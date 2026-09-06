@@ -5,8 +5,8 @@ shows, why it is there, and what is softer than it looks. The full design is
 `docs/specs/2026-09-05-marketplace-rebuild-pipeline-design.md`; section numbers
 here match the poster, not the spec.
 
-**Context.** Alex asked for one visual that gives easy insight into what is
-being built and how it works, covering every aspect of the draft spec. The
+**Context.** One visual giving easy insight into what is being built and how
+it works, covering every aspect of the draft spec. The
 poster is a reference to return to; this document carries the caveats.
 
 **A note on colour.** Green means deterministic, it blocks or enforces. Gold
@@ -42,7 +42,7 @@ cards, and a red band for the sixth principle, egress.
 **The argument.** The criterion is the atom. It is minted at ratification,
 never reused, and versioned on any wording change. Every other artifact hangs
 off it, which is what lets the state site be generated from git rather than
-maintained by hand. The principles are Alex's prototype's three rules plus the
+maintained by hand. The principles are the originating prototype's three rules plus the
 front door, derivability and egress.
 
 *What changed on 2026-09-05.* The spec previously said both repositories would
@@ -57,7 +57,7 @@ locally until a step genuinely needs a remote.
 **What the panel shows.** The two repo layouts, the runner commands, and the
 four parts of the configuration file.
 
-**The argument.** Kaegan's pack copies eighty files into each repo. Referencing
+**The argument.** The tier2-v3 pack in bcgov/bcparks-ar-admin-agentic copies eighty files into each repo. Referencing
 by version is what makes upgrades a one-line change and lets another team adopt
 without forking. `bcgov/quickstart-openshift` already does this for its deploy
 workflows, so the pattern is proven in the org.
@@ -78,8 +78,8 @@ piece most pipelines leave implicit: the personas, routes, labels, test IDs,
 API description and observables that tests need in order to act. Writing it
 down as spec content is what lets blind tests and a blind implementation meet.
 
-*On the confidence field.* It unifies Rog's confirmed, inferred and open
-ledger, spec-kit's NEEDS CLARIFICATION marker and Crow's reconciliation class.
+*On the confidence field.* It unifies a confirmed, inferred and open ledger from an internal
+requirements-engineering practice, spec-kit's NEEDS CLARIFICATION marker and Crow's reconciliation class.
 The rule that nothing ratifies while inferred or open is what stops an agent's
 guess becoming contract.
 
@@ -133,8 +133,8 @@ on the state site is the tell.
 the left, binding adapters and enforcing separation on the right. A band on
 why the oracle step exists.
 
-**The argument.** Rog's planted-defect experiment showed agents write tests
-that bless bugs when they can see the code. The boundary that matters is what
+**The argument.** An internal planted-defect experiment showed agents write
+tests that bless bugs when they can see the code. The boundary that matters is what
 the test-writing session can see, not how many repos exist. The blind
 workspace holds the spec bundle only. Tests call an abstract surface; an
 adapter per target binds it to real locators, and a lint rule keeps every
@@ -142,11 +142,10 @@ assertion out of adapters and every selector out of tests. The old adapter is
 written by walking the running application, never its source.
 
 *On the old application's sign-in.* Its automated tests do not log in through
-Keycloak, the real government login. They visit a special address that exists
-only in development builds and creates a session for a named role, so a test
-can be "admin" or "vendor 3" instantly. Calibration uses that. The new
-application needs an equivalent for tests, and it must be impossible to enable
-outside sandbox environments. That is open question 1 in the spec.
+Keycloak. They visit a development-only address that creates a session for a
+named role. Calibration's old adapter uses that. The new application does not
+copy it: tests sign in through a sandbox identity provider seeded with test
+users, and the application code stays production-shaped.
 
 *Softer than it looks.* The first calibration run will produce many misses that
 are adapter or contract fixes rather than defects. That is expected and cheap.
@@ -188,9 +187,8 @@ is deliberately not a headline.
 
 *On the rejected pieces.* caveman is rejected because it compresses the prose
 the gates need readable. ponytail is optional and off by default because its
-own benchmark notes reasoning models can go the other way. Kaegan's pack source
-and his two MCP servers are not public; the ideas and scripts are ported from
-the installed copy in his fork, and asking him is worthwhile but not blocking.
+own benchmark notes reasoning models can go the other way. The tier2-v3 pack's source and its two MCP servers are not public; the ideas
+and scripts are ported from the installed copy, which is not blocking.
 
 ---
 
@@ -198,12 +196,12 @@ the installed copy in his fork, and asking him is worthwhile but not blocking.
 
 1. Test identity on the new target (decided at G2).
 2. Observing email on the old application during calibration.
-3. Whether agent-held gates need a stricter sample than five per week.
+3. What sample size agent-held gates need; five per week is only the default.
 4. Whether page stories in Storybook drift from real data shapes; the stories
    use the same seed fixtures the tests use to limit this.
 5. When a remote is first needed, and permission to push at that point.
 
 ---
 
-*Draft for Alex's review, 2026-09-05. Describes the design as specified, not as
+*Draft for review, 2026-09-05. Describes the design as specified, not as
 built. Nothing has been pushed to any remote.*

@@ -1,6 +1,6 @@
 # Agentic SDLC pipeline, proven by rebuilding the Digital Marketplace
 
-**Design specification · 2026-09-05 · draft for Alex's review**
+**Design specification · 2026-09-05 · draft for review**
 
 This document describes two things that are built together: a reusable agentic
 software-delivery pipeline, and the first project it runs on, a rebuild of the
@@ -70,7 +70,7 @@ assets and the oracle for later replays.
 
 ## 2. Principles
 
-These come from Alex's 2026-08-25 prototype and are not negotiable inside the
+These come from the originating prototype and are not negotiable inside the
 pipeline. A project may tighten them, never loosen them.
 
 1. **Deterministic checks block. Agents advise. Humans judge risk.** Anything
@@ -104,7 +104,7 @@ pipeline. A project may tighten them, never loosen them.
 | Project repo (marketplace rebuild) | Constitution, config, intent, spec, contract, tests, adapters, design catalogue, plan, application code, evidence, generated state site | bcgov, public |
 
 Both are local git repositories until something requires a remote, and
-nothing is pushed without Alex's explicit permission at that moment. The first
+nothing is pushed without the tech lead's explicit permission at that moment. The first
 thing that requires a remote is a gate expressed as a GitHub pull request; until
 then the runner expresses gates as local branches with a generated decision page,
 and a ruling is recorded by a commit. The intended remote is the bcgov
@@ -207,12 +207,12 @@ that validates its shape.
 `constitution.md`. Structure from spec-kit's constitution template (principles,
 constraints, workflow, governance and amendment), content from two sources:
 platform articles that no project may loosen, and project articles the team
-fills in. The project articles include the domain glossary that mattpocock's
-skills read as the shared vocabulary. Each platform article cites the BC Gov
+fills in. The project articles include the domain glossary that the
+mattpocock/skills pack reads as the shared vocabulary. Each platform article cites the BC Gov
 policy or standard it comes from, and phase 0 verifies every citation; an
 article that cannot be traced to a policy is marked as a team convention, not
-a platform rule. The platform articles for BC Gov, taken from Kaegan's tier2-v3
-pack and kept: accessibility to WCAG 2.1 AA; the BC Design
+a platform rule. The platform articles for BC Gov, taken from the tier2-v3 pack in
+`bcgov/bcparks-ar-admin-agentic` and kept: accessibility to WCAG 2.1 AA; the BC Design
 System for new services; no personal information before a privacy assessment;
 OpenShift as deploy target unless an exception is recorded; spec in git as
 source of truth; three human checkpoints with no agent self-merge; test
@@ -248,8 +248,9 @@ any wording change), confidence (`confirmed`, `inferred`, `open`; nothing
 ratifies while `inferred` or `open`), citations (for recovered criteria, file
 and line at a commit), reconciliation (`aligned`, `implemented-only`,
 `documented-only`, `conflicting`, for recovered criteria). The confidence field
-unifies three existing conventions: Rog's confirmed/inferred/open ledger,
-spec-kit's NEEDS CLARIFICATION marker, and Crow's reconciliation class.
+unifies three existing conventions: a confirmed/inferred/open ledger from an
+internal requirements-engineering practice, spec-kit's NEEDS CLARIFICATION
+marker, and Crow's reconciliation class.
 
 `spec/features/*.feature` holds Given/When/Then scenarios tagged `@R-12.3`.
 Gherkin is used as a writing format only. No Cucumber runner.
@@ -395,8 +396,8 @@ stack, database kept, sandbox only.
 Inputs: the source repository at a pinned commit, its documentation, its
 migrations, its OpenAPI description, its issue and PR history through the
 GitHub CLI. Explicitly excluded: the source repository's own tests, which
-encode current behaviour and would contaminate the spec; and any of Alex's
-notes. Skill: the archaeology skill, which borrows Crow's business-rule
+encode current behaviour and would contaminate the spec; and any private
+notes or correspondence. Skill: the archaeology skill, which borrows Crow's business-rule
 extraction guidance and its data shape (stable IDs, citations, reconciliation
 class). Workspace: a read-only checkout of the source at `sources/old/` plus
 `spec/` and `intent/`. Outputs, one PR per domain: draft criteria marked
@@ -413,7 +414,7 @@ evaluation and scoring, notifications, content and administration, files.
 
 ### 5.4 `ratify` (gate G1)
 
-Inputs: the archaeology PRs. This stage is human. For each domain Alex reads
+Inputs: the archaeology PRs. This stage is human. For each domain the tech lead reads
 the summary page and rules per criterion: contract, defect, edit, obsolete, or
 spike. Bulk rulings are allowed where the agent's confidence is `confirmed` and
 reconciliation is `aligned`; the agent's `conflicting` and `open` rows are
@@ -468,8 +469,8 @@ screen when a direction is undecided. Workspace: `design/`, `spec/`,
 `constitution.md`. Outputs: `DESIGN.md`, the catalogue, and the test IDs written
 back into `surface.yaml`. Checks: every screen in `surface.yaml` has a story for
 every state it declares; Storybook's accessibility addon reports no violations;
-no hard-coded colour values. Exit: Inderdeep approves the catalogue PR. His
-review is the gate; his findings are filed as design criteria where they change
+no hard-coded colour values. Exit: the UX reviewer approves the catalogue PR. That
+review is the gate; its findings are filed as design criteria where they change
 behaviour.
 
 ### 5.9 `plan` (gate G2)
@@ -526,9 +527,9 @@ Inputs: the deployed sandbox, its logs and metrics. Output: intents. A monitor
 per criterion where the criterion makes a production promise; an anomaly
 drafts a spec delta and a candidate fix, which enters at `intent` through the
 front door. First increment: the weekly metrics collector and the statistical
-band detector from Kaegan's pack, ported. Second increment: an SRE agent
-reading OpenShift logs over an MCP server, which is the validation Justin asked
-for. Not in the first pass beyond the metrics collector.
+band detector from the tier2-v3 pack, ported. Second increment: an SRE agent
+reading OpenShift logs over an MCP server, which is the validation the
+programme asked for. Not in the first pass beyond the metrics collector.
 
 ### 5.15 `status`
 
@@ -540,14 +541,19 @@ Deterministic. Regenerates the state site locally or in CI. No agent.
 
 ### 6.1 The gates
 
-| Gate | Decides | Artifact judged | Holder for this run |
+Holders are roles. The binding of a role to a person lives outside the public
+repository: in GitHub's CODEOWNERS for pull-request approval, and in a local,
+untracked `.sdlc/holders.local.yaml` for the runner. Nothing in the tracked
+config names a person.
+
+| Gate | Decides | Artifact judged | Holder role for this run |
 |---|---|---|---|
-| G0 intent | Is this the right problem and outcome? | `intent/<slug>.md` | Product-owner persona agent, Alex on escalation |
-| G1 ratify | Is this criterion the contract, or a defect? | Domain summary page plus criteria list | Alex |
-| G-DESIGN | Does the catalogue show the intended experience, accessibly? | Storybook catalogue plus `DESIGN.md` | Inderdeep |
-| G2 plan | Is the architecture sound and every criterion assigned? | `plan.md` | Architect persona agent, Alex on escalation |
-| G3 review and ship | Does the PR do what the slice said, with evidence? | PR with review comment and receipt | Reviewer persona agent, Alex on escalation and weekly sample |
-| G-POL policy | May the policy change? | `.sdlc/config.yaml` policy section | Alex |
+| G0 intent | Is this the right problem and outcome? | `intent/<slug>.md` | Product-owner persona agent, tech lead on escalation |
+| G1 ratify | Is this criterion the contract, or a defect? | Domain summary page plus criteria list | Tech lead |
+| G-DESIGN | Does the catalogue show the intended experience, accessibly? | Storybook catalogue plus `DESIGN.md` | UX reviewer |
+| G2 plan | Is the architecture sound and every criterion assigned? | `plan.md` | Architect persona agent, tech lead on escalation |
+| G3 review and ship | Does the PR do what the slice said, with evidence? | PR with review comment and receipt | Reviewer persona agent, tech lead on escalation and sample |
+| G-POL policy | May the policy change? | `.sdlc/config.yaml` policy section | Tech lead |
 
 Every gate is a proposal branch with a generated decision page that leads with
 the question, the recommendation, and a link to the page on the state site.
@@ -560,8 +566,8 @@ runner feeds back to the producing stage as input.
 
 A gate holder is a role, and the config binds each role to a person or to a
 persona agent. During pipeline testing most gates are agent-held so a full run
-does not wait on a human at every step, which is what Kaegan did in his rematch
-with simulated checkpoints. Rules that make this safe rather than a rubber stamp:
+does not wait on a human at every step, which is what a prior pilot did with
+simulated checkpoints. Rules that make this safe rather than a rubber stamp:
 
 - A persona agent has a written brief (`personas/<role>.md`): what it cares
   about, what it must refuse, and when it must escalate. The product-owner
@@ -573,13 +579,14 @@ with simulated checkpoints. Rules that make this safe rather than a rubber stamp
   producing stage's confidence is below its threshold, or when the persona's
   brief says so. Escalated items wait for the human bound to the role.
 - A human samples agent-held decisions: the config sets a sample size per gate
-  per week, and the sample is listed on the state site for review.
+  per week (a default, not a commitment; the run record will say what it should
+  be), and the sample is listed on the state site for review.
 - Switching a gate from agent to human, or back, is a G-POL change.
 
 For the marketplace run: phase 1 ratify and phase 3 design are human-held from
 the start, because those rulings are the experiment's evidence. G0, G2 and G3
-begin agent-held with a weekly human sample, and Alex can take any gate back at
-any time by editing the config.
+begin agent-held with a weekly human sample, and the tech lead can take any
+gate back at any time by editing the config.
 
 ### 6.3 Tiers and the short circuit
 
@@ -718,13 +725,13 @@ targets:
     base_url: http://localhost:8080
     identity: test-idp
 policy:
-  gates:
-    G0: {holder: agent:product-owner, escalate_to: alex}
-    G1: {holder: alex}
-    G-DESIGN: {holder: inderdeep}
-    G2: {holder: agent:architect, escalate_to: alex}
-    G3: {holder: agent:reviewer, escalate_to: alex, human_sample_per_week: 5}
-    G-POL: {holder: alex}
+  gates:                              # roles; people are bound in holders.local.yaml (untracked)
+    G0: {holder: agent:product-owner, escalate_to: tech-lead}
+    G1: {holder: tech-lead}
+    G-DESIGN: {holder: ux-reviewer}
+    G2: {holder: agent:architect, escalate_to: tech-lead}
+    G3: {holder: agent:reviewer, escalate_to: tech-lead, human_sample_per_week: 5}
+    G-POL: {holder: tech-lead}
   default_tier: STANDARD
   rungs: {}                         # none earned
   triage: {direct_max_files: 3, direct_allowed_paths: [app/]}
@@ -757,6 +764,12 @@ From the prototype, applied because both repositories are public.
 | E-3 | Per-person metrics leaving the private run record | Metrics script publishes aggregates only |
 | E-4 | Participant names in evidence records | Intent skill anonymises before filing |
 
+These rules apply to the pipeline repository's own documents, this one
+included: no colleague is named, no internal ticket number or meeting is
+cited, and no private note is referenced by path. A structural check scans
+both repositories for ticket-number patterns, note-folder paths, and a
+locally held, untracked list of names, and fails the proposal on a hit.
+
 The agent never posts to GitHub directly. It writes to a buffer; a separate
 step with its own token applies the filter, posts the filtered version, and
 logs every strip in the run record. This is a process control and it is stated
@@ -774,7 +787,7 @@ opens a PR with the changes and a summary. The full register is
 | Dependency | Used for | Taken as | Why this one |
 |---|---|---|---|
 | github/spec-kit | Spec, plan, tasks, constitution, checklist templates | Copied templates with attribution | The most-used templates for this shape; the process and CLI are not used because the runner owns the process |
-| Kaegan's tier2-v3 pack (from `bcgov/bcparks-ar-admin-agentic`) | Constitution platform articles, provenance header check, triage direct/pipeline, checkpoint gate, harness evals, metrics collector, band detector, evidence receipt | Ideas and ported scripts; source repo is not public | Already run on a real BC Gov repo; the BC platform articles are right |
+| tier2-v3 pack (in `bcgov/bcparks-ar-admin-agentic`) | Constitution platform articles, provenance header check, triage direct/pipeline, checkpoint gate, harness evals, metrics collector, band detector, evidence receipt | Ideas and ported scripts; source repo is not public | Already run on a real BC Gov repo; the BC platform articles are right |
 | mattpocock/skills | grilling, domain-modeling, prototype, tdd, code-review | Editable copies via `npx skills add`, pinned | Small, composable, model-agnostic; grilling is the intent interview, tdd defines seams, prototype produces UI variants |
 | bcgov/crow | crow-bcgov-ux and the `DESIGN.md` template; business-rules data shape as a reference | Skill copied; schema referenced | BC Design System and WCAG guidance written for BC Gov; the rule schema has stable IDs, citations and reconciliation |
 | bcgov/design-system | React components, tokens, BC Sans, and the packages' own agent instructions | npm dependencies of the project | The design system, and it ships instructions for agents |
@@ -782,9 +795,9 @@ opens a PR with the changes and a summary. The full register is
 | bcgov/agent-guardrails | Shell wrappers blocking merge, hook bypass, live cluster access | Installed on every machine that runs the pipeline | Cheap enforcement of "agents propose, never merge" |
 | bcgov/quickstart-openshift and -helpers | The `openshift-ts` stack profile's scaffold and deploy workflows | Referenced by version | Org-maintained, current, deploys to the platform the marketplace runs on, already uses central workflows |
 | DietrichGebert/ponytail | Scope brake during build | Optional pack, disabled by default | Honest benchmarks; may hurt with reasoning models, so measured before kept |
-| Playwright, Vitest, Storybook | Acceptance tests, unit tests, catalogue | Project dev dependencies | Standard; Storybook is what Inderdeep already uses |
+| Playwright, Vitest, Storybook | Acceptance tests, unit tests, catalogue | Project dev dependencies | Standard; Storybook is what the UX practice already uses |
 | microsoft/AI-Engineering-Coach | Session-log review to find repeated prompts worth turning into skills | Phase 5 retrospective tool only | Not part of the pipeline |
-| Rog's requirements materials | Confidence ledger, ID-at-ratification rule, four-facet requirement template, the oracle-independence argument | Rules adopted | Empirical basis for blindness |
+| Internal requirements-engineering practice | Confidence ledger, ID-at-ratification rule, four-facet requirement template, the oracle-independence argument | Rules adopted | Empirical basis for blindness |
 
 Not adopted, with reasons recorded in the register: caveman (compresses prose
 the gates need readable), rl-project-template (Emerald and .NET specific),
@@ -810,7 +823,7 @@ The first stack profile, and the one the marketplace uses.
   contract is the source), validation at the boundary, testing rules (unit at
   seams, acceptance only from spec), accessibility, plain language at Grade 8.
   Drawn from bcgov/agent-instructions, the design system's agent instructions,
-  and Ryan Loiselle's coding standards, and recorded with sources.
+  and the coding standards in `rloisell/rl-project-template`, and recorded with sources.
 - **Deploy**: per-PR sandbox and a persistent sandbox namespace through the
   quickstart helpers. No route to any production namespace exists in the
   project's workflows.
@@ -860,14 +873,14 @@ availability.
 
 ## 15. The marketplace run, phase by phase
 
-| Phase | Stages | Exit criterion | Gate holder |
+| Phase | Stages | Exit criterion | Gate holder role |
 |---|---|---|---|
-| 0 Harness | Create both repos locally, `sdlc init`, constitution, config, guardrails, persona briefs | Checkpoint checks green on an empty proposal branch | Alex |
-| 1 Spec | `intent`, `archaeology` per domain, `ratify` | Every domain ratified; `criteria-index.json` has no `inferred` or `open` accepted rows | Alex |
-| 2 Tests | `derive-tests`, `bind-adapter old`, `calibrate` | Every calibrate row is pass or ruled | Alex |
-| 3 Design | `design` | Catalogue approved | Inderdeep |
-| 4 Build | `plan`, then per slice `build`, `verify`, `review-and-ship`, `deploy` | Every slice done per section 7.4; parity metric reported | Alex |
-| 5 Rails | `operate` metrics, one feature through the full chain, one trivial change through the short circuit, harness improvements from the run record | The pipeline version bumps; rebuild two starts from the same config | Alex |
+| 0 Harness | Create both repos locally, `sdlc init`, constitution, config, guardrails, persona briefs | Checkpoint checks green on an empty proposal branch | Tech lead |
+| 1 Spec | `intent`, `archaeology` per domain, `ratify` | Every domain ratified; `criteria-index.json` has no `inferred` or `open` accepted rows | Tech lead |
+| 2 Tests | `derive-tests`, `bind-adapter old`, `calibrate` | Every calibrate row is pass or ruled | Tech lead |
+| 3 Design | `design` | Catalogue approved | UX reviewer |
+| 4 Build | `plan`, then per slice `build`, `verify`, `review-and-ship`, `deploy` | Every slice done per section 7.4; parity metric reported | Tech lead |
+| 5 Rails | `operate` metrics, one feature through the full chain, one trivial change through the short circuit, harness improvements from the run record | The pipeline version bumps; rebuild two starts from the same config | Tech lead |
 
 Slice order for phase 4, first pass: public opportunity listing and detail;
 sign-in and organisation management; vendor proposal submission for Code With
@@ -880,7 +893,7 @@ content.
 ## 16. Decisions taken on recommendation, and remaining risks
 
 Each of these was an open question on the first draft. The recommendation was
-adopted on 2026-09-05 and stands unless Alex objects.
+adopted on 2026-09-05 and stands unless the tech lead objects.
 
 1. **Test identity on the new target.** A sandbox identity provider seeded
    with test users, run beside the application in non-production. The
@@ -888,20 +901,20 @@ adopted on 2026-09-05 and stands unless Alex objects.
 2. **Observing email.** A mail catcher as the SMTP target for both old and new
    applications in non-production, set by environment variable, so
    notification criteria calibrate like any other.
-3. **Kaegan's pack source.** Port the ideas and scripts from the installed
-   copy now; Alex asks Kaegan for the source and the two MCP servers when
-   convenient. Not blocking.
+3. **tier2-v3 pack source.** The pack's source repository and its two MCP
+   servers are not public. Port the ideas and scripts from the installed copy
+   now. Not blocking.
 4. **Storybook page stories.** Use the same seed fixtures the tests use, so
    the catalogue cannot drift from real data shapes.
 5. **Ponytail.** Off by default; measured on one slice in phase 4; kept only if
    tokens and verify attempts both fall.
 6. **Public repositories.** Push both repositories to the bcgov organisation
-   at the end of phase 0, with Alex's go-ahead at that moment, so others can
+   at the end of phase 0, with the tech lead's go-ahead at that moment, so others can
    watch it work. Private run record by default; the egress filter runs on
    everything that posts.
 7. **Old fixtures.** Scanned for real-looking personal data before reuse.
-8. **Agent-held gate sampling.** Five decisions per gate per week reviewed by
-   a human, adjusted once the run record shows the miss rate.
+8. **Agent-held gate sampling.** A config default of five decisions per gate
+   per week. A default, not a commitment.
 
 Remaining risks: the egress filter is a pattern filter and will miss novel
 shapes; retry bounds are starting values; Storybook page stories are a
