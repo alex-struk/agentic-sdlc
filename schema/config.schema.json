@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agentic-sdlc project configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pipeline", "profile", "stack", "project", "policy", "skills", "egress"],
+  "properties": {
+    "pipeline": { "type": "object", "additionalProperties": false, "required": ["repo", "ref"],
+      "properties": { "repo": { "type": "string" }, "ref": { "type": "string" } } },
+    "profile": { "enum": ["greenfield", "rebuild", "remediation", "feature"] },
+    "stack": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "project": { "type": "object", "additionalProperties": false, "required": ["name", "domains"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "domains": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-z0-9-]+$" } } } },
+    "sources": { "type": "object", "additionalProperties": false,
+      "properties": { "old": { "$ref": "#/definitions/source" } } },
+    "oracle": { "type": "object", "additionalProperties": false, "required": ["target", "compose", "seed", "base_url", "identity"],
+      "properties": {
+        "target": { "type": "string" }, "compose": { "type": "string" }, "seed": { "type": "string" },
+        "base_url": { "type": "string", "format": "uri" }, "identity": { "enum": ["session-route", "sandbox-idp"] } } },
+    "targets": { "type": "object", "additionalProperties": { "$ref": "#/definitions/target" } },
+    "policy": { "type": "object", "additionalProperties": false, "required": ["gates", "default_tier"],
+      "properties": {
+        "gates": { "type": "object", "additionalProperties": false,
+          "required": ["G0", "G1", "G-DESIGN", "G2", "G3", "G-POL"],
+          "properties": {
+            "G0": { "$ref": "#/definitions/gate" }, "G1": { "$ref": "#/definitions/gate" },
+            "G-DESIGN": { "$ref": "#/definitions/gate" }, "G2": { "$ref": "#/definitions/gate" },
+            "G3": { "$ref": "#/definitions/gate" }, "G-POL": { "$ref": "#/definitions/gate" } } },
+        "default_tier": { "enum": ["LOW", "STANDARD", "HIGH", "CRITICAL"] },
+        "rungs": { "type": "object", "additionalProperties": { "type": "string" } },
+        "triage": { "type": "object", "additionalProperties": false,
+          "properties": { "direct_max_files": { "type": "integer", "minimum": 1 },
+                          "direct_allowed_paths": { "type": "array", "items": { "type": "string" } } } },
+        "budgets": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1 } } } },
+    "skills": { "type": "object", "additionalProperties": false, "required": ["packs"],
+      "properties": {
+        "packs": { "type": "array", "items": { "$ref": "#/definitions/pack" } },
+        "extra": { "type": "array", "items": { "type": "string" } } } },
+    "egress": { "type": "object", "additionalProperties": false, "required": ["rules"],
+      "properties": { "rules": { "type": "array", "items": { "enum": ["E-1", "E-2", "E-3", "E-4"] } } } }
+  },
+  "definitions": {
+    "source": { "type": "object", "additionalProperties": false, "required": ["repo", "commit"],
+      "properties": {
+        "repo": { "type": "string" }, "commit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "docs": { "type": "array", "items": { "type": "string" } },
+        "exclude": { "type": "array", "items": { "type": "string" } } } },
+    "target": { "type": "object", "additionalProperties": false, "required": ["base_url", "identity"],
+      "properties": { "base_url": { "type": "string", "format": "uri" }, "identity": { "enum": ["session-route", "sandbox-idp"] } } },
+    "gate": { "type": "object", "additionalProperties": false, "required": ["holder"],
+      "properties": {
+        "holder": { "type": "string", "pattern": "^(agent:)?[a-z][a-z0-9-]*$" },
+        "escalate_to": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "human_sample_per_week": { "type": "integer", "minimum": 0 } } },
+    "pack": { "type": "object", "additionalProperties": false, "required": ["repo", "ref", "skills"],
+      "properties": {
+        "repo": { "type": "string" }, "ref": { "type": "string" },
+        "skills": { "type": "array", "items": { "type": "string" } },
+        "enabled": { "type": "boolean" } } }
+  }
+}
