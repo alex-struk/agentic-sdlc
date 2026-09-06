@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readText } from "../lib/fsx.mjs";
 
-export function checkConstitution(projectDir) {
+export function checkConstitution(projectDir, ctx = {}) {
   const id = "constitution";
   const p = join(projectDir, "constitution.md");
   if (!existsSync(p)) return { id, ok: false, messages: ["constitution.md is missing"] };

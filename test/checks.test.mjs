@@ -7,6 +7,7 @@ import { git } from "../src/lib/git.mjs";
 import { checkConstitution } from "../src/checks/constitution.mjs";
 import { checkEgress, defaultNamesPath } from "../src/checks/egress.mjs";
 import { checkLayout } from "../src/checks/layout.mjs";
+import { checkConfig } from "../src/checks/config.mjs";
 
 function repo() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-chk-"));
@@ -137,6 +138,16 @@ test("egress: the default name list follows XDG_CONFIG_HOME", () => {
     if (prevEnv === undefined) delete process.env.SDLC_EGRESS_NAMES; else process.env.SDLC_EGRESS_NAMES = prevEnv;
     if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = prevXdg;
   }
+});
+
+test("config: malformed YAML is reported, not thrown", () => {
+  const d = repo();
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), "policy: { gates: [G1\nprofile: rebuild\n");
+  const r = checkConfig(d, {});
+  assert.equal(r.ok, false);
+  assert.equal(r.config, null);
+  assert.ok(r.messages.some((m) => /not valid YAML/.test(m)), r.messages.join("\n"));
 });
 
 test("layout: required paths for a rebuild project", () => {

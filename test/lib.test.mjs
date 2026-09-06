@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, gitOk, assertCleanTree } from "../src/lib/git.mjs";
-import { copyTree, writeText, readText } from "../src/lib/fsx.mjs";
+import { copyTree, readText } from "../src/lib/fsx.mjs";
 import { appendRun } from "../src/lib/runrecord.mjs";
 
 test("git wrapper runs and reports", () => {

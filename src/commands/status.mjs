@@ -2,15 +2,20 @@ import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
+import { loadConfig } from "../config/load.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 const STATES = ["proposed", "accepted", "implemented", "verified", "monitored"];
 
 export function buildSite(projectDir) {
   projectDir = resolve(projectDir);
-  const cfg = parse(readText(join(projectDir, ".sdlc", "config.yaml")));
+  const { config: cfg, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+  // The site is a report on the project, so a configuration problem is reported rather
+  // than raised: the gate log and the run log are still worth generating without it.
+  for (const e of errors) console.warn(`warning: .sdlc/config.yaml: ${e}`);
+  if (!cfg) throw new Error(`cannot build the site: .sdlc/config.yaml did not parse`);
   const idxPath = join(projectDir, "spec", "criteria-index.json");
-  const criteria = existsSync(idxPath) ? JSON.parse(readText(idxPath)).criteria : [];
+  const criteria = (existsSync(idxPath) ? JSON.parse(readText(idxPath)).criteria : []) ?? [];
   const counts = Object.fromEntries(STATES.map((s) => [s, criteria.filter((c) => c.state === s).length]));
   const index = [`# ${cfg.project.name} — state`, "", `Profile: ${cfg.profile} · generated ${new Date().toISOString()}`, "",
     "## Coverage", "", "| State | Criteria |", "| --- | --- |", ...STATES.map((s) => `| ${s} | ${counts[s]} |`), "",

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { loadConfig } from "../config/load.mjs";
 import { stagesFor } from "../profiles.mjs";
 
-export function checkConfig(projectDir) {
+export function checkConfig(projectDir, ctx = {}) {
   const id = "config";
   const p = join(projectDir, ".sdlc", "config.yaml");
   if (!existsSync(p)) return { id, ok: false, messages: [".sdlc/config.yaml is missing"], config: null };

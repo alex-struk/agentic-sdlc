@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseConfig } from "../src/config/load.mjs";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseConfig, loadConfig } from "../src/config/load.mjs";
 
 const GOOD = `
 pipeline: { repo: agentic-sdlc, ref: v0.1.0 }
@@ -53,4 +56,22 @@ test("bad profile is an error", () => {
 test("a person-looking holder is rejected: holders are roles or agent:persona", () => {
   const { errors } = parseConfig(GOOD.replace("G1: { holder: tech-lead }", "G1: { holder: jane.doe }"));
   assert.ok(errors.length > 0);
+});
+
+test("malformed YAML is an error, not a thrown exception", () => {
+  const { config, errors } = parseConfig("project: { name: p, domains: [a }\n");
+  assert.equal(config, null);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /^config\.yaml is not valid YAML: /);
+});
+
+test("loadConfig reads a file and reports the same way parseConfig does", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-loadcfg-"));
+  const good = join(d, "good.yaml"); writeFileSync(good, GOOD);
+  assert.deepEqual(loadConfig(good).errors, []);
+  assert.equal(loadConfig(good).config.project.name, "example-service");
+  const bad = join(d, "bad.yaml"); writeFileSync(bad, "policy: { gates: [\n");
+  const r = loadConfig(bad);
+  assert.equal(r.config, null);
+  assert.match(r.errors[0], /not valid YAML/);
 });
