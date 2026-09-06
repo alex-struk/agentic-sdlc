@@ -232,13 +232,13 @@ export function writeIndex(projectDir, parsed) {
   return path;
 }
 
-function domainOrder(projectDir, domains) {
-  const cfgPath = join(projectDir, ".sdlc", "config.yaml");
-  let configured = null;
-  if (existsSync(cfgPath)) {
-    const { config } = loadConfig(cfgPath);
-    if (Array.isArray(config?.project?.domains)) configured = config.project.domains;
-  }
+// Pure ordering rule shared with `status.mjs`'s coverage board: domains named in
+// `configured` (`config.project.domains`) sort by their position there; any domain not
+// listed (and the whole set, when no config is available at all) falls back to
+// alphabetical. Split out from `domainOrder` below so a caller that has already loaded
+// its config (`buildSite` does) does not have to read `.sdlc/config.yaml` a second time
+// just to order a set of domain names.
+export function orderDomains(configured, domains) {
   if (!configured) return [...domains].sort();
   const rank = new Map(configured.map((d, i) => [d, i]));
   return [...domains].sort((a, b) => {
@@ -246,6 +246,16 @@ function domainOrder(projectDir, domains) {
     const rb = rank.has(b) ? rank.get(b) : Infinity;
     return ra !== rb ? ra - rb : a.localeCompare(b);
   });
+}
+
+function domainOrder(projectDir, domains) {
+  const cfgPath = join(projectDir, ".sdlc", "config.yaml");
+  let configured = null;
+  if (existsSync(cfgPath)) {
+    const { config } = loadConfig(cfgPath);
+    if (Array.isArray(config?.project?.domains)) configured = config.project.domains;
+  }
+  return orderDomains(configured, domains);
 }
 
 // A `|` inside a free-text cell (a statement can contain one) would otherwise split the
