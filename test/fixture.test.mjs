@@ -43,12 +43,11 @@ test("fixture project: create, fill constitution, checks green, propose, approve
     assert.equal(pages.length, 5);
     assert.ok(existsSync(join(dir, "site/gates.md")));
     assert.ok(existsSync(join(dir, "site/proposals/harness-ready.md")));
-    // The direct `buildSite` call above regenerates `site/*.md` with a fresh generation
-    // timestamp but does not commit it (unlike the runner, which folds a rebuild into
-    // the commit it belongs to) — `runStage` below requires a clean tree, so this needs
-    // a commit of its own first.
-    git(["add", "-A"], dir);
-    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "rebuild site"], dir);
+    // The ruling above already folded a rebuilt site into its own commit, and the site
+    // is a pure function of the state on disk, so the direct `buildSite` call above
+    // rewrites the same bytes and leaves nothing to commit — which is what lets
+    // `runStage` below start from a clean tree.
+    assert.equal(git(["status", "--porcelain"], dir), "", "a rebuild of an unchanged site is a no-op");
 
     // The runner end to end, in CI: a real stage turn through the mock executor, then a
     // real persona ruling through the same mock, on the same fixture project the steps

@@ -28,7 +28,11 @@ dispatched.
 On the proposal branch:
 
 - `.sdlc/gates/<name>.yaml`: `gate`, `verdict`, `by`, `held_by` (`agent` or `human`, derived from
-  whether `by` starts with `agent:`), `note`, `at`.
+  whether `by` starts with `agent:`), `note`, `at`. An agent-held ruling replaces `note` with the
+  persona's `rationale` and `conditions`, and adds `cost`, `turns` and `session` — what that
+  ruling turn itself cost, the same three numbers a stage's journal entry records, which
+  `site/index.md` totals as `Rulings cost`. A mandatory escalation records zeros, since it never
+  asks the persona anything; a human ruling has no turn and carries none of the three.
 - An appended `.sdlc/runs/<date>.md` entry.
 - One commit, staging those two paths by name and nothing else.
 

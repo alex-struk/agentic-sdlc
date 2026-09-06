@@ -46,7 +46,13 @@ function blockScalar(text) {
 // writes a `rationale` and an `escalate_to`, with no conditions. Building the text in
 // one place keeps all three shapes consistent (same key order, same block-scalar
 // convention) without any caller knowing about another's fields.
-function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, escalateTo }) {
+//
+// `metrics` is what a ruling turn cost — the same three numbers a stage's journal entry
+// records, so the state site can total what the pipeline spent on rulings alongside
+// what it spent on stages. Every agent path passes it, including a mandatory escalation
+// that never asked the persona anything (cost 0, no session); a human ruling has no
+// turn to measure and the keys are left out of its file entirely.
+function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, escalateTo, metrics }) {
   let text = `gate: ${gate}\nverdict: ${verdict}\nby: ${by}\nheld_by: ${heldBy}\n`;
   if (escalateTo !== undefined) text += `escalate_to: ${escalateTo ?? ""}\n`;
   if (rationale !== undefined) {
@@ -57,6 +63,10 @@ function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, 
     }
   } else {
     text += `note: ${JSON.stringify(note ?? "")}\n`;
+  }
+  if (metrics) {
+    const { cost = 0, turns = 0, session = "" } = metrics;
+    text += `cost: ${cost}\nturns: ${turns}\nsession: ${JSON.stringify(session)}\n`;
   }
   text += `at: ${new Date().toISOString()}\n`;
   return text;
@@ -79,9 +89,9 @@ function commitSite(projectDir) {
 // append the run record, stage exactly those paths (plus the proposal page when the
 // caller already appended a `## Ruling` section to it), commit, merge on approve, and
 // fold the rebuilt site into that same commit.
-function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, proposalPath, proposalAppended }) {
+function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, metrics, proposalPath, proposalAppended }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
-  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions }));
+  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, metrics }));
   const runPath = appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
   const paths = [gatePath, relative(projectDir, runPath)];
   if (proposalAppended) paths.push(relative(projectDir, proposalPath));
@@ -91,9 +101,9 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   commitSite(projectDir);
 }
 
-function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale }) {
+function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
-  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, rationale }));
+  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, rationale, metrics }));
   const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`);
   stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} escalated to ${escalateTo ?? "?"}`], projectDir);
@@ -163,7 +173,9 @@ export async function ruleByAgent(projectDir, name, { persona }) {
 
   if (mandatoryReason) {
     const rationale = `mandatory escalation: ${mandatoryReason}`;
-    writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale });
+    // No persona turn ran, so the ruling cost nothing — recorded as zero rather than
+    // omitted, so every agent-held gate file carries the same three keys.
+    writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics: { cost: 0, turns: 0, session: "" } });
     return { verdict: "escalate", rationale, escalated: true };
   }
 
@@ -175,17 +187,18 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // reset) so the tampering is still there for a person to see.
   assertCleanTree(projectDir, "rule: the ruling agent modified the working tree");
   const { verdict, rationale, conditions } = parseVerdict(result.text);
+  const metrics = { cost: result.cost, turns: result.turns, session: result.sessionId };
 
   if (verdict === "escalate") {
-    writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale });
+    writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics });
     return { verdict, rationale, escalated: true };
   }
 
   // The ruling has to land in the proposal page's own commit, not a follow-up one, so
   // it is appended and written before `commitRuling` stages and commits.
   writeText(proposalPath, appendRulingSection(proposalText, { verdict, by, rationale, conditions }));
-  commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, proposalPath, proposalAppended: true });
-  return { verdict, rationale, escalated: false };
+  commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, metrics, proposalPath, proposalAppended: true });
+  return { verdict, rationale, escalated: false, ...metrics };
 }
 
 // `sdlc rule --pending`: every open proposal branch whose gate is agent-held, ruled in

@@ -42,6 +42,13 @@ function computeSampled(gates, cfg) {
   return sampled;
 }
 
+// Costs are summed, and a sum of floats prints as 0.30000000000000004 often enough to
+// matter on a page people read. Six decimal places is far below a cent and well inside
+// what any single turn reports.
+function money(n) {
+  return Math.round(n * 1e6) / 1e6;
+}
+
 function parseFrontMatter(text) {
   const m = text.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
   if (!m) return { front: {}, body: text };
@@ -63,15 +70,19 @@ export function buildSite(projectDir) {
   const gates = existsSync(gatesDir) ? readdirSync(gatesDir).filter((f) => f.endsWith(".yaml")).map((f) => ({ name: f.replace(/\.yaml$/, ""), ...parse(readText(join(gatesDir, f))) })) : [];
   gates.sort((a, b) => String(b.at).localeCompare(String(a.at)));
   const sampled = computeSampled(gates, cfg);
-  const gatesMd = ["# Gate log", "", "| When | Proposal | Gate | Verdict | By | Held | Sample |", "| --- | --- | --- | --- | --- | --- | --- |",
-    ...gates.map((g) => `| ${g.at} | ${g.name} | ${g.gate} | ${g.verdict} | ${g.by} | ${g.held_by === "agent" ? "agent-held, unsampled" : "human"} | ${sampled.has(g) ? "sample" : ""} |`), ""].join("\n");
+  // `Cost` is what the ruling turn itself cost. A human ruling has no turn to measure
+  // and its cell is blank, which is not the same claim as $0 — an agent ruling that
+  // genuinely cost nothing (a mandatory escalation, a mock) does print $0.
+  const rulingsCost = money(gates.reduce((sum, g) => sum + (Number(g.cost) || 0), 0));
+  const gatesMd = ["# Gate log", "", "| When | Proposal | Gate | Verdict | By | Held | Cost | Sample |", "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...gates.map((g) => `| ${g.at} | ${g.name} | ${g.gate} | ${g.verdict} | ${g.by} | ${g.held_by === "agent" ? "agent-held, unsampled" : "human"} | ${g.cost === undefined ? "" : `$${g.cost}`} | ${sampled.has(g) ? "sample" : ""} |`), ""].join("\n");
 
   const runsDir = join(projectDir, ".sdlc", "runs");
   const runs = existsSync(runsDir) ? readdirSync(runsDir).filter((f) => f.endsWith(".md")).sort().reverse().map((f) => readText(join(runsDir, f))) : [];
   const runsMd = ["# Run log", "", ...runs].join("\n");
 
   const journal = readJournal(projectDir);
-  const journalCost = journal.reduce((sum, e) => sum + (Number(e.cost) || 0), 0);
+  const journalCost = money(journal.reduce((sum, e) => sum + (Number(e.cost) || 0), 0));
   const journalMd = ["# Journal", "", ...journal.slice().reverse().flatMap((e) => {
     const num = (e.file.match(/^(\d+)/) ?? [, ""])[1];
     const date = e.at ? String(e.at).slice(0, 10) : "";
@@ -109,7 +120,10 @@ export function buildSite(projectDir) {
   const agentRulings = gates.filter((g) => g.held_by === "agent" && g.verdict !== "escalated").length;
   const openEscalations = gates.filter((g) => g.verdict === "escalated").length;
 
-  const index = [`# ${cfg.project.name} — state`, "", `Profile: ${cfg.profile} · generated ${new Date().toISOString()}`, "",
+  // No generation timestamp: the site is committed by whatever run or ruling regenerated
+  // it, so git already dates it, and a timestamp would make every rebuild a diff — which
+  // is what turns `sdlc status` on an unchanged project into a dirty tree.
+  const index = [`# ${cfg.project.name} — state`, "", `Profile: ${cfg.profile}`, "",
     "## Coverage", "", "| State | Criteria |", "| --- | --- |", ...STATES.map((s) => `| ${s} | ${counts[s]} |`), "",
     `Total criteria: ${criteria.length}`, "",
     "## Pages", "",
@@ -117,6 +131,8 @@ export function buildSite(projectDir) {
     ...proposalPages.map(([, , name]) => `- [${name}](proposals/${name}.md)`), "",
     "## Totals", "",
     `- Journal cost: $${journalCost}`,
+    `- Rulings cost: $${rulingsCost}`,
+    `- Total cost: $${money(journalCost + rulingsCost)}`,
     `- Agent-held rulings: ${agentRulings}`,
     `- Open escalations: ${openEscalations}`,
     `- Open proposals: ${openProposals}`, ""].join("\n");

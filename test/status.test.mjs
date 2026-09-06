@@ -65,10 +65,12 @@ function bigFixture() {
   writeFileSync(join(d, ".sdlc/proposals/p-escalated.md"),
     `---\ngate: G0\nquestion: "Risky change?"\nrecommendation: "Escalate"\nopened: 2026-01-05T00:00:00.000Z\n---\n\n# Risky change?\n\n**Recommendation.** Escalate\n\nSome content.\n`);
 
+  // The ruled gate carries what its persona turn cost; the escalated one never asked a
+  // persona anything, so it carries zeros.
   writeFileSync(join(d, ".sdlc/gates/p-ruled.yaml"),
-    `gate: G2\nverdict: approve\nby: agent:architect\nheld_by: agent\nrationale: |2-\n  Looks fine.\nconditions: []\nat: 2026-01-04T01:00:00.000Z\n`);
+    `gate: G2\nverdict: approve\nby: agent:architect\nheld_by: agent\nrationale: |2-\n  Looks fine.\nconditions: []\ncost: 0.25\nturns: 4\nsession: "r1"\nat: 2026-01-04T01:00:00.000Z\n`);
   writeFileSync(join(d, ".sdlc/gates/p-escalated.yaml"),
-    `gate: G0\nverdict: escalated\nby: agent:product-owner\nheld_by: agent\nescalate_to: tech-lead\nrationale: |2-\n  mandatory escalation: tier HIGH\nat: 2026-01-05T02:00:00.000Z\n`);
+    `gate: G0\nverdict: escalated\nby: agent:product-owner\nheld_by: agent\nescalate_to: tech-lead\nrationale: |2-\n  mandatory escalation: tier HIGH\ncost: 0\nturns: 0\nsession: ""\nat: 2026-01-05T02:00:00.000Z\n`);
 
   // G3 sampling: three agent-held rulings in the same ISO week (2026-01-05/06/07, all
   // W02), one in the next week (2026-01-12, W03), and a human ruling in the first week
@@ -137,4 +139,30 @@ test("index totals cost, agent rulings, escalations and open proposals", () => {
   assert.match(index, /\[p-open\]\(proposals\/p-open\.md\)/);
   assert.match(index, /\[p-ruled\]\(proposals\/p-ruled\.md\)/);
   assert.match(index, /\[Journal\]\(journal\.md\)/);
+});
+
+test("gate log carries a cost column and the index totals rulings alongside journal cost", () => {
+  const d = bigFixture();
+  buildSite(d);
+  const gates = readFileSync(join(d, "site/gates.md"), "utf8");
+  assert.match(gates, /\| When \| Proposal \| Gate \| Verdict \| By \| Held \| Cost \| Sample \|/);
+  const ruled = gates.split("\n").find((l) => l.includes("p-ruled"));
+  assert.match(ruled, /\|\s*\$0\.25\s*\|/, ruled);
+  // A human ruling has no turn to measure, so its cost cell is blank rather than $0.
+  const human = gates.split("\n").find((l) => l.includes("g3-human"));
+  assert.match(human, /\|\s*human\s*\|\s*\|/, human);
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  assert.match(index, /Journal cost: \$4\n/);
+  assert.match(index, /Rulings cost: \$0\.25\n/);
+  assert.match(index, /Total cost: \$4\.25\n/);
+});
+
+test("two consecutive builds produce identical pages, so status on an unchanged project changes nothing", () => {
+  const d = bigFixture();
+  const { pages } = buildSite(d);
+  const first = pages.map((p) => readFileSync(join(d, p), "utf8"));
+  buildSite(d);
+  const second = pages.map((p) => readFileSync(join(d, p), "utf8"));
+  assert.deepEqual(second, first);
+  assert.ok(!first.join("").includes("generated 20"), "no generation timestamp: git dates the commit");
 });

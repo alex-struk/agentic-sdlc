@@ -13,15 +13,27 @@ every `.sdlc/proposals/*.md`, and every `.sdlc/runs/*.md`.
 
 ## Outputs
 
-- `site/index.md`: project name, profile, a generation timestamp, a coverage table counting
-  criteria by state (`proposed`, `accepted`, `implemented`, `verified`, `monitored`), the total
-  criteria count, links to the journal, gates and runs pages and to every proposal page, and
-  totals: journal cost so far, the number of agent-held rulings, the number of open escalations
-  (gate files with `verdict: escalated`), and the number of open proposals (proposal files with
-  no gate file yet).
+- `site/index.md`: project name, profile, a coverage table counting criteria by state
+  (`proposed`, `accepted`, `implemented`, `verified`, `monitored`), the total criteria count,
+  links to the journal, gates and runs pages and to every proposal page, and a totals list:
+
+  | Total | What it sums |
+  | --- | --- |
+  | `Journal cost` | The `cost` front-matter field of every journal entry — what the pipeline's stage turns have cost. |
+  | `Rulings cost` | The `cost` field of every gate file — what the persona turns that ruled proposals have cost. |
+  | `Total cost` | Those two added together: everything this project has spent on agent turns. |
+  | `Agent-held rulings` | Gate files with `held_by: agent` and a verdict other than `escalated`. |
+  | `Open escalations` | Gate files with `verdict: escalated`. |
+  | `Open proposals` | Proposal files with no gate file yet. |
+
+  There is no generation timestamp on the page. The site is committed by whatever run or ruling
+  regenerated it, so git already dates it, and a timestamp would make every rebuild a diff —
+  which is exactly what would leave `sdlc status` on an unchanged project with a dirty tree.
 - `site/gates.md`: one row per gate ruling, newest first, showing when, which proposal, which
-  gate, the verdict, who ruled, whether the ruling was `agent-held, unsampled` or `human`, and a
-  `Sample` column: for each gate, the first `human_sample_per_week` (from that gate's policy
+  gate, the verdict, who ruled, whether the ruling was `agent-held, unsampled` or `human`, a
+  `Cost` column — what that ruling's own agent turn cost, blank for a human ruling because there
+  was no turn to measure, and `$0` for an agent ruling that genuinely cost nothing (a mandatory
+  escalation never asks the persona anything) — and a `Sample` column: for each gate, the first `human_sample_per_week` (from that gate's policy
   entry, default 0) agent-held rulings in each ISO week (grouped by `at`) are marked `sample`;
   every other row — including every human ruling — is left blank.
 - `site/journal.md`: every journal entry, newest first, as a `## NNN · <stage> · <date>` heading,
@@ -55,8 +67,10 @@ Exits 0 and prints every generated file path (the fixed pages plus one per propo
 
 ## Re-run behaviour
 
-Fully idempotent for unchanged inputs: every run overwrites every page from the current state on
-disk, so it is safe — and expected — to call after every checkpoint.
+Fully idempotent for unchanged inputs, and byte-for-byte so: every page is a pure function of the
+state on disk, with nothing dated or numbered by when the build ran, so a second `sdlc status`
+against unchanged inputs rewrites the same bytes and leaves the working tree clean. It is safe —
+and expected — to call after every checkpoint.
 
 ## Failure modes
 

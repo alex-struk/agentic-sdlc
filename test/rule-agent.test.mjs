@@ -384,3 +384,31 @@ test("init backfills all five persona briefs on an existing project missing them
     restoreEgress(prevEgress);
   }
 });
+
+test("ruleByAgent records what the ruling turn cost in the gate file and the site totals", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-cost-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p11", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mockRule('Fine.\n\n```json\n{"verdict":"approve","rationale":"checks green","conditions":[]}\n```');
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await ruleByAgent(dir, "p11", { persona: "product-owner" });
+    // The mock's turn is free, so the assertion is that the three keys are there and
+    // that the totals add them up — not that any particular amount was spent.
+    assert.equal(r.cost, 0);
+    const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/p11.yaml"), "utf8"));
+    assert.equal(gate.cost, 0);
+    assert.equal(gate.turns, 1);
+    assert.equal(gate.session, "mock");
+    const gates = readFileSync(join(dir, "site/gates.md"), "utf8");
+    assert.match(gates, /\| Held \| Cost \| Sample \|/);
+    assert.match(gates.split("\n").find((l) => l.includes("p11")), /\|\s*\$0\s*\|/);
+    const index = readFileSync(join(dir, "site/index.md"), "utf8");
+    assert.match(index, /Rulings cost: \$0\n/);
+    assert.match(index, /Total cost: \$0\n/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
