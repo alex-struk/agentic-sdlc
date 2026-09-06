@@ -16,7 +16,7 @@ Regenerate the generated state site from the project's criteria index, gate log 
   total criteria count.
 - `site/gates.md`: one row per gate ruling, newest first, showing when, which proposal, which
   gate, the verdict, who ruled, and whether the ruling was `agent-held, unsampled` or `human`.
-- `site/runs.md`: the concatenation of every run-record file, in filename order.
+- `site/runs.md`: the concatenation of every run-record file, in reverse filename order (most recent day first).
 
 Files are written directly; nothing is committed by this command.
 
@@ -42,4 +42,4 @@ state on disk, so it is safe — and expected — to call after every checkpoint
 
 - `.sdlc/config.yaml` missing or invalid: throws. Unlike the criteria index, gates and runs,
   `status` has no fallback for this file.
-- A `spec/criteria-index.json` present but without a top-level `criteria` array: throws when read.
+- A `spec/criteria-index.json` present but without a top-level `criteria` array: throws when counting criteria.
