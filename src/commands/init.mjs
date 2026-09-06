@@ -4,6 +4,7 @@ import { git, gitOk, stagePaths } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
+import { buildSite } from "./status.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { defaultNamesPath } from "../checks/egress.mjs";
 import { COMMANDS } from "../cli.mjs";
@@ -18,6 +19,9 @@ const TEMPLATE_FILES = [
   { src: ["templates", "project", ".gitattributes"], dst: [".gitattributes"] },
   { src: ["templates", "project", ".sdlc", "personas", "ux-reviewer.md"], dst: [".sdlc", "personas", "ux-reviewer.md"] },
   { src: ["templates", "project", ".sdlc", "personas", "tech-lead.md"], dst: [".sdlc", "personas", "tech-lead.md"] },
+  { src: ["templates", "project", ".sdlc", "personas", "product-owner.md"], dst: [".sdlc", "personas", "product-owner.md"] },
+  { src: ["templates", "project", ".sdlc", "personas", "architect.md"], dst: [".sdlc", "personas", "architect.md"] },
+  { src: ["templates", "project", ".sdlc", "personas", "reviewer.md"], dst: [".sdlc", "personas", "reviewer.md"] },
 ];
 
 function installTemplateFiles(projectDir) {
@@ -87,6 +91,11 @@ export async function init(projectDir = process.cwd()) {
 
   if (changed) {
     const runPath = appendRun(projectDir, `init: pipeline ${pipelineCommit.slice(0, 7)}, packs ${packs.length}, skills installed ${r.installed.length}, skipped ${r.skipped.length}`);
+    // The state site is only rebuilt here when something else already made this init a
+    // commit — never on a genuine no-op re-run, which must stay a no-op (see
+    // test/new-init.test.mjs) even though the site's own generated timestamp always
+    // differs between builds.
+    buildSite(projectDir);
     // `init` is the one command that may run on a dirty tree — a team runs it in the
     // middle of ordinary work — so it stages the files it owns by name and leaves
     // everything else exactly as it found it.
@@ -97,6 +106,7 @@ export async function init(projectDir = process.cwd()) {
       join(".claude", "settings.json"),
       join(".sdlc", "hooks"),
       join(".sdlc", "personas"),
+      "site",
       ".gitattributes",
       relative(projectDir, runPath),
     ]);

@@ -11,12 +11,17 @@ human's `--by` is trusted — phase 0 has no authentication either way (see
 
 ## Inputs
 
-Human: `sdlc rule <name> approve|return --by <role or agent:persona> [--note "..."]`, run from
-inside the project's working tree.
+Human: `sdlc rule <name> approve|return --by <role> [--note "..."]`, run from inside the
+project's working tree.
 
 Agent: `sdlc rule <name> --by agent:<persona>` — no verdict is typed; the persona decides it.
 `sdlc rule --pending` rules every open proposal (a `proposal/*` branch with no gate file yet)
 whose gate is held by an agent, oldest branch first, and prints one line per ruling.
+
+Typing a verdict together with `--by agent:<persona>` throws `an agent holder rules through its
+own turn; omit the verdict, or rule as a human role` rather than running the agent's turn with the
+typed verdict silently discarded: `sdlc rule <name> approve --by agent:<persona>` is rejected, not
+dispatched.
 
 ## Outputs
 
@@ -37,7 +42,10 @@ On `return`, the proposal branch is left exactly as it is — not merged — so 
 another round.
 
 `sdlc status` (`buildSite`) runs after every ruling, human or agent, so the state site's gate log
-and coverage numbers are never more than one ruling stale.
+and coverage numbers are never more than one ruling stale. The site is a tracked artifact:
+`site/index.md`, `site/gates.md` and `site/runs.md` are folded into the same commit the ruling
+made — the merge commit on `main` for an approval, the plain ruling commit otherwise — rather than
+left as an uncommitted diff.
 
 ## The agent path
 
@@ -62,7 +70,15 @@ nothing after it:
 
 Only the *last* such block in the reply is read, so anything the agent explored earlier in the
 turn cannot be mistaken for its answer. A reply with no fenced JSON block throws `no verdict block
-in persona reply`; a `verdict` outside the three named values throws `bad verdict: <value>`.
+in persona reply`; a block that isn't valid JSON throws `bad verdict block: <parse error>`; a
+`verdict` outside the three named values throws `bad verdict: <value>`; a verdict with no
+non-empty `rationale` throws `verdict has no rationale`.
+
+Right after the agent turn returns and before its verdict is even parsed, the working tree is
+checked for edits the turn left behind (`assertCleanTree`): a ruling is a read-only turn, and a
+persona that edited files is rejected with `rule: the ruling agent modified the working tree`
+rather than having its verdict trusted. The edit is left in place, not discarded, so it stays
+visible in `git status` for a person to look at.
 
 An `approve` or `return` verdict reuses the same gate-file-and-commit path a human ruling takes,
 with `by: agent:<persona>` (so `held_by: agent`) and the persona's `rationale` and `conditions`
@@ -110,7 +126,13 @@ Nothing is materialised into a separate workspace for a ruling.
 For the agent path (`--by agent:<persona>` or `--pending`), the policy check is narrower: `by`
 must equal the gate's `holder` exactly. A persona agent is never allowed to act as the
 `escalate_to` target the way a human can — escalation targets are human roles by schema, so this
-only ever rejects a persona ruling a gate it does not hold.
+only ever rejects a persona ruling a gate it does not hold. An agent-held gate with no
+`escalate_to` at all is rejected next, before the persona brief is read or any agent turn runs:
+`gate <name> has an agent holder but no escalate_to`.
+
+`--pending` rules each open, agent-held proposal in its own try/catch: one proposal's failure
+(a bad verdict block, a tampered working tree) is printed and written to the run record, and the
+loop moves on to the next branch rather than aborting the whole batch.
 
 ## Exit criterion
 
@@ -136,5 +158,11 @@ the gate log will show both. Treat a proposal as ruled once its verdict is recor
   returns to the proposal branch, and the error names the conflicted files.
 - Agent path: no persona brief at `.sdlc/personas/<persona>.md`: throws `no persona brief for
   <persona>`. The persona is not the gate's `holder`: throws naming who is (`is not a holder of
-  <gate>`). The reply has no fenced JSON block: throws `no verdict block in persona reply`. The
-  reply's `verdict` is not `approve`, `return` or `escalate`: throws `bad verdict: <value>`.
+  <gate>`). The gate has no `escalate_to`: throws `gate <name> has an agent holder but no
+  escalate_to`. The agent turn edited the working tree: throws `rule: the ruling agent modified
+  the working tree` and leaves the edit in place. The reply has no fenced JSON block: throws `no
+  verdict block in persona reply`. The block is not valid JSON: throws `bad verdict block: <parse
+  error>`. The reply's `verdict` is not `approve`, `return` or `escalate`: throws `bad verdict:
+  <value>`. The verdict has no non-empty `rationale`: throws `verdict has no rationale`.
+- CLI: a verdict typed together with `--by agent:<persona>` throws `an agent holder rules through
+  its own turn; omit the verdict, or rule as a human role` instead of running the agent's turn.

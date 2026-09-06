@@ -1,6 +1,6 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitOk, assertCleanTree, stagePaths } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, stagePaths, stageAll } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -28,17 +28,33 @@ function mergeApproved(projectDir, branch, message) {
   }
 }
 
-// The gate file's body differs by who ruled: a human writes a free-text `note`, an
-// agent writes a `rationale` block plus the `conditions` it attached to the verdict.
-// Building the text in one place keeps both shapes consistent (same key order, same
-// block-scalar convention) without either caller knowing about the other's fields.
-function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions }) {
+// A literal block scalar's indentation is normally inferred from its first non-blank
+// line, which breaks the moment a rationale's own first line starts with whitespace:
+// the parser reads that whitespace as part of the declared indentation, then a later
+// line indented less than that (including a plain 2-space continuation line) falls
+// outside the block and is parsed as a sibling of `rationale:` — invalid YAML. `|2-`
+// pins the indentation to exactly the two spaces this function adds and strips the
+// scalar's own trailing newline, so the parsed value is always exactly `text` back,
+// regardless of what its first line looks like.
+function blockScalar(text) {
+  return text.split("\n").map((l) => (l ? `  ${l}` : "")).join("\n");
+}
+
+// The gate file's body differs by who ruled and how: a human writes a free-text
+// `note`; an agent approving or returning writes a `rationale` block plus the
+// `conditions` it attached to the verdict; an escalation (mandatory or agent-decided)
+// writes a `rationale` and an `escalate_to`, with no conditions. Building the text in
+// one place keeps all three shapes consistent (same key order, same block-scalar
+// convention) without any caller knowing about another's fields.
+function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, escalateTo }) {
   let text = `gate: ${gate}\nverdict: ${verdict}\nby: ${by}\nheld_by: ${heldBy}\n`;
+  if (escalateTo !== undefined) text += `escalate_to: ${escalateTo ?? ""}\n`;
   if (rationale !== undefined) {
-    const block = rationale.split("\n").map((l) => (l ? `  ${l}` : "")).join("\n");
-    text += `rationale: |\n${block}\n`;
-    const list = conditions ?? [];
-    text += list.length ? `conditions:\n${list.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n` : `conditions: []\n`;
+    text += `rationale: |2-\n${blockScalar(rationale)}\n`;
+    if (conditions !== undefined) {
+      const list = conditions ?? [];
+      text += list.length ? `conditions:\n${list.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n` : `conditions: []\n`;
+    }
   } else {
     text += `note: ${JSON.stringify(note ?? "")}\n`;
   }
@@ -46,9 +62,23 @@ function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions }
   return text;
 }
 
+// The state site is rebuilt and folded into the commit a ruling just made — the merge
+// commit on `main` for an approval, the plain ruling commit otherwise — via `--amend`
+// rather than a trailing uncommitted diff or a second commit. Doing it here, after any
+// merge, also means an approval's site reflects `main`'s complete gate history: a
+// proposal branch built and carried its own site through the merge, cross-branch
+// regeneration (each side producing fresh, always-different content) would conflict
+// on every concurrent approval.
+function commitSite(projectDir) {
+  buildSite(projectDir);
+  stageAll(projectDir, ["site"]);
+  git([...SDLC_AUTHOR, "commit", "-q", "--amend", "--no-edit"], projectDir);
+}
+
 // Shared by the human path and the agent-approve/return path: write the gate file,
 // append the run record, stage exactly those paths (plus the proposal page when the
-// caller already appended a `## Ruling` section to it), commit, and merge on approve.
+// caller already appended a `## Ruling` section to it), commit, merge on approve, and
+// fold the rebuilt site into that same commit.
 function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, proposalPath, proposalAppended }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   writeText(join(projectDir, gatePath), gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions }));
@@ -58,16 +88,16 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   stagePaths(projectDir, paths);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${verdict} by ${by}`], projectDir);
   if (verdict === "approve") mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
+  commitSite(projectDir);
 }
 
 function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
-  const block = rationale.split("\n").map((l) => (l ? `  ${l}` : "")).join("\n");
-  writeText(join(projectDir, gatePath),
-    `gate: ${gate}\nverdict: escalated\nby: ${by}\nheld_by: agent\nescalate_to: ${escalateTo ?? ""}\nrationale: |\n${block}\nat: ${new Date().toISOString()}\n`);
+  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, rationale }));
   const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`);
   stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} escalated to ${escalateTo ?? "?"}`], projectDir);
+  commitSite(projectDir);
 }
 
 function appendRulingSection(text, { verdict, by, rationale, conditions = [] }) {
@@ -101,7 +131,6 @@ export function rule(projectDir, name, verdict, { by, note = "" }) {
   if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
   const heldBy = by.startsWith("agent:") ? "agent" : "human";
   commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note });
-  buildSite(projectDir);
   return { gate, verdict, heldBy };
 }
 
@@ -117,6 +146,10 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // Persona agents cannot rule gates they do not hold: unlike a human, an agent is never
   // allowed to act as the escalation target, so only an exact match on `holder` passes.
   if (g.holder !== by) throw new Error(`${by} is not a holder of ${gate} (allowed: ${g.holder})`);
+  // An agent-held gate with nowhere to escalate is a broken policy, not a ruling this
+  // agent can be trusted with — checked before the persona brief is even read, since
+  // every path below (mandatory escalation, an `escalate` verdict) needs `escalate_to`.
+  if (!g.escalate_to) throw new Error(`gate ${gate} has an agent holder but no escalate_to`);
 
   const brief = readPersonaBrief(projectDir, persona);
   const tierMatch = proposalText.match(/^tier:\s*(\S+)/m);
@@ -131,17 +164,20 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   if (mandatoryReason) {
     const rationale = `mandatory escalation: ${mandatoryReason}`;
     writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale });
-    buildSite(projectDir);
     return { verdict: "escalate", rationale, escalated: true };
   }
 
-  const prompt = await buildPersonaPrompt(projectDir, name, persona);
+  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier });
   const result = await runAgent({ cwd: projectDir, prompt, stage: "rule", maxTurns: 12 });
+  // A ruling is a read-only turn: the agent is asked for a verdict, not permitted to
+  // change the project. Checked before the verdict is even parsed, so a verdict text
+  // that looks fine cannot mask files the turn left behind — and left in place (not
+  // reset) so the tampering is still there for a person to see.
+  assertCleanTree(projectDir, "rule: the ruling agent modified the working tree");
   const { verdict, rationale, conditions } = parseVerdict(result.text);
 
   if (verdict === "escalate") {
     writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale });
-    buildSite(projectDir);
     return { verdict, rationale, escalated: true };
   }
 
@@ -149,7 +185,6 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // it is appended and written before `commitRuling` stages and commits.
   writeText(proposalPath, appendRulingSection(proposalText, { verdict, by, rationale, conditions }));
   commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, proposalPath, proposalAppended: true });
-  buildSite(projectDir);
   return { verdict, rationale, escalated: false };
 }
 
@@ -177,9 +212,26 @@ export async function rulePending(projectDir) {
     const g = config.policy.gates[gateMatch[1]];
     if (!g || !g.holder?.startsWith("agent:")) continue;
     const persona = g.holder.slice("agent:".length);
-    const r = await ruleByAgent(projectDir, name, { persona });
-    results.push({ name, ...r });
-    console.log(r.escalated ? `${name}: escalated to ${g.escalate_to}` : `${name}: ${r.verdict} at ${gateMatch[1]}`);
+    // One proposal's agent turn misbehaving (a bad verdict block, a tampered working
+    // tree) must not take the rest of the batch down with it: the failure is recorded
+    // — printed here and written to the run record — and the loop moves on to the next
+    // branch rather than throwing out of `rulePending` entirely.
+    try {
+      const r = await ruleByAgent(projectDir, name, { persona });
+      results.push({ name, ...r });
+      console.log(r.escalated ? `${name}: escalated to ${g.escalate_to}` : `${name}: ${r.verdict} at ${gateMatch[1]}`);
+    } catch (e) {
+      results.push({ name, failed: true, error: e.message });
+      console.log(`${name}: failed — ${e.message}`);
+      gitOk(["checkout", "-q", "main"], projectDir);
+      try {
+        const runPath = appendRun(projectDir, `rule --pending ${name}: failed — ${e.message}`);
+        stagePaths(projectDir, [relative(projectDir, runPath)]);
+        if (git(["diff", "--cached", "--name-only"], projectDir)) {
+          git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(--pending): ${name} failed`], projectDir);
+        }
+      } catch { /* the failure is already in `results` and printed; recording it is best-effort */ }
+    }
   }
   return results;
 }
@@ -187,6 +239,10 @@ export async function rulePending(projectDir) {
 COMMANDS.rule = async ({ pos, flags }) => {
   if (flags.pending) { await rulePending(process.cwd()); return 0; }
   if (typeof flags.by === "string" && flags.by.startsWith("agent:")) {
+    // An agent rules through its own turn, not a typed verdict: a verdict positional
+    // alongside an `agent:` holder is refused rather than quietly dispatched to the
+    // agent path with the typed verdict discarded.
+    if (pos[1]) throw new Error("an agent holder rules through its own turn; omit the verdict, or rule as a human role");
     const r = await ruleByAgent(process.cwd(), pos[0], { persona: flags.by.slice("agent:".length) });
     console.log(r.escalated ? `${pos[0]}: escalated (${r.rationale})` : `${pos[0]}: ${r.verdict}`);
     return 0;

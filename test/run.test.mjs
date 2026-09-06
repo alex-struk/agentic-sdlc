@@ -65,7 +65,10 @@ test("sdlc run probe: commits the probe file and journal, leaves the tree clean"
     assert.equal(r2.ok, true);
     assert.ok(existsSync(join(dir, ".sdlc/journal/002-probe.md")));
     const files2 = git(["show", "--name-only", "--format=", "HEAD"], dir).split("\n").filter(Boolean);
-    assert.ok(files2.every((f) => f.startsWith(".sdlc/journal/") || f.startsWith(".sdlc/runs/")), files2.join(", "));
+    // The state site is a tracked artifact: it is rebuilt on every run and picked up by
+    // `changedPaths()` the same as the journal and run record, since its own generation
+    // timestamp always differs from what main already has committed.
+    assert.ok(files2.every((f) => f.startsWith(".sdlc/journal/") || f.startsWith(".sdlc/runs/") || f.startsWith("site/")), files2.join(", "));
     assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;

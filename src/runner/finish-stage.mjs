@@ -46,10 +46,10 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
   appendRun(projectDir, `run ${stage.name}: ok, cost ${agentResult.cost}, turns ${agentResult.turns}`);
 
   buildSite(projectDir);
-  // The site is regenerated on every successful run so it is always current on disk.
-  // `changedPaths()` already reflects `git status --porcelain`, which never lists an
-  // ignored path in the first place, so nothing here needs to special-case `site/` —
-  // doing so would also drop it once a later task makes the site a tracked artifact.
+  // The site is regenerated on every successful run so it is always current on disk,
+  // and it is a tracked artifact: `changedPaths()` reflects `git status --porcelain`,
+  // so the freshly written `site/*.md` files are picked up here the same as any other
+  // change and staged and committed below alongside the journal and run record.
   const changed = changedPaths(projectDir);
 
   let proposal = null;

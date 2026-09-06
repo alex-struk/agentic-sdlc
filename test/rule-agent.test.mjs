@@ -1,14 +1,32 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
+import { init } from "../src/commands/init.mjs";
 import { propose } from "../src/commands/propose.mjs";
-import { ruleByAgent } from "../src/commands/rule.mjs";
+import { ruleByAgent, rulePending } from "../src/commands/rule.mjs";
+import { buildSite } from "../src/commands/status.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
+
+// A minimal hand-built project, the same shape test/gates.test.mjs uses: fast to set up
+// and free of the pack/egress machinery `newProject` brings along, for tests that only
+// need policy gates and a git history. `policy.gates` requires exactly these six keys.
+function microProject(config) {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-rule-micro-"));
+  git(["init", "-q", "-b", "main"], d); git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  mkdirSync(join(d, ".sdlc"), { recursive: true }); writeFileSync(join(d, ".sdlc/config.yaml"), config);
+  // Two proposals opened the same day both append to `.sdlc/runs/<day>.md`, which is an
+  // add/add conflict on merge without this — the same attribute a real project gets
+  // from `init`.
+  writeFileSync(join(d, ".gitattributes"), ".sdlc/runs/*.md merge=union\n");
+  writeFileSync(join(d, "README.md"), "x"); git(["add", "-A"], d); git(["commit", "-q", "-m", "init"], d);
+  return d;
+}
 
 // Isolates the egress name list the same way test/run.test.mjs does: `init` (run as
 // part of `newProject`) seeds the default list under the real home directory unless
@@ -60,6 +78,7 @@ test("ruleByAgent: approve records a rationale, held_by agent, and merges to mai
     const page = readFileSync(join(dir, ".sdlc/proposals/p1.md"), "utf8");
     assert.match(page, /## Ruling/);
     assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.notEqual(git(["ls-files", "site/gates.md"], dir), "", "the state site is tracked");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -132,6 +151,176 @@ test("ruleByAgent: a persona that does not hold the gate is rejected", async () 
   propose(dir, "p5", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
   try {
     await assert.rejects(() => ruleByAgent(dir, "p5", { persona: "reviewer" }), /not a holder/);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ruleByAgent: a rationale whose first line starts with whitespace round-trips through YAML", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-yaml-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p6", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const rationale = " leading space on the first line\nplain second line\n\nthird line after a blank one";
+  const mockDir = mockRule(`Some reasoning.\n\n\`\`\`json\n${JSON.stringify({ verdict: "approve", rationale, conditions: [] })}\n\`\`\``);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await ruleByAgent(dir, "p6", { persona: "product-owner" });
+    assert.equal(r.verdict, "approve");
+    const gateText = readFileSync(join(dir, ".sdlc/gates/p6.yaml"), "utf8");
+    const parsed = parseYaml(gateText);
+    assert.equal(parsed.rationale, rationale);
+    assert.doesNotThrow(() => buildSite(dir));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ruleByAgent: an agent turn that edits the working tree is rejected and the edit stays visible", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-tamper-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p7", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-rule-tamper-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    text: 'Looks fine.\n\n```json\n{"verdict":"approve","rationale":"looks fine","conditions":[]}\n```',
+    files: { "constitution.md": "tampered" },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    await assert.rejects(() => ruleByAgent(dir, "p7", { persona: "product-owner" }),
+      /rule: the ruling agent modified the working tree/);
+    // Not discarded: the branch stays on the proposal, and the tampered content is
+    // still there for a person to look at.
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/p7");
+    assert.match(git(["status", "--porcelain"], dir), /constitution\.md/);
+    assert.equal(readFileSync(join(dir, "constitution.md"), "utf8"), "tampered");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ruleByAgent: a verdict block that isn't valid JSON throws bad verdict block", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-badjson-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p8", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mockRule('```json\n{"verdict": "approve", "rationale":}\n```');
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    await assert.rejects(() => ruleByAgent(dir, "p8", { persona: "product-owner" }), /bad verdict block/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ruleByAgent: a verdict with no non-empty rationale throws verdict has no rationale", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-norationale-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p9", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mockRule('```json\n{"verdict":"approve","rationale":"   ","conditions":[]}\n```');
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    await assert.rejects(() => ruleByAgent(dir, "p9", { persona: "product-owner" }), /verdict has no rationale/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ruleByAgent: an agent-held gate with no escalate_to is rejected before any agent work", async () => {
+  const CONFIG = `
+pipeline: { repo: agentic-sdlc, ref: main }
+profile: greenfield
+stack: openshift-ts
+project: { name: p, domains: [a] }
+policy:
+  gates:
+    G0: { holder: "agent:product-owner" }
+    G1: { holder: tech-lead }
+    G-DESIGN: { holder: ux-reviewer }
+    G2: { holder: tech-lead }
+    G3: { holder: tech-lead }
+    G-POL: { holder: tech-lead }
+  default_tier: STANDARD
+skills: { packs: [] }
+egress: { rules: [E-2] }
+`;
+  const dir = microProject(CONFIG);
+  propose(dir, "p10", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  // No persona brief and no mock canned response exist for this project: if the check
+  // ran any later than "before any agent work", one of those missing pieces would throw
+  // a different error first.
+  await assert.rejects(() => ruleByAgent(dir, "p10", { persona: "product-owner" }),
+    /gate G0 has an agent holder but no escalate_to/);
+});
+
+test("rulePending: one proposal's failure is recorded and does not stop the batch", async () => {
+  const CONFIG = `
+pipeline: { repo: agentic-sdlc, ref: main }
+profile: greenfield
+stack: openshift-ts
+project: { name: p, domains: [a] }
+policy:
+  gates:
+    G0: { holder: "agent:product-owner", escalate_to: tech-lead }
+    G1: { holder: "agent:architect" }
+    G-DESIGN: { holder: ux-reviewer }
+    G2: { holder: tech-lead }
+    G3: { holder: tech-lead }
+    G-POL: { holder: tech-lead }
+  default_tier: STANDARD
+skills: { packs: [] }
+egress: { rules: [E-2] }
+`;
+  const dir = microProject(CONFIG);
+  mkdirSync(join(dir, ".sdlc/personas"), { recursive: true });
+  writeFileSync(join(dir, ".sdlc/personas/product-owner.md"), "# Product owner\n\nRules on intent.\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "add persona"], dir);
+  propose(dir, "good-one", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  propose(dir, "bad-one", { gate: "G1", question: "Sound design?", recommendation: "Yes." });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-pending-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    text: '```json\n{"verdict":"approve","rationale":"looks fine","conditions":[]}\n```',
+  }));
+  const prevEgress = process.env.SDLC_EGRESS_NAMES;
+  const emptyList = join(mkdtempSync(join(tmpdir(), "sdlc-egress-pending-")), "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const results = await rulePending(dir);
+    const byName = Object.fromEntries(results.map((r) => [r.name, r]));
+    assert.equal(byName["good-one"].verdict, "approve");
+    assert.equal(byName["bad-one"].failed, true);
+    assert.match(byName["bad-one"].error, /has an agent holder but no escalate_to/);
+    // The batch finishes on `main`, not stuck on the failed proposal's branch.
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
+    assert.match(runs, /bad-one: failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("init backfills all five persona briefs on an existing project missing them", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-init-personas-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const names = ["product-owner", "architect", "reviewer", "ux-reviewer", "tech-lead"];
+  for (const n of names) rmSync(join(dir, ".sdlc", "personas", `${n}.md`), { force: true });
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "remove personas"], dir);
+  try {
+    await init(dir);
+    for (const n of names) assert.ok(existsSync(join(dir, ".sdlc", "personas", `${n}.md`)), `${n}.md was not backfilled`);
   } finally {
     restoreEgress(prevEgress);
   }

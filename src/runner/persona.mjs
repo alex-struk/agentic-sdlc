@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { readText } from "../lib/fsx.mjs";
-import { loadConfig } from "../config/load.mjs";
 import { git } from "../lib/git.mjs";
 import { runChecks } from "../checks/index.mjs";
 import { formatChecks } from "../commands/checks.mjs";
@@ -17,15 +16,10 @@ export function readPersonaBrief(projectDir, persona) {
   return readText(p);
 }
 
-export async function buildPersonaPrompt(projectDir, name, persona) {
+export async function buildPersonaPrompt(projectDir, name, persona, { tier }) {
   const brief = readPersonaBrief(projectDir, persona);
   const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
   const proposal = readText(proposalPath);
-
-  const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
-  if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
-  const tierMatch = proposal.match(/^tier:\s*(\S+)/m);
-  const tier = tierMatch ? tierMatch[1] : config.policy.default_tier;
 
   const branch = `proposal/${name}`;
   const stat = git(["diff", `main...${branch}`, "--stat"], projectDir);
@@ -75,7 +69,10 @@ export function parseVerdict(text) {
   let last = null;
   while ((m = re.exec(text)) !== null) last = m[1];
   if (last === null) throw new Error("no verdict block in persona reply");
-  const parsed = JSON.parse(last);
+  let parsed;
+  try { parsed = JSON.parse(last); } catch (e) { throw new Error(`bad verdict block: ${e.message}`); }
   if (!["approve", "return", "escalate"].includes(parsed.verdict)) throw new Error(`bad verdict: ${parsed.verdict}`);
-  return { verdict: parsed.verdict, rationale: parsed.rationale ?? "", conditions: parsed.conditions ?? [] };
+  const rationale = typeof parsed.rationale === "string" ? parsed.rationale : "";
+  if (!rationale.trim()) throw new Error("verdict has no rationale");
+  return { verdict: parsed.verdict, rationale, conditions: parsed.conditions ?? [] };
 }
