@@ -115,7 +115,7 @@ test("help returns 0", async () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd /home/alstruk/GitHub/agentic-sdlc && node --test test/`
+Run: `cd /home/alstruk/GitHub/agentic-sdlc && npm test`
 Expected: FAIL, cannot find module `src/lib/args.mjs`
 
 - [ ] **Step 3: Write the scaffold**
@@ -131,7 +131,7 @@ Expected: FAIL, cannot find module `src/lib/args.mjs`
   "bin": { "sdlc": "bin/sdlc.mjs" },
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "check": "node bin/sdlc.mjs checks --self"
   },
   "license": "Apache-2.0"
@@ -227,7 +227,7 @@ commit, and the dependency register lists both.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `node --test test/`
+Run: `npm test`
 Expected: 4 passing
 
 - [ ] **Step 5: Commit**
