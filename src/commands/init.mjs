@@ -5,7 +5,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
-import { DEFAULT_NAMES } from "../checks/egress.mjs";
+import { defaultNamesPath } from "../checks/egress.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { PIPELINE_ROOT } from "./new.mjs";
 
@@ -77,7 +77,8 @@ export async function init(projectDir = process.cwd()) {
   // Creating the default egress name list under the user's home is machine-local
   // housekeeping, not a project change: it never touches projectDir, so it must not
   // gate the run record or the commit below.
-  if (!existsSync(DEFAULT_NAMES)) writeText(DEFAULT_NAMES,
+  const namesPath = defaultNamesPath();
+  if (!existsSync(namesPath)) writeText(namesPath,
     "# agentic-sdlc egress name list: one colleague name per line. Never commit this file.\n# The egress check fails any tracked file that contains a name listed here.\n");
 
   for (const s of r.skipped) console.warn(`warning: ${s}`);

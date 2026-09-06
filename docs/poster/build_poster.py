@@ -2,7 +2,10 @@
 """Build the reference poster for the agentic SDLC pipeline design spec.
 
     python3 build_poster.py
-    python3 /home/alstruk/.claude/skills/research-poster/scripts/check_svg.py pipeline-poster.svg --margin 20
+    python3 "$POSTER_KIT_DIR"/check_svg.py pipeline-poster.svg --margin 20
+
+POSTER_KIT_DIR points at the research-poster kit and defaults to
+~/.claude/skills/research-poster/scripts.
 
 Colour axis, held across the whole poster:
   green = deterministic, blocks or enforces     gold = human judgement, a gate
@@ -10,7 +13,8 @@ Colour axis, held across the whole poster:
 """
 
 import os, sys
-sys.path.insert(0, "/home/alstruk/.claude/skills/research-poster/scripts")
+POSTER_KIT_DIR = os.environ.get("POSTER_KIT_DIR", os.path.expanduser("~/.claude/skills/research-poster/scripts"))
+sys.path.insert(0, POSTER_KIT_DIR)
 from poster_kit import Poster, BCGOV
 
 HERE = os.path.dirname(os.path.abspath(__file__))

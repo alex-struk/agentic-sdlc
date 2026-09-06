@@ -9,8 +9,10 @@ request.
 ## Inputs
 
 `sdlc checks [dir] [--self] [--json]`. `dir` defaults to the current directory. `--self` runs only
-the egress check, scoped to the pipeline repository's own `docs/` (excluding
-`docs/superpowers/`), `skills/`, `templates/` and `stacks/`. `--json` prints the raw results array
+the egress check, over every tracked text file in the pipeline repository except
+`node_modules/`, `package-lock.json`, `.superpowers/` and `docs/superpowers/`. The scope is an
+exclude list rather than a list of directories to include, so a file added somewhere new is
+scanned by default instead of being silently skipped. `--json` prints the raw results array
 instead of the formatted text.
 
 ## Outputs
@@ -34,10 +36,13 @@ No agent.
 - **constitution** — `constitution.md` exists, has no unfilled `{{placeholder}}`, has at least one
   `### P<n>` platform article, and every such article has a `Source:` line that is either the
   literal word `convention` or an `http(s)://` URL.
-- **egress** — every tracked, text-typed file (skipping `.sdlc/packs/`) is scanned line by line for
-  ticket-number patterns, private-notes-folder paths, references to a private notes location or a
-  meeting or transcript, and any name in the egress name list. A missing or empty name list is a
-  warning, not a failure.
+- **egress** — every tracked, text-typed file (skipping `.sdlc/packs/`, and any path git still
+  tracks but that is gone from disk) is scanned line by line for ticket-number patterns,
+  private-notes-folder paths, references to a private notes location or a meeting or transcript,
+  local home paths (`/home/<name>`, `/Users/<name>`, `C:\Users\<name>`), and any name in the
+  egress name list. A missing or empty name list is a warning, not a failure. The name list is
+  read from `SDLC_EGRESS_NAMES`, then `<project>/.sdlc/egress.local.txt`, then
+  `$XDG_CONFIG_HOME/agentic-sdlc/egress-names.txt` (defaulting to `~/.config`).
 
 ## Exit criterion
 

@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkConfig } from "../checks/config.mjs";
-import { DEFAULT_NAMES } from "../checks/egress.mjs";
+import { defaultNamesPath } from "../checks/egress.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 const VERSION_ARGS = { node: ["--version"], git: ["--version"], gh: ["--version"], claude: ["--version"], docker: ["--version"] };
@@ -20,7 +20,7 @@ function denyListPresent(dir) {
   try { return JSON.parse(readFileSync(p, "utf8")).permissions?.deny?.some((d) => d.startsWith("Bash(git push")) ?? false; } catch { return false; }
 }
 function nameListState() {
-  try { const n = readFileSync(DEFAULT_NAMES, "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("#")).length; return n ? `${n} names` : "empty"; }
+  try { const n = readFileSync(defaultNamesPath(), "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("#")).length; return n ? `${n} names` : "empty"; }
   catch { return "missing"; }
 }
 
@@ -34,7 +34,7 @@ COMMANDS.doctor = async ({ pos }) => {
   const deny = denyListPresent(dir);
   console.log(`${deny ? "ok  " : "warn"} agent deny list ${deny ? "present in .claude/settings.json" : "missing: re-run sdlc init"}`);
   const nl = nameListState();
-  console.log(`${nl === "missing" || nl === "empty" ? "warn" : "ok  "} egress name list ${nl} (${DEFAULT_NAMES})`);
+  console.log(`${nl === "missing" || nl === "empty" ? "warn" : "ok  "} egress name list ${nl} (${defaultNamesPath()})`);
   const cfg = checkConfig(dir);
   console.log(`${cfg.ok ? "ok  " : "FAIL"} config ${cfg.messages.join("; ")}`);
   const required = tools.filter((t) => ["node", "git"].includes(t.name)).every((t) => t.found);

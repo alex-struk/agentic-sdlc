@@ -57,7 +57,7 @@ Optional. Container of deployment targets.
 Required. Container of governance gates, tiers, and budgets.
 
 - `gates` (object): A map of required gate definitions. Must include: `G0`, `G1`, `G-DESIGN`, `G2`, `G3`, `G-POL`. Each gate is an object:
-  - `holder` (string, pattern `^(agent:)?[a-z][a-z0-9-]*$`): A role name or `agent:<persona>`. Role names are lowercase words joined by hyphens. Rejects person-like identifiers (e.g., `alex.struk` fails because of the dot).
+  - `holder` (string, pattern `^(agent:)?[a-z][a-z0-9-]*$`): A role name or `agent:<persona>`. Role names are lowercase words joined by hyphens. Rejects person-like identifiers (e.g., `jane.doe` fails because of the dot).
   - `escalate_to` (string, optional, pattern `^[a-z][a-z0-9-]*$`): A role to escalate to if the holder cannot decide. Lowercase, no agent: prefix.
   - `human_sample_per_week` (integer, optional, min 0): If set, the human reviewing this gate samples 1 in N decisions.
 - `default_tier` (enum): One of `LOW`, `STANDARD`, `HIGH`, `CRITICAL`. The default risk tier for decisions.
