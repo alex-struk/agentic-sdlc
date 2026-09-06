@@ -70,18 +70,22 @@ authorised, CI-side stages run locally through the same scripts.
 
 ## §04 — The artifacts
 
-**What the panel shows.** Eight cards, one per artifact, with the fields that
-matter.
+**What the panel shows.** Eight cards, one per file the pipeline produces. The
+badge on each card says which stage writes it and which gate rules on it. The
+colour says who made it: navy for an agent, gold for a human-owned file, green
+for a script-generated one.
 
 **The argument.** Intent is why, spec is what, plan is how. The contract is the
-piece most pipelines leave implicit: the personas, routes, labels, test IDs,
-API description and observables that tests need in order to act. Writing it
-down as spec content is what lets blind tests and a blind implementation meet.
+piece most pipelines leave implicit: who the users are, the pages and what you
+can do on each, the API description, and how side effects are observed.
+Writing it down as spec content is what lets blind tests and a blind
+implementation meet.
 
-*On the confidence field.* It unifies a confirmed, inferred and open ledger from an internal
-requirements-engineering practice, spec-kit's NEEDS CLARIFICATION marker and Crow's reconciliation class.
-The rule that nothing ratifies while inferred or open is what stops an agent's
-guess becoming contract.
+*On the confidence mark.* Each criterion is confirmed, inferred or open. It
+unifies a confirmed, inferred and open ledger from an internal
+requirements-engineering practice, spec-kit's NEEDS CLARIFICATION marker and
+Crow's reconciliation class. The rule that nothing ratifies while inferred or
+open is what stops an agent's guess becoming contract.
 
 *On Gherkin.* Given/When/Then is used as a writing format because it forces
 observable behaviour. Cucumber, the runner that executes Gherkin, is not used,
