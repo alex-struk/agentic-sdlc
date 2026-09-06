@@ -70,3 +70,45 @@ test("materialise throws on an unknown mode", () => {
   const d = makeProject();
   assert.throws(() => materialise(d, "nope"), /unknown workspace mode/);
 });
+
+function makeAppOnlyProject() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-proj-"));
+  git(["init", "-q", "-b", "main"], d);
+  git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  mkdirSync(join(d, "app"), { recursive: true });
+  writeFileSync(join(d, "app/secret.ts"), "export const secret = 1;\n");
+  git(["add", "."], d); git(["commit", "-q", "-m", "init"], d);
+  return d;
+}
+
+test("materialise spec-only on a project with only app/ yields a workspace without app/", () => {
+  const d = makeAppOnlyProject();
+  const ws = materialise(d, "spec-only");
+  assert.ok(!existsSync(join(ws.dir, "app")));
+  ws.cleanup();
+});
+
+function makeBlindAdapterProject() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-proj-"));
+  git(["init", "-q", "-b", "main"], d);
+  git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  mkdirSync(join(d, "spec/contract"), { recursive: true });
+  writeFileSync(join(d, "spec/contract/c.md"), "# contract\n");
+  writeFileSync(join(d, "spec/spec.md"), "# spec\n");
+  mkdirSync(join(d, "tests/adapters"), { recursive: true });
+  writeFileSync(join(d, "tests/adapters/a.mjs"), "export default {};\n");
+  mkdirSync(join(d, "app"), { recursive: true });
+  writeFileSync(join(d, "app/secret.ts"), "export const secret = 1;\n");
+  git(["add", "."], d); git(["commit", "-q", "-m", "init"], d);
+  return d;
+}
+
+test("materialise blind-adapter yields spec/contract and tests/adapters, not spec.md or app", () => {
+  const d = makeBlindAdapterProject();
+  const ws = materialise(d, "blind-adapter");
+  assert.ok(existsSync(join(ws.dir, "spec/contract/c.md")));
+  assert.ok(existsSync(join(ws.dir, "tests/adapters/a.mjs")));
+  assert.ok(!existsSync(join(ws.dir, "spec/spec.md")));
+  assert.ok(!existsSync(join(ws.dir, "app")));
+  ws.cleanup();
+});

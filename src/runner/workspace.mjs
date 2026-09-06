@@ -17,9 +17,17 @@ export function materialise(projectDir, mode) {
   const paths = MODES[mode].filter((p) => existsSync(join(projectDir, p)));
   // git archive only pulls committed content, so an uncommitted edit in the project
   // does not leak into the workspace (and does not appear there either).
-  const tar = execFileSync("git", ["archive", "HEAD", "--", ...paths], { cwd: projectDir, maxBuffer: 256 * 1024 * 1024 });
-  execFileSync("tar", ["-x", "-C", dir], { input: tar });
+  // An empty pathspec means "the whole tree" to git archive, not "nothing" —
+  // so when none of a mode's paths exist, skip the archive/extract step
+  // entirely and leave the workspace empty (plus tests/acceptance/ below).
+  if (paths.length > 0) {
+    const tar = execFileSync("git", ["archive", "HEAD", "--", ...paths], { cwd: projectDir, maxBuffer: 256 * 1024 * 1024 });
+    execFileSync("tar", ["-x", "-C", dir], { input: tar });
+  }
   mkdirSync(join(dir, "tests", "acceptance"), { recursive: true });
+  if (existsSync(join(dir, "app"))) {
+    throw new Error(`blindness violated: app/ present in ${mode} workspace`);
+  }
   return { dir, mode, cleanup() { rmSync(dir, { recursive: true, force: true }); } };
 }
 
