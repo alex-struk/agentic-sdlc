@@ -19,9 +19,9 @@ description: Coding, testing, auth and deploy standards for the openshift-ts sta
 - Frontend code lives under `app/frontend`, backend code under
   `app/backend`, and schema and migration artifacts under `app/migrations`.
   Source: convention
-- Local-only services — Postgres, a sandbox Keycloak realm, and a mail
-  catcher — are declared in `app/compose/` and are never referenced from a
-  deploy or production workflow.
+- Local-only services — Postgres, a sandbox Keycloak realm, and Mailpit (a
+  mail catcher) — are declared in `app/compose/` and are never referenced
+  from a deploy or production workflow.
   Source: convention
 
 ## Naming

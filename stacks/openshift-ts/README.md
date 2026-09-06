@@ -26,15 +26,31 @@ Confirmed by cloning that commit:
 - **Tests**: Vitest for unit tests in both `frontend/` and `backend/`;
   Playwright (`@playwright/test`) for browser tests in `frontend/`.
 - **Lint and format**: ESLint 10 and Prettier 3, configured in both packages.
-- **Per-PR and per-merge sandbox deploy** through central, versioned
-  workflows: `.github/workflows/pr-open.yml`, `pr-close.yml`, `merge.yml` and
-  `scheduled.yml` call `bcgov/quickstart-openshift-helpers`'s reusable
-  workflows (e.g.
-  `bcgov/quickstart-openshift-helpers/.github/workflows/.pr-validate.yml@a11ad3d1b9288fb40757c4314a62eb86ff227931
-  # v1.2.1`) and the `bcgov/action-deployer-openshift`,
-  `bcgov/action-builder-ghcr`, `bcgov/action-test-and-analyse` and
-  `bcgov/action-oc-runner` actions, each pinned to a commit with a version
-  comment.
+  A separate `.github/workflows/analysis.yml` runs lint, coverage and
+  SonarCloud analysis via `bcgov/action-test-and-analyse@8f699e3fd3fadd9a6adf6f4b1f2638ef7ecfefb9
+  # v2.0.0`; it is not part of the deploy path below.
+- **Per-PR and per-merge sandbox deploy**, confirmed per workflow file:
+  - `pr-open.yml` calls `bcgov/action-builder-ghcr@cb2629351c87dd1c2130073e4ebb7233a9653a63
+    # v4.4.1` directly, then the repo's own `reusable-deploy.yml` and
+    `reusable-tests.yml` workflows.
+  - `pr-close.yml` calls the reusable workflow
+    `bcgov/quickstart-openshift-helpers/.github/workflows/.pr-close.yml@a11ad3d1b9288fb40757c4314a62eb86ff227931
+    # v1.2.1`.
+  - `merge.yml` calls `bcgov/action-get-pr@28b0adf8e4d40720d41f9c87356ce24b0a4bd6af
+    # v0.3.1`, then the same `reusable-deploy.yml` and `reusable-tests.yml`
+    workflows, followed by `bcgov/actions/sysdig-monitor@4ad61a784f1c17765b03d8d6de9737c1d3f4c0f2
+    # v0.5.0` and `shrink/actions-docker-registry-tag@e6aaef25c595b6e0edd18bf4c7dbfea3abd43299
+    # v5`.
+  - `scheduled.yml` calls `bcgov/action-oc-runner@111868d1fc50db0a40417ba321d865ef5c931bbd
+    # v1.7.0` and the reusable workflow
+    `bcgov/quickstart-openshift-helpers/.github/workflows/.schema-spy.yml@a11ad3d1b9288fb40757c4314a62eb86ff227931
+    # v1.2.1`.
+  - The local `reusable-deploy.yml` workflow (called by both `pr-open.yml`
+    and `merge.yml`) calls `bcgov/action-deployer-openshift@27a85b7b157bfc9c3c9bf0aca53bcd288d4d2506
+    # v4.2.1`.
+
+  All external actions and workflows above are pinned to a commit SHA with a
+  version comment.
 
 ## What this profile adds
 
@@ -42,7 +58,7 @@ Confirmed by cloning that commit:
   loads.
 - A sandbox identity provider: a Keycloak realm dedicated to tests, added to
   `app/compose/`. It is not part of the upstream scaffold's compose file.
-- A mail catcher for local and sandbox outbound mail, also added to
+- Mailpit, a mail catcher for local and sandbox outbound mail, also added to
   `app/compose/`.
 
 ## What the plan stage must still decide
