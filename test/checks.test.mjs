@@ -79,6 +79,18 @@ test("egress: no name list is a warning, not a failure", () => {
   }
 });
 
+test("egress: self scope excludes docs/superpowers/ (working plans and briefs) but still scans other docs/", () => {
+  const d = repo();
+  mkdirSync(join(d, "docs", "superpowers"), { recursive: true });
+  writeFileSync(join(d, "docs", "superpowers", "plan.md"), "See ticket AB-1234\n");
+  writeFileSync(join(d, "docs", "other.md"), "See ticket AB-1234\n");
+  git(["add", "-A"], d);
+  const r = checkEgress(d, { self: true });
+  assert.equal(r.ok, false);
+  assert.ok(!r.messages.some((m) => m.includes("docs/superpowers/plan.md")));
+  assert.ok(r.messages.some((m) => m.includes("docs/other.md") && m.includes("ticket")));
+});
+
 test("layout: required paths for a rebuild project", () => {
   const d = repo();
   const r = checkLayout(d, { config: { profile: "rebuild" } });

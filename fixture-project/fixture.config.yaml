@@ -1,0 +1,21 @@
+# fixture-project/fixture.config.yaml — a deliberately unrelated application used to test the pipeline.
+pipeline: { repo: agentic-sdlc, ref: main }
+profile: greenfield
+stack: openshift-ts
+project:
+  name: permit-intake
+  domains: [applications, fees]
+targets:
+  new: { base_url: http://localhost:8080, identity: sandbox-idp }
+policy:
+  gates:
+    G0: { holder: "agent:product-owner", escalate_to: tech-lead }
+    G1: { holder: tech-lead }
+    G-DESIGN: { holder: ux-reviewer }
+    G2: { holder: "agent:architect", escalate_to: tech-lead }
+    G3: { holder: "agent:reviewer", escalate_to: tech-lead, human_sample_per_week: 5 }
+    G-POL: { holder: tech-lead }
+  default_tier: STANDARD
+  triage: { direct_max_files: 3, direct_allowed_paths: [app/] }
+skills: { packs: [] }
+egress: { rules: [E-1, E-2, E-3, E-4] }

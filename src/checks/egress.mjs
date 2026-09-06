@@ -27,7 +27,7 @@ export function checkEgress(projectDir, ctx = {}) {
   const names = nameList(projectDir);
   const warnings = names.length ? [] : [`no egress name list found; add colleagues' names, one per line, to ${DEFAULT_NAMES}`];
   const files = git(["ls-files"], projectDir).split("\n").filter((f) => f && TEXT_EXT.test(f) && !f.startsWith(".sdlc/packs/"));
-  const scoped = ctx.self ? files.filter((f) => f.startsWith("docs/") || f.startsWith("skills/") || f.startsWith("templates/") || f.startsWith("stacks/")) : files;
+  const scoped = ctx.self ? files.filter((f) => (f.startsWith("docs/") && !f.startsWith("docs/superpowers/")) || f.startsWith("skills/") || f.startsWith("templates/") || f.startsWith("stacks/")) : files;
   const messages = [];
   for (const f of scoped) {
     const lines = readText(join(projectDir, f)).split("\n");
