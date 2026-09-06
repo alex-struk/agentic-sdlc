@@ -36,13 +36,22 @@ test("probe post-check fails when app/PROBE.md is missing the sentence", () => {
   assert.ok(results.some((r) => !r.ok));
 });
 
-test("every stage name from profiles.mjs other than probe is an unimplemented stub", () => {
+test("every stage name from profiles.mjs other than probe and intent is an unimplemented stub", () => {
   for (const name of STAGES) {
+    if (name === "intent") continue;
     const stage = stageFor(name);
     assert.equal(stage.implemented, false, name);
     assert.equal(stage.workspace, "project", name);
     assert.throws(() => stage.prompt({}), /not implemented/, name);
   }
+});
+
+test("intent holds gate G0, is implemented, and its prompt does not throw", () => {
+  const stage = stageFor("intent");
+  assert.equal(stage.implemented, true);
+  assert.equal(stage.gate, "G0");
+  assert.equal(stage.workspace, "project");
+  assert.doesNotThrow(() => stage.prompt({}));
 });
 
 test("stageFor(\"archaeology\") is a stub whose prompt throws not implemented", () => {

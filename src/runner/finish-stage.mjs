@@ -63,7 +63,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
 
   let proposal = null;
   if (stage.gate) {
-    const p = stage.proposal(ctx);
+    // `agentText` is added alongside whatever `postChecks` already stashed on `ctx`
+    // (the same object, so a stage's own `ctx.intentFile`-style side effect above still
+    // reaches `proposal` through the spread) rather than passed as a separate argument,
+    // so a `proposal(ctx)` written before this existed keeps working unchanged.
+    const p = stage.proposal({ ...ctx, agentText: agentResult.text });
     const { branch } = propose(projectDir, p.name, {
       gate: stage.gate, question: p.question, recommendation: p.recommendation, page: agentResult.text, paths: changed,
     });
