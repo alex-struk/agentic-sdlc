@@ -10,11 +10,13 @@
 
 ### P1 — Accessibility
 All user-facing interfaces SHALL meet WCAG 2.1 Level AA. Prefer components that encode accessible behaviour. No colour-only status, unlabelled icon buttons, or missing form labels.
-Source: https://digital.gov.bc.ca/design/wcag/intro/
+Source: convention
+Policy citation still to be found.
 
 ### P2 — Design system
 New BC Gov services SHOULD use `@bcgov/design-system-react-components`, `@bcgov/design-tokens` and `@bcgov/bc-sans`, and agents SHOULD consult the design system's own agent instructions before generating UI.
-Source: https://www2.gov.bc.ca/gov/content/digital/design-system
+Source: convention
+Policy citation still to be found.
 
 ### P3 — Privacy
 No personal information MAY enter a system, log, model prompt or third-party API until a Privacy Impact Assessment appropriate to the classification is complete and recorded. Lower environments use synthetic or anonymised data. No secrets or tokens in the repository.
