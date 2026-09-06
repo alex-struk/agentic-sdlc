@@ -11,4 +11,9 @@ jobs:
         with: { node-version: "24", cache: npm }
       - run: npm ci
       - run: npm test
+      # An empty, explicit name list so the self-check's egress scan never falls back to
+      # seeding (or reading) ~/.config/agentic-sdlc/egress-names.txt on the runner.
+      - run: touch "${{ runner.temp }}/egress-names.txt"
       - run: npm run check
+        env:
+          SDLC_EGRESS_NAMES: ${{ runner.temp }}/egress-names.txt

@@ -1,0 +1,6 @@
+{
+  "text": "Started the probe stage in a clean project workspace to prove the runner can carry an agent turn all the way through to a committed result. The task was small on purpose: create app/PROBE.md with a dated line and the phrase \"the runner works\", then stop, so the post-check and the journal entry would have something concrete to point at.\n\nWrote the file, confirmed it matched what the post-check expects, and left the workspace otherwise untouched. Nothing outside app/ changed, so the stage should finish clean, land a journal entry, and leave the tree ready for the next run.",
+  "files": {
+    "app/PROBE.md": "2026-09-06 the runner works\n"
+  }
+}
