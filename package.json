@@ -7,7 +7,7 @@
   "bin": { "sdlc": "bin/sdlc.mjs" },
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "check": "node bin/sdlc.mjs checks --self"
   },
   "license": "Apache-2.0"
