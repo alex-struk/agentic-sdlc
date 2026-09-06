@@ -1,5 +1,6 @@
-import { relative } from "node:path";
-import { git, changedPaths, stageAll, stageSite } from "../lib/git.mjs";
+import { existsSync } from "node:fs";
+import { join, relative } from "node:path";
+import { git, gitOk, changedPaths, stageAll, stageSite } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { writeJournal } from "./journal.mjs";
 import { propose } from "../commands/propose.mjs";
@@ -7,6 +8,72 @@ import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
 
 const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
+
+// A stage that opened a proposal on a previous run and has not been ruled yet is not
+// safe to run again under the same name: `propose`'s own `git checkout -q -b` refuses
+// to recreate a branch that already exists. Called three ways: by `runStage`, before a
+// workspace is even materialised, with the name a real run would open; by `resume`, the
+// same way, before it calls `finishStage` directly; and by `finishStage` itself, below,
+// as a late safety net against a name only knowable after the agent has run.
+// `stage.proposal` is called with an empty `agentText` so a stage whose recommendation
+// quotes the agent's journal (every gated stage today) still gets a real name back,
+// since the name itself never depends on `agentText`; `projectDir` is added to `ctx` so
+// a stage whose name depends on a file that does not exist yet (`intent`, before the
+// agent has written one) can still derive a candidate from something already on disk
+// (`intent/brief.md`'s own heading) rather than returning `null` outright.
+export function checkProposalNotOpen(projectDir, stage, ctx) {
+  if (!stage.gate) return null;
+  const p = stage.proposal({ ...ctx, projectDir, agentText: "" });
+  if (!p?.name) return null;
+  const branch = `proposal/${p.name}`;
+  if (!gitOk(["rev-parse", "--verify", branch], projectDir)) return null;
+  const gatePath = join(projectDir, ".sdlc", "gates", `${p.name}.yaml`);
+  if (existsSync(gatePath)) {
+    // Already ruled: its verdict is either merged into `main` (approve) or recorded on
+    // its own commit (return, escalate), so the branch itself is spent — kept around
+    // only because nothing ever deletes one. Left in place, it would still block the
+    // next run that opens a proposal under this same name: `propose`'s `git checkout -b`
+    // refuses to recreate a branch that already exists. Deleted here with the safe form
+    // (`-d`, which itself refuses anything not fully merged into the current branch) so
+    // an approved proposal's spent branch clears the way silently; an unmerged one (a
+    // `return`, whose ruling commit lives only on the branch itself, or a branch this
+    // pre-flight check is not currently sitting on top of) is left for a person to deal
+    // with rather than force-deleted.
+    gitOk(["branch", "-d", branch], projectDir);
+    return null;
+  }
+  return p.name;
+}
+
+// The commit shape for a pre-flight block: no agent has run yet (or, for `resume`, none
+// is going to), so there is nothing agent-shaped to journal — only the run record, the
+// same way a pre-check failure is recorded. Shared by `runStage`'s and `resume`'s own
+// pre-flight calls to `checkProposalNotOpen` so the message and commit read identically
+// no matter which one caught it.
+export function commitProposalStillOpen(projectDir, stageName, openProposal) {
+  const message = `proposal ${openProposal} is still open; rule it (or delete the branch) before running ${stageName} again`;
+  const runPath = appendRun(projectDir, `run ${stageName}: proposal ${openProposal} still open`);
+  stageAll(projectDir, [relative(projectDir, runPath)]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${stageName}): proposal still open`], projectDir);
+  return { ok: false, messages: [message] };
+}
+
+// The commit shape for a post-checks failure: a journal entry (the agent's own text
+// plus what failed) and a run-record line, both committed; everything else the agent
+// left in the working tree stays untracked, for a person to inspect. Shared between an
+// actual post-check failure and `finishStage`'s own late open-proposal check below,
+// since the second is reported the same way the ruling calls for.
+function commitPostCheckFailure(projectDir, stage, agentResult, messages) {
+  const journal = writeJournal(projectDir, {
+    stage: stage.name,
+    title: `${stage.name}: post-checks failed`,
+    body: `${agentResult.text}\n\n${messages.join("\n")}`,
+  });
+  const runPath = appendRun(projectDir, `run ${stage.name}: post-checks failed`);
+  stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): post-checks failed`], projectDir);
+  return { ok: false, journal, messages };
+}
 
 // Post-checks through the final commit and site build — steps 9-12 of `sdlc run`.
 // Both `runStage` (right after a real agent turn) and `resume` (after a crash, with a
@@ -23,18 +90,24 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
   const post = stage.postChecks(projectDir, ctx);
   const postFail = post.filter((r) => !r.ok);
   if (postFail.length) {
-    const messages = postFail.flatMap((r) => r.messages);
-    const journal = writeJournal(projectDir, {
-      stage: stage.name,
-      title: `${stage.name}: post-checks failed`,
-      body: `${agentResult.text}\n\n${messages.join("\n")}`,
-    });
-    const runPath = appendRun(projectDir, `run ${stage.name}: post-checks failed`);
     // Only the journal and the run record are staged: the agent's other files stay in
     // the working tree, untracked, so a person can see exactly what it produced.
-    stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
-    git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): post-checks failed`], projectDir);
-    return { ok: false, journal, messages };
+    return commitPostCheckFailure(projectDir, stage, agentResult, postFail.flatMap((r) => r.messages));
+  }
+
+  // A safety net for a stage whose proposal name is only knowable after the run
+  // (`intent`, keyed on the file the agent just wrote): whichever caller got here —
+  // `runStage`'s own pre-flight, run before the agent turn, or `resume`'s identical one,
+  // run before `finishStage` is even called — may have had nothing to check yet, since
+  // neither can see a file the agent has not written. Checked again now, with the
+  // stage's real proposal name, before `propose` gets anywhere near its own doomed
+  // `git checkout -q main` / `git checkout -q -b <branch>` — and reported the same way
+  // any other post-check failure is, since by this point the agent has already run and
+  // left files worth preserving.
+  const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
+  if (openProposal) {
+    const message = `proposal ${openProposal} is still open; rule it (or delete the branch) before running ${stage.name} again`;
+    return commitPostCheckFailure(projectDir, stage, agentResult, [message]);
   }
 
   const journal = writeJournal(projectDir, {

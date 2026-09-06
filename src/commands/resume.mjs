@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { loadConfig } from "../config/load.mjs";
 import { readRunState } from "../runner/run-state.mjs";
 import { stageFor } from "../stages/registry.mjs";
-import { finishStage } from "../runner/finish-stage.mjs";
+import { finishStage, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 export async function resume(projectDir, { again = false } = {}) {
@@ -30,6 +30,18 @@ export async function resume(projectDir, { again = false } = {}) {
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
   const ctx = { ...state.ctx, config };
+
+  // `resume` has no agent turn of its own to run, but it still lands on `finishStage`,
+  // which can open a proposal — so the same pre-flight `sdlc run` performs before its
+  // own agent turn belongs here too, before spending a post-checks judgment on files
+  // that would only get thrown away by a blocked proposal a moment later.
+  const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
+  if (openProposal) {
+    const r = commitProposalStillOpen(projectDir, state.stage, openProposal);
+    console.log(`run ${state.stage}: failed\n  ${r.messages.join("\n  ")}`);
+    return 1;
+  }
+
   // The agent step is not re-run here even with --again: there is no session to
   // resume it from, only the files (if any) it left behind before the process died.
   // Post-checks judge those files exactly as they would judge a fresh agent turn.

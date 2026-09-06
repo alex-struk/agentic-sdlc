@@ -72,16 +72,26 @@ sets.
 - The project's `.sdlc/config.yaml` must load and validate.
 - The stage's own `preChecks(projectDir, ctx)` must all pass. `probe` declares none; a stage that
   does declare pre-checks fails before a workspace is ever materialised.
-- For a gated stage, the proposal this run would open must not already be open and unruled: `run`
-  calls `stage.proposal({ ...ctx, agentText: "" })` to learn the name a real run would use and,
-  when that name resolves to a `proposal/<name>` branch that exists with no `.sdlc/gates/<name>.yaml`
-  on it yet, refuses to start (see "Re-run behaviour" below). A stage whose proposal name is not
-  yet knowable before the agent has run (`intent`, keyed on the file it interviews into) returns
-  `null` from `proposal(ctx)` when the context it needs is missing, and this check is skipped for
-  it.
+- For a gated stage, the proposal this run would open must not already be open and unruled:
+  `checkProposalNotOpen` (`src/runner/finish-stage.mjs`) calls `stage.proposal({ ...ctx, projectDir,
+  agentText: "" })` to learn the name a real run would use and, when that name resolves to a
+  `proposal/<name>` branch that exists with no `.sdlc/gates/<name>.yaml` on it yet, refuses to start
+  (see "Re-run behaviour" below). `intent`'s proposal name is normally only knowable once the agent
+  has written `intent/<slug>.md`; before that, `proposal(ctx)` derives the same slug from
+  `intent/brief.md`'s own `# ` heading instead — the rule the skill gives the agent for naming its
+  own file — using the `projectDir` this check adds to `ctx` for exactly that. Only when the brief
+  has no heading at all does `proposal(ctx)` return `null` and this check get skipped, for `intent`
+  or any other stage.
 - The stage's own `postChecks(projectDir, ctx)`, run after the agent session, must all pass —
   `probe`'s post-check requires `app/PROBE.md` to exist and contain the sentence "the runner
   works".
+- Immediately after those post-checks pass, `finishStage` runs the identical open-proposal check a
+  second time, now against the stage's real (not derived) proposal name — a safety net for a name
+  the check above had nothing to test yet, because it depended on a file the agent had not written
+  when the check above ran (`sdlc resume`, `docs/stages/resume.md`, runs the identical check above
+  itself, before `finishStage` is even called, but is exactly as blind to that file). A collision
+  found here is reported the same way any other post-check failure is (see "Failure modes" below),
+  since by this point the agent has already run and left files worth preserving for inspection.
 
 ## Exit criterion
 
@@ -114,6 +124,13 @@ safe `git branch -d`, which itself refuses anything not fully merged) so a fresh
 recreate a branch of the same name without colliding with the old one; a returned or escalated
 proposal's branch, never merged into `main`, is left in place for a person to deal with.
 
+`intent` gets this same protection, not a weaker one: its proposal name is derived from
+`intent/brief.md`'s own heading before the agent runs (see `docs/stages/intent.md`), so re-running
+`intent` against the same, unrevised brief while its proposal is still open is refused up front the
+same as any other gated stage. The one gap that check cannot close on its own is an agent that
+titles its document differently than the brief's heading suggests — `finishStage`'s second,
+post-run check (see "Checks that block" above) exists specifically to catch that.
+
 ## Failure modes
 
 - The working tree is dirty at the start: throws before any check or workspace runs, listing the
@@ -128,6 +145,14 @@ proposal's branch, never merged into `main`, is left in place for a person to de
   commits `run(<stage>): proposal still open` to the run record and returns `{ ok: false, messages:
   ["proposal <name> is still open; rule it (or delete the branch) before running <stage> again"] }`,
   without materialising a workspace or starting an agent session.
+- The same collision, but only discoverable after the agent has run — the pre-flight above (run
+  either by `run` or by `sdlc resume`) had no real name to check yet, only `intent`'s brief-derived
+  guess, and the agent titled its document differently: `finishStage` commits
+  `stage(<stage>): post-checks failed` with a journal entry (the agent's own text plus the same
+  `proposal <name> is still open…` message) and the run record staged, and returns
+  `{ ok: false, journal, messages }`. Everything else the agent left in the working tree — including
+  whatever file it wrote — stays untracked, visible in `git status`, exactly as any other post-check
+  failure leaves it.
 - The agent session itself fails to run at all (the `claude` binary is missing, authentication is
   not in place, or its process exits with no JSON on stdout): `runAgent` throws
   `claude failed: <stderr>` or `claude returned non-JSON output: <excerpt>`, and `run` propagates

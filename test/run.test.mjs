@@ -7,6 +7,7 @@ import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage, turnsFor } from "../src/commands/run.mjs";
 import { resume } from "../src/commands/resume.mjs";
+import { propose } from "../src/commands/propose.mjs";
 import { registerStage } from "../src/stages/registry.mjs";
 import { finishStage } from "../src/runner/finish-stage.mjs";
 
@@ -390,6 +391,53 @@ test("resume refuses a stage whose workspace was a temporary directory", async (
     assert.ok(existsSync(join(dir, ".sdlc/run-state.json")));
   } finally {
     console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc resume: refuses to continue a stage whose proposal is still open, without ever calling finishStage's post-checks", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-openproposal-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  // A gated stage whose proposal name never depends on `ctx` — unlike `intent`, which
+  // needs its own derivation to be pre-flight-able at all — so this test isolates
+  // `resume`'s own pre-flight call from that logic.
+  registerStage({
+    name: "resume-guard-stage",
+    title: "resume guard stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: "G1",
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => ({ name: "resume-guard-stage-x", question: "q?", recommendation: "r." }),
+    preChecks: () => [],
+    postChecks: () => { throw new Error("postChecks must not run: the pre-flight should have refused first"); },
+  });
+  try {
+    // Opens `proposal/resume-guard-stage-x` directly, standing in for a previous run
+    // that finished and opened this proposal, left unruled.
+    propose(dir, "resume-guard-stage-x", { gate: "G1", question: "q?", recommendation: "r." });
+    git(["checkout", "-q", "main"], dir);
+    writeFileSync(join(dir, ".sdlc", "run-state.json"),
+      JSON.stringify({ stage: "resume-guard-stage", ctx: {}, phase: "post-checks" }) + "\n");
+
+    const code = await resume(dir, {});
+    assert.equal(code, 1);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(resume-guard-stage\): proposal still open/);
+    const day = new Date().toISOString().slice(0, 10);
+    assert.match(readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8"),
+      /run resume-guard-stage: proposal resume-guard-stage-x still open/);
+    // No journal entry: the pre-flight refused before `finishStage` (and its
+    // `postChecks`) ever ran.
+    assert.ok(!existsSync(join(dir, ".sdlc/journal")));
+    // run-state.json is untouched, at `phase: "post-checks"`, for a later `resume` to
+    // find once the proposal is ruled or its branch is deleted.
+    const state = JSON.parse(readFileSync(join(dir, ".sdlc/run-state.json"), "utf8"));
+    assert.equal(state.phase, "post-checks");
+  } finally {
     restoreEgress(prevEgress);
   }
 });

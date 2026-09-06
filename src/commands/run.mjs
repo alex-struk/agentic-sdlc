@@ -1,7 +1,7 @@
 import { join, relative, resolve } from "node:path";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { git, gitOk, assertCleanTree, stageAll } from "../lib/git.mjs";
+import { git, assertCleanTree, stageAll } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -10,7 +10,7 @@ import { materialise, collect } from "../runner/workspace.mjs";
 import { runAgent } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
-import { finishStage } from "../runner/finish-stage.mjs";
+import { finishStage, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
@@ -60,43 +60,6 @@ function agentTurnFailed(projectDir, stage, r) {
   return { ok: false, journal, messages: [reason] };
 }
 
-// A stage that opened a proposal on its last run and has not been ruled yet is not
-// safe to run again: `sdlc run` starts from whatever branch is currently checked out
-// (the still-open proposal branch itself, right after that first run), and letting the
-// agent turn happen anyway means `finishStage` eventually tries to open a *second*
-// proposal under the same name — `propose`'s own `git checkout -q main` fails outright
-// once the freshly-written files conflict with what main already has, leaving the tree
-// dirty with no run record of what happened. Checked here, before a workspace is even
-// materialised, using the same name the real run would open: `stage.proposal` is called
-// with an empty `agentText` so a stage whose recommendation quotes the agent's journal
-// (every gated stage today) still gets a real name back, since the name itself never
-// depends on `agentText`. A stage whose proposal name depends on output that doesn't
-// exist yet before an agent has run (`intent`, keyed on the file it interviews into)
-// returns `null` here and is skipped — there is nothing to pre-flight for it.
-function checkProposalNotOpen(projectDir, stage, ctx) {
-  if (!stage.gate) return null;
-  const p = stage.proposal({ ...ctx, agentText: "" });
-  if (!p?.name) return null;
-  const branch = `proposal/${p.name}`;
-  if (!gitOk(["rev-parse", "--verify", branch], projectDir)) return null;
-  const gatePath = join(projectDir, ".sdlc", "gates", `${p.name}.yaml`);
-  if (existsSync(gatePath)) {
-    // Already ruled: its verdict is either merged into `main` (approve) or recorded on
-    // its own commit (return, escalate), so the branch itself is spent — kept around
-    // only because nothing ever deletes one. Left in place, it would still block the
-    // next run that opens a proposal under this same name: `propose`'s `git checkout -b`
-    // refuses to recreate a branch that already exists. Deleted here with the safe form
-    // (`-d`, which itself refuses anything not fully merged into the current branch) so
-    // an approved proposal's spent branch clears the way silently; an unmerged one (a
-    // `return`, whose ruling commit lives only on the branch itself, or a branch this
-    // pre-flight check is not currently sitting on top of) is left for a person to deal
-    // with rather than force-deleted.
-    gitOk(["branch", "-d", branch], projectDir);
-    return null;
-  }
-  return p.name;
-}
-
 export async function runStage(projectDir, name, { slice, domain, dryRun = false, again = false } = {}) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
@@ -124,13 +87,7 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
   void again;
 
   const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
-  if (openProposal) {
-    const message = `proposal ${openProposal} is still open; rule it (or delete the branch) before running ${name} again`;
-    const runPath = appendRun(projectDir, `run ${name}: proposal ${openProposal} still open`);
-    stageAll(projectDir, [relative(projectDir, runPath)]);
-    git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): proposal still open`], projectDir);
-    return { ok: false, messages: [message] };
-  }
+  if (openProposal) return commitProposalStillOpen(projectDir, name, openProposal);
 
   const ws = materialise(projectDir, stage.workspace);
   try {

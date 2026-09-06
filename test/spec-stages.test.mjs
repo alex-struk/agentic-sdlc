@@ -7,6 +7,10 @@ import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule } from "../src/commands/rule.mjs";
+import { propose } from "../src/commands/propose.mjs";
+import { loadConfig } from "../src/config/load.mjs";
+import { finishStage } from "../src/runner/finish-stage.mjs";
+import { stageFor } from "../src/stages/registry.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -192,6 +196,87 @@ test("sdlc run intent: a mock that writes outside intent/ fails scope check", as
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(intent\): post-checks failed/);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run intent: a second run while the proposal is open is refused before any agent turn runs", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-intent-rerun-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  commitBrief(dir);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const first = await runStage(dir, "intent");
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
+
+    // Before this fix, `intent.proposal` returned `null` until `ctx.intentFile` existed,
+    // so this pre-flight had nothing to check and a second run reached the agent turn —
+    // which then collided with the still-open proposal partway through `finishStage`.
+    // `intent.proposal` now derives the same slug the agent itself builds its filename
+    // from straight out of `intent/brief.md`'s own heading, so the pre-flight catches
+    // this the same way any other gated stage's does: before a workspace is even
+    // materialised, no agent turn, tree left exactly as it was.
+    const second = await runStage(dir, "intent");
+    assert.equal(second.ok, false);
+    assert.deepEqual(second.messages, [
+      "proposal intent-permit-intake is still open; rule it (or delete the branch) before running intent again",
+    ]);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(intent\): proposal still open/);
+    // No second journal entry was written — the pre-flight caught this before any agent
+    // turn, so there is nothing to journal.
+    assert.ok(!existsSync(join(dir, ".sdlc/journal/002-intent.md")));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("finishStage: a proposal collision the pre-flight could not have known about is caught before propose, agent files left untracked", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-intent-late-collision-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  commitBrief(dir);
+  try {
+    // Simulates a proposal that appeared under the name this run's own agent turn is
+    // about to land on, opened after any pre-flight check could have looked — the case
+    // the pre-flight structurally cannot cover (`docs/stages/run.md`), whatever the
+    // reason: a run that arrived via `sdlc resume` and skipped straight to `finishStage`,
+    // or an intent brief whose heading didn't match what the agent actually titled its
+    // document. `propose` opens the branch directly, with no gate file on it yet.
+    propose(dir, "intent-permit-intake", {
+      gate: "G0", question: "Is this the right problem and outcome?", recommendation: "placeholder",
+    });
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
+    git(["checkout", "-q", "main"], dir);
+
+    // Stand in for what a real agent turn would have left behind: a valid intent
+    // document, uncommitted, in the working tree.
+    writeFileSync(join(dir, "intent", "permit-intake.md"),
+      "# Intent: Permit intake\nStatus: draft\n\n## Open questions\n- [ ]\n");
+
+    const { config } = loadConfig(join(dir, ".sdlc/config.yaml"));
+    const ctx = { slice: undefined, domain: undefined, config };
+    const agentResult = { text: "wrote the intent document", cost: 0, turns: 1, sessionId: "" };
+    const r = await finishStage(dir, stageFor("intent"), ctx, agentResult);
+
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, [
+      "proposal intent-permit-intake is still open; rule it (or delete the branch) before running intent again",
+    ]);
+    assert.ok(r.journal && existsSync(r.journal));
+    assert.match(readFileSync(r.journal, "utf8"), /proposal intent-permit-intake is still open/);
+
+    // Reported the same way any other post-check failure is: a journal entry and run
+    // record committed on `main` (finishStage never touched branches), the agent's own
+    // file left in the working tree, untracked, for a person to inspect.
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(intent\): post-checks failed/);
+    const status = git(["status", "--porcelain"], dir);
+    assert.match(status, /intent\/permit-intake\.md/);
+  } finally {
     restoreEgress(prevEgress);
   }
 });

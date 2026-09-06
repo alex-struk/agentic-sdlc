@@ -54,13 +54,20 @@ where it is; running the stage again overwrites it.
   to guess: it prints `run <stage>: the agent step was interrupted before finishing; pass --again to
   continue with post-checks anyway` and exits 1 without touching the working tree.
 - The project's `.sdlc/config.yaml` must load and validate.
+- For a gated stage, the proposal it would open must not already be open and unruled — the same
+  `checkProposalNotOpen` pre-flight `sdlc run` performs before its own agent turn
+  (`docs/stages/run.md`), run here before `finishStage` is called at all. `resume` has no agent turn
+  of its own, so there is nothing to lose by checking this first: a blocked run costs nothing beyond
+  the run record it commits, rather than spending a post-checks judgment on files that would only be
+  thrown away by a blocked proposal a moment later.
 - The stage's own `postChecks(projectDir, ctx)` must pass, exactly as in `sdlc run`.
 
 ## Exit criterion
 
 Exits 0 when `finishStage` reports `{ ok: true }` (including the "nothing to resume" case above),
 1 when it reports `{ ok: false }`, when the recorded stage's workspace was a temporary directory,
-or when an interrupted agent step is refused for lack of `--again`.
+when an interrupted agent step is refused for lack of `--again`, or when the recorded stage's own
+proposal is still open.
 
 ## Re-run behaviour
 
@@ -82,6 +89,11 @@ person to fix it by hand and let `resume` pick the result up.
 - The stage named in the run-state file is not in the registry: throws `unknown stage: <stage>` —
   this only happens if `.sdlc/run-state.json` was hand-edited or corrupted, since `run` only ever
   writes a stage name it already validated.
+- The recorded stage's own proposal is still open (opened, but not yet ruled): `resume` commits
+  `run(<stage>): proposal still open` to the run record and prints `run <stage>: failed` followed by
+  `proposal <name> is still open; rule it (or delete the branch) before running <stage> again`,
+  exiting 1 without ever calling `finishStage` or judging the stage's post-checks.
+  `.sdlc/run-state.json` is left exactly as it was, at whatever `phase` it was already recorded at.
 - A post-check still fails: the same failure path as `sdlc run` — a journal entry records the
   stand-in agent text plus the check messages, `stage(<stage>): post-checks failed` is committed
   with only the journal and run record staged, and `resume` returns exit 1. `.sdlc/run-state.json`

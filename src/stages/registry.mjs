@@ -87,6 +87,29 @@ function checkIntentScope(projectDir) {
   return { id, ok: true, messages: [] };
 }
 
+// The same slug rule the skill (`src/stages/skills/intent.md`) instructs the agent to
+// build its own filename from: lowercased, every run of non-alphanumeric characters
+// collapsed to one hyphen, no leading or trailing hyphen.
+function slugify(text) {
+  return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// Before an agent has run, there is no `intent/<slug>.md` yet to name a proposal after
+// — only the brief it is about to interview. `checkProposalNotOpen`'s pre-flight still
+// needs a name to check a second run against, so this reads the same slug the agent is
+// about to build its own filename from: `intent/brief.md`'s first `# ` heading, run
+// through the same rule `slugify` above applies. An agent that titles its document
+// differently than the brief's own heading is not caught here — that gap is closed by
+// `finishStage`'s own late check instead, once the real file exists.
+function briefSlug(projectDir) {
+  if (!projectDir) return null;
+  const p = join(projectDir, "intent", "brief.md");
+  if (!existsSync(p)) return null;
+  const heading = readText(p).match(/^#\s+(.+)$/m);
+  if (!heading) return null;
+  return slugify(heading[1]) || null;
+}
+
 // The recommendation on an intent proposal is the first sentence of the agent's own
 // journal text, not a re-derivation of it: whatever the agent decided to say first is
 // what a reader sees first. Falls back to the whole (trimmed) text when it holds no
@@ -122,13 +145,19 @@ const intent = {
       "Finish with your journal entry.",
     ].join("\n\n");
   },
-  // Named only once a post-check has stashed `ctx.intentFile`: a caller that asks for a
-  // name before the file exists (the pre-flight open-proposal check `runStage` runs
-  // before an agent turn) has nothing to name, so it gets `null` — a proposal to check
-  // for, not a guess dressed up as `intent-untitled`.
+  // Once a post-check has stashed `ctx.intentFile`, the name comes straight from the
+  // file the agent actually wrote. Before that — the pre-flight open-proposal check
+  // `runStage` runs before its agent turn, and `resume` runs before calling
+  // `finishStage` at all — there is no such file yet, so the slug is derived from
+  // `intent/brief.md`'s own heading instead (`briefSlug` above), the same rule the
+  // skill gives the agent for naming its own file. If the brief has no heading at all,
+  // there is nothing to name a proposal after and this returns `null` — a proposal to
+  // check for, not a guess dressed up as `intent-untitled`.
   proposal(ctx) {
-    if (!ctx.intentFile) return null;
-    const slug = ctx.intentFile.slice("intent/".length, -".md".length);
+    const slug = ctx.intentFile
+      ? ctx.intentFile.slice("intent/".length, -".md".length)
+      : briefSlug(ctx.projectDir);
+    if (!slug) return null;
     return {
       name: `intent-${slug}`,
       question: "Is this the right problem and outcome?",
@@ -140,8 +169,7 @@ const intent = {
   },
   // `ctx` is the same object `runStage`/`resume` also hand to `proposal` a moment later
   // in the same `finishStage` call, so the file this discovers is stashed on it here —
-  // the only way `proposal(ctx)` can name the right slug without a `projectDir` of its
-  // own to look one up with.
+  // the real file, once it exists, always wins over the brief-derived guess.
   postChecks(projectDir, ctx) {
     const fileCheck = checkIntentFile(projectDir);
     if (fileCheck.ok) ctx.intentFile = fileCheck.file;

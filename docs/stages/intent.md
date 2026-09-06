@@ -59,21 +59,36 @@ intent document, if the agent wrote one, stays in the working tree, untracked, f
 
 ## Re-run behaviour
 
-Re-running `intent` while its own proposal is still open — opened, but not yet ruled — is, for
-most gated stages, refused up front by `run`'s own pre-flight check (`docs/stages/run.md`): it
-names the proposal the coming run would open and checks whether that one is already sitting open
-and unruled. `intent` is the one stage that check cannot cover, because the proposal name
-(`intent-<slug>`) is only known once the agent has written `intent/<slug>.md` — nothing before the
-run starts can name it. So a second `intent` run is not blocked by anything here: `sdlc run` starts
-from `main`, which the still-open proposal branch has not yet merged into, so `intent/brief.md` is
-exactly as it was and a second run interviews it again, most likely producing the same
-`intent/<slug>.md` and opening a second, separately-branched proposal for the same slug. Rule the
-open proposal first (`sdlc rule intent-<slug> approve --by agent:product-owner`, or `return`)
-rather than relying on anything here to stop that.
+Re-running `intent` while its own proposal is still open — opened, but not yet ruled — is refused
+up front by `run`'s own pre-flight check, the same as any other gated stage (`docs/stages/run.md`):
+before the agent turn starts, `intent.proposal` derives a candidate slug straight from
+`intent/brief.md`'s own first `# ` heading — the same rule the skill gives the agent for naming the
+file it writes (lowercased, every run of non-alphanumeric characters turned into one hyphen) — and
+the pre-flight checks whether `proposal/intent-<that-slug>` is already open and unruled. Since
+`sdlc run` starts from `main`, which the still-open proposal branch has not yet merged into,
+`intent/brief.md` is exactly as it was, so a second run against the same unrevised brief is caught
+here every time.
+
+If the brief has no `# ` heading at all, `intent.proposal` has nothing to derive and returns
+`null`, so the pre-flight is skipped and the run proceeds to the agent turn to find out. And
+because the pre-flight's derived slug is only a guess at what the agent will actually title its
+document — an agent that names the file differently than the brief's own heading suggests can still
+collide with an open proposal the pre-flight didn't know to check — `finishStage` checks again once
+the agent has run and the real `intent/<slug>.md` exists. A collision found there is reported the
+same way any other post-check failure is: a journal entry and run record are committed, and the
+agent's own files (the intent document it wrote included) are left in the working tree, untracked,
+for inspection — rather than letting `propose`'s own `git checkout -q main` fail messily partway
+through. Either way, rule the open proposal first (`sdlc rule intent-<slug> approve --by
+agent:product-owner`, or `return`) before running `intent` again.
 
 ## Failure modes
 
 - `intent/brief.md` is missing: the pre-check fails before anything else runs (see above).
+- The brief's own proposal (`proposal/intent-<slug>`) is still open: refused before a workspace is
+  materialised, the same as any other gated stage's pre-flight (see "Re-run behaviour" above) — or,
+  if the pre-flight couldn't know because the agent titled its document differently than the brief's
+  heading suggested, caught instead by `finishStage` right after the agent's document passes its
+  other post-checks, reported the same way a post-check failure is.
 - The agent session itself fails to run, or reports failure (turn limit, an error result): handled
   the same way every stage's agent-turn failure is (`docs/stages/run.md`) — no post-checks run,
   the turn's own text becomes the journal entry, and `run` returns `{ ok: false }`.
