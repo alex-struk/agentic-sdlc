@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, symlinkSync, lstatSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -15,8 +15,13 @@ export function ensureConfigHome() {
   const link = join(home, ".credentials.json");
   const src = credentialsSource();
   if (existsSync(src)) {
-    try { if (lstatSync(link).isSymbolicLink()) unlinkSync(link); } catch {}
-    if (!existsSync(link)) symlinkSync(src, link);
+    // Whatever is at that path goes, symlink or not. Only a stale *symlink* used to be
+    // replaced, so a real credentials file left there by anything else — a copy someone
+    // made, a directory — survived and was read instead of the operator's own, which is
+    // the one thing this directory exists to get right. `force` makes the usual case
+    // (nothing there at all) a no-op.
+    rmSync(link, { recursive: true, force: true });
+    symlinkSync(src, link);
   }
   return home;
 }

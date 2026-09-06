@@ -168,7 +168,9 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // Mandatory escalation happens before the persona is ever asked: a HIGH/CRITICAL item,
   // or a persona whose brief always defers on this gate, never gets a chance to rule.
   const mandatoryReason = ["HIGH", "CRITICAL"].includes(tier) ? `tier ${tier}`
-    : brief.includes("always escalate") ? `persona brief for ${persona} says always escalate`
+    // Matched case-insensitively: a brief is prose, and the phrase reads as naturally at
+    // the start of a bullet ("Always escalate a platform-article change") as inside one.
+    : brief.toLowerCase().includes("always escalate") ? `persona brief for ${persona} says always escalate`
       : null;
 
   if (mandatoryReason) {

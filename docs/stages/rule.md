@@ -106,9 +106,12 @@ Some proposals never reach the persona at all. Before asking, `sdlc rule` escala
 when either is true:
 
 - the proposal's tier is `HIGH` or `CRITICAL`;
-- the persona's brief contains the phrase "always escalate" (a persona can hold a gate and still
-  always defer on it — see `templates/project/.sdlc/personas/tech-lead.md`, which always escalates
-  a platform-article change).
+- the persona's brief contains the phrase "always escalate", in any capitalisation (a persona can
+  hold a gate and still always defer on it — see `templates/project/.sdlc/personas/tech-lead.md`,
+  which always escalates a platform-article change). The match is against the whole brief, so the
+  phrase appearing anywhere in it escalates **every** proposal at that gate, not only the ones the
+  sentence it appears in describes: a brief that should defer on one kind of change and rule on
+  the rest must say so in some other wording.
 
 The gate file records `verdict: escalated`, `escalate_to: <the gate's escalate_to>`, and a
 rationale beginning `mandatory escalation: <reason>`. The proposal branch is left open — nothing

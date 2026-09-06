@@ -392,3 +392,19 @@ test("resume refuses a stage whose workspace was a temporary directory", async (
     restoreEgress(prevEgress);
   }
 });
+
+test("turnsFor warns once, by name, when a token-sized budget is ignored", () => {
+  const warnings = [];
+  const orig = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
+  try {
+    const config = { policy: { budgets: { "budget-warn": 250000 } } };
+    assert.equal(turnsFor(config, "budget-warn"), 40);
+    assert.equal(turnsFor(config, "budget-warn"), 40);
+  } finally {
+    console.warn = orig;
+  }
+  assert.equal(warnings.length, 1, warnings.join(" | "));
+  assert.match(warnings[0], /policy\.budgets\.budget-warn is 250000/);
+  assert.match(warnings[0], /default of 40 turns/);
+});

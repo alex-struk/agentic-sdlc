@@ -68,7 +68,9 @@ Beyond `CLAUDE_CONFIG_DIR` and `--strict-mcp-config`, `buildArgs` sets:
   files it left behind, not a saved conversation.
 - `--max-turns <n>` — a hard ceiling on how long a single stage session can run, derived from
   `config.policy.budgets[<stage>]` by `turnsFor` (`src/commands/run.mjs`); a stage cannot spin
-  indefinitely against its cost budget.
+  indefinitely against its cost budget. A token-sized budget (1000 or more) cannot be converted
+  to turns yet and is ignored in favour of the default of 40, with a warning naming the stage so
+  the ceiling a project thinks it set is not silently a different one.
 - `--allowedTools <tool> …` — when the caller names a tool list, the only tools the session may
   use. `sdlc rule`'s persona turn passes a read-only list (`Read`, `Grep`, `Glob`, and the three
   read-only git commands) because a ruling answers a question rather than changing anything; a

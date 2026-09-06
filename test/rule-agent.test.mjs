@@ -437,3 +437,27 @@ test("ruleByAgent: an agent turn that reports failure throws with the turn's own
     restoreEgress(prevEgress);
   }
 });
+
+test("ruleByAgent: 'Always escalate' in a brief is matched however it is capitalised", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-case-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  // The wording installed personas actually use: the phrase opens a bullet, so it is
+  // capitalised, and a case-sensitive match would let the proposal through to the agent.
+  writeFileSync(join(dir, ".sdlc/personas/product-owner.md"),
+    "# Product owner\n\n- Always escalate a change to what the product promises.\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "brief that always defers"], dir);
+  propose(dir, "p13", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  // No canned response: reaching the agent at all would throw "no canned response".
+  const emptyMockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-empty-case-"));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = emptyMockDir;
+  try {
+    const r = await ruleByAgent(dir, "p13", { persona: "product-owner" });
+    assert.equal(r.escalated, true);
+    assert.match(r.rationale, /says always escalate/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});

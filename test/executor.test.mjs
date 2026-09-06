@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, lstatSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureConfigHome } from "../src/runner/config-home.mjs";
@@ -56,4 +56,19 @@ test("mock executor writes files and returns the canned text", async () => {
     assert.equal(readFileSync(join(cwd, "app/out.txt"), "utf8"), "hello");
     await assert.rejects(() => runAgent({ cwd, prompt: "x", stage: "nope" }), /nope\.json/);
   } finally { delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; }
+});
+
+test("ensureConfigHome replaces whatever is already at the credentials path", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-home-replace-"));
+  const cred = join(root, "creds.json"); writeFileSync(cred, "{\"real\":true}");
+  const home = join(root, "home"); mkdirSync(home, { recursive: true });
+  // A plain file, not a symlink: the previous version left it alone and the session
+  // would have authenticated with it instead of the operator's own credentials.
+  writeFileSync(join(home, ".credentials.json"), "{\"stale\":true}");
+  process.env.SDLC_CLAUDE_HOME = home; process.env.SDLC_CREDENTIALS = cred;
+  try {
+    const p = ensureConfigHome();
+    assert.ok(lstatSync(join(p, ".credentials.json")).isSymbolicLink());
+    assert.equal(readFileSync(join(p, ".credentials.json"), "utf8"), "{\"real\":true}");
+  } finally { delete process.env.SDLC_CLAUDE_HOME; delete process.env.SDLC_CREDENTIALS; }
 });
