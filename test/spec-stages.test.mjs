@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
@@ -9,22 +9,58 @@ import { runStage } from "../src/commands/run.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
+const OLD_DIR = new URL("../fixture-project/old", import.meta.url).pathname;
 
 // Isolates the egress name list the same way test/run.test.mjs does: `init` (run as
 // part of `newProject`) seeds the default list under the real home directory unless
-// this is set first, and an existing-but-empty file wins the lookup outright.
-async function makeProject(tmp) {
+// this is set first, and an existing-but-empty file wins the lookup outright. `from`
+// and `name` default to the plain greenfield fixture; archaeology's own tests pass a
+// one-off config carrying a `sources.old` block instead (see `makeSourcesProject`).
+async function makeProject(tmp, { from = FROM, name = "permit-intake" } = {}) {
   const prevEgress = process.env.SDLC_EGRESS_NAMES;
   const emptyList = join(tmp, "empty-egress-names.txt");
   writeFileSync(emptyList, "");
   process.env.SDLC_EGRESS_NAMES = emptyList;
-  const dir = join(tmp, "permit-intake");
-  await newProject({ dir, from: FROM });
+  const dir = join(tmp, name);
+  await newProject({ dir, from });
   const c = join(dir, "constitution.md");
   writeFileSync(c, readFileSync(c, "utf8").replace(/\{\{[A-Z_]+\}\}/g, "filled"));
   git(["add", "-A"], dir);
   git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "fill constitution"], dir);
   return { dir, prevEgress };
+}
+
+// A local git repo standing in for the old application, built from the fixture's own
+// plain files: `fixture-project/old` is committed to this repo as ordinary files, never
+// as a nested git repo, so the pipeline's own history never carries a repo inside a
+// repo. `ensureSources` (the `with-sources` workspace) needs something `git clone` can
+// actually reach, so this turns a fresh copy of it into one, once per test.
+function makeOldRepo(tmp) {
+  const dir = join(tmp, "old-repo");
+  cpSync(OLD_DIR, dir, { recursive: true });
+  git(["init", "-q", "-b", "main"], dir);
+  git(["config", "user.email", "t@example.org"], dir);
+  git(["config", "user.name", "t"], dir);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "old app"], dir);
+  return { dir, commit: git(["rev-parse", "HEAD"], dir) };
+}
+
+// The checked-in fixture.config.yaml stays greenfield (no `sources` block) so every
+// other test in this file keeps creating a plain project. Archaeology's own tests need
+// `sources.old` pointing at a real, committed repo, so this writes a one-off copy of the
+// config with that block appended, pointing at the repo `makeOldRepo` just made.
+function sourcesConfigPath(tmp, repoDir, commit) {
+  const base = readFileSync(FROM, "utf8");
+  const path = join(tmp, "fixture-with-sources.config.yaml");
+  writeFileSync(path, `${base}sources:\n  old: { repo: ${repoDir}, commit: ${commit}, exclude: [tests/] }\n`);
+  return path;
+}
+
+async function makeSourcesProject(tmp) {
+  const { dir: repoDir, commit } = makeOldRepo(tmp);
+  const from = sourcesConfigPath(tmp, repoDir, commit);
+  return makeProject(tmp, { from, name: "permit-intake-sources" });
 }
 
 function restoreEgress(prev) {
@@ -153,6 +189,130 @@ test("sdlc run intent: a mock that writes outside intent/ fails scope check", as
     assert.ok(r.messages.some((m) => m.includes("app/oops.md")), r.messages.join(" | "));
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(intent\): post-checks failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run archaeology --domain applications: the mock run opens proposal/archaeology-applications, recovers the domain file, and leaves sources/ untracked", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-ok-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const r = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(r.proposal);
+    assert.equal(r.proposal.name, "archaeology-applications");
+    assert.equal(r.proposal.gate, "G1");
+    assert.equal(r.proposal.branch, "proposal/archaeology-applications");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+
+    const domainPath = join(dir, "spec/domains/applications.md");
+    assert.ok(existsSync(domainPath));
+    const domainText = readFileSync(domainPath, "utf8");
+    assert.match(domainText, /D-applications-1/);
+    assert.match(domainText, /D-applications-2/);
+
+    // ensureSources materialised the old app under sources/old, but sources/ is
+    // gitignored project-wide, so none of it is ever tracked in the project's history.
+    assert.equal(git(["ls-files", "--", "sources"], dir), "");
+    assert.ok(existsSync(join(dir, "sources/old/src/routes.js")));
+    assert.ok(!existsSync(join(dir, "sources/old/tests")));
+
+    const journalPath = join(dir, ".sdlc/journal/001-archaeology.md");
+    assert.ok(existsSync(journalPath));
+    assert.match(readFileSync(journalPath, "utf8"), /applications domain/);
+
+    const proposalText = readFileSync(join(dir, ".sdlc/proposals/archaeology-applications.md"), "utf8");
+    assert.match(proposalText, /gate: G1/);
+    assert.match(proposalText, /Is this what the applications domain does, and which of it is the contract\?/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run archaeology: without --domain, fails pre-checks", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-nodomain-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    const r = await runStage(dir, "archaeology");
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /--domain/.test(m)), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run archaeology --domain bogus: fails pre-checks, domain not in project.domains", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-baddomain-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    const r = await runStage(dir, "archaeology", { domain: "bogus" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /not in project\.domains/.test(m)), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run archaeology: a mock that mints an R- id fails post-checks", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-rid-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-archaeology-rid-mock-"));
+  writeFileSync(join(mockDir, "archaeology.json"), JSON.stringify({
+    text: "recovered the applications domain and minted a permanent id",
+    files: {
+      "spec/domains/applications.md":
+        "### R-1.1 · v1 · confirmed · recovered\nWhen an applicant submits a permit application, the system shall "
+        + "reject it unless the applicant is at least 19 years old.\n- cites: src/routes.js:3\n"
+        + "- reconciliation: implemented-only\n- given: an applicant submitting a permit application\n"
+        + "- when: the applicant is under 19 years old\n- then: the application is rejected\n",
+    },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /R-1\.1/.test(m) && /ratify/.test(m)), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(archaeology\): post-checks failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run archaeology: a mock that also writes app/x fails scope check", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-scope-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-archaeology-scope-mock-"));
+  writeFileSync(join(mockDir, "archaeology.json"), JSON.stringify({
+    text: "recovered the applications domain and wrote a stray file",
+    files: {
+      "spec/domains/applications.md":
+        "### D-applications-1 · v1 · confirmed · recovered\nWhen an applicant submits a permit application, the "
+        + "system shall reject it unless the applicant is at least 19 years old.\n- cites: src/routes.js:3\n"
+        + "- reconciliation: implemented-only\n- given: an applicant submitting a permit application\n"
+        + "- when: the applicant is under 19 years old\n- then: the application is rejected\n",
+      "app/x": "This should not be here",
+    },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m.includes("app/x")), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(archaeology\): post-checks failed/);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

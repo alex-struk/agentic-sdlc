@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { readText } from "../lib/fsx.mjs";
 import { changedPaths } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
+import { parseDomainFile } from "../spec/criteria.mjs";
+import { checkCriteria } from "../checks/criteria.mjs";
 
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
 
@@ -143,9 +145,92 @@ const intent = {
   },
 };
 
-// Every real pipeline stage (archaeology, design, build, …) is a stub until its own
-// task lands: calling `prompt` fails loudly and by name, so `sdlc run <stage>` reports
-// a clear reason instead of quietly doing nothing.
+// `archaeology` requires `--domain <d>`: missing entirely, or naming a domain
+// `config.project.domains` doesn't list, both fail here rather than letting the agent
+// discover it partway through a session. One check id covers both, since they are the
+// same question ("is there a domain this run can recover?") asked two different ways.
+function checkDomainOption(ctx) {
+  const id = "domain-option";
+  if (!ctx.domain) return { id, ok: false, messages: ["archaeology needs --domain <d>"] };
+  const domains = ctx.config?.project?.domains ?? [];
+  if (!domains.includes(ctx.domain)) {
+    return { id, ok: false, messages: [`domain "${ctx.domain}" is not in project.domains: ${domains.join(", ") || "(none configured)"}`] };
+  }
+  return { id, ok: true, messages: [] };
+}
+
+function checkSourcesConfigured(ctx) {
+  const id = "sources-configured";
+  if (!ctx.config?.sources?.old) return { id, ok: false, messages: ["sources.old is not configured in .sdlc/config.yaml"] };
+  return { id, ok: true, messages: [] };
+}
+
+// The domain file this run is judged by: parsed fresh (not just checked for existence)
+// so the same read can also catch a criterion this run itself must never mint — an `R-`
+// ID, which only `ratify` is allowed to write.
+function checkArchaeologyDomainFile(projectDir, domain) {
+  const id = "archaeology-domain-file";
+  const file = `spec/domains/${domain}.md`;
+  const full = join(projectDir, file);
+  if (!existsSync(full)) return { id, ok: false, messages: [`${file} is missing`], file };
+  const { criteria, errors } = parseDomainFile(readText(full), domain);
+  const messages = errors.map((e) => `${file}:${e.line}: ${e.message}`);
+  if (criteria.length === 0) messages.push(`${file} has no criteria`);
+  const minted = criteria.filter((c) => c.id.startsWith("R-"));
+  if (minted.length) messages.push(`${file} mints a permanent id (${minted.map((c) => c.id).join(", ")}); minting is ratify's job, not archaeology's`);
+  return { id, ok: messages.length === 0, messages, file };
+}
+
+// archaeology may only ever change files under spec/ — the old application it reads is
+// never written to, and every other project path belongs to some other stage.
+function checkArchaeologyScope(projectDir) {
+  const id = "archaeology-scope";
+  const outside = changedPaths(projectDir).filter((p) => !p.startsWith("spec/"));
+  if (outside.length) return { id, ok: false, messages: [`archaeology may only change spec/, but also touched: ${outside.join(", ")}`] };
+  return { id, ok: true, messages: [] };
+}
+
+// `archaeology` recovers one business domain's behaviour from the old application,
+// checked out read-only at `sources/old` by the `with-sources` workspace before the
+// agent session starts. It holds gate G1: the recovered domain file is not trusted as
+// the contract until a human or the persona bound to G1 rules on it — ratify (a later
+// stage) mints permanent IDs only for what that ruling accepts.
+const archaeology = {
+  name: "archaeology",
+  title: "archaeology",
+  skill: skillPath("archaeology"),
+  workspace: "with-sources",
+  gate: "G1",
+  collect: [],
+  implemented: true,
+  prompt(ctx) {
+    const d = ctx.domain;
+    return [
+      `Recover what the old application does for the "${d}" domain, reading only sources/old — its code, migrations, docs, README, and any OpenAPI/swagger file it has. Never read sources/old/tests, and never read anything outside sources/old except constitution.md, spec/, and intent/.`,
+      `Write spec/domains/${d}.md in the criterion format your skill instructions describe (spec/README.md has the exact grammar): provisional IDs D-${d}-<n>, origin recovered, a confidence graded by the evidence you actually found, at least one cites on every criterion, a reconciliation class, and given/when/then. Mark anything you are not sure of inferred or open, and say in a note why.`,
+      `Append any pages you recover to spec/contract/surface.yaml under a "domain: ${d}" entry, and any roles you recover to spec/contract/personas.yaml if they are not already listed there.`,
+      `Finish with your journal entry: lead with three sentences on what the ${d} domain does, then say what conflicted between your sources, then say what you could not determine.`,
+    ].join("\n\n");
+  },
+  proposal(ctx) {
+    const d = ctx.domain;
+    return {
+      name: `archaeology-${d}`,
+      question: `Is this what the ${d} domain does, and which of it is the contract?`,
+      recommendation: firstSentence(ctx.agentText),
+    };
+  },
+  preChecks(projectDir, ctx) {
+    return [checkDomainOption(ctx), checkSourcesConfigured(ctx)];
+  },
+  postChecks(projectDir, ctx) {
+    return [checkCriteria(projectDir, ctx), checkArchaeologyDomainFile(projectDir, ctx.domain), checkArchaeologyScope(projectDir)];
+  },
+};
+
+// Every real pipeline stage (design, build, …) is a stub until its own task lands:
+// calling `prompt` fails loudly and by name, so `sdlc run <stage>` reports a clear
+// reason instead of quietly doing nothing.
 function stub(name) {
   return {
     name,
@@ -173,6 +258,7 @@ function stub(name) {
 export const STAGES_BY_NAME = Object.fromEntries(STAGES.map((name) => [name, stub(name)]));
 STAGES_BY_NAME.probe = probe;
 STAGES_BY_NAME.intent = intent;
+STAGES_BY_NAME.archaeology = archaeology;
 
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];

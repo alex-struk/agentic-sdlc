@@ -36,9 +36,9 @@ test("probe post-check fails when app/PROBE.md is missing the sentence", () => {
   assert.ok(results.some((r) => !r.ok));
 });
 
-test("every stage name from profiles.mjs other than probe and intent is an unimplemented stub", () => {
+test("every stage name from profiles.mjs other than probe, intent and archaeology is an unimplemented stub", () => {
   for (const name of STAGES) {
-    if (name === "intent") continue;
+    if (name === "intent" || name === "archaeology") continue;
     const stage = stageFor(name);
     assert.equal(stage.implemented, false, name);
     assert.equal(stage.workspace, "project", name);
@@ -54,10 +54,23 @@ test("intent holds gate G0, is implemented, and its prompt does not throw", () =
   assert.doesNotThrow(() => stage.prompt({}));
 });
 
-test("stageFor(\"archaeology\") is a stub whose prompt throws not implemented", () => {
+test("archaeology holds gate G1, is implemented, workspace with-sources, and its prompt does not throw", () => {
   const stage = stageFor("archaeology");
-  assert.equal(stage.implemented, false);
-  assert.throws(() => stage.prompt({}), /stage archaeology is not implemented yet/);
+  assert.equal(stage.implemented, true);
+  assert.equal(stage.gate, "G1");
+  assert.equal(stage.workspace, "with-sources");
+  assert.doesNotThrow(() => stage.prompt({ domain: "applications" }));
+});
+
+test("archaeology pre-checks fail without --domain, and with a domain not in config", () => {
+  const stage = stageFor("archaeology");
+  const cfg = { project: { domains: ["applications"] }, sources: { old: { repo: "x", commit: "abc1234" } } };
+  const missing = stage.preChecks(".", { domain: undefined, config: cfg });
+  assert.ok(missing.some((r) => !r.ok && /--domain/.test(r.messages.join(" "))));
+  const wrong = stage.preChecks(".", { domain: "bogus", config: cfg });
+  assert.ok(wrong.some((r) => !r.ok && /not in project\.domains/.test(r.messages.join(" "))));
+  const noSources = stage.preChecks(".", { domain: "applications", config: { project: { domains: ["applications"] } } });
+  assert.ok(noSources.some((r) => !r.ok && /sources\.old/.test(r.messages.join(" "))));
 });
 
 test("stageFor throws unknown stage for a bogus name", () => {
