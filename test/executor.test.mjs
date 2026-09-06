@@ -58,6 +58,22 @@ test("mock executor writes files and returns the canned text", async () => {
   } finally { delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; }
 });
 
+test("ensureConfigHome leaves the credentials file alone when the source already lives at the link path", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-home-self-"));
+  const home = join(root, "home"); mkdirSync(home, { recursive: true });
+  const cred = join(home, ".credentials.json"); writeFileSync(cred, "{\"real\":true}");
+  process.env.SDLC_CLAUDE_HOME = home; process.env.SDLC_CREDENTIALS = cred;
+  try {
+    const p = ensureConfigHome();
+    assert.equal(p, home);
+    // Not a symlink and not deleted: the source and the link path are the same file, so
+    // the rm/symlink dance must be skipped entirely rather than deleting the operator's
+    // own credentials and symlinking the (now missing) path to itself.
+    assert.ok(!lstatSync(cred).isSymbolicLink());
+    assert.equal(readFileSync(cred, "utf8"), "{\"real\":true}");
+  } finally { delete process.env.SDLC_CLAUDE_HOME; delete process.env.SDLC_CREDENTIALS; }
+});
+
 test("ensureConfigHome replaces whatever is already at the credentials path", () => {
   const root = mkdtempSync(join(tmpdir(), "sdlc-home-replace-"));
   const cred = join(root, "creds.json"); writeFileSync(cred, "{\"real\":true}");

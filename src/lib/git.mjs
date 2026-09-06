@@ -55,9 +55,24 @@ export function stagePaths(projectDir, paths) {
 // caller gets for free by building the list from `changedPaths()` below rather than
 // naming files itself. Skips the call entirely when the list is empty, since
 // `git add -A --` with no further pathspec means "the whole tree" rather than "nothing".
+//
+// The retry exists for one specific caller shape: a path `stageSite` already
+// force-added (`git add -Af`) because some `.gitignore` rule still matches it, showing
+// up again here as part of a stage's or ruling's wider `changedPaths()` list. Naming an
+// ignored path explicitly makes plain `git add -A` refuse the *entire* call, even though
+// the path is already staged and there is nothing further to record for it —
+// `git check-ignore` can't be asked instead, because it reports an already-tracked path
+// as not ignored regardless of any rule that would otherwise match it, which is the
+// opposite of what `git add` does. Retrying with `-f` only after the plain attempt fails
+// keeps every other caller's error (a real mistake elsewhere in the list) unchanged.
 export function stageAll(projectDir, paths) {
   if (paths.length === 0) return;
-  git(["add", "-A", "--", ...paths], projectDir);
+  try {
+    git(["add", "-A", "--", ...paths], projectDir);
+  } catch (e) {
+    if (!/ignored by one of your \.gitignore files/.test(e.message)) throw e;
+    git(["add", "-A", "-f", "--", ...paths], projectDir);
+  }
 }
 
 // The porcelain status as bare project-relative paths — one per changed file, two for a
@@ -118,14 +133,29 @@ export function reconcileGitignore(projectDir) {
 
 // Stages the generated state site for whatever commit the caller is about to make.
 // A project whose `.gitignore` still ignores `site/` would otherwise commit nothing at
-// all here and silently keep an untracked site, so the ignore is reconciled away first
-// and the reconciled `.gitignore` staged alongside. Staging goes through `stageAll`, so
-// a page the site no longer generates is recorded as removed rather than left behind.
+// all here and silently keep an untracked site, so the ignore is reconciled away first.
+// `.gitignore` itself is only staged when `reconcileGitignore` actually rewrote it — a
+// project's own uncommitted edit to that file is none of this command's business and
+// must not be swept in just because the site happened to be staged in the same run.
+//
+// Reconciling only removes an exact `site/` line (see `UNIGNORE` above), so a pattern
+// that also matches the directory — `/site/`, a broader glob, a rule in a parent
+// `.gitignore` — survives untouched. Rather than leave the site silently untracked in
+// that case, `check-ignore` is asked again after reconciling and, if it still says the
+// path is ignored, the site is force-added and the rule responsible is named on stderr
+// so a person can go fix their own ignore file instead of it happening invisibly.
 export function stageSite(projectDir) {
-  if (gitOk(["check-ignore", "-q", "--", "site"], projectDir)) reconcileGitignore(projectDir);
+  const gitignoreChanged = reconcileGitignore(projectDir);
   const paths = [];
   if (existsSync(join(projectDir, "site"))) paths.push("site");
   else if (git(["ls-files", "--", "site"], projectDir)) paths.push("site");
-  if (existsSync(join(projectDir, ".gitignore"))) paths.push(".gitignore");
-  stageAll(projectDir, paths);
+  if (gitignoreChanged) paths.push(".gitignore");
+
+  const stillIgnored = paths.includes("site") && gitOk(["check-ignore", "-q", "--", "site"], projectDir);
+  if (stillIgnored) {
+    const rule = git(["check-ignore", "-v", "--", "site"], projectDir);
+    console.warn(`warning: site/ is still ignored after reconciling .gitignore (${rule}); staging it anyway`);
+  }
+  stageAll(projectDir, stillIgnored ? paths.filter((p) => p !== "site") : paths);
+  if (stillIgnored) git(["add", "-Af", "--", "site"], projectDir);
 }
