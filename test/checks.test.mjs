@@ -58,12 +58,17 @@ test("egress: ticket numbers, notes paths and listed names are caught in tracked
 test("egress: no name list is a warning, not a failure", () => {
   const d = repo();
   writeFileSync(join(d, "clean.md"), "nothing here\n"); git(["add", "clean.md"], d);
-  // Isolate from the real machine's default names file: point SDLC_EGRESS_NAMES
-  // at a path inside this test's own temp dir that is never created, so a
-  // developer's actual ~/.config/agentic-sdlc/egress-names.txt (if present)
-  // cannot make this assertion flaky.
+  // Isolate from the real machine's default names file. nameList() stops at
+  // the first EXISTING candidate in [env, .sdlc/egress.local.txt, default] —
+  // so pointing SDLC_EGRESS_NAMES at a path that doesn't exist would still
+  // fall through to a developer's real ~/.config/agentic-sdlc/egress-names.txt
+  // if one happens to be present. Pointing it at an existing-but-empty file
+  // instead makes it win that lookup outright, so the default path is never
+  // consulted regardless of machine state.
   const prev = process.env.SDLC_EGRESS_NAMES;
-  process.env.SDLC_EGRESS_NAMES = join(d, "does-not-exist.txt");
+  const emptyList = join(d, "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
   try {
     const r = checkEgress(d, {});
     assert.equal(r.ok, true);
