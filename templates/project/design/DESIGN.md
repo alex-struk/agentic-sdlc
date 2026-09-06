@@ -1,4 +1,3 @@
-<!-- Structure adapted from bcgov/crow's DESIGN.template.md. -->
 ---
 version: 0.1.0
 name: "{{PROJECT_NAME}}"
@@ -11,6 +10,8 @@ tokens:
   radius: []
 components: []
 ---
+
+<!-- Structure adapted from bcgov/crow v0.6.0's DESIGN.template.md. -->
 
 # Design — {{PROJECT_NAME}}
 
