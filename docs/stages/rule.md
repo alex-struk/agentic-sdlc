@@ -110,6 +110,19 @@ written into the gate file in place of a human's free-text `note`. The rationale
 also appended to the proposal page itself, under a `## Ruling` heading, *before* that page is
 committed — so the ruling is part of the same commit the gate file is, not a follow-up.
 
+### Ratification conditions
+
+`conditions` is free-form for most personas, but `product-owner`'s own brief
+(`.sdlc/personas/product-owner.md`) gives it a closed vocabulary for approving an archaeology
+proposal — one line per criterion ID, using `contract`, `confirm`, `edit`, `defect`, `spike`,
+`obsolete` or `drop` — that `sdlc run ratify` (`docs/stages/ratify.md`) reads back out of this
+same gate file and applies mechanically. A `return` verdict carries no conditions at all; its
+rationale paragraph says what archaeology has to go back and change instead. `rule` itself does
+not interpret a single condition line — it only carries the array from the persona's verdict block
+into the gate file — so a condition naming an ID that turns out not to exist in the domain, or a
+line neither `rule` nor `ratify` recognises, is not caught here; `ratify` reports it later, against
+the domain file it actually has in hand.
+
 ## Mandatory escalation
 
 Some proposals never reach the persona at all. Before asking, `sdlc rule` escalates on its own

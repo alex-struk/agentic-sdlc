@@ -254,3 +254,153 @@ export function renderSpecIndex(projectDir, parsed) {
   writeText(path, text);
   return path;
 }
+
+// The product-owner's ruling vocabulary (see `templates/project/.sdlc/personas/product-owner.md`,
+// "Ruling format"): one condition per line, `<verb> <ID>` or `<verb> <ID>: <text>`. `contract` and
+// `confirm` take no text; the rest require it. Anything else — an unrecognised verb, a missing
+// colon where one is required — is not this function's business to guess at, and is left for
+// `applyConditions` to report as unknown rather than thrown here.
+function parseCondition(line) {
+  const t = line.trim();
+  let m;
+  if ((m = /^contract\s+(\S+)\s*$/.exec(t))) return { verb: "contract", id: m[1] };
+  if ((m = /^confirm\s+(\S+)\s*$/.exec(t))) return { verb: "confirm", id: m[1] };
+  if ((m = /^defect\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "defect", id: m[1], text: m[2].trim() };
+  if ((m = /^edit\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "edit", id: m[1], text: m[2].trim() };
+  if ((m = /^obsolete\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "obsolete", id: m[1], text: m[2].trim() };
+  if ((m = /^drop\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "drop", id: m[1], text: m[2].trim() };
+  if ((m = /^spike\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "spike", id: m[1], text: m[2].trim() };
+  return null;
+}
+
+// Applies `ratify`'s gate-file conditions to a domain's parsed criteria. Every condition
+// names an ID the product owner ruled on; a line this cannot parse, or whose ID is not in
+// `criteria`, is reported in `unknown` rather than silently dropped — a persona's typo
+// must surface somewhere a person will read it (the ratify journal), not vanish.
+//
+// `defect <ID>: <replacement>` is the one verb that adds a row rather than editing one:
+// the old behaviour (`<ID>`) is kept, marked `reconciliation: defect`, and a new
+// `authored`/`confirmed` criterion carries the corrected statement with `replaces: <ID>`.
+// Its own provisional ID is minted here (`D-<domain>-<n>`, continuing from the highest
+// number already used for that domain across both the input and any earlier addition in
+// this same call) — `mintIds`, run right after, promotes it to a permanent `R-` id the
+// same pass promotes its `replaces` target to, so the two end up pointing at each other's
+// final IDs rather than one permanent and one provisional.
+export function applyConditions(criteria, conditions) {
+  const out = criteria.map((c) => ({ ...c, notes: [...(c.notes ?? [])] }));
+  const byId = new Map(out.map((c) => [c.id, c]));
+  const additions = [];
+  const applied = [];
+  const unknown = [];
+
+  const nextInDomain = (domain) => {
+    const nums = [...out, ...additions].filter((c) => domainOf(c.id) === domain).map((c) => idNumber(c.id));
+    return (nums.length ? Math.max(...nums) : 0) + 1;
+  };
+
+  for (const line of conditions) {
+    const parsed = parseCondition(line);
+    const target = parsed ? byId.get(parsed.id) : null;
+    if (!parsed || !target) { unknown.push(line); continue; }
+    const { verb, id, text } = parsed;
+
+    switch (verb) {
+      case "contract":
+        // A no-op marker: recorded as applied so the journal can say the persona looked
+        // at this ID and left it as the contract, without changing the row itself.
+        break;
+      case "confirm":
+        target.confidence = "confirmed";
+        break;
+      case "edit":
+        target.statement = text;
+        target.version += 1;
+        break;
+      case "obsolete":
+      case "drop":
+        target.state = "obsolete";
+        target.notes.push(text);
+        break;
+      case "spike":
+        target.confidence = "open";
+        target.notes.push(text);
+        break;
+      case "defect": {
+        target.reconciliation = "defect";
+        const domain = domainOf(target.id) ?? domainOf(id);
+        const newId = `D-${domain}-${nextInDomain(domain)}`;
+        const addition = {
+          id: newId, version: 1, confidence: "confirmed", origin: "authored",
+          statement: text, cites: [], reconciliation: undefined,
+          given: undefined, when: undefined, then: undefined, notes: [],
+          state: "proposed", tier: undefined, replaces: id, supersededBy: undefined,
+          raw: `### ${newId} · v1 · confirmed · authored`, line: undefined,
+        };
+        additions.push(addition);
+        byId.set(newId, addition);
+        break;
+      }
+    }
+    applied.push({ line, id, verb });
+  }
+
+  return { criteria: [...out, ...additions], applied, unknown };
+}
+
+// Promotes every provisional criterion the product owner has confirmed to a permanent
+// ID: `D-<domain>-<n>` with `confidence: confirmed` and a state other than `obsolete`
+// becomes `R-<domainOrdinal>.<n>`, `n` continuing from `existingMax` (the highest `.<n>`
+// already minted for this domain — a fresh domain passes 0). A criterion still `inferred`
+// or `open` is not ready and keeps its `D-` id and `proposed` state untouched — ratify
+// mints only what was actually ruled on. `replaces`/`superseded-by` references are
+// rewritten to the new permanent id when the criterion they point at was minted in this
+// same pass (a `defect` row and its replacement are minted together, so both end up
+// pointing at final IDs); a reference to an id minted on an earlier run, or never minted
+// at all, is left exactly as written.
+export function mintIds(criteria, domainOrdinal, existingMax) {
+  const out = criteria.map((c) => ({ ...c }));
+  const minted = new Map();
+  let next = existingMax + 1;
+  for (const c of out) {
+    if (c.id.startsWith("D-") && c.confidence === "confirmed" && c.state !== "obsolete") {
+      const newId = `R-${domainOrdinal}.${next}`;
+      minted.set(c.id, newId);
+      c.id = newId;
+      c.state = "accepted";
+      next += 1;
+    }
+  }
+  for (const c of out) {
+    if (c.replaces && minted.has(c.replaces)) c.replaces = minted.get(c.replaces);
+    if (c.supersededBy && minted.has(c.supersededBy)) c.supersededBy = minted.get(c.supersededBy);
+  }
+  return out;
+}
+
+// Writes a domain file back in the canonical format: one block per criterion, ids
+// ordered numerically, bullets in the fixed order the format documents (spec/README.md)
+// — cites, reconciliation, given, when, then, state, tier, replaces, superseded-by,
+// note. `given`/`when`/`then` were already merged by the parser when several bullets of
+// the same key repeated (`parseDomainFile` joins them with " and "), so each is written
+// back as the single merged line it now is; re-parsing that line yields the identical
+// merged string, which is what makes parse → serialise → parse round-trip. `state` is
+// always written explicitly, even when it is the default `proposed`, so the file never
+// depends on a reader knowing what an absent bullet defaults to.
+export function serialiseDomainFile(criteria, domain) {
+  const sorted = [...criteria].sort((a, b) => compareIds(a.id, b.id));
+  const blocks = sorted.map((c) => {
+    const lines = [`### ${c.id} ${DOT} v${c.version} ${DOT} ${c.confidence} ${DOT} ${c.origin}`, c.statement];
+    for (const cite of c.cites ?? []) lines.push(`- cites: ${cite.line !== undefined ? `${cite.path}:${cite.line}` : cite.path}`);
+    if (c.reconciliation) lines.push(`- reconciliation: ${c.reconciliation}`);
+    if (c.given) lines.push(`- given: ${c.given}`);
+    if (c.when) lines.push(`- when: ${c.when}`);
+    if (c.then) lines.push(`- then: ${c.then}`);
+    lines.push(`- state: ${c.state ?? "proposed"}`);
+    if (c.tier) lines.push(`- tier: ${c.tier}`);
+    if (c.replaces) lines.push(`- replaces: ${c.replaces}`);
+    if (c.supersededBy) lines.push(`- superseded-by: ${c.supersededBy}`);
+    for (const note of c.notes ?? []) lines.push(`- note: ${note}`);
+    return lines.join("\n");
+  });
+  return `# ${domain}\n\n${blocks.join("\n\n")}\n`;
+}

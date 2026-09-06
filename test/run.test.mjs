@@ -118,7 +118,9 @@ test("runStage rejects an unimplemented stage by name", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-stub-"));
   const { dir, prevEgress } = await makeProject(tmp);
   try {
-    await assert.rejects(() => runStage(dir, "ratify"), /not implemented/);
+    // `ratify` used to be one of these stubs; it is implemented as of this stage's own
+    // task, so a still-unimplemented one (`design`) stands in for it here instead.
+    await assert.rejects(() => runStage(dir, "design"), /not implemented/);
   } finally {
     restoreEgress(prevEgress);
   }

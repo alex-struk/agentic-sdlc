@@ -1,0 +1,109 @@
+# Stage: `ratify`
+
+## Purpose
+
+Turn a ruled archaeology proposal into the permanent contract. Archaeology only ever writes
+provisional `D-<domain>-<n>` IDs — nothing recovered is trusted until a human or the persona bound
+to G1 rules on it — and `ratify` is the one place a `D-` id is promoted to a permanent `R-<domain
+ordinal>.<n>` id. It does this mechanically: read the conditions the ruling attached to the
+archaeology proposal, apply each one to the domain file, mint permanent IDs for whatever the
+ruling actually confirmed, and regenerate the two generated files (`spec/criteria-index.json`,
+`spec/spec.md`) every later stage reads instead of a domain file directly. There is no agent turn —
+`ratify` is the first stage in the registry with `agent: false` — because once the ruling is on
+disk, what to do with it is a deterministic reading of that ruling's own conditions, not a
+judgement call.
+
+## Inputs
+
+`sdlc run ratify --domain <d>`, run from inside the project's working tree, once
+`proposal/archaeology-<d>` has been ruled `approve` and merged into `main`. `<d>` is one of the
+names in `.sdlc/config.yaml`'s `project.domains` — the same domain archaeology just recovered.
+`ratify` reads `.sdlc/gates/archaeology-<d>.yaml` for the `conditions` the ruling attached (see
+`docs/stages/rule.md`, "Ratification conditions") and `spec/domains/<d>.md` for the criteria those
+conditions apply to.
+
+## Outputs
+
+- `spec/domains/<d>.md`, rewritten in place: every criterion the ruling's conditions named has been
+  changed as that condition says (`applyConditions`, `src/spec/criteria.mjs`), and every criterion
+  left `confirmed` and not `obsolete` — whether a condition named it or not — has been minted a
+  permanent `R-<k>.<n>` id (`mintIds`), `k` the domain's 1-based position in `project.domains` and
+  `n` continuing from whatever this domain has already minted. A `defect` condition keeps the row
+  it corrects (now marked `reconciliation: defect`) and appends a new, `authored` criterion with
+  the corrected statement and `replaces: <the corrected row's own final id>` — both mint together,
+  so the reference lands on the permanent id, not the provisional one that no longer exists once
+  the pass is done.
+- `spec/criteria-index.json` and `spec/spec.md`, regenerated from every domain file in the project
+  (`writeIndex`, `renderSpecIndex`), not only the one this run touched.
+- A journal entry and a run-record line, as every stage produces. The journal states how many
+  criteria were accepted, how many are still open (naming each one and, where a note explains it,
+  why), how many were made obsolete, how many replacements a `defect` condition added, and lists
+  any condition whose ID this domain file does not actually have.
+- No proposal and no gate: `ratify` holds no gate of its own (the ruling it acts on already
+  happened, at G1, on the archaeology proposal), so a successful run commits directly to `main` as
+  `stage(ratify): ratify <d>`.
+
+## Workspace the agent sees
+
+None. `ratify`'s registry entry carries `agent: false`, which tells `runStage` to skip
+materialising a workspace and spawning an agent turn entirely and call `stage.execute(projectDir,
+ctx)` in-process instead, in the project's own working tree — the same tree every other command
+operates on. `execute`'s return (`{ text, changed }`) stands in for an agent's own result the same
+way `runStage` synthesises the rest of one (`cost: 0`, `turns: 0`, `sessionId: "deterministic"`)
+before handing it to the same `finishStage` every agent-run stage finishes through.
+
+## Checks that block
+
+- **Pre-checks.**
+  - `--domain <d>` must be given, and `<d>` must be one of `project.domains`.
+  - `.sdlc/gates/archaeology-<d>.yaml` must exist and record `verdict: approve` — a `return` or an
+    `escalated` gate file, or no gate file at all, fails this before anything is read or written.
+  - That approval must actually be on `main`: either `proposal/archaeology-<d>` shows up in `git
+    branch --merged main`, or the gate file itself is reachable from `HEAD` (the ordinary case,
+    since `sdlc rule` checks `main` out immediately after merging an approval).
+  - `spec/domains/<d>.md` must exist.
+- **Post-checks**, run against the working tree after `execute` returns:
+  - `checkCriteria` — the same structural check every stage that touches `spec/domains` runs:
+    every domain file parses, IDs are unique across domains, and no criterion is `accepted` while
+    its confidence is still `inferred` or `open`. This is `ratify`'s own promise that it never
+    mints an id for something it should not have.
+  - `spec/criteria-index.json` exists and parses as JSON; `spec/spec.md` exists.
+
+## Exit criterion
+
+Exits 0 and prints `run ratify: ok` once `execute` has written the domain file and regenerated
+both generated artifacts, or once it has determined there is nothing left to do (see "Re-run
+behaviour"). Any pre-check or post-check failure exits 1 and prints the failing check's messages.
+
+## Re-run behaviour
+
+Running `ratify --domain <d>` again once the domain has nothing provisional left in it — every
+`D-<d>-<n>` id it had has already been minted to an `R-` id — is a true no-op: `execute` notices
+before touching anything on disk and returns `{ changed: [] }`, which `runStage` reads as "nothing
+happened" and returns without writing a journal entry, appending a run record, or committing
+anything. This is different from every agent-run stage's re-run behaviour (`docs/stages/run.md`),
+which always produces a fresh, separately numbered journal entry even when the agent's output is
+byte-identical to what is already on `main` — `ratify` skips that because nothing spawned an agent
+turn to journal in the first place.
+
+Running `archaeology --domain <d>` again after ratifying it, then ruling and ratifying the newly
+recovered criteria, is ordinary: each pass mints only what that pass's own conditions and
+confirmations cover, continuing the domain's `R-<k>.<n>` numbering from wherever the last pass left
+it.
+
+## Failure modes
+
+- `--domain` is missing, or names a domain not in `project.domains`: the pre-check fails before
+  anything else runs.
+- The archaeology proposal for this domain has not been ruled, was returned or escalated rather
+  than approved, or is approved but not yet merged into `main`: the matching pre-check fails,
+  naming which of the three is missing.
+- `spec/domains/<d>.md` does not exist: the pre-check fails.
+- A condition names an ID this domain's criteria do not actually have, or is not one of the seven
+  recognised verbs: `applyConditions` reports it in `unknown` rather than throwing, and `execute`'s
+  journal text lists it — the run still succeeds, since one bad condition line should not block
+  every other one that parsed fine.
+- The rewritten domain file, or the regenerated index or spec page, fails `checkCriteria` or the
+  artifacts check: `finishStage` commits `stage(ratify): post-checks failed` with only the journal
+  and run record staged, and the domain file `execute` actually wrote is left in the working tree,
+  untracked, for a person to inspect.

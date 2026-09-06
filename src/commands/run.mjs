@@ -89,6 +89,27 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
   const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
   if (openProposal) return commitProposalStillOpen(projectDir, name, openProposal);
 
+  // `agent: false` (only `ratify` today) means there is no agent turn at all: the stage's
+  // work is mechanical and deterministic, so `stage.execute(projectDir, ctx)` runs in
+  // process, in the project's own working tree, in place of materialising a workspace and
+  // spawning `runAgent`. Nothing is spawned, so there is no crash mid-turn for `sdlc
+  // resume` to pick up and `.sdlc/run-state.json` is never written for this path.
+  // `finishStage` is still the one place that decides whether a run's output is worth a
+  // journal entry and a commit — reached here with a synthesised agent result standing in
+  // for a real one — except when `execute` reports nothing changed: unlike an agent turn,
+  // running `execute` twice against unchanged input is expected to be a no-op, and
+  // `finishStage` has no way to skip its own always-fresh journal entry, so that case is
+  // short-circuited here instead of manufacturing an empty commit.
+  if (stage.agent === false) {
+    if (dryRun) {
+      console.log(`stage ${name}: agent: false — runs stage.execute(projectDir, ctx) directly, no agent session`);
+      return { ok: true, dryRun: true };
+    }
+    const { text, changed } = stage.execute(projectDir, ctx);
+    if (!changed || changed.length === 0) return { ok: true, changed: [] };
+    return await finishStage(projectDir, stage, ctx, { text, cost: 0, turns: 0, sessionId: "deterministic" });
+  }
+
   const ws = materialise(projectDir, stage.workspace);
   try {
     const skillDir = mkdtempSync(join(tmpdir(), `sdlc-skill-${name}-`));

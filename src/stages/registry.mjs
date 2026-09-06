@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readText } from "../lib/fsx.mjs";
-import { changedPaths } from "../lib/git.mjs";
+import { parse as parseYaml } from "yaml";
+import { readText, writeText } from "../lib/fsx.mjs";
+import { changedPaths, git, gitOk } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
-import { parseDomainFile, parseAll } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex } from "../spec/criteria.mjs";
 import { checkCriteria } from "../checks/criteria.mjs";
 
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
@@ -177,13 +178,15 @@ const intent = {
   },
 };
 
-// `archaeology` requires `--domain <d>`: missing entirely, or naming a domain
-// `config.project.domains` doesn't list, both fail here rather than letting the agent
-// discover it partway through a session. One check id covers both, since they are the
-// same question ("is there a domain this run can recover?") asked two different ways.
-function checkDomainOption(ctx) {
+// Both `archaeology` and `ratify` require `--domain <d>`: missing entirely, or naming a
+// domain `config.project.domains` doesn't list, both fail here rather than letting the
+// agent (or, for `ratify`, the mint) discover it partway through a run. One check id
+// covers both, since they are the same question ("is there a domain this run applies
+// to?") asked two different ways. `stageName` only shapes the missing-domain message —
+// the membership check is identical either way.
+function checkDomainOption(ctx, stageName = "archaeology") {
   const id = "domain-option";
-  if (!ctx.domain) return { id, ok: false, messages: ["archaeology needs --domain <d>"] };
+  if (!ctx.domain) return { id, ok: false, messages: [`${stageName} needs --domain <d>`] };
   const domains = ctx.config?.project?.domains ?? [];
   if (!domains.includes(ctx.domain)) {
     return { id, ok: false, messages: [`domain "${ctx.domain}" is not in project.domains: ${domains.join(", ") || "(none configured)"}`] };
@@ -286,6 +289,152 @@ const archaeology = {
   },
 };
 
+function ratifyGateName(domain) {
+  return `archaeology-${domain}`;
+}
+
+function ratifyGatePath(projectDir, domain) {
+  return join(projectDir, ".sdlc", "gates", `${ratifyGateName(domain)}.yaml`);
+}
+
+// `ratify` mints permanent IDs only for a domain a human (or the persona bound to G1)
+// has actually approved, and only once that approval has landed on `main` — a `return`
+// or an `escalate` gate file exists too, and neither is safe to ratify from. Checked two
+// ways, matching how the ruling actually gets there: an ordinary approve+merge leaves the
+// proposal branch reachable from `main` (`git branch --merged main`), while `main` itself
+// already holding the gate file at `HEAD` (the common case, since `sdlc rule` checks
+// `main` out right after merging) covers a history rewritten since.
+function checkArchaeologyApproved(projectDir, domain) {
+  const id = "archaeology-approved";
+  // A missing `--domain` is `checkDomainOption`'s message to give, not this one's —
+  // reported here as passing so the two checks do not print the same complaint twice.
+  if (!domain) return { id, ok: true, messages: [] };
+  const name = ratifyGateName(domain);
+  const gatePath = ratifyGatePath(projectDir, domain);
+  if (!existsSync(gatePath)) return { id, ok: false, messages: [`.sdlc/gates/${name}.yaml is missing; rule ${name} approve first`] };
+  const gate = parseYaml(readText(gatePath)) ?? {};
+  if (gate.verdict !== "approve") return { id, ok: false, messages: [`${name} was not approved (verdict: ${gate.verdict ?? "unknown"})`] };
+  const branch = `proposal/${name}`;
+  const merged = gitOk(["branch", "--merged", "main"], projectDir)
+    && git(["branch", "--merged", "main"], projectDir).split("\n").map((l) => l.replace(/^\*?\s*/, "").trim()).includes(branch);
+  const reachable = gitOk(["cat-file", "-e", `HEAD:.sdlc/gates/${name}.yaml`], projectDir);
+  if (!merged && !reachable) return { id, ok: false, messages: [`${branch} is approved but not merged into main yet`] };
+  return { id, ok: true, messages: [] };
+}
+
+function checkRatifyDomainFile(projectDir, domain) {
+  const id = "ratify-domain-file";
+  if (!domain) return { id, ok: true, messages: [] };
+  const file = `spec/domains/${domain}.md`;
+  if (!existsSync(join(projectDir, file))) return { id, ok: false, messages: [`${file} is missing`] };
+  return { id, ok: true, messages: [] };
+}
+
+// `spec/criteria-index.json` and `spec/spec.md` are ratify's own generated artifacts
+// (`spec/README.md`: "Do not edit either by hand"); this post-check is the promise that
+// a successful ratify run actually leaves both behind, parsing.
+function checkSpecArtifacts(projectDir) {
+  const id = "spec-artifacts";
+  const messages = [];
+  const idxPath = join(projectDir, "spec", "criteria-index.json");
+  if (!existsSync(idxPath)) messages.push("spec/criteria-index.json is missing");
+  else { try { JSON.parse(readText(idxPath)); } catch (e) { messages.push(`spec/criteria-index.json does not parse: ${e.message}`); } }
+  if (!existsSync(join(projectDir, "spec", "spec.md"))) messages.push("spec/spec.md is missing");
+  return { id, ok: messages.length === 0, messages };
+}
+
+// The highest `n` already minted as `R-<domainOrdinal>.<n>` in this domain's own
+// criteria — `mintIds`' `existingMax`, so a second ratify run on a domain archaeology
+// revisited continues numbering rather than colliding with what an earlier run already
+// minted.
+function maxRNumber(criteria, domainOrdinal) {
+  const re = new RegExp(`^R-${domainOrdinal}\\.(\\d+)$`);
+  let max = 0;
+  for (const c of criteria) {
+    const m = re.exec(c.id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return max;
+}
+
+// `ratify` holds no gate and spawns no agent (`agent: false` — see `runStage`): the
+// product owner already ruled at G1, on the archaeology proposal itself, and what is left
+// is mechanical — apply the conditions that ruling attached, mint permanent IDs for
+// whatever it confirmed, and regenerate the two files every other stage reads instead of
+// a domain file. `execute` is called directly by `runStage` in place of an agent turn; its
+// return shape (`{ text, changed }`) stands in for an agent result the same way
+// `runStage` synthesises one (`cost: 0, turns: 0, sessionId: "deterministic"`).
+const ratify = {
+  name: "ratify",
+  title: "ratify",
+  workspace: "project",
+  gate: null,
+  agent: false,
+  collect: [],
+  implemented: true,
+  // `stage.title` is read by `finishStage` as a plain field, not a function, when it
+  // builds the no-gate commit subject (`stage(ratify): <title>`) — so the domain name is
+  // folded into it here, the one point that already has `ctx.domain` in hand, rather than
+  // widening `finishStage`'s contract for a title only this stage needs to parameterise.
+  execute(projectDir, ctx) {
+    const domain = ctx.domain;
+    this.title = `ratify ${domain}`;
+
+    const gate = parseYaml(readText(ratifyGatePath(projectDir, domain))) ?? {};
+    const conditions = gate.conditions ?? [];
+
+    const domainFile = join(projectDir, "spec", "domains", `${domain}.md`);
+    const { criteria: before } = parseDomainFile(readText(domainFile), domain);
+
+    // Nothing provisional left to rule on: an earlier ratify run already minted every
+    // `D-` id this domain had, so re-running against the same, unchanged gate file is a
+    // no-op — no new journal entry, no commit (`runStage` skips `finishStage` entirely
+    // when `changed` comes back empty).
+    if (!before.some((c) => c.id.startsWith("D-"))) {
+      return { text: `ratify ${domain}: nothing to do — no provisional criteria remain`, changed: [] };
+    }
+
+    const { criteria: withConditions, applied, unknown } = applyConditions(before, conditions);
+
+    const domains = ctx.config?.project?.domains ?? [];
+    const domainOrdinal = domains.indexOf(domain) + 1;
+    const existingMax = maxRNumber(withConditions, domainOrdinal);
+    const minted = mintIds(withConditions, domainOrdinal, existingMax);
+
+    writeText(domainFile, serialiseDomainFile(minted, domain));
+
+    const parsed = parseAll(projectDir);
+    writeIndex(projectDir, parsed);
+    renderSpecIndex(projectDir, parsed);
+
+    const accepted = minted.filter((c) => c.state === "accepted");
+    const stillOpen = minted.filter((c) => c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open"));
+    const obsolete = minted.filter((c) => c.state === "obsolete");
+    const replacementsAdded = applied.filter((a) => a.verb === "defect").length;
+
+    const lines = [`ratify ${domain}: ${accepted.length} accepted, ${stillOpen.length} still open, ${obsolete.length} obsolete, ${replacementsAdded} replacement(s) added.`];
+    if (stillOpen.length) {
+      lines.push("Still open:");
+      for (const c of stillOpen) lines.push(`- ${c.id} (${c.confidence})${c.notes?.length ? ` — ${c.notes[0]}` : ""}`);
+    }
+    if (unknown.length) {
+      lines.push("Unknown conditions (reported, not applied):");
+      for (const u of unknown) lines.push(`- ${u}`);
+    }
+
+    return { text: lines.join("\n"), changed: [`spec/domains/${domain}.md`, "spec/criteria-index.json", "spec/spec.md"] };
+  },
+  proposal() {
+    return null;
+  },
+  preChecks(projectDir, ctx) {
+    return [checkDomainOption(ctx, "ratify"), checkArchaeologyApproved(projectDir, ctx.domain), checkRatifyDomainFile(projectDir, ctx.domain)];
+  },
+  postChecks(projectDir, ctx) {
+    return [checkCriteria(projectDir, ctx), checkSpecArtifacts(projectDir)];
+  },
+};
+
 // Every real pipeline stage (design, build, …) is a stub until its own task lands:
 // calling `prompt` fails loudly and by name, so `sdlc run <stage>` reports a clear
 // reason instead of quietly doing nothing.
@@ -317,6 +466,7 @@ export const STAGES_BY_NAME = Object.fromEntries(STAGES.map((name) => [name, stu
 STAGES_BY_NAME.probe = probe;
 STAGES_BY_NAME.intent = intent;
 STAGES_BY_NAME.archaeology = archaeology;
+STAGES_BY_NAME.ratify = ratify;
 
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];

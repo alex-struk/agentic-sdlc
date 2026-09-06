@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
-import { parseDomainFile, parseAll, writeIndex, renderSpecIndex } from "../src/spec/criteria.mjs";
+import { parseDomainFile, parseAll, writeIndex, renderSpecIndex, applyConditions, mintIds, serialiseDomainFile } from "../src/spec/criteria.mjs";
 import { checkCriteria } from "../src/checks/criteria.mjs";
 
 function repo() {
@@ -404,4 +404,172 @@ test("checkCriteria: a heading ID whose domain does not match its file fails", (
   const r = checkCriteria(d, {});
   assert.equal(r.ok, false);
   assert.ok(r.messages.some((m) => m.includes("belongs to domain \"renewals\"")));
+});
+
+// --- applyConditions --------------------------------------------------------
+
+test("applyConditions: contract is a no-op marker, still recorded as applied", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · confirmed · authored\nA statement.\n", "permits");
+  const { criteria: out, applied, unknown } = applyConditions(criteria, ["contract D-permits-1"]);
+  assert.deepEqual(unknown, []);
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].verb, "contract");
+  assert.deepEqual(out, criteria);
+});
+
+test("applyConditions: confirm upgrades confidence to confirmed", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · inferred · authored\nA statement.\n", "permits");
+  const { criteria: out, applied } = applyConditions(criteria, ["confirm D-permits-1"]);
+  assert.equal(out[0].confidence, "confirmed");
+  assert.equal(applied[0].verb, "confirm");
+});
+
+test("applyConditions: edit replaces the statement and bumps the version", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · confirmed · authored\nOld statement.\n", "permits");
+  const { criteria: out } = applyConditions(criteria, ["edit D-permits-1: A corrected statement."]);
+  assert.equal(out[0].statement, "A corrected statement.");
+  assert.equal(out[0].version, 2);
+});
+
+test("applyConditions: obsolete and drop both set state obsolete with a note recording why", () => {
+  const { criteria: c1 } = parseDomainFile("### D-permits-1 · v1 · confirmed · authored\nA statement.\n", "permits");
+  const { criteria: out1 } = applyConditions(c1, ["obsolete D-permits-1: no longer needed"]);
+  assert.equal(out1[0].state, "obsolete");
+  assert.deepEqual(out1[0].notes, ["no longer needed"]);
+
+  const { criteria: c2 } = parseDomainFile("### D-permits-2 · v1 · confirmed · authored\nAnother.\n", "permits");
+  const { criteria: out2 } = applyConditions(c2, ["drop D-permits-2: superseded by a policy change"]);
+  assert.equal(out2[0].state, "obsolete");
+  assert.deepEqual(out2[0].notes, ["superseded by a policy change"]);
+});
+
+test("applyConditions: spike downgrades confidence to open with the question recorded as a note", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · confirmed · authored\nA statement.\n", "permits");
+  const { criteria: out } = applyConditions(criteria, ["spike D-permits-1: does this hold for renewals too?"]);
+  assert.equal(out[0].confidence, "open");
+  assert.deepEqual(out[0].notes, ["does this hold for renewals too?"]);
+});
+
+test("applyConditions: defect keeps the old row, marks it, and appends a replacement continuing the domain's own numbering", () => {
+  const { criteria } = parseDomainFile(`### D-permits-1 · v1 · confirmed · recovered
+The fee is fixed at intake.
+- cites: app.js:1
+
+### D-permits-2 · v1 · confirmed · recovered
+Something unrelated.
+- cites: app.js:2
+`, "permits");
+  const { criteria: out, applied, unknown } = applyConditions(criteria,
+    ["defect D-permits-1: the fee is recalculated when the application is edited"]);
+  assert.deepEqual(unknown, []);
+  assert.equal(out.length, 3);
+  const original = out.find((c) => c.id === "D-permits-1");
+  assert.equal(original.reconciliation, "defect");
+  const addition = out.find((c) => c.id === "D-permits-3");
+  assert.ok(addition, "the replacement's provisional id continues from the highest id already in the domain (2), not from 1");
+  assert.equal(addition.origin, "authored");
+  assert.equal(addition.confidence, "confirmed");
+  assert.equal(addition.state, "proposed");
+  assert.equal(addition.replaces, "D-permits-1");
+  assert.equal(addition.statement, "the fee is recalculated when the application is edited");
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].verb, "defect");
+});
+
+test("applyConditions: an id that does not exist in this domain is reported as unknown, not applied", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · inferred · authored\nA statement.\n", "permits");
+  const { criteria: out, applied, unknown } = applyConditions(criteria, ["confirm D-permits-9"]);
+  assert.deepEqual(applied, []);
+  assert.deepEqual(unknown, ["confirm D-permits-9"]);
+  assert.equal(out[0].confidence, "inferred", "the one real criterion in the domain is untouched");
+});
+
+test("applyConditions: a line that does not parse as any known verb is reported as unknown", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · confirmed · authored\nA statement.\n", "permits");
+  const { unknown } = applyConditions(criteria, ["edit D-permits-1 missing the colon", "bogus D-permits-1: whatever"]);
+  assert.deepEqual(unknown, ["edit D-permits-1 missing the colon", "bogus D-permits-1: whatever"]);
+});
+
+// --- mintIds -----------------------------------------------------------------
+
+test("mintIds: mints R-<ordinal>.<n> for confirmed, non-obsolete D- criteria; inferred and obsolete stay D-", () => {
+  const { criteria } = parseDomainFile(`### D-permits-1 · v1 · confirmed · authored
+First.
+
+### D-permits-2 · v1 · inferred · authored
+Second, still inferred.
+
+### D-permits-3 · v1 · confirmed · authored
+Third, but already obsolete.
+- state: obsolete
+`, "permits");
+  const out = mintIds(criteria, 2, 0);
+  assert.equal(out[0].id, "R-2.1");
+  assert.equal(out[0].state, "accepted");
+  assert.equal(out[1].id, "D-permits-2", "still inferred, so it stays provisional");
+  assert.equal(out[1].state, "proposed");
+  assert.equal(out[2].id, "D-permits-3", "obsolete is never minted even though it is confirmed");
+  assert.equal(out[2].state, "obsolete");
+});
+
+test("mintIds: numbering continues from existingMax rather than restarting at 1", () => {
+  const { criteria } = parseDomainFile("### D-permits-5 · v1 · confirmed · authored\nFifth.\n", "permits");
+  const out = mintIds(criteria, 3, 4);
+  assert.equal(out[0].id, "R-3.5");
+});
+
+test("mintIds: a replaces reference is rewritten to the new id when both are minted in the same pass", () => {
+  const { criteria } = parseDomainFile(`### D-permits-1 · v1 · confirmed · recovered
+Old behaviour.
+- cites: app.js:1
+- reconciliation: defect
+
+### D-permits-2 · v1 · confirmed · authored
+Corrected behaviour.
+- replaces: D-permits-1
+`, "permits");
+  const out = mintIds(criteria, 1, 0);
+  const replacement = out.find((c) => c.statement === "Corrected behaviour.");
+  assert.equal(replacement.replaces, "R-1.1", "rewritten to the id its target was just minted to");
+});
+
+test("mintIds: a replaces reference to an id not minted in this pass is left as written", () => {
+  const { criteria } = parseDomainFile(`### D-permits-2 · v1 · confirmed · authored
+Corrected behaviour, replacing something already ratified on an earlier run.
+- replaces: R-1.9
+`, "permits");
+  const out = mintIds(criteria, 1, 9);
+  const replacement = out.find((c) => c.statement.startsWith("Corrected behaviour"));
+  assert.equal(replacement.replaces, "R-1.9");
+});
+
+// --- serialiseDomainFile -----------------------------------------------------
+
+test("serialiseDomainFile: round trip — parse, serialise, parse yields equal objects", () => {
+  const text = `### D-permits-1 · v1 · inferred · recovered
+When an applicant submits a completed permit application, its status shall change to "Under review" and the assigned reviewer shall be notified.
+- cites: src/lib/permits/application.ts:88
+- cites: src/lib/permits/notify.ts:12
+- reconciliation: implemented-only
+- given: a permit application with all required fields completed
+- when: the applicant submits it
+- then: the application's status changes to "Under review"
+- note: the old system logs this transition but has no automated test for it
+
+### R-1.2 · v2 · confirmed · authored
+A second criterion with a replaces reference and no cites.
+- reconciliation: aligned
+- state: accepted
+- replaces: D-permits-9
+`;
+  const { criteria: first, errors: firstErrors } = parseDomainFile(text, "permits");
+  assert.deepEqual(firstErrors, []);
+  const serialised = serialiseDomainFile(first, "permits");
+  const { criteria: second, errors: secondErrors } = parseDomainFile(serialised, "permits");
+  assert.deepEqual(secondErrors, []);
+  // `raw` and `line` are positional/textual artifacts of where a heading landed in the
+  // source, not part of what the criterion means, so the round trip is judged on
+  // everything else.
+  const strip = (c) => { const { raw, line, ...rest } = c; return rest; };
+  assert.deepEqual(second.map(strip), first.map(strip));
 });
