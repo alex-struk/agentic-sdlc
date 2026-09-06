@@ -30,8 +30,18 @@ allows 22 or later.
   `proposal/<name>` branch with a decision page.
 - `sdlc rule <name> approve|return --by <role>` — record a verdict on an open proposal and merge it
   into `main` on approval.
+- `sdlc rule <name> --by agent:<persona>` — let the gate's own persona agent rule instead of a
+  human, with a recorded rationale and mandatory escalation on HIGH/CRITICAL tier or a brief that
+  says to always escalate.
+- `sdlc rule --pending` — rule every open proposal whose gate is held by a persona agent, oldest
+  branch first.
+- `sdlc run <stage> [--slice N] [--domain X] [--dry-run]` — run one pipeline stage as an isolated
+  headless session: materialise its workspace, run pre-checks, let the agent work, run
+  post-checks, and commit or open a proposal.
+- `sdlc resume [--again]` — continue a run an interrupted process left mid-stage, re-judging
+  whatever the agent session left behind against the stage's post-checks.
 - `sdlc status [dir]` — regenerate the generated state site (`site/index.md`, `site/gates.md`,
-  `site/runs.md`).
+  `site/runs.md`, `site/journal.md`, `site/proposals/*.md`).
 
 Run `sdlc help` (or any unrecognised command) to print this list from the CLI itself.
 

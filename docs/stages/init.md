@@ -25,6 +25,10 @@ and seed the machine-local egress name list.
   `.sdlc/hooks/implement-guard.sh` (made executable) and `.gitattributes` (which marks
   `.sdlc/runs/*.md` as `merge=union`), each written from the pipeline's templates when missing or
   different.
+- The five persona briefs a gate's agent holder rules from — `.sdlc/personas/ux-reviewer.md`,
+  `tech-lead.md`, `product-owner.md`, `architect.md` and `reviewer.md` — copied from the pipeline's
+  own templates the same way: written when missing, rewritten when the pipeline's copy has changed.
+  `sdlc rule <name> --by agent:<persona>` reads whichever of these matches the gate's `holder`.
 - `.github/workflows/sdlc-checkpoint.yml`, generated from the template with the pipeline repo
   filled in and the pipeline pinned to the commit recorded in `.sdlc/lock.json`, not to the
   floating ref.

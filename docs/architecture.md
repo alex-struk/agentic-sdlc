@@ -21,25 +21,39 @@ repository are the primitives that shape composes into:
   layout, constitution, egress) before and after a stage does its work, locally and in CI, because
   `runChecks(projectDir, opts) -> results[]` is a pure function of the directory: it takes no
   action, so calling it twice around a stage's work is exactly as sound as calling it once.
-- **Agent** — a stage's agent step runs `claude -p` (or, in CI, whichever cloud executor the
-  configuration names) confined to the workspace by two mechanisms: `.claude/settings.json`'s deny
-  list, which blocks destructive commands and reading secrets outright, and
+- **Agent** — `sdlc run <stage>` (`docs/stages/run.md`) is the dispatcher: it materialises the
+  stage's workspace (`src/runner/workspace.mjs`), runs the stage's pre-checks, and calls
+  `runAgent` (`src/runner/executor.mjs`), which spawns `claude -p` — or, in CI, whichever cloud
+  executor the configuration names, and in tests a mock executor selected by
+  `SDLC_EXECUTOR=mock` — confined to the workspace by three mechanisms: an isolated
+  `CLAUDE_CONFIG_DIR` holding only a link to the operator's credentials
+  (`docs/decisions/0004-isolated-stage-sessions.md`), `.claude/settings.json`'s deny list, which
+  blocks destructive commands and reading secrets outright, and
   `templates/hooks/implement-guard.sh`, which reads `SDLC_STAGE` and blocks edits outside the paths
-  that stage owns (see `docs/stages/init.md` for both tables). The current implementation exercises
-  this contract in one place: the onboarding interview behind `sdlc new --interactive` and
-  `sdlc new --answers`, itself constrained to the `Write` tool and one output file.
+  that stage owns (see `docs/stages/init.md` for both tables). Phase 1a ships one implemented
+  stage, `probe`, which proves this whole loop end to end; every real pipeline stage
+  (`archaeology`, `design`, `build`, …) is a named stub that throws until its own task lands. The
+  onboarding interview behind `sdlc new --interactive` and `sdlc new --answers` runs a separate,
+  narrower agent turn constrained to the `Write` tool and one output file, outside this loop.
+  `sdlc resume` (`docs/stages/resume.md`) continues a run a crashed process left mid-stage, reading
+  `.sdlc/run-state.json` for which stage and context it was on and re-judging whatever the agent
+  session left behind against the same post-checks.
 - **Proposal** — `sdlc propose` opens a `proposal/<name>` branch with a decision page
   (`.sdlc/proposals/<name>.md`) naming the gate, the question, and the recommendation.
   `sdlc rule` records a verdict against the policy in `.sdlc/config.yaml`, checks that the caller
   actually holds (or is the escalation target for) that gate, and merges the branch into `main` on
-  approval.
+  approval. A gate whose `holder` is `agent:<persona>` can also be ruled by that persona directly
+  (`sdlc rule <name> --by agent:<persona>`, or in a batch with `sdlc rule --pending`): a short agent
+  turn reads the persona's brief (`.sdlc/personas/<persona>.md`), the proposal, the diff and the
+  checks, and answers with a verdict, a rationale and any conditions, escalating on its own when the
+  tier is HIGH/CRITICAL or the brief says to always escalate on this gate.
 - **Run record** — every command that changes state calls `appendRun`, which appends one line to
-  `.sdlc/runs/<date>.md`. `sdlc status` folds every run-record file, the gate log, and the criteria
-  index into the generated state site.
-
-A generic per-stage dispatcher — something like `sdlc run <stage>` walking the full stage list
-automatically — is not part of what exists today. What exists is the set of primitives above,
-callable directly, that such a dispatcher would compose.
+  `.sdlc/runs/<date>.md`. A stage's own agent turn also gets a journal entry
+  (`.sdlc/journal/<NNN>-<stage>.md`, `src/runner/journal.mjs`) in the agent's own words, with the
+  turn's cost, turn count and session id in its front matter. `sdlc status` folds every run-record
+  file, the gate log, the journal and the criteria index into the generated state site, which is
+  now a tracked artifact: `site/*.md` is committed alongside whatever else a run or a ruling
+  changed, not left as a generated file nobody commits.
 
 ## The two repositories
 
@@ -63,17 +77,30 @@ There is no database. All state is git plus files:
   per open decision, created by `sdlc propose` and merged into `main` by `sdlc rule approve`; a
   `return` verdict leaves its branch open for another round.
 - **`.sdlc/gates/<name>.yaml`** — one file per ruled proposal: which gate, the verdict, who ruled,
-  whether that ruling was agent-held or human, and when.
+  whether that ruling was agent-held or human, and when — plus, for an agent-held ruling, the
+  persona's own rationale and any conditions it attached.
+- **`.sdlc/journal/<NNN>-<stage>.md`** — one entry per stage agent turn, numbered in order, holding
+  the agent's own account of what it did in its own words, with the turn's cost, turn count and
+  session id recorded in front matter.
 - **`.sdlc/runs/<date>.md`** — one append-only file per day, one line per command that changed
   state.
+- **`.sdlc/run-state.json`** — project-local scratch, never committed, naming which stage a run is
+  on and how far it got (`agent` or `post-checks`); `sdlc resume` reads it to continue a run an
+  interrupted process left mid-stage, and it is cleared once that stage finishes.
 - **`.sdlc/config.yaml`** — the only hand-authored (or interview-produced) state file; everything
   else under `.sdlc/` is generated from it.
 - **`.sdlc/lock.json`** — the pinned pipeline commit and the resolved skill pack commits, written by
   `sdlc init`.
 - **`.sdlc/packs/<name>`** and **`.claude/skills/<skill>`** — cloned skill pack repositories and the
   skill directories copied out of them.
-- **`site/`** — generated, never hand-edited. `sdlc status` regenerates `index.md` (a criteria
-  coverage table), `gates.md` (the gate log) and `runs.md` (the run log) from everything above.
+- **`.sdlc/personas/<name>.md`** — one brief per persona (`ux-reviewer`, `tech-lead`,
+  `product-owner`, `architect`, `reviewer`), installed by `sdlc init` and read by `sdlc rule` when a
+  gate's holder is that persona.
+- **`site/`** — generated, and now a tracked artifact rather than hand-edited or ignored: a run or
+  a ruling folds the freshly regenerated `site/*.md` into the same commit it makes. `sdlc status`
+  regenerates `index.md` (a criteria coverage table and cost/ruling totals), `gates.md` (the gate
+  log), `runs.md` (the run log), `journal.md` (the stage journal) and `proposals/<name>.md` (one
+  page per proposal, ruled or open) from everything above.
 
 ## The circular-import loader in `src/cli.mjs`
 
