@@ -181,7 +181,8 @@ export const COMMANDS = {};
 const HELP = `sdlc <command> [args] [--flags]
 
   new <dir> --from <config.yaml>   create a project repo from a saved config
-  new <dir>                        create a project repo via the onboarding interview
+  new <dir> --interactive          create a project repo via the onboarding interview
+  new <dir> --answers <brief.md>   run the interview against a written stakeholder brief (no person needed)
   init [dir]                       install the pipeline into a project (lockfile, packs, callers)
   checks [dir] [--self] [--json]   run the structural checks
   propose <name> --gate G1 --question "..." --recommendation "..."
@@ -420,7 +421,7 @@ Expected: 4 passing. If ajv complains about the `format` keyword under `strict`,
 
 - [ ] **Step 6: Write the configuration reference**
 
-`docs/config.md`: one heading per top-level key, one line per field with type and meaning, copied from the schema, plus the two rules the schema enforces silently: unknown keys are errors, and gate holders are roles (`tech-lead`, `ux-reviewer`) or `agent:<persona>`; the role-to-person binding lives in `.sdlc/holders.local.yaml`, which is untracked.
+`docs/config.md`: one heading per top-level key, one line per field with type and meaning, copied from the schema, plus the two rules the schema enforces silently: unknown keys are errors, and gate holders are roles (`tech-lead`, `ux-reviewer`) or `agent:<persona>`; people are bound to roles only where a remote needs it (code owners for pull-request approval), never in tracked config.
 
 - [ ] **Step 7: Commit**
 
@@ -617,7 +618,7 @@ git commit -m "feat: git, filesystem and run-record helpers"
 - Test: `test/checks.test.mjs`
 
 **Interfaces:**
-- Produces: each check is `(projectDir, ctx) -> {id, ok, messages: string[]}` where `ctx = {config?: object, self?: boolean}`. `runChecks(projectDir, {self}) -> Promise<results[]>`. `checkEgress` reads an optional name list from `<projectDir>/.sdlc/egress.local.txt` or the file named by env `SDLC_EGRESS_NAMES`, one name per line, and scans only git-tracked text files.
+- Produces: each check is `(projectDir, ctx) -> {id, ok, messages: string[], warnings?: string[]}` where `ctx = {config?: object, self?: boolean}`. `runChecks(projectDir, {self}) -> Promise<results[]>`. `checkEgress` reads the name list from, in order: the file named by env `SDLC_EGRESS_NAMES`, `<projectDir>/.sdlc/egress.local.txt`, then the fixed default `~/.config/agentic-sdlc/egress-names.txt`; one name per line, `#` comments allowed. It scans only git-tracked text files. If no list exists or it is empty, the check still passes but carries a warning naming the default path, so a new installer sees what to fill in. `sdlc init` creates the default file with a comment header if it does not exist (Task 8).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -678,6 +679,14 @@ test("egress: ticket numbers, notes paths and listed names are caught in tracked
   assert.ok(r.messages.some((m) => m.includes("b.md") && m.includes("name")));
   assert.ok(r.messages.some((m) => m.includes("b.md") && m.includes("meeting")));
   assert.ok(!r.messages.some((m) => m.includes("untracked.md")));
+});
+
+test("egress: no name list is a warning, not a failure", () => {
+  const d = repo();
+  writeFileSync(join(d, "clean.md"), "nothing here\n"); git(["add", "clean.md"], d);
+  const r = checkEgress(d, {});
+  assert.equal(r.ok, true);
+  assert.ok(r.warnings.length === 1 && r.warnings[0].includes("egress-names.txt"));
 });
 
 test("layout: required paths for a rebuild project", () => {
@@ -741,15 +750,20 @@ const PATTERNS = [
 ];
 const TEXT_EXT = /\.(md|mjs|js|ts|tsx|json|ya?ml|txt|sh|feature|svg|py|html|css)$/i;
 
+import { homedir } from "node:os";
+export const DEFAULT_NAMES = join(homedir(), ".config", "agentic-sdlc", "egress-names.txt");
+
 function nameList(projectDir) {
-  const candidates = [process.env.SDLC_EGRESS_NAMES, join(projectDir, ".sdlc", "egress.local.txt")].filter(Boolean);
-  for (const c of candidates) if (existsSync(c)) return readText(c).split("\n").map((s) => s.trim()).filter(Boolean);
+  const candidates = [process.env.SDLC_EGRESS_NAMES, join(projectDir, ".sdlc", "egress.local.txt"), DEFAULT_NAMES].filter(Boolean);
+  for (const c of candidates) if (existsSync(c))
+    return readText(c).split("\n").map((s) => s.trim()).filter((s) => s && !s.startsWith("#"));
   return [];
 }
 
 export function checkEgress(projectDir, ctx = {}) {
   const id = "egress";
   const names = nameList(projectDir);
+  const warnings = names.length ? [] : [`no egress name list found; add colleagues' names, one per line, to ${DEFAULT_NAMES}`];
   const files = git(["ls-files"], projectDir).split("\n").filter((f) => f && TEXT_EXT.test(f) && !f.startsWith(".sdlc/packs/"));
   const scoped = ctx.self ? files.filter((f) => f.startsWith("docs/") || f.startsWith("skills/") || f.startsWith("templates/") || f.startsWith("stacks/")) : files;
   const messages = [];
@@ -760,7 +774,7 @@ export function checkEgress(projectDir, ctx = {}) {
       for (const n of names) if (line.includes(n)) messages.push(`${f}:${i + 1}: listed name (rule E-2)`);
     });
   }
-  return { id, ok: messages.length === 0, messages };
+  return { id, ok: messages.length === 0, messages, warnings };
 }
 ```
 
@@ -831,7 +845,7 @@ git commit -m "feat: structural checks for config, layout, constitution and egre
 ### Task 6: Project templates, Claude Code hook, persona briefs
 
 **Files:**
-- Create under `templates/project/`: `constitution.md`, `.gitignore`, `.claude/settings.json`, `.sdlc/holders.local.example.yaml`, `.sdlc/personas/product-owner.md`, `.sdlc/personas/architect.md`, `.sdlc/personas/reviewer.md`, `intent/.template.md`, `spec/spec.md`, `spec/features/.gitkeep`, `spec/contract/personas.yaml`, `spec/contract/surface.yaml`, `spec/contract/observables.yaml`, `spec/contract/openapi.yaml`, `tests/acceptance/.gitkeep`, `tests/adapters/.gitkeep`, `tests/seed/.gitkeep`, `design/DESIGN.md`, `plan/plan.md`, `plan/tasks.md`, `app/.gitkeep`, `evidence/pr-evidence.md`
+- Create under `templates/project/`: `constitution.md`, `.gitignore`, `.claude/settings.json`, `.sdlc/personas/product-owner.md`, `.sdlc/personas/architect.md`, `.sdlc/personas/reviewer.md`, `intent/.template.md`, `spec/spec.md`, `spec/features/.gitkeep`, `spec/contract/personas.yaml`, `spec/contract/surface.yaml`, `spec/contract/observables.yaml`, `spec/contract/openapi.yaml`, `tests/acceptance/.gitkeep`, `tests/adapters/.gitkeep`, `tests/seed/.gitkeep`, `design/DESIGN.md`, `plan/plan.md`, `plan/tasks.md`, `app/.gitkeep`, `evidence/pr-evidence.md`
 - Create: `templates/hooks/implement-guard.sh`, `templates/workflows/sdlc-checkpoint.yml`
 - Test: `test/hook.test.mjs`
 
@@ -915,10 +929,23 @@ fi
 exit 0
 ```
 
-`.claude/settings.json` template:
+`.claude/settings.json` template. The `permissions.deny` list is the local
+enforcement of "agents propose, never merge": no push, no merge, no skipped
+hooks, no live cluster, no secrets. It is tracked, so every project gets it,
+and it applies only to the agent, never to a person's shell.
 
 ```json
 {
+  "permissions": {
+    "deny": [
+      "Bash(git push*)", "Bash(git merge*)", "Bash(git rebase*)", "Bash(git reset --hard*)",
+      "Bash(git commit --no-verify*)", "Bash(git commit -n *)",
+      "Bash(gh pr merge*)", "Bash(gh pr review*)", "Bash(gh pr close*)", "Bash(gh release*)", "Bash(gh secret*)",
+      "Bash(oc *)", "Bash(kubectl *)", "Bash(helm *)",
+      "Bash(npm publish*)", "Bash(docker push*)",
+      "Read(.env*)", "Read(**/*.pem)", "Read(**/*.key)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       { "matcher": "Edit|Write|MultiEdit|NotebookEdit",
@@ -927,6 +954,10 @@ exit 0
   }
 }
 ```
+
+The `bcgov/agent-guardrails` shell wrappers are not installed by the pipeline:
+they edit a person's shell profile and apply to the person, not the agent.
+They stay in the dependency register as an optional extra a team may add.
 
 - [ ] **Step 4: Run the hook test, expect 4 passing**
 
@@ -1017,13 +1048,6 @@ site/
 .sdlc/packs/
 .sdlc/*.local.yaml
 .sdlc/*.local.txt
-```
-
-`templates/project/.sdlc/holders.local.example.yaml`:
-```yaml
-# Copy to holders.local.yaml (untracked). Binds gate roles to people for the local runner.
-tech-lead: "<github username>"
-ux-reviewer: "<github username>"
 ```
 
 `templates/project/.sdlc/personas/product-owner.md`:
@@ -1308,7 +1332,7 @@ git commit -m "feat: resolve and install skill packs at pinned commits"
 - Test: `test/new-init.test.mjs`
 
 **Interfaces:**
-- Produces: `newProject({dir, from, interactive}) -> {dir}`: validates the config, creates the directory and a git repo on `main`, copies `templates/project/`, writes `.sdlc/config.yaml`, fills `{{PROJECT_NAME}}`, `{{DATE}}` and `{{DOMAIN_SECTIONS}}` (one `## <domain>` heading per configured domain), installs the hook to `.sdlc/hooks/implement-guard.sh`, commits, then calls `init`. `init(projectDir) -> {lock}`: writes `.sdlc/lock.json` `{pipeline: {repo, ref, commit}, packs: [...resolved], created}` (pipeline commit is the pipeline repo's HEAD when run from a checkout, else the ref), installs packs, writes the checkpoint caller workflow with placeholders filled, appends to the run record, commits if anything changed.
+- Produces: `newProject({dir, from, interactive, answers}) -> {dir}`: validates the config, creates the directory and a git repo on `main`, copies `templates/project/`, writes `.sdlc/config.yaml`, fills `{{PROJECT_NAME}}`, `{{DATE}}` and `{{DOMAIN_SECTIONS}}` (one `## <domain>` heading per configured domain), installs the hook to `.sdlc/hooks/implement-guard.sh`, commits, then calls `init`. `init(projectDir) -> {lock}`: writes `.sdlc/lock.json` `{pipeline: {repo, ref, commit}, packs: [...resolved], created}` (pipeline commit is the pipeline repo's HEAD when run from a checkout, else the ref), installs packs, writes the checkpoint caller workflow with placeholders filled, appends to the run record, commits if anything changed.
 
 - [ ] **Step 1: Write the failing end-to-end test**
 
@@ -1390,13 +1414,13 @@ import { COMMANDS } from "../cli.mjs";
 
 export const PIPELINE_ROOT = resolve(fileURLToPath(import.meta.url), "../../..");
 
-export async function newProject({ dir, from, interactive = false }) {
+export async function newProject({ dir, from, interactive = false, answers = null }) {
   dir = resolve(dir);
   if (existsSync(join(dir, ".sdlc"))) throw new Error(`${dir} already has a .sdlc folder`);
   let text;
   if (from) text = readText(from);
-  else if (interactive) text = await onboardingInterview(dir);
-  else throw new Error("sdlc new needs --from <config.yaml> (or --interactive)");
+  else if (interactive || answers) text = await onboardingInterview(dir, { answers });
+  else throw new Error("sdlc new needs --from <config.yaml>, --interactive, or --answers <file>");
   const { config, errors } = parseConfig(text);
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
 
@@ -1422,18 +1446,24 @@ export async function newProject({ dir, from, interactive = false }) {
   return { dir };
 }
 
-async function onboardingInterview(dir) {
+async function onboardingInterview(dir, { answers = null } = {}) {
   // Runs the onboarding skill in a Claude Code session and expects it to write <dir>.config.yaml next to dir.
+  // With `answers`, a second party answers instead of a person: the file is a written stakeholder brief,
+  // and the session is told to interview it and never invent a value the brief does not contain.
   const { execFileSync } = await import("node:child_process");
   const out = `${dir}.config.yaml`;
   const skill = readText(join(PIPELINE_ROOT, "skills", "onboarding", "SKILL.md"));
-  execFileSync("claude", ["-p", `${skill}\n\nWrite the finished configuration to ${out} and nothing else.`], { stdio: "inherit" });
+  const schema = readText(join(PIPELINE_ROOT, "schema", "config.schema.json"));
+  let prompt = `${skill}\n\nThe configuration schema is:\n${schema}\n\nWrite the finished configuration to ${out} and nothing else.`;
+  if (answers) prompt += `\n\nThere is no person to ask. Answer every question only from this stakeholder brief; where the brief is silent, leave the field out if optional or write a schema-valid placeholder and list it under a top-of-file comment "# open:".\n\n${readText(answers)}`;
+  const args = answers ? ["-p", prompt, "--allowedTools", "Write"] : ["-p", prompt, "--allowedTools", "Write"];
+  execFileSync("claude", args, { stdio: answers ? "pipe" : "inherit" });
   if (!existsSync(out)) throw new Error("onboarding did not produce a config file");
   return readText(out);
 }
 
 COMMANDS.new = async ({ pos, flags }) => {
-  const r = await newProject({ dir: pos[0], from: flags.from, interactive: !!flags.interactive });
+  const r = await newProject({ dir: pos[0], from: flags.from, interactive: !!flags.interactive, answers: flags.answers ?? null });
   console.log(`created ${r.dir}`);
   return 0;
 };
@@ -1448,6 +1478,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
+import { DEFAULT_NAMES } from "../checks/egress.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { PIPELINE_ROOT } from "./new.mjs";
 
@@ -1470,6 +1501,9 @@ export async function init(projectDir = process.cwd()) {
   const wfPath = join(projectDir, ".github", "workflows", "sdlc-checkpoint.yml");
   if (!existsSync(wfPath) || readText(wfPath) !== wf) writeText(wfPath, wf);
 
+  if (!existsSync(DEFAULT_NAMES)) writeText(DEFAULT_NAMES,
+    "# agentic-sdlc egress name list: one colleague name per line. Never commit this file.\n# The egress check fails any tracked file that contains a name listed here.\n");
+
   appendRun(projectDir, `init: pipeline ${pipelineCommit.slice(0, 7)}, packs ${packs.length}, skills installed ${r.installed.length}, skipped ${r.skipped.length}`);
   for (const s of r.skipped) console.warn(`warning: ${s}`);
 
@@ -1491,16 +1525,52 @@ Register both by importing them in `src/cli.mjs` at the bottom (side-effect impo
 name: sdlc-onboarding
 description: Interview that produces a valid .sdlc/config.yaml for a new project.
 ---
-Ask one question at a time. Do not guess a value; if the person does not know, write the schema default or leave the field for a later proposal and say so.
+You are producing `.sdlc/config.yaml` for a new project. Ask one question at a time. Do not guess a value: if the person (or the brief you were given) does not know, leave an optional field out, or write a schema-valid placeholder and list it under a top-of-file comment `# open:` so it becomes a proposal later.
 Questions, in order: project name (lowercase, hyphens); the domains the system has; profile (greenfield, rebuild, remediation, feature); for rebuild or remediation, the source repository URL and commit; stack profile; who holds each gate, as roles (tech-lead, ux-reviewer) or agent:<persona>; the oracle: how the reference system runs (compose file, seed, base URL, identity mechanism); skill packs to enable beyond the defaults.
 Then write the configuration file at the path you were given, validate it against schema/config.schema.json in the pipeline repository, and stop.
 ```
 
-- [ ] **Step 4: Run the full suite, expect passing. Commit**
+- [ ] **Step 4: Write the live onboarding test (runs only when `SDLC_LIVE=1`, because it spends tokens)**
+
+```js
+// test/onboarding.live.test.mjs
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { newProject } from "../src/commands/new.mjs";
+import { loadConfig } from "../src/config/load.mjs";
+
+const BRIEF = `# Stakeholder brief: permit intake
+We are building a new service called permit-intake. It has two areas: applications and fees.
+It is greenfield. Deploy on OpenShift with the openshift-ts stack. The tech lead holds ratify, plan, review and policy;
+the UX reviewer holds design; intent may be held by a product-owner agent escalating to the tech lead.
+No source repository. Tests sign in through a sandbox identity provider at http://localhost:8080.
+No extra skill packs.`;
+
+test("onboarding interview against a written brief produces a valid config", { skip: process.env.SDLC_LIVE !== "1" }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-live-"));
+  const brief = join(root, "brief.md"); writeFileSync(brief, BRIEF);
+  const dir = join(root, "permit-intake");
+  await newProject({ dir, answers: brief });
+  assert.ok(existsSync(join(dir, ".sdlc", "config.yaml")));
+  const { config, errors } = loadConfig(join(dir, ".sdlc", "config.yaml"));
+  assert.deepEqual(errors, []);
+  assert.equal(config.profile, "greenfield");
+  assert.deepEqual(config.project.domains, ["applications", "fees"]);
+  assert.equal(config.policy.gates["G-DESIGN"].holder, "ux-reviewer");
+});
+```
+
+Run: `SDLC_LIVE=1 node --test test/onboarding.live.test.mjs`
+Expected: PASS. If the produced config fails validation, the fix is in `skills/onboarding/SKILL.md` (the interview is the code here), not in the test. Record the token cost from the run in the run record note of the commit message.
+
+- [ ] **Step 5: Run the full suite, expect passing. Commit**
 
 ```bash
-git add src/commands/new.mjs src/commands/init.mjs src/cli.mjs skills/onboarding test/new-init.test.mjs
-git commit -m "feat: sdlc new --from and sdlc init"
+git add src/commands/new.mjs src/commands/init.mjs src/cli.mjs skills/onboarding test/new-init.test.mjs test/onboarding.live.test.mjs
+git commit -m "feat: sdlc new --from, --answers and --interactive; sdlc init"
 ```
 
 ---
@@ -1513,7 +1583,7 @@ git commit -m "feat: sdlc new --from and sdlc init"
 - Test: `test/commands.test.mjs`
 
 **Interfaces:**
-- Produces: `checks` prints one line per check (`ok  config` / `FAIL constitution` followed by indented messages), returns 0 only when all pass, `--json` prints the results array. `doctor` reports node, git, gh, claude, docker, docker compose, guardrails, and config validity, returns 1 if node, git or the config fails, 0 otherwise (missing optional tools are warnings).
+- Produces: `checks` prints one line per check (`ok  config` / `FAIL constitution` followed by indented messages and warnings), returns 0 only when all pass, `--json` prints the results array. `doctor` reports node, git, gh, claude, docker, whether the project's `.claude/settings.json` carries the deny list, whether the egress name list exists and is non-empty, and config validity; returns 1 if node, git or the config fails, 0 otherwise (everything else is a warning).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1547,7 +1617,9 @@ import { runChecks } from "../checks/index.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 export function formatChecks(results) {
-  return results.map((r) => `${r.ok ? "ok  " : "FAIL"} ${r.id}` + r.messages.map((m) => `\n    ${m}`).join("")).join("\n");
+  return results.map((r) => `${r.ok ? "ok  " : "FAIL"} ${r.id}`
+    + r.messages.map((m) => `\n    ${m}`).join("")
+    + (r.warnings ?? []).map((m) => `\n    warning: ${m}`).join("")).join("\n");
 }
 
 COMMANDS.checks = async ({ pos, flags }) => {
@@ -1576,16 +1648,22 @@ export function toolReport(names) {
   });
 }
 
-function guardrailsInstalled() {
-  const rc = join(homedir(), ".bashrc");
-  try { return existsSync(rc) && /agent-guardrails/.test(require("node:fs").readFileSync(rc, "utf8")); } catch { return false; }
+function denyListPresent(dir) {
+  const p = join(dir, ".claude", "settings.json");
+  try { return JSON.parse(readFileSync(p, "utf8")).permissions?.deny?.some((d) => d.startsWith("Bash(git push")) ?? false; } catch { return false; }
+}
+function nameListState() {
+  try { const n = readFileSync(DEFAULT_NAMES, "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("#")).length; return n ? `${n} names` : "empty"; }
+  catch { return "missing"; }
 }
 
 COMMANDS.doctor = async ({ pos }) => {
   const dir = resolve(pos[0] ?? process.cwd());
   const tools = toolReport(["node", "git", "gh", "claude", "docker"]);
   for (const t of tools) console.log(`${t.found ? "ok  " : "warn"} ${t.name} ${t.version ?? "(not found)"}`);
-  console.log(`${guardrailsInstalled() ? "ok  " : "warn"} agent-guardrails ${guardrailsInstalled() ? "installed" : "not installed: see docs/stages/init.md"}`);
+  console.log(`${denyListPresent(dir) ? "ok  " : "warn"} agent deny list ${denyListPresent(dir) ? "present in .claude/settings.json" : "missing: re-run sdlc init"}`);
+  const nl = nameListState();
+  console.log(`${nl === "missing" || nl === "empty" ? "warn" : "ok  "} egress name list ${nl} (${DEFAULT_NAMES})`);
   const cfg = checkConfig(dir);
   console.log(`${cfg.ok ? "ok  " : "FAIL"} config ${cfg.messages.join("; ")}`);
   const required = tools.filter((t) => ["node", "git"].includes(t.name)).every((t) => t.found);
@@ -1593,7 +1671,7 @@ COMMANDS.doctor = async ({ pos }) => {
 };
 ```
 
-Replace the `require` in `guardrailsInstalled` with a top-level `import { readFileSync } from "node:fs"` (ESM has no `require`).
+Add `import { readFileSync } from "node:fs";` and `import { DEFAULT_NAMES } from "../checks/egress.mjs";` at the top; remove the unused `homedir` import.
 
 - [ ] **Step 4: Run tests, expect passing. Commit**
 
@@ -1964,13 +2042,13 @@ git commit -m "test: fixture project end to end, and the pipeline's own CI"
 - Create: `docs/architecture.md`, `docs/dependencies.md`, `docs/stages/new.md`, `docs/stages/init.md`, `docs/stages/checks.md`, `docs/stages/propose.md`, `docs/stages/rule.md`, `docs/stages/status.md`, `docs/stages/doctor.md`
 - Modify: `README.md` (create; the repo has none yet)
 
-- [ ] **Step 1: Write the stage contracts.** Each `docs/stages/<name>.md` has exactly these headings, filled from the code in Tasks 8 to 11: Purpose; Inputs; Outputs; Workspace the agent sees (or "no agent"); Checks that block; Exit criterion; Re-run behaviour; Failure modes. For `init` include the implement-guard table (stage to blocked paths) copied from the hook script, and the guardrails install instruction:
+- [ ] **Step 1: Write the stage contracts.** Each `docs/stages/<name>.md` has exactly these headings, filled from the code in Tasks 8 to 11: Purpose; Inputs; Outputs; Workspace the agent sees (or "no agent"); Checks that block; Exit criterion; Re-run behaviour; Failure modes. For `init` include the implement-guard table (stage to blocked paths) copied from the hook script, the deny list and what each entry prevents, and the egress name list:
 
 ```markdown
-## Local guardrails
-Install once per machine, with the tech lead's go-ahead because it edits `~/.bashrc`:
-    curl -fsSL https://raw.githubusercontent.com/bcgov/agent-guardrails/main/setup.sh | bash
-Verify: `type git` prints a function. `sdlc doctor` reports it.
+## Egress name list
+`sdlc init` creates `~/.config/agentic-sdlc/egress-names.txt` once per machine. Add colleagues'
+names, one per line. The file is never committed; the egress check fails any tracked file that
+contains one of them. `sdlc doctor` warns while the list is missing or empty.
 ```
 
 - [ ] **Step 2: Write `docs/dependencies.md`** as the register from spec section 11, one row per dependency with: name, used for, taken as, pinned version or commit (fill `ajv` and `yaml` from `package.json`; skill packs get their commits when Task 15 pins them), and why. Include the "not adopted" list with reasons. Add a final section "Keeping in sync": the weekly drift workflow is a later task; until then `git ls-remote` each pack and compare to the lockfile.
@@ -2104,12 +2182,9 @@ node /home/alstruk/GitHub/agentic-sdlc/bin/sdlc.mjs propose constitution-v1 --ga
 
 Then, on that branch with `SDLC_STAGE=archaeology`, fill J1 to J7 from the old repository's README and the design spec: J1 the marketplace's purpose (administers Code With Us, Sprint With Us and Team With Us procurement); J2 in scope (the rebuild, sandbox environments) and out (production, operations, the old repository); J3 forbidden patterns (no test-only entrances in application code, no production namespace in any workflow, no personal data in fixtures, no selectors in acceptance tests); J4 the domain terms (opportunity, proposal, proponent, organisation, affiliation, evaluation stage, award, the three programs); J5 baselines (Keycloak OIDC as today; existing Postgres schema kept; WCAG 2.1 AA); J6 empty; J7 how to run the old application from its compose file. Commit on the branch.
 
-- [ ] **Step 4: Copy the local holders binding and the egress name list (both untracked)**
+- [ ] **Step 4: Fill the egress name list once for this machine**
 
-```bash
-cp .sdlc/holders.local.example.yaml .sdlc/holders.local.yaml   # then edit with the two usernames
-printf '%s\n' "<first name> <last name>" ... > .sdlc/egress.local.txt    # colleagues' names, one per line
-```
+Open `~/.config/agentic-sdlc/egress-names.txt` (created by `sdlc init`) and add colleagues' names, one per line. It is outside every repository and applies to every project on the machine. No role-to-person binding is needed in phase 0: rulings are made as roles, and usernames matter only once a remote exists.
 
 - [ ] **Step 5: Run the checks and doctor on the proposal branch**
 
@@ -2117,7 +2192,7 @@ printf '%s\n' "<first name> <last name>" ... > .sdlc/egress.local.txt    # colle
 node /home/alstruk/GitHub/agentic-sdlc/bin/sdlc.mjs checks && node /home/alstruk/GitHub/agentic-sdlc/bin/sdlc.mjs doctor
 ```
 
-Expected: all four checks `ok`; doctor reports node, git, gh, claude, docker found; guardrails may warn until installed (Task 13's instruction, with the tech lead's go-ahead).
+Expected: all four checks `ok` with no egress warning; doctor reports node, git, gh, claude, docker found, the deny list present, and the name list non-empty.
 
 - [ ] **Step 6: Read the proposal back to the tech lead and record the ruling**
 
@@ -2136,7 +2211,7 @@ Expected: merged into `main`, `.sdlc/gates/constitution-v1.yaml` present, `site/
 
 **Coverage.** Section 3.2 layout: Tasks 1, 6, 8, 12, 13, 14 (workflows/ holds one caller template; more arrive with later stages; `evals/` is deferred to the harness-evals task in phase 1 because there is no skill to test yet). Section 3.3 project layout: Task 6 templates plus Task 5 layout check. Section 3.4 install and upgrade: Task 8 covers `new` and `init`; `upgrade` is deferred to the first pipeline version bump, since there is nothing to upgrade from yet. Section 4 artifacts: templates in Task 6. Section 5.1 `init` and 5.15 `status`: Tasks 8 and 11. Section 6.1 gates as proposals without a remote, 6.2 persona agents and holder roles: Tasks 2, 6, 10. Section 9 config: Task 2. Section 10 egress including "the pipeline's own documents": Task 5 and the `check --self` script. Section 11 dependency register: Task 13 and 15. Section 12 stack profile: Task 14. Section 14 fixture project: Task 12. Section 15 phase 0 row: Task 16.
 
-**Deferred, named so nobody looks for them here:** `sdlc run <stage>` and `resume` (phase 1, with the first agent stage), harness evals (phase 1), the HTML state site (later), the weekly drift workflow (later), the separation lint for tests and adapters (phase 2), the interactive onboarding interview is implemented but untested against a live Claude session until phase 1.
+**Deferred, named so nobody looks for them here:** `sdlc run <stage>` and `resume` (phase 1, with the first agent stage), harness evals (phase 1), the HTML state site (later), the weekly drift workflow (later), the separation lint for tests and adapters (phase 2), the interactive onboarding interview is tested against a written stakeholder brief with a live Claude session when `SDLC_LIVE=1` (Task 8), and against a person only when someone runs `--interactive`.
 
 **Placeholders.** The `{{…}}` tokens in templates are data the pipeline fills, not plan placeholders. `<commit from Task 15>` in Task 16 is filled by a named earlier step.
 
