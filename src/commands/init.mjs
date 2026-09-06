@@ -1,9 +1,10 @@
 import { existsSync, chmodSync, rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { git, gitOk, stagePaths } from "../lib/git.mjs";
+import { git, gitOk, stagePaths, stageSite, reconcileGitignore } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
+import { buildSite } from "./status.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { defaultNamesPath } from "../checks/egress.mjs";
 import { COMMANDS } from "../cli.mjs";
@@ -16,6 +17,11 @@ const TEMPLATE_FILES = [
   { src: ["templates", "project", ".claude", "settings.json"], dst: [".claude", "settings.json"] },
   { src: ["templates", "hooks", "implement-guard.sh"], dst: [".sdlc", "hooks", "implement-guard.sh"], mode: 0o755 },
   { src: ["templates", "project", ".gitattributes"], dst: [".gitattributes"] },
+  { src: ["templates", "project", ".sdlc", "personas", "ux-reviewer.md"], dst: [".sdlc", "personas", "ux-reviewer.md"] },
+  { src: ["templates", "project", ".sdlc", "personas", "tech-lead.md"], dst: [".sdlc", "personas", "tech-lead.md"] },
+  { src: ["templates", "project", ".sdlc", "personas", "product-owner.md"], dst: [".sdlc", "personas", "product-owner.md"] },
+  { src: ["templates", "project", ".sdlc", "personas", "architect.md"], dst: [".sdlc", "personas", "architect.md"] },
+  { src: ["templates", "project", ".sdlc", "personas", "reviewer.md"], dst: [".sdlc", "personas", "reviewer.md"] },
 ];
 
 function installTemplateFiles(projectDir) {
@@ -42,17 +48,36 @@ function clearMovedPackSkills(projectDir, packs, prev) {
   }
 }
 
+// `.sdlc/run-state.json` is a run's own scratch — which stage it is on and how far it
+// got — and never a project artifact. An earlier version of the pipeline let it be
+// committed, so a project can arrive here with it tracked: the index entry is dropped
+// (the file on disk is left alone, since a run may be using it right now) and the
+// removal is staged with the init commit. `--ignore-unmatch` makes this a no-op on
+// every project that never tracked it.
+function untrackRunState(projectDir) {
+  const rel = join(".sdlc", "run-state.json");
+  if (!git(["ls-files", "--", rel], projectDir)) return false;
+  git(["rm", "--cached", "-q", "--ignore-unmatch", "--", rel], projectDir);
+  return true;
+}
+
 export async function init(projectDir = process.cwd()) {
   projectDir = resolve(projectDir);
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
+
+  let changed = false;
+  // Both of these repair a project built by an earlier version of the pipeline, and
+  // both are no-ops on one that was not: the ignore file is reconciled line by line
+  // (see docs/stages/init.md) and the run-state file is dropped from the index.
+  if (reconcileGitignore(projectDir)) changed = true;
+  if (untrackRunState(projectDir)) changed = true;
 
   const pipelineCommit = gitOk(["rev-parse", "HEAD"], PIPELINE_ROOT) ? git(["rev-parse", "HEAD"], PIPELINE_ROOT) : config.pipeline.ref;
   const packs = resolvePacks(config.skills.packs, projectDir);
   const lock = { pipeline: { ...config.pipeline, commit: pipelineCommit }, packs, created: new Date().toISOString() };
   const lockPath = join(projectDir, ".sdlc", "lock.json");
   const prev = existsSync(lockPath) ? JSON.parse(readText(lockPath)) : null;
-  let changed = false;
   if (!prev || JSON.stringify({ ...prev, created: 0 }) !== JSON.stringify({ ...lock, created: 0 })) {
     writeText(lockPath, JSON.stringify(lock, null, 2) + "\n");
     changed = true;
@@ -85,6 +110,14 @@ export async function init(projectDir = process.cwd()) {
 
   if (changed) {
     const runPath = appendRun(projectDir, `init: pipeline ${pipelineCommit.slice(0, 7)}, packs ${packs.length}, skills installed ${r.installed.length}, skipped ${r.skipped.length}`);
+    // The state site is only rebuilt here when something else already made this init a
+    // commit — never on a genuine no-op re-run, which must stay a no-op (see
+    // test/new-init.test.mjs).
+    buildSite(projectDir);
+    // The site goes through the shared helper, which un-ignores it first if this
+    // project's `.gitignore` still hides it and records a page the site no longer
+    // generates as removed.
+    stageSite(projectDir);
     // `init` is the one command that may run on a dirty tree — a team runs it in the
     // middle of ordinary work — so it stages the files it owns by name and leaves
     // everything else exactly as it found it.
@@ -94,6 +127,7 @@ export async function init(projectDir = process.cwd()) {
       join(".claude", "skills"),
       join(".claude", "settings.json"),
       join(".sdlc", "hooks"),
+      join(".sdlc", "personas"),
       ".gitattributes",
       relative(projectDir, runPath),
     ]);

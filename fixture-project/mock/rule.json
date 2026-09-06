@@ -1,0 +1,3 @@
+{
+  "text": "Reviewed the probe stage journal entry and the diff against main. The change is exactly what the proposal describes: a single new file inside app/, nothing touched outside that path, and the post-check that gates this stage already reports green.\n\n```json\n{\"verdict\":\"approve\",\"rationale\":\"The probe file exists, the post-check passed and nothing outside app/ changed.\",\"conditions\":[]}\n```"
+}
