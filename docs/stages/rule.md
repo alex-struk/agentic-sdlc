@@ -3,12 +3,20 @@
 ## Purpose
 
 Record a verdict — `approve` or `return` — on an open proposal, checked against who is allowed to
-hold that gate, and merge the proposal into `main` on approval.
+hold that gate, and merge the proposal into `main` on approval. A gate whose `holder` in
+`.sdlc/config.yaml` is `agent:<persona>` can also be ruled by that persona directly: a short
+agent turn reads the proposal, the diff and the checks, and answers with a verdict the same way a
+human's `--by` is trusted — phase 0 has no authentication either way (see
+`docs/decisions/0003-caller-workflow-and-unauthenticated-roles.md`).
 
 ## Inputs
 
-`sdlc rule <name> approve|return --by <role or agent:persona> [--note "..."]`, run from inside the
-project's working tree.
+Human: `sdlc rule <name> approve|return --by <role or agent:persona> [--note "..."]`, run from
+inside the project's working tree.
+
+Agent: `sdlc rule <name> --by agent:<persona>` — no verdict is typed; the persona decides it.
+`sdlc rule --pending` rules every open proposal (a `proposal/*` branch with no gate file yet)
+whose gate is held by an agent, oldest branch first, and prints one line per ruling.
 
 ## Outputs
 
@@ -28,9 +36,61 @@ conflicted files — `main` is never left mid-merge.
 On `return`, the proposal branch is left exactly as it is — not merged — so it stays open for
 another round.
 
+`sdlc status` (`buildSite`) runs after every ruling, human or agent, so the state site's gate log
+and coverage numbers are never more than one ruling stale.
+
+## The agent path
+
+When `--by agent:<persona>` names the gate's own `holder`, `sdlc rule` builds a prompt out of:
+
+- the persona brief, `.sdlc/personas/<persona>.md`;
+- the proposal page;
+- the tier — the proposal's own `tier:` front matter if it set one, else
+  `policy.default_tier`;
+- `git diff main...proposal/<name> --stat`;
+- the diff of everything outside `app/` (`git diff main...proposal/<name> -- . ':!app'`), capped
+  at 20,000 characters with a `[truncated]` marker so a large or generated diff cannot blow the
+  prompt budget;
+- the four structural checks, run on the proposal branch's current checkout.
+
+The agent turn runs with `maxTurns: 12` and must end its reply with one fenced JSON block and
+nothing after it:
+
+```json
+{"verdict": "approve"|"return"|"escalate", "rationale": "...", "conditions": [...]}
+```
+
+Only the *last* such block in the reply is read, so anything the agent explored earlier in the
+turn cannot be mistaken for its answer. A reply with no fenced JSON block throws `no verdict block
+in persona reply`; a `verdict` outside the three named values throws `bad verdict: <value>`.
+
+An `approve` or `return` verdict reuses the same gate-file-and-commit path a human ruling takes,
+with `by: agent:<persona>` (so `held_by: agent`) and the persona's `rationale` and `conditions`
+written into the gate file in place of a human's free-text `note`. The rationale and verdict are
+also appended to the proposal page itself, under a `## Ruling` heading, *before* that page is
+committed — so the ruling is part of the same commit the gate file is, not a follow-up.
+
+## Mandatory escalation
+
+Some proposals never reach the persona at all. Before asking, `sdlc rule` escalates on its own
+when either is true:
+
+- the proposal's tier is `HIGH` or `CRITICAL`;
+- the persona's brief contains the phrase "always escalate" (a persona can hold a gate and still
+  always defer on it — see `templates/project/.sdlc/personas/tech-lead.md`, which always escalates
+  a platform-article change).
+
+The gate file records `verdict: escalated`, `escalate_to: <the gate's escalate_to>`, and a
+rationale beginning `mandatory escalation: <reason>`. The proposal branch is left open — nothing
+is merged — and a run-record line is appended the same as for any other ruling.
+
+An agent-decided `escalate` verdict (as opposed to a mandatory one) is recorded the same way, with
+the persona's own rationale instead of the mandatory-escalation wording.
+
 ## Workspace the agent sees
 
-No agent.
+The full project checkout, on the proposal branch — the same `cwd` the human commands operate on.
+Nothing is materialised into a separate workspace for a ruling.
 
 ## Checks that block
 
@@ -47,9 +107,16 @@ No agent.
 - `by` must equal that gate's `holder` or `escalate_to`; anyone else is rejected, and the error
   names who is allowed.
 
+For the agent path (`--by agent:<persona>` or `--pending`), the policy check is narrower: `by`
+must equal the gate's `holder` exactly. A persona agent is never allowed to act as the
+`escalate_to` target the way a human can — escalation targets are human roles by schema, so this
+only ever rejects a persona ruling a gate it does not hold.
+
 ## Exit criterion
 
-Exits 0 and prints `<name>: <verdict> at <gate>`.
+Exits 0. Human path prints `<name>: <verdict> at <gate>`. Agent path prints `<name>: <verdict>` on
+approve/return, or `<name>: escalated (<rationale>)` on escalation; `--pending` prints one such
+line per proposal it rules.
 
 ## Re-run behaviour
 
@@ -67,3 +134,7 @@ the gate log will show both. Treat a proposal as ruled once its verdict is recor
 - The working tree is dirty: throws before anything is checked out, listing the dirty paths.
 - The approval merge conflicts: the merge is aborted, `main` is left as it was, the working tree
   returns to the proposal branch, and the error names the conflicted files.
+- Agent path: no persona brief at `.sdlc/personas/<persona>.md`: throws `no persona brief for
+  <persona>`. The persona is not the gate's `holder`: throws naming who is (`is not a holder of
+  <gate>`). The reply has no fenced JSON block: throws `no verdict block in persona reply`. The
+  reply's `verdict` is not `approve`, `return` or `escalate`: throws `bad verdict: <value>`.

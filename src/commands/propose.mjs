@@ -7,7 +7,7 @@ import { COMMANDS } from "../cli.mjs";
 
 const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
 
-export function propose(projectDir, name, { gate, question, recommendation, page = "", paths = null }) {
+export function propose(projectDir, name, { gate, question, recommendation, page = "", paths = null, tier = null }) {
   projectDir = resolve(projectDir);
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error("proposal name: lowercase letters, digits, hyphens");
   if (!gate || !question || !recommendation) throw new Error("propose needs --gate, --question and --recommendation");
@@ -37,8 +37,9 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   git(["checkout", "-q", "-b", branch], projectDir);
   const opened = new Date().toISOString();
   const proposalPath = join(".sdlc", "proposals", `${name}.md`);
+  const tierLine = tier ? `tier: ${tier}\n` : "";
   writeText(join(projectDir, proposalPath),
-    `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`);
+    `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n${tierLine}---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`);
   const runPath = appendRun(projectDir, `propose ${name} at ${gate}`);
   stageAll(projectDir, [proposalPath, relative(projectDir, runPath), ...(paths ?? [])]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `propose(${gate}): ${name}`], projectDir);
@@ -46,6 +47,6 @@ export function propose(projectDir, name, { gate, question, recommendation, page
 }
 
 COMMANDS.propose = async ({ pos, flags }) => {
-  const r = propose(process.cwd(), pos[0], { gate: flags.gate, question: flags.question, recommendation: flags.recommendation, page: flags.page ?? "" });
+  const r = propose(process.cwd(), pos[0], { gate: flags.gate, question: flags.question, recommendation: flags.recommendation, page: flags.page ?? "", tier: flags.tier ?? null });
   console.log(`opened ${r.branch}`); return 0;
 };

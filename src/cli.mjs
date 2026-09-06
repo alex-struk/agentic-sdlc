@@ -10,7 +10,8 @@ const HELP = `sdlc <command> [args] [--flags]
   init [dir]                       install the pipeline into a project (lockfile, packs, callers)
   checks [dir] [--self] [--json]   run the structural checks
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."]
-  rule <name> approve|return --by <role> [--note "..."]
+  rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>
+  rule --pending                   rule every open proposal an agent holds the gate for
   run <stage> [--slice N] [--domain X] [--dry-run]   run one pipeline stage
   resume [--again]                 continue an interrupted run
   status [dir]                     regenerate the state site

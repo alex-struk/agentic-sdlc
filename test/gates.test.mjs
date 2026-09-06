@@ -30,6 +30,10 @@ function project() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-gate-"));
   git(["init", "-q", "-b", "main"], d); git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
   mkdirSync(join(d, ".sdlc"), { recursive: true }); writeFileSync(join(d, ".sdlc/config.yaml"), CONFIG);
+  // `rule` builds the state site after every ruling; it is generated output, not
+  // something these fixtures track, so it is ignored the same way templates/project's
+  // own .gitignore ignores it in a real project.
+  writeFileSync(join(d, ".gitignore"), "site/\n");
   writeFileSync(join(d, "README.md"), "x"); git(["add", "-A"], d); git(["commit", "-q", "-m", "init"], d);
   return d;
 }

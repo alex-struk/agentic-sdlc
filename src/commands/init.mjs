@@ -16,6 +16,8 @@ const TEMPLATE_FILES = [
   { src: ["templates", "project", ".claude", "settings.json"], dst: [".claude", "settings.json"] },
   { src: ["templates", "hooks", "implement-guard.sh"], dst: [".sdlc", "hooks", "implement-guard.sh"], mode: 0o755 },
   { src: ["templates", "project", ".gitattributes"], dst: [".gitattributes"] },
+  { src: ["templates", "project", ".sdlc", "personas", "ux-reviewer.md"], dst: [".sdlc", "personas", "ux-reviewer.md"] },
+  { src: ["templates", "project", ".sdlc", "personas", "tech-lead.md"], dst: [".sdlc", "personas", "tech-lead.md"] },
 ];
 
 function installTemplateFiles(projectDir) {
@@ -94,6 +96,7 @@ export async function init(projectDir = process.cwd()) {
       join(".claude", "skills"),
       join(".claude", "settings.json"),
       join(".sdlc", "hooks"),
+      join(".sdlc", "personas"),
       ".gitattributes",
       relative(projectDir, runPath),
     ]);
