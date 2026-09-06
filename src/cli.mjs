@@ -27,7 +27,7 @@ const HELP = `sdlc <command> [args] [--flags]
 // its own top level, so `COMMANDS` is already the real object by the time they assign to it.
 let commandsLoaded = null;
 function loadCommands() {
-  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs")]);
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs")]);
   return commandsLoaded;
 }
 
