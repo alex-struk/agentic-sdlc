@@ -11,15 +11,33 @@ import { loadConfig } from "../config/load.mjs";
 // whichever separator a domain file was written with, what this module treats as the
 // canonical heading text is the same.
 const DOT = "·";
-const SEP = `\\s*(?:${DOT}|-)\\s*`;
+// Exactly one whitespace character on each side of the separator — not `\s*` — so a
+// heading missing its spacing (`v1-confirmed`) fails to parse instead of silently
+// matching; the format is written with single spaces around the separator and nothing
+// looser is a valid heading.
+const SEP = `(?:\\s${DOT}\\s|\\s-\\s)`;
 const HEADING_RE = new RegExp(`^### (D-[a-z0-9-]+-\\d+|R-\\d+\\.\\d+)${SEP}v(\\d+)${SEP}(confirmed|inferred|open)${SEP}(recovered|authored)\\s*$`);
 const BULLET_RE = /^- ([a-z-]+):\s*(.*)$/;
 const CITE_RE = /^([^:]+)(?::(\d+))?$/;
 
 // States a criterion's own `state` bullet may hold; used both to validate the
 // `checkCriteria` "accepted while still inferred/open" rule and to order the coverage
-// counts `renderSpecIndex` prints.
-export const STATES = ["proposed", "accepted", "implemented", "verified", "monitored"];
+// counts `renderSpecIndex` prints. `obsolete` covers a criterion that is no longer
+// wanted at all (as opposed to `superseded-by`, which points at its replacement).
+export const STATES = ["proposed", "accepted", "implemented", "verified", "monitored", "obsolete"];
+
+// The closed vocabularies for `reconciliation` and `tier`. Like `state`, a value outside
+// these lists is a parse error rather than being accepted verbatim — an unrecognised
+// value here is exactly as dangerous as an unrecognised bullet key: it disarms whatever
+// check or report reads the field, silently, unless it is rejected at parse time.
+export const RECONCILIATIONS = ["aligned", "implemented-only", "documented-only", "conflicting", "defect"];
+export const TIERS = ["LOW", "STANDARD", "HIGH", "CRITICAL"];
+
+// Bullet keys that hold a single value rather than repeating (`cites`, `given`, `when`,
+// `then` and `note` all repeat by design). A second occurrence of one of these is a
+// parse error — silently keeping "the last one wins" would let a later duplicate bullet
+// overwrite an earlier one with no record that it happened.
+const SINGLE_KEYS = new Set(["reconciliation", "state", "tier", "replaces", "superseded-by"]);
 
 function domainOf(id) {
   const m = /^D-(.+)-\d+$/.exec(id);
@@ -47,15 +65,23 @@ export function parseDomainFile(text, domain) {
   const criteria = [];
   const errors = [];
   let i = 0;
+  let sawHeadingMarker = false;
 
   while (i < lines.length) {
     const line = lines[i];
     if (line.trim() === "") { i++; continue; }
     if (!line.startsWith("### ")) {
+      // Before the first `### ` block, a domain file may open with a `#`/`##` title or
+      // any other prose (a short intro, a heading naming the domain) — that text is not
+      // part of the criterion format and is ignored rather than flagged. Once the first
+      // `### ` line has been seen (whether it went on to parse or not), the file is past
+      // that point and a stray line here is again a real error.
+      if (!sawHeadingMarker) { i++; continue; }
       errors.push({ line: i + 1, message: `expected a heading (### ID ${DOT} vN ${DOT} confidence ${DOT} origin), got: ${line}` });
       i++;
       continue;
     }
+    sawHeadingMarker = true;
     const headingLine = i + 1;
     const m = HEADING_RE.exec(line);
     if (!m) {
@@ -83,6 +109,7 @@ export function parseDomainFile(text, domain) {
 
     const cites = [];
     const notes = [];
+    const singleSeen = new Set();
     let reconciliation, given, when, then, state, tier, replaces, supersededBy;
     while (i < lines.length) {
       const raw = lines[i];
@@ -97,6 +124,13 @@ export function parseDomainFile(text, domain) {
       }
       const [, key, rawValue] = bm;
       const value = rawValue.trim();
+      // A single-value key repeated is a parse error rather than "last one wins": that
+      // would silently discard whichever occurrence came first with nothing recorded.
+      if (SINGLE_KEYS.has(key) && singleSeen.has(key)) {
+        errors.push({ line: i + 1, message: `repeated key: ${key} (already set earlier in this block)` });
+        i++;
+        continue;
+      }
       if (key === "cites") {
         const cm = CITE_RE.exec(value);
         if (!cm) errors.push({ line: i + 1, message: `malformed cites value: ${value}` });
@@ -105,11 +139,20 @@ export function parseDomainFile(text, domain) {
       else if (key === "when") { when = when ? `${when} and ${value}` : value; }
       else if (key === "then") { then = then ? `${then} and ${value}` : value; }
       else if (key === "note") { notes.push(value); }
-      else if (key === "reconciliation") reconciliation = value;
-      else if (key === "state") state = value;
-      else if (key === "tier") tier = value;
-      else if (key === "replaces") replaces = value;
-      else if (key === "superseded-by") supersededBy = value;
+      else if (key === "reconciliation") {
+        singleSeen.add(key);
+        if (RECONCILIATIONS.includes(value)) reconciliation = value;
+        else errors.push({ line: i + 1, message: `invalid reconciliation: ${value} (expected one of ${RECONCILIATIONS.join(", ")})` });
+      } else if (key === "state") {
+        singleSeen.add(key);
+        if (STATES.includes(value)) state = value;
+        else errors.push({ line: i + 1, message: `invalid state: ${value} (expected one of ${STATES.join(", ")})` });
+      } else if (key === "tier") {
+        singleSeen.add(key);
+        if (TIERS.includes(value)) tier = value;
+        else errors.push({ line: i + 1, message: `invalid tier: ${value} (expected one of ${TIERS.join(", ")})` });
+      } else if (key === "replaces") { singleSeen.add(key); replaces = value; }
+      else if (key === "superseded-by") { singleSeen.add(key); supersededBy = value; }
       else errors.push({ line: i + 1, message: `unknown key: ${key}` });
       i++;
     }
@@ -179,18 +222,28 @@ function domainOrder(projectDir, domains) {
   });
 }
 
+// A `|` inside a free-text cell (a statement can contain one) would otherwise split the
+// Markdown table into extra columns, so it is escaped on the way into every cell.
+function escapeCell(s) {
+  return String(s).replaceAll("|", "\\|");
+}
+
 // `spec/spec.md`: the generated, technology-free index a reader opens instead of the
 // domain files themselves — one table per domain (ordered by `config.project.domains`
 // where the config loads, else alphabetically; ties and unlisted domains fall back to
-// alphabetical too) and a coverage count across every domain by `state`.
+// alphabetical too) and a coverage count across every domain by `state`. `state` is
+// validated by the parser against the closed `STATES` vocabulary (an unrecognised value
+// is a parse error, not a silent pass-through), so every criterion reaching this
+// function always carries a known state and no row's count is ever lost off the end of
+// the coverage table.
 export function renderSpecIndex(projectDir, parsed) {
   const domains = domainOrder(projectDir, Object.keys(parsed.domains));
   const counts = Object.fromEntries(STATES.map((s) => [s, 0]));
   const sections = domains.map((domain) => {
     const criteria = [...parsed.domains[domain]].sort((a, b) => compareIds(a.id, b.id));
     const rows = criteria.map((c) => {
-      counts[c.state] = (counts[c.state] ?? 0) + 1;
-      return `| ${c.id} | ${c.version} | ${c.confidence} | ${c.state} | ${c.statement} |`;
+      counts[c.state]++;
+      return `| ${escapeCell(c.id)} | ${c.version} | ${c.confidence} | ${c.state} | ${escapeCell(c.statement)} |`;
     });
     return [`## ${domain}`, "", "| ID | Version | Confidence | State | Statement |", "| --- | --- | --- | --- | --- |", ...rows, ""].join("\n");
   });

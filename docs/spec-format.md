@@ -11,6 +11,11 @@ The parser that turns a domain file into both — `parseDomainFile`, `parseAll`,
 `renderSpecIndex` in `src/spec/criteria.mjs` — is the actual contract this document describes: if
 this page and the parser ever disagree, the parser is what every other stage runs against.
 
+A domain file may open with a `#`/`##` title or a line or two of prose (naming the domain, a short
+intro) before its first `### ` block; that text is ignored rather than treated as a parse error.
+Once the first `### ` line has been seen, the format is strict again — text between two criterion
+blocks has to be a bullet, blank, or the next heading.
+
 ## One block
 
 ```
@@ -43,18 +48,20 @@ When an applicant submits a completed permit application, its status shall chang
   whose confidence has not caught up.
 - **`<origin>`** is `recovered` (found in an existing application) or `authored` (written new, no
   prior system to point at).
-- The separator between the four fields is the middle dot `·` (U+00B7). A plain hyphen
-  surrounded by spaces (` - `) is also accepted, for the same reason a plain apostrophe is
-  accepted where a typographic one would be correct: an agent (or a person) without the real
-  character at hand still needs to write a valid heading.
+- The separator between the four fields is the middle dot `·` (U+00B7), with exactly one space on
+  each side. A plain hyphen surrounded by exactly one space on each side (` - `) is also accepted,
+  for the same reason a plain apostrophe is accepted where a typographic one would be correct: an
+  agent (or a person) without the real character at hand still needs to write a valid heading.
+  Anything looser — no space, or more than one — does not match and is a malformed heading.
 
 ## The body
 
 The first non-empty, non-bullet line (and any further non-bullet lines before the first bullet)
 is the statement: one sentence, technology-free, stating what the system does and for whom.
 
-After the statement, bullet lines carry everything else. Each is `- key: value`; an unknown key
-is a parse error.
+After the statement, bullet lines carry everything else. Each is `- key: value`; an unknown key is
+a parse error, and so is a second occurrence of a key that does not repeat (`reconciliation`,
+`state`, `tier`, `replaces`, `superseded-by` — see the "Repeats" column below).
 
 | Key | Value | Repeats |
 | --- | --- | --- |
@@ -64,15 +71,20 @@ is a parse error.
 | `when` | the triggering action | yes — repeats join with " and " |
 | `then` | the observable outcome | yes — repeats join with " and " |
 | `note` | free text; anything worth recording that has no other field | yes — every note is kept |
-| `state` | `proposed` \| `accepted` \| `implemented` \| `verified` \| `monitored` (default `proposed`) | no |
+| `state` | `proposed` \| `accepted` \| `implemented` \| `verified` \| `monitored` \| `obsolete` (default `proposed`) | no |
 | `tier` | `LOW` \| `STANDARD` \| `HIGH` \| `CRITICAL` | no |
 | `replaces` | the ID of a criterion this one supersedes | no |
 | `superseded-by` | the ID of the criterion that replaced this one | no |
 
+`reconciliation`, `state` and `tier` are closed vocabularies: a value outside the list in the
+table above is a parse error, exactly like an unknown key — it is rejected rather than stored
+verbatim, so a typo cannot silently disarm whatever check or report reads the field later.
+
 A `recovered` criterion needs at least one `cites`, since a claim about what the old application
 does has to point at where; `checkCriteria` fails one that has none. A `defect` reconciliation —
 the old application does something the spec says it should not — needs either a `replaces` (the
-ID of the corrected criterion) or a `note` saying explicitly that there is no replacement yet.
+ID of the corrected criterion) or at least one `note`; any note satisfies it; there is no required
+wording.
 
 ## Checks
 
@@ -82,8 +94,8 @@ fails on: a parse error in any domain file; the same ID appearing in two domain 
 (only when `sources/old` is present — a citation cannot be checked against a source that has not
 been materialised yet, so a missing `sources/old` turns this into a warning instead); a criterion
 whose `state` is `accepted` while its confidence is still `inferred` or `open`; and a `defect`
-reconciliation with neither a `replaces` nor a note saying there is none. `checkLayout` requires
-`spec/domains` to exist at all.
+reconciliation with neither a `replaces` nor a note. `checkLayout` requires `spec/domains` to
+exist at all.
 
 ## Why this shape
 

@@ -5,8 +5,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { readJournal } from "../runner/journal.mjs";
 import { COMMANDS } from "../cli.mjs";
-
-const STATES = ["proposed", "accepted", "implemented", "verified", "monitored"];
+import { STATES } from "../spec/criteria.mjs";
 
 // ISO 8601 week: Thursday of the same week decides the week-numbering year, which is
 // what makes the last days of December (or first days of January) land in the correct

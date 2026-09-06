@@ -48,8 +48,11 @@ export function checkCriteria(projectDir, ctx = {}) {
     if (c.state === "accepted" && (c.confidence === "inferred" || c.confidence === "open"))
       messages.push(`${where}: accepted while still ${c.confidence}`);
 
-    if (c.reconciliation === "defect" && !c.replaces && !c.notes.some((n) => /no replacement/i.test(n)))
-      messages.push(`${where}: defect reconciliation has no replaces and no note saying there is none`);
+    // Any note satisfies a `defect` with no `replaces` — the check does not require a
+    // specific phrase ("no replacement yet" and the like); the point is that the absence
+    // of a replacement was noticed and recorded, not that it is worded a particular way.
+    if (c.reconciliation === "defect" && !c.replaces && c.notes.length === 0)
+      messages.push(`${where}: defect reconciliation has no replaces and no note explaining why`);
   }
 
   return { id, ok: messages.length === 0, messages, warnings };

@@ -24,8 +24,8 @@ function writeDomain(d, domain, text) {
   writeFileSync(join(domainsDir(d), `${domain}.md`), text);
 }
 
-// The sample block from the brief, restated in a generic domain (permits, not
-// procurement) so nothing here names a real system.
+// A representative, fully-populated criterion block in a generic domain (permits),
+// exercising every bullet key at once; reused across several tests below.
 const SAMPLE = `### D-permits-1 · v1 · inferred · recovered
 When an applicant submits a completed permit application, its status shall change to
 "Under review" and the assigned reviewer shall be notified.
@@ -70,6 +70,20 @@ test("parseDomainFile: the plain-hyphen separator is accepted", () => {
   assert.equal(criteria.length, 1);
   assert.equal(criteria[0].id, "D-permits-2");
   assert.match(criteria[0].raw, /·/, "raw normalises the separator to the middle dot on write");
+});
+
+test("parseDomainFile: a separator missing its space on one side is a malformed heading", () => {
+  const text = "### D-permits-1 ·v1 · confirmed · authored\nA statement.\n";
+  const { criteria, errors } = parseDomainFile(text, "permits");
+  assert.equal(criteria.length, 0);
+  assert.ok(errors.some((e) => e.line === 1 && /malformed heading/.test(e.message)));
+});
+
+test("parseDomainFile: a separator with no spaces at all is a malformed heading, not a loose match", () => {
+  const text = "### D-permits-1-v1-confirmed-authored\nA statement.\n";
+  const { criteria, errors } = parseDomainFile(text, "permits");
+  assert.equal(criteria.length, 0);
+  assert.ok(errors.some((e) => e.line === 1 && /malformed heading/.test(e.message)));
 });
 
 test("parseDomainFile: three-criterion round trip", () => {
@@ -131,6 +145,58 @@ test("parseDomainFile: an unknown bullet key is an error", () => {
   assert.equal(criteria.length, 1);
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /unknown key: unknown-key/);
+});
+
+test("parseDomainFile: state, reconciliation and tier are validated against closed vocabularies", () => {
+  const text = `### D-permits-1 · v1 · confirmed · authored
+A statement.
+- state: bogus
+- reconciliation: not-a-value
+- tier: EXTREME
+`;
+  const { criteria, errors } = parseDomainFile(text, "permits");
+  assert.equal(criteria.length, 1, "still parsed, so the bad values are reported rather than swallowing the criterion");
+  assert.equal(criteria[0].state, "proposed", "an invalid state is not assigned; it falls back to the default like an absent bullet");
+  assert.equal(criteria[0].reconciliation, undefined);
+  assert.equal(criteria[0].tier, undefined);
+  assert.equal(errors.length, 3);
+  assert.match(errors[0].message, /invalid state: bogus/);
+  assert.match(errors[1].message, /invalid reconciliation: not-a-value/);
+  assert.match(errors[2].message, /invalid tier: EXTREME/);
+});
+
+test("parseDomainFile: obsolete is a valid state", () => {
+  const text = "### D-permits-1 · v1 · confirmed · authored\nA statement.\n- state: obsolete\n";
+  const { criteria, errors } = parseDomainFile(text, "permits");
+  assert.deepEqual(errors, []);
+  assert.equal(criteria[0].state, "obsolete");
+});
+
+test("parseDomainFile: a repeated single-value key is a parse error; the first occurrence wins", () => {
+  const text = `### D-permits-1 · v1 · confirmed · authored
+A statement.
+- state: accepted
+- state: proposed
+`;
+  const { criteria, errors } = parseDomainFile(text, "permits");
+  assert.equal(criteria.length, 1);
+  assert.equal(criteria[0].state, "accepted", "the repeat is flagged, not silently applied over the first value");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /repeated key: state/);
+});
+
+test("parseDomainFile: a title and prose before the first ### block are ignored, not errors", () => {
+  const text = `# Permits domain
+
+A short introduction to this domain, written before any criterion block.
+
+### D-permits-1 · v1 · confirmed · authored
+A statement.
+`;
+  const { criteria, errors } = parseDomainFile(text, "permits");
+  assert.deepEqual(errors, []);
+  assert.equal(criteria.length, 1);
+  assert.equal(criteria[0].id, "D-permits-1");
 });
 
 test("parseDomainFile: a D- heading whose domain does not match the file is an error", () => {
@@ -233,6 +299,20 @@ First criterion.
   assert.match(text, /\| proposed \| 1 \|/);
   assert.match(text, /\| accepted \| 1 \|/);
   assert.match(text, /\| implemented \| 0 \|/);
+});
+
+test("renderSpecIndex: a `|` in a statement is escaped, not left to split the table row", () => {
+  const d = repo();
+  writeDomain(d, "permits", `### D-permits-1 · v1 · confirmed · authored
+A permit is either "Approved" | "Denied" once reviewed.
+- reconciliation: aligned
+`);
+  const text = readFileSync(renderSpecIndex(d, parseAll(d)), "utf8");
+  const row = text.split("\n").find((l) => l.includes("D-permits-1"));
+  assert.equal(row, `| D-permits-1 | 1 | confirmed | proposed | A permit is either "Approved" \\| "Denied" once reviewed. |`);
+  // 5 columns means 4 unescaped separators between them plus the leading/trailing border —
+  // splitting on a bare `|` (one not preceded by `\`) must yield exactly 6 pieces.
+  assert.equal(row.split(/(?<!\\)\|/).length, 7);
 });
 
 // --- checkCriteria ---------------------------------------------------------
