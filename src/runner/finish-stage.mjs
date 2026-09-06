@@ -152,7 +152,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     const batch = changed.filter((p) => !stagedBySite.includes(p)
       && !(stagedBySite.includes("site") && p.startsWith("site/")));
     stageAll(projectDir, batch);
-    git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${stage.title ?? stage.name}`], projectDir);
+    // `title` may be a plain string (every stage but `ratify`) or a function of `ctx`
+    // (`ratify`, whose commit subject folds in the domain — `ratify applications`, not
+    // just `ratify` — and which cannot know that until it is actually run for a domain).
+    const title = typeof stage.title === "function" ? stage.title(ctx) : stage.title ?? stage.name;
+    git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${title}`], projectDir);
   }
 
   clearRunState(projectDir);

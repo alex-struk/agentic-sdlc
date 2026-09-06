@@ -28,11 +28,28 @@ conditions apply to.
   changed as that condition says (`applyConditions`, `src/spec/criteria.mjs`), and every criterion
   left `confirmed` and not `obsolete` — whether a condition named it or not — has been minted a
   permanent `R-<k>.<n>` id (`mintIds`), `k` the domain's 1-based position in `project.domains` and
-  `n` continuing from whatever this domain has already minted. A `defect` condition keeps the row
-  it corrects (now marked `reconciliation: defect`) and appends a new, `authored` criterion with
-  the corrected statement and `replaces: <the corrected row's own final id>` — both mint together,
-  so the reference lands on the permanent id, not the provisional one that no longer exists once
-  the pass is done.
+  `n` continuing from the highest `n` already minted under that ordinal *anywhere in the project*,
+  not only in this domain's own file — a domain reorder in `project.domains` after some ids were
+  already minted could otherwise strand an old `R-<k>.<n>` in a file this run never looks at, and a
+  fresh id minted from this domain's own count alone could collide with it.
+  A `defect` condition keeps the row it corrects, marking it `reconciliation: defect` and adding a
+  `superseded-by` and a note naming the new criterion, and appends that new, `authored` criterion
+  with the corrected statement and `replaces: <the corrected row's id>`. `replaces` and
+  `superseded-by` point at whatever id their target had at the moment they were written
+  (`applyConditions`, which runs before minting); `mintIds`, right after, rewrites each one — and
+  any mention of the same id inside a note — to the permanent id its target actually ends up with,
+  but only when that target is minted in the *same* pass. The replacement (always authored
+  `confirmed`) almost always mints immediately, so in the ordinary case both the row's
+  `superseded-by` and its note end up naming a permanent id, not the provisional one that no longer
+  exists anywhere in the file once the pass is done. The row being corrected does not necessarily
+  mint alongside it — if the ruling left it `inferred` or `open` rather than confirming it, it keeps
+  its own provisional `D-` id regardless of what happens to its replacement.
+- Applying the same gate-file conditions again, on a domain that still has some other `D-`
+  criterion left in it (see "Re-run behaviour"), changes nothing further: every verb `applyConditions`
+  applies checks the row it targets before acting — a note is pushed only if the row does not
+  already carry it, `edit` bumps the version only when the statement actually differs, and `defect`
+  appends a replacement only when no criterion already carries `replaces` naming that target with
+  that exact corrected text.
 - `spec/criteria-index.json` and `spec/spec.md`, regenerated from every domain file in the project
   (`writeIndex`, `renderSpecIndex`), not only the one this run touched.
 - A journal entry and a run-record line, as every stage produces. The journal states how many
@@ -77,14 +94,21 @@ behaviour"). Any pre-check or post-check failure exits 1 and prints the failing 
 
 ## Re-run behaviour
 
-Running `ratify --domain <d>` again once the domain has nothing provisional left in it — every
-`D-<d>-<n>` id it had has already been minted to an `R-` id — is a true no-op: `execute` notices
-before touching anything on disk and returns `{ changed: [] }`, which `runStage` reads as "nothing
-happened" and returns without writing a journal entry, appending a run record, or committing
-anything. This is different from every agent-run stage's re-run behaviour (`docs/stages/run.md`),
-which always produces a fresh, separately numbered journal entry even when the agent's output is
-byte-identical to what is already on `main` — `ratify` skips that because nothing spawned an agent
-turn to journal in the first place.
+Running `ratify --domain <d>` again is a true no-op whenever it would leave the domain file
+byte-identical to what is already on disk: `execute` re-derives the file from the same gate-file
+conditions and compares the result to what is there before writing anything, and if the two match,
+returns `{ changed: [] }`, which `runStage` reads as "nothing happened" and returns without writing
+a journal entry, appending a run record, or committing anything (it still prints `execute`'s text,
+so a re-run is not silent — see "Outputs"). This covers two cases: the domain has nothing
+provisional left in it (every `D-<d>-<n>` id has already been minted to an `R-` id), and — just as
+common — some criterion is still `D-` on purpose (a `spike`d or still-`inferred` row the ruling
+never confirmed) and stays that way indefinitely, with every condition that already touched it a
+no-op the second time (see "Outputs"). Neither case is different from every agent-run stage's
+re-run behaviour (`docs/stages/run.md`) because `ratify` is a no-op *more* readily, not less — an
+agent-run stage always produces a fresh, separately numbered journal entry even when the agent's
+output is byte-identical to what is already on `main`; `ratify` never does, because nothing spawned
+an agent turn to journal in the first place, and there is a real, cheap way to tell whether anything
+actually changed.
 
 Running `archaeology --domain <d>` again after ratifying it, then ruling and ratifying the newly
 recovered criteria, is ordinary: each pass mints only what that pass's own conditions and

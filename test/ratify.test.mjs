@@ -8,6 +8,7 @@ import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { ruleByAgent } from "../src/commands/rule.mjs";
+import { COMMANDS } from "../src/cli.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -172,6 +173,105 @@ test("sdlc run ratify --domain applications: a second run on an already-ratified
     assert.equal(git(["rev-parse", "HEAD"], dir), headBefore, "no new commit was made");
     assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run ratify --domain applications: three consecutive runs with edit and spike conditions are idempotent — one version bump, one commit, then true no-ops", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-idempotent-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    const archaeologyRun = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(archaeologyRun.ok, true, JSON.stringify(archaeologyRun.messages));
+
+    // D-applications-1 is already `confirmed` (recovered): `edit` changes its wording,
+    // and it mints on this same pass regardless, so the edit itself is only ever applied
+    // once no matter how it is exercised. D-applications-2 is `inferred`: `spike` moves
+    // it to `open`, which `mintIds` never promotes — it stays `D-applications-2` forever,
+    // which is exactly the "a `D-` row survives" case the idempotency fix targets.
+    const ownerMockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-owner-idempotent-"));
+    writeFileSync(join(ownerMockDir, "rule.json"), JSON.stringify({
+      text: '```json\n' + JSON.stringify({
+        verdict: "approve",
+        rationale: "the age check wording is corrected; the fee basis needs a real answer before it can be confirmed",
+        conditions: [
+          "edit D-applications-1: When an applicant submits a permit application, the system rejects it unless the applicant is at least 19 years old.",
+          "spike D-applications-2: does this hold for renewals too?",
+        ],
+      }) + '\n```',
+    }));
+    process.env.SDLC_MOCK_DIR = ownerMockDir;
+    const ruling = await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" });
+    assert.equal(ruling.verdict, "approve");
+
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    const first = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    const headAfterFirst = git(["rev-parse", "HEAD"], dir);
+    const domainAfterFirst = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    assert.match(domainAfterFirst, /### R-1\.1 · v2 · confirmed · recovered/, "edited exactly once, and minted since it was already confirmed");
+    assert.match(domainAfterFirst, /### D-applications-2 · v1 · open · recovered/, "the spiked row stays provisional");
+    const spikeNoteCount = [...domainAfterFirst.matchAll(/does this hold for renewals too\?/g)].length;
+    assert.equal(spikeNoteCount, 1, "the spike note appears exactly once after the first run");
+
+    for (let i = 1; i <= 2; i++) {
+      const r = await runStage(dir, "ratify", { domain: "applications" });
+      assert.equal(r.ok, true, JSON.stringify(r.messages));
+      assert.deepEqual(r.changed, [], `rerun ${i} is a true no-op`);
+      assert.equal(git(["rev-parse", "HEAD"], dir), headAfterFirst, `rerun ${i} made no new commit`);
+    }
+
+    const domainFinal = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    assert.equal(domainFinal, domainAfterFirst, "three passes leave the domain file exactly as the first run wrote it — no duplicated bump or note");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run ratify: existingMax for a domain's ordinal is computed project-wide, not just from the domain's own file", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-maxnumber-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  try {
+    // A stray `R-1.5` in a domain file other than `applications` (ordinal 1), as if left
+    // behind by an earlier `project.domains` reorder — `maxRNumber` must see it so a
+    // freshly minted id under the same ordinal cannot collide with it.
+    writeFileSync(join(dir, "spec/domains/stray.md"), "### R-1.5 · v1 · confirmed · authored\nMinted under ordinal 1, in a different file.\n");
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "seed a stray R-1 id"], dir);
+
+    const r = await ratifyApplications(dir);
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    const domainText = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    assert.match(domainText, /### R-1\.6 /, "numbering continues from the project-wide max (5), not from applications.md's own count (0)");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run ratify: a no-op rerun prints execute's own text, not just \"ok\"", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-noop-text-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  const logs = [];
+  const origLog = console.log;
+  const origCwd = process.cwd();
+  try {
+    const first = await ratifyApplications(dir);
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+
+    process.chdir(dir);
+    console.log = (...a) => logs.push(a.join(" "));
+    const code = await COMMANDS.run({ pos: ["ratify"], flags: { domain: "applications" } });
+    assert.equal(code, 0);
+    assert.ok(logs.some((l) => /nothing to do|already ratified/.test(l)), logs.join(" | "));
+  } finally {
+    console.log = origLog;
+    process.chdir(origCwd);
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }

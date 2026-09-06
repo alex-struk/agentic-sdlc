@@ -224,6 +224,36 @@ test("parseAll: no spec/domains directory yields an empty result, not a throw", 
   assert.deepEqual(parseAll(d), { domains: {}, errors: [] });
 });
 
+test("parseDomainFile: without an ordinal argument, an R- id of any ordinal is accepted (usable without a config)", () => {
+  const { criteria, errors } = parseDomainFile("### R-99.1 · v1 · confirmed · authored\nNo ordinal to check against.\n", "permits");
+  assert.deepEqual(errors, []);
+  assert.equal(criteria[0].id, "R-99.1");
+});
+
+test("parseDomainFile: an R- id whose ordinal does not match the one given is an error", () => {
+  const { criteria, errors } = parseDomainFile("### R-2.1 · v1 · confirmed · authored\nWrong ordinal for this file.\n", "permits", 1);
+  assert.equal(criteria.length, 1, "still parsed, so the mismatch is reported rather than swallowing the criterion");
+  assert.ok(errors.some((e) => /belongs to domain ordinal 2, not 1/.test(e.message)));
+});
+
+test("parseAll: when a config is present, an R- id whose ordinal does not match its domain's position in project.domains is an error", () => {
+  const d = repo();
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "config.yaml"), "profile: rebuild\nproject: { name: p, domains: [permits, renewals] }\n");
+  writeDomain(d, "permits", "### R-2.1 · v1 · confirmed · authored\nMinted under the wrong ordinal.\n");
+  const { errors } = parseAll(d);
+  assert.ok(errors.some((e) => e.file === "spec/domains/permits.md" && /belongs to domain ordinal 2, not 1/.test(e.message)));
+});
+
+test("parseAll: a domain not listed in project.domains gets no ordinal check at all", () => {
+  const d = repo();
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "config.yaml"), "profile: rebuild\nproject: { name: p, domains: [permits] }\n");
+  writeDomain(d, "renewals", "### R-99.1 · v1 · confirmed · authored\nrenewals is not in project.domains.\n");
+  const { errors } = parseAll(d);
+  assert.deepEqual(errors, []);
+});
+
 test("writeIndex: deterministic ordering (domain, then id numeric) and no timestamps", () => {
   const d = repo();
   writeDomain(d, "b-domain", "### D-b-domain-10 · v1 · confirmed · authored\nTen.\n\n### D-b-domain-2 · v1 · confirmed · authored\nTwo.\n");
@@ -474,6 +504,84 @@ Something unrelated.
   assert.equal(addition.statement, "the fee is recalculated when the application is edited");
   assert.equal(applied.length, 1);
   assert.equal(applied[0].verb, "defect");
+});
+
+test("applyConditions: defect on a target with no note gives it one and points superseded-by at the replacement, satisfying checkCriteria", () => {
+  const { criteria } = parseDomainFile(`### D-permits-1 · v1 · confirmed · recovered
+The fee is fixed at intake.
+- cites: app.js:1
+`, "permits");
+  const { criteria: out } = applyConditions(criteria,
+    ["defect D-permits-1: the fee is recalculated when the application is edited"]);
+  const target = out.find((c) => c.id === "D-permits-1");
+  assert.equal(target.reconciliation, "defect");
+  assert.ok(target.notes.length > 0, "a note is added, so a defect target that arrived with none still satisfies checkCriteria");
+  const addition = out.find((c) => c.id !== "D-permits-1");
+  assert.equal(target.supersededBy, addition.id);
+  assert.ok(target.notes[0].includes(addition.id), "the note names the replacement");
+
+  const d = repo();
+  writeDomain(d, "permits", serialiseDomainFile(out, "permits"));
+  const r = checkCriteria(d, {});
+  assert.equal(r.ok, true, r.messages.join("\n"));
+});
+
+test("applyConditions + mintIds: replaying spike, edit and defect conditions three times against a target that stays D- (never confirmed) is idempotent", () => {
+  let text = `### D-x-1 · v1 · inferred · authored
+Statement to edit.
+
+### D-x-2 · v1 · open · authored
+Statement to spike.
+- note: initial
+
+### D-x-3 · v1 · inferred · recovered
+Statement to defect.
+- cites: app.js:1
+`;
+  const conditions = [
+    "edit D-x-1: A corrected statement.",
+    "spike D-x-2: does this hold for renewals too?",
+    "defect D-x-3: the fee is recalculated when the application is edited",
+  ];
+  for (let pass = 0; pass < 3; pass++) {
+    const { criteria, errors } = parseDomainFile(text, "x");
+    assert.deepEqual(errors, [], `pass ${pass}: domain file still parses`);
+    const { criteria: withConditions } = applyConditions(criteria, conditions);
+    let existingMax = 0;
+    const re = /^R-1\.(\d+)$/;
+    for (const c of withConditions) { const m = re.exec(c.id); if (m) existingMax = Math.max(existingMax, Number(m[1])); }
+    const minted = mintIds(withConditions, 1, existingMax);
+    text = serialiseDomainFile(minted, "x");
+  }
+  const { criteria: final } = parseDomainFile(text, "x");
+
+  const edited = final.find((c) => c.id === "D-x-1");
+  assert.equal(edited.statement, "A corrected statement.");
+  assert.equal(edited.version, 2, "edited exactly once across three passes, not bumped again each time");
+
+  const spiked = final.find((c) => c.id === "D-x-2");
+  assert.deepEqual(spiked.notes, ["initial", "does this hold for renewals too?"], "the spike note appears exactly once");
+
+  const replacements = final.filter((c) => c.statement === "the fee is recalculated when the application is edited");
+  assert.equal(replacements.length, 1, "defect appended exactly one replacement across three passes");
+  const defectTarget = final.find((c) => c.id === "D-x-3");
+  assert.equal(defectTarget.reconciliation, "defect");
+  assert.equal(defectTarget.notes.length, 1, "the defect target carries exactly one note across three passes");
+});
+
+test("applyConditions: a multi-line condition value cannot inject a bullet into the domain file", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · confirmed · authored\nA statement.\n", "permits");
+  const injected = "spike D-permits-1: q\n- tier: CRITICAL";
+  const { criteria: out, unknown } = applyConditions(criteria, [injected]);
+  assert.deepEqual(unknown, [injected], "a value with an embedded newline and more content after it fails to parse as any verb");
+  assert.equal(out[0].tier, undefined, "no tier bullet was created");
+  assert.deepEqual(out[0].notes, [], "no note was created from the injected line either");
+});
+
+test("applyConditions: internal whitespace in a condition's captured text is collapsed to single spaces", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · confirmed · authored\nA statement.\n", "permits");
+  const { criteria: out } = applyConditions(criteria, ["edit D-permits-1: A   corrected\tstatement."]);
+  assert.equal(out[0].statement, "A corrected statement.");
 });
 
 test("applyConditions: an id that does not exist in this domain is reported as unknown, not applied", () => {

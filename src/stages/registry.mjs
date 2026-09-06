@@ -343,16 +343,24 @@ function checkSpecArtifacts(projectDir) {
   return { id, ok: messages.length === 0, messages };
 }
 
-// The highest `n` already minted as `R-<domainOrdinal>.<n>` in this domain's own
-// criteria — `mintIds`' `existingMax`, so a second ratify run on a domain archaeology
-// revisited continues numbering rather than colliding with what an earlier run already
-// minted.
-function maxRNumber(criteria, domainOrdinal) {
+// The highest `n` already minted as `R-<domainOrdinal>.<n>` anywhere in the project —
+// `mintIds`' `existingMax`, so a second ratify run on a domain archaeology revisited
+// continues numbering rather than colliding with what an earlier run already minted.
+// Scoped to the whole project (every domain's criteria), not just the domain being
+// ratified: an id's ordinal is a *position* in `config.project.domains`, and a project
+// whose domain list gets reordered after some ids were already minted can leave an
+// `R-<k>.<n>` sitting in a domain file other than the one that now owns ordinal `k`.
+// Scanning every domain for that ordinal, rather than trusting the current domain's own
+// file to hold its own history, is what keeps a freshly minted id from colliding with
+// one already claimed under the same ordinal elsewhere.
+function maxRNumber(allDomains, domainOrdinal) {
   const re = new RegExp(`^R-${domainOrdinal}\\.(\\d+)$`);
   let max = 0;
-  for (const c of criteria) {
-    const m = re.exec(c.id);
-    if (m) max = Math.max(max, Number(m[1]));
+  for (const criteria of Object.values(allDomains)) {
+    for (const c of criteria) {
+      const m = re.exec(c.id);
+      if (m) max = Math.max(max, Number(m[1]));
+    }
   }
   return max;
 }
@@ -366,42 +374,52 @@ function maxRNumber(criteria, domainOrdinal) {
 // `runStage` synthesises one (`cost: 0, turns: 0, sessionId: "deterministic"`).
 const ratify = {
   name: "ratify",
-  title: "ratify",
+  // `finishStage` resolves a function `title` by calling it with `ctx` — the domain name
+  // is folded into the no-gate commit subject (`stage(ratify): <title>`) this way, rather
+  // than by `execute` mutating the shared, single `ratify` object's own `title` field
+  // (unsafe if the runner ever executes stages concurrently within one process, and a
+  // stale value on any run that reads `stage.title` before `execute` is called for the
+  // first time).
+  title: (ctx) => (ctx?.domain ? `ratify ${ctx.domain}` : "ratify"),
   workspace: "project",
   gate: null,
   agent: false,
   collect: [],
   implemented: true,
-  // `stage.title` is read by `finishStage` as a plain field, not a function, when it
-  // builds the no-gate commit subject (`stage(ratify): <title>`) — so the domain name is
-  // folded into it here, the one point that already has `ctx.domain` in hand, rather than
-  // widening `finishStage`'s contract for a title only this stage needs to parameterise.
   execute(projectDir, ctx) {
     const domain = ctx.domain;
-    this.title = `ratify ${domain}`;
 
     const gate = parseYaml(readText(ratifyGatePath(projectDir, domain))) ?? {};
     const conditions = gate.conditions ?? [];
 
     const domainFile = join(projectDir, "spec", "domains", `${domain}.md`);
-    const { criteria: before } = parseDomainFile(readText(domainFile), domain);
-
-    // Nothing provisional left to rule on: an earlier ratify run already minted every
-    // `D-` id this domain had, so re-running against the same, unchanged gate file is a
-    // no-op — no new journal entry, no commit (`runStage` skips `finishStage` entirely
-    // when `changed` comes back empty).
-    if (!before.some((c) => c.id.startsWith("D-"))) {
-      return { text: `ratify ${domain}: nothing to do — no provisional criteria remain`, changed: [] };
-    }
-
-    const { criteria: withConditions, applied, unknown } = applyConditions(before, conditions);
+    const originalText = readText(domainFile);
 
     const domains = ctx.config?.project?.domains ?? [];
     const domainOrdinal = domains.indexOf(domain) + 1;
-    const existingMax = maxRNumber(withConditions, domainOrdinal);
-    const minted = mintIds(withConditions, domainOrdinal, existingMax);
 
-    writeText(domainFile, serialiseDomainFile(minted, domain));
+    // Read before this pass writes anything: `maxRNumber` needs every OTHER domain's
+    // own already-minted ids under this ordinal, not just this domain's.
+    const { domains: allDomains } = parseAll(projectDir);
+    const existingMax = maxRNumber(allDomains, domainOrdinal);
+
+    const { criteria: before } = parseDomainFile(originalText, domain, domainOrdinal);
+    const { criteria: withConditions, applied, unknown } = applyConditions(before, conditions);
+    const minted = mintIds(withConditions, domainOrdinal, existingMax);
+    const serialised = serialiseDomainFile(minted, domain);
+
+    // Every verb `applyConditions` applies is idempotent against a row it already
+    // changed (see that function's own comment), so replaying the same gate-file
+    // conditions against an unchanged domain file reproduces the same text byte for
+    // byte. That real comparison — not "does any `D-` id happen to remain" — decides
+    // whether this run is a no-op: a domain can carry a `D-` id forever (a `spike`d or
+    // still-`inferred` criterion that never gets confirmed) without that meaning a rerun
+    // has fresh work to do.
+    const domainChanged = serialised !== originalText;
+    if (!domainChanged) {
+      return { text: `ratify ${domain}: nothing to do — already ratified`, changed: [] };
+    }
+    writeText(domainFile, serialised);
 
     const parsed = parseAll(projectDir);
     writeIndex(projectDir, parsed);

@@ -60,7 +60,16 @@ function compareIds(a, b) {
 // (the statement), then `- key: value` bullets. Parses everything it can and collects
 // what it cannot into `errors` rather than throwing, so a single malformed block in a
 // domain file never hides every criterion after it.
-export function parseDomainFile(text, domain) {
+// `expectedOrdinal`, when given, is the domain's 1-based position in
+// `config.project.domains` — `parseAll` passes it through when a config is available;
+// direct callers (and every existing test) that omit it get the parser's original,
+// config-free behaviour: an `R-<k>.<n>` heading is accepted for any `k` at all. When it
+// is given, a heading `R-<k>.<n>` whose `k` does not match is a parse error the same way
+// a `D-` heading whose domain does not match the file is — a permanent id has drifted
+// into the wrong file (most likely a domain reorder in `config.project.domains` after
+// some ids were already minted under the old ordinal) and that is worth surfacing rather
+// than silently accepting.
+export function parseDomainFile(text, domain, expectedOrdinal) {
   const lines = text.split("\n");
   const criteria = [];
   const errors = [];
@@ -93,6 +102,11 @@ export function parseDomainFile(text, domain) {
     const idDomain = domainOf(id);
     if (idDomain !== null && idDomain !== domain)
       errors.push({ line: headingLine, message: `heading ID ${id} belongs to domain "${idDomain}", not "${domain}"` });
+    if (expectedOrdinal !== undefined) {
+      const rm = /^R-(\d+)\.\d+$/.exec(id);
+      if (rm && Number(rm[1]) !== expectedOrdinal)
+        errors.push({ line: headingLine, message: `heading ID ${id} belongs to domain ordinal ${rm[1]}, not ${expectedOrdinal} ("${domain}")` });
+    }
     i++;
 
     // The statement is every non-empty, non-bullet line up to the first bullet (or the
@@ -179,9 +193,21 @@ export function parseAll(projectDir) {
   const errors = [];
   if (!existsSync(dir)) return { domains, errors };
   const files = readdirSync(dir).filter((f) => f.endsWith(".md")).sort();
+
+  // The ordinal check in `parseDomainFile` only fires when a config is actually
+  // available and lists the domain — a domain file for a name `project.domains` does
+  // not (yet) know about parses exactly as it always has, with no ordinal check at all.
+  const cfgPath = join(projectDir, ".sdlc", "config.yaml");
+  let configuredDomains = null;
+  if (existsSync(cfgPath)) {
+    const { config } = loadConfig(cfgPath);
+    if (Array.isArray(config?.project?.domains)) configuredDomains = config.project.domains;
+  }
+
   for (const f of files) {
     const domain = f.replace(/\.md$/, "");
-    const { criteria, errors: fileErrors } = parseDomainFile(readText(join(dir, f)), domain);
+    const ordinal = configuredDomains && configuredDomains.includes(domain) ? configuredDomains.indexOf(domain) + 1 : undefined;
+    const { criteria, errors: fileErrors } = parseDomainFile(readText(join(dir, f)), domain, ordinal);
     domains[domain] = criteria;
     for (const e of fileErrors) errors.push({ file: `spec/domains/${f}`, ...e });
   }
@@ -260,16 +286,29 @@ export function renderSpecIndex(projectDir, parsed) {
 // `confirm` take no text; the rest require it. Anything else — an unrecognised verb, a missing
 // colon where one is required — is not this function's business to guess at, and is left for
 // `applyConditions` to report as unknown rather than thrown here.
+// No `/s` (dotAll) flag on any of these: `.` does not match a newline, so a value that
+// tries to smuggle a second line in — `spike D-x-1: q\n- tier: CRITICAL`, hoping the
+// injected `- tier:` line gets serialised into the domain file as its own bullet — fails
+// to match at all (a bare `$`, with neither `/s` nor `/m`, only ever lands at the true
+// end of the string, which a line with more content after an embedded `\n` never
+// reaches), so the whole condition is reported as `unknown` rather than half-applied.
+// What *is* still captured is run through `collapseWhitespace` so any internal run of
+// whitespace a legitimate single-line value happens to carry (extra spaces, a stray tab)
+// comes out normalised, rather than reproduced byte-for-byte into the domain file.
+function collapseWhitespace(s) {
+  return s.replace(/\s+/g, " ").trim();
+}
+
 function parseCondition(line) {
   const t = line.trim();
   let m;
   if ((m = /^contract\s+(\S+)\s*$/.exec(t))) return { verb: "contract", id: m[1] };
   if ((m = /^confirm\s+(\S+)\s*$/.exec(t))) return { verb: "confirm", id: m[1] };
-  if ((m = /^defect\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "defect", id: m[1], text: m[2].trim() };
-  if ((m = /^edit\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "edit", id: m[1], text: m[2].trim() };
-  if ((m = /^obsolete\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "obsolete", id: m[1], text: m[2].trim() };
-  if ((m = /^drop\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "drop", id: m[1], text: m[2].trim() };
-  if ((m = /^spike\s+(\S+):\s*(.+)$/s.exec(t))) return { verb: "spike", id: m[1], text: m[2].trim() };
+  if ((m = /^defect\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "defect", id: m[1], text: collapseWhitespace(m[2]) };
+  if ((m = /^edit\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "edit", id: m[1], text: collapseWhitespace(m[2]) };
+  if ((m = /^obsolete\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "obsolete", id: m[1], text: collapseWhitespace(m[2]) };
+  if ((m = /^drop\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "drop", id: m[1], text: collapseWhitespace(m[2]) };
+  if ((m = /^spike\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "spike", id: m[1], text: collapseWhitespace(m[2]) };
   return null;
 }
 
@@ -285,7 +324,20 @@ function parseCondition(line) {
 // number already used for that domain across both the input and any earlier addition in
 // this same call) — `mintIds`, run right after, promotes it to a permanent `R-` id the
 // same pass promotes its `replaces` target to, so the two end up pointing at each other's
-// final IDs rather than one permanent and one provisional.
+// final IDs rather than one permanent and one provisional. The old row also gets
+// `superseded-by` pointing at the replacement and a note naming it, both written once at
+// creation — `checkCriteria` fails a `defect` row that has neither a `replaces` nor a
+// note, and an inherited criterion that arrives already marked defect (recovered that
+// way, with no note of its own) would otherwise trip that check the moment it is ratified.
+//
+// Every verb here is applied against whatever is already on the row, not blindly: a
+// second (or third) `ratify` run over the same gate file's conditions — which happens
+// whenever some other criterion in the domain is still `inferred`/`open` and so the
+// domain file still has *a* `D-` row left in it, the signal `execute` used to use to
+// decide whether to do anything at all — must leave the row exactly as the first run
+// left it, not duplicate the note, bump the version again, or mint a second replacement.
+// `confirm` and `contract` are naturally idempotent (setting `confidence` to the same
+// value, or changing nothing, twice is still just that value); the rest check first.
 export function applyConditions(criteria, conditions) {
   const out = criteria.map((c) => ({ ...c, notes: [...(c.notes ?? [])] }));
   const byId = new Map(out.map((c) => [c.id, c]));
@@ -313,31 +365,55 @@ export function applyConditions(criteria, conditions) {
         target.confidence = "confirmed";
         break;
       case "edit":
-        target.statement = text;
-        target.version += 1;
+        // Only a real change costs a version: replaying the same `edit` condition
+        // against a row it already brought up to date must not keep bumping the
+        // version every run.
+        if (target.statement !== text) {
+          target.statement = text;
+          target.version += 1;
+        }
         break;
       case "obsolete":
       case "drop":
         target.state = "obsolete";
-        target.notes.push(text);
+        if (!target.notes.includes(text)) target.notes.push(text);
         break;
       case "spike":
         target.confidence = "open";
-        target.notes.push(text);
+        if (!target.notes.includes(text)) target.notes.push(text);
         break;
       case "defect": {
         target.reconciliation = "defect";
         const domain = domainOf(target.id) ?? domainOf(id);
-        const newId = `D-${domain}-${nextInDomain(domain)}`;
-        const addition = {
-          id: newId, version: 1, confidence: "confirmed", origin: "authored",
-          statement: text, cites: [], reconciliation: undefined,
-          given: undefined, when: undefined, then: undefined, notes: [],
-          state: "proposed", tier: undefined, replaces: id, supersededBy: undefined,
-          raw: `### ${newId} · v1 · confirmed · authored`, line: undefined,
-        };
-        additions.push(addition);
-        byId.set(newId, addition);
+        // Idempotency check: a replacement for this exact defect — same target, same
+        // corrected text — may already exist, either as an earlier addition in this same
+        // call or (the ordinary case, replaying a prior ratify run's condition against a
+        // row that survived as `D-` because it never got confirmed) one already sitting
+        // in `criteria` from disk. `replaces` is checked against both the target's
+        // *current* id and the condition's own `id` (the id as the ruling named it),
+        // since the two coincide except when the target was minted on an earlier pass —
+        // in which case this same condition line would already have failed the `byId`
+        // lookup above and never reached here at all, so this covers the case that
+        // matters: a target that stayed `D-` across repeated runs.
+        const already = [...out, ...additions].find((c) => (c.replaces === target.id || c.replaces === id) && c.statement === text);
+        if (!already) {
+          const newId = `D-${domain}-${nextInDomain(domain)}`;
+          const addition = {
+            id: newId, version: 1, confidence: "confirmed", origin: "authored",
+            statement: text, cites: [], reconciliation: undefined,
+            given: undefined, when: undefined, then: undefined, notes: [],
+            state: "proposed", tier: undefined, replaces: id, supersededBy: undefined,
+            raw: `### ${newId} · v1 · confirmed · authored`, line: undefined,
+          };
+          additions.push(addition);
+          byId.set(newId, addition);
+          // Written once, here, using the replacement's provisional id: `mintIds`, run
+          // right after, rewrites both `supersededBy` and this note's mention of `newId`
+          // to the replacement's permanent id when it mints in the same pass (the
+          // ordinary case, since the replacement is always authored `confirmed`).
+          target.supersededBy = newId;
+          target.notes.push(`superseded by ${newId}`);
+        }
         break;
       }
     }
@@ -356,9 +432,15 @@ export function applyConditions(criteria, conditions) {
 // rewritten to the new permanent id when the criterion they point at was minted in this
 // same pass (a `defect` row and its replacement are minted together, so both end up
 // pointing at final IDs); a reference to an id minted on an earlier run, or never minted
-// at all, is left exactly as written.
+// at all, is left exactly as written. A note is free text, not a reference field, but a
+// `defect` note (`applyConditions`) names its replacement by whatever id that replacement
+// had at the moment the note was written — almost always its provisional one, since
+// `applyConditions` runs before this function does — so any occurrence of an id this pass
+// mints is rewritten inside every note too, the same way `replaces`/`superseded-by` are,
+// rather than leaving a note as the one place a fully-ratified domain file still mentions
+// a provisional id that no longer exists anywhere else in it.
 export function mintIds(criteria, domainOrdinal, existingMax) {
-  const out = criteria.map((c) => ({ ...c }));
+  const out = criteria.map((c) => ({ ...c, notes: [...(c.notes ?? [])] }));
   const minted = new Map();
   let next = existingMax + 1;
   for (const c of out) {
@@ -370,9 +452,21 @@ export function mintIds(criteria, domainOrdinal, existingMax) {
       next += 1;
     }
   }
+  const rewriteNote = (note) => {
+    let rewritten = note;
+    for (const [oldId, newId] of minted) {
+      // `(?!\d)` keeps `D-x-1` from matching as a prefix of `D-x-10` — an id's trailing
+      // number has no fixed width, so a plain substring replace could rewrite the wrong
+      // (longer) id's mention by accident.
+      const re = new RegExp(`${oldId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\d)`, "g");
+      rewritten = rewritten.replace(re, newId);
+    }
+    return rewritten;
+  };
   for (const c of out) {
     if (c.replaces && minted.has(c.replaces)) c.replaces = minted.get(c.replaces);
     if (c.supersededBy && minted.has(c.supersededBy)) c.supersededBy = minted.get(c.supersededBy);
+    if (minted.size && c.notes.length) c.notes = c.notes.map(rewriteNote);
   }
   return out;
 }

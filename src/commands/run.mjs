@@ -106,7 +106,11 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
       return { ok: true, dryRun: true };
     }
     const { text, changed } = stage.execute(projectDir, ctx);
-    if (!changed || changed.length === 0) return { ok: true, changed: [] };
+    // `text` is carried on the no-op return too — there is no journal entry for this
+    // path (nothing changed, so `finishStage` is never called), so this is the only
+    // place `execute`'s account of "already ratified" reaches anyone; `COMMANDS.run`
+    // prints it below.
+    if (!changed || changed.length === 0) return { ok: true, changed: [], text };
     return await finishStage(projectDir, stage, ctx, { text, cost: 0, turns: 0, sessionId: "deterministic" });
   }
 
@@ -154,6 +158,7 @@ COMMANDS.run = async ({ pos, flags }) => {
   });
   if (r.dryRun) return 0;
   if (!r.ok) { console.error(`run ${pos[0]}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }
+  if (r.text) console.log(r.text);
   console.log(`run ${pos[0]}: ok${r.proposal ? ` (opened ${r.proposal.branch})` : ""}`);
   return 0;
 };
