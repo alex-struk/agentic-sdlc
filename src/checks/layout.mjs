@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { stagesFor } from "../profiles.mjs";
 
 const ALWAYS = ["constitution.md", ".sdlc/config.yaml", ".sdlc/lock.json", "intent", "spec", "spec/features",
-  "spec/contract", "plan", "app", "evidence/pr-evidence.md", "tests/acceptance", "tests/adapters", "tests/seed"];
+  "spec/domains", "spec/contract", "plan", "app", "evidence/pr-evidence.md", "tests/acceptance", "tests/adapters", "tests/seed"];
 const BY_STAGE = { design: ["design"] };
 
 export function checkLayout(projectDir, ctx = {}) {

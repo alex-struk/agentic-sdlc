@@ -158,7 +158,21 @@ test("layout: required paths for a rebuild project", () => {
     mkdirSync(join(d, p.includes(".") ? p.split("/").slice(0, -1).join("/") || "." : p), { recursive: true });
     if (p.includes(".")) writeFileSync(join(d, p), "");
   }
-  for (const p of ["intent", "design", "plan", "app", "tests/adapters", "tests/seed", "spec/features", "spec/contract"]) mkdirSync(join(d, p), { recursive: true });
+  for (const p of ["intent", "design", "plan", "app", "tests/adapters", "tests/seed", "spec/features", "spec/domains", "spec/contract"]) mkdirSync(join(d, p), { recursive: true });
   writeFileSync(join(d, ".sdlc/lock.json"), "{}");
+  assert.equal(checkLayout(d, { config: { profile: "rebuild" } }).ok, true);
+});
+
+test("layout: spec/domains is required", () => {
+  const d = repo();
+  for (const p of ["constitution.md", ".sdlc/config.yaml", ".sdlc/lock.json", "evidence/pr-evidence.md"]) {
+    mkdirSync(join(d, p.split("/").slice(0, -1).join("/") || "."), { recursive: true });
+    writeFileSync(join(d, p), "");
+  }
+  for (const p of ["intent", "design", "plan", "app", "tests/acceptance", "tests/adapters", "tests/seed", "spec", "spec/features", "spec/contract"]) mkdirSync(join(d, p), { recursive: true });
+  const r = checkLayout(d, { config: { profile: "rebuild" } });
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.includes("missing: spec/domains"));
+  mkdirSync(join(d, "spec/domains"), { recursive: true });
   assert.equal(checkLayout(d, { config: { profile: "rebuild" } }).ok, true);
 });

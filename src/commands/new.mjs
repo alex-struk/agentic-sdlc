@@ -26,8 +26,6 @@ export async function newProject({ dir, from, interactive = false, answers = nul
   const fill = (p, map) => writeText(p, Object.entries(map).reduce((t, [k, v]) => t.replaceAll(`{{${k}}}`, v), readText(p)));
   const date = new Date().toISOString().slice(0, 10);
   fill(join(dir, "constitution.md"), { PROJECT_NAME: config.project.name, DATE: date });
-  fill(join(dir, "spec", "spec.md"), { PROJECT_NAME: config.project.name,
-    DOMAIN_SECTIONS: config.project.domains.map((d) => `## ${d}\n\n_No criteria yet._\n`).join("\n") });
   fill(join(dir, "spec", "contract", "openapi.yaml"), { PROJECT_NAME: config.project.name });
   fill(join(dir, "plan", "tasks.md"), { PROJECT_NAME: config.project.name });
 
