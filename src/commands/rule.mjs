@@ -212,10 +212,18 @@ export async function rulePending(projectDir) {
     const g = config.policy.gates[gateMatch[1]];
     if (!g || !g.holder?.startsWith("agent:")) continue;
     const persona = g.holder.slice("agent:".length);
-    // One proposal's agent turn misbehaving (a bad verdict block, a tampered working
-    // tree) must not take the rest of the batch down with it: the failure is recorded
+    // One proposal's agent turn misbehaving (a bad verdict block, an escalation with no
+    // target) must not take the rest of the batch down with it: the failure is recorded
     // — printed here and written to the run record — and the loop moves on to the next
-    // branch rather than throwing out of `rulePending` entirely.
+    // branch rather than throwing out of `rulePending` entirely. A *tampered working
+    // tree* is different: `git checkout -q main` succeeds even with uncommitted changes
+    // present whenever the file is identical on both branches, so switching branches
+    // here would carry the tampering onto `main` silently, and every later proposal in
+    // the batch would then fail its own `assertCleanTree` with a message that points at
+    // the wrong ruling. So when the tree is left dirty, the batch stops instead: no
+    // checkout, no run-record commit (there is nothing clean to commit it onto), just
+    // the failure already pushed above plus a `stopped` marker on the returned summary,
+    // leaving the caller on the offending proposal branch with the tampering visible.
     try {
       const r = await ruleByAgent(projectDir, name, { persona });
       results.push({ name, ...r });
@@ -223,6 +231,12 @@ export async function rulePending(projectDir) {
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
       console.log(`${name}: failed — ${e.message}`);
+      if (git(["status", "--porcelain"], projectDir)) {
+        const stopped = `${name}: working tree dirty after the ruling agent's turn; inspect and clean before continuing`;
+        console.log(stopped);
+        results.stopped = stopped;
+        return results;
+      }
       gitOk(["checkout", "-q", "main"], projectDir);
       try {
         const runPath = appendRun(projectDir, `rule --pending ${name}: failed — ${e.message}`);

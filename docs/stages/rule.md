@@ -130,9 +130,22 @@ only ever rejects a persona ruling a gate it does not hold. An agent-held gate w
 `escalate_to` at all is rejected next, before the persona brief is read or any agent turn runs:
 `gate <name> has an agent holder but no escalate_to`.
 
-`--pending` rules each open, agent-held proposal in its own try/catch: one proposal's failure
-(a bad verdict block, a tampered working tree) is printed and written to the run record, and the
+`--pending` rules each open, agent-held proposal in its own try/catch: one proposal's failure (a
+bad verdict block, an escalation with no target) is printed and written to the run record, and the
 loop moves on to the next branch rather than aborting the whole batch.
+
+A failure that leaves the working tree dirty (an agent's turn tampering with a file) is different
+and stops the batch instead of continuing. `git checkout -q main` succeeds even with uncommitted
+changes present whenever the file is identical on both branches, so switching back to `main` to
+carry on would carry the tampering onto `main` silently, and every later proposal in the batch
+would then fail its own clean-tree check with a message pointing at the wrong ruling — and `main`
+would be left dirty besides. So `--pending` checks the tree after any failure: if it is dirty, it
+does not check out `main`, does not attempt the run-record commit (there is nothing clean to
+commit it onto), and stops — no further proposals are ruled. The failure is still pushed into the
+returned results, and the summary carries a `stopped: "<name>: working tree dirty after the ruling
+agent's turn; inspect and clean before continuing"` entry. The checkout is left on the offending
+`proposal/<name>` branch with the tampered file visible, for a person to inspect and clean up
+before running `--pending` again.
 
 ## Exit criterion
 

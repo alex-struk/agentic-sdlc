@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { git } from "../src/lib/git.mjs";
+import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { init } from "../src/commands/init.mjs";
 import { propose } from "../src/commands/propose.mjs";
@@ -305,6 +305,65 @@ egress: { rules: [E-2] }
     const day = new Date().toISOString().slice(0, 10);
     const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
     assert.match(runs, /bad-one: failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("rulePending: a dirty tree after a ruling agent's turn stops the batch instead of contaminating main", async () => {
+  const CONFIG = `
+pipeline: { repo: agentic-sdlc, ref: main }
+profile: greenfield
+stack: openshift-ts
+project: { name: p, domains: [a] }
+policy:
+  gates:
+    G0: { holder: "agent:product-owner", escalate_to: tech-lead }
+    G1: { holder: "agent:architect", escalate_to: tech-lead }
+    G-DESIGN: { holder: ux-reviewer }
+    G2: { holder: tech-lead }
+    G3: { holder: tech-lead }
+    G-POL: { holder: tech-lead }
+  default_tier: STANDARD
+skills: { packs: [] }
+egress: { rules: [E-2] }
+`;
+  const dir = microProject(CONFIG);
+  mkdirSync(join(dir, ".sdlc/personas"), { recursive: true });
+  writeFileSync(join(dir, ".sdlc/personas/product-owner.md"), "# Product owner\n\nRules on intent.\n");
+  writeFileSync(join(dir, ".sdlc/personas/architect.md"), "# Architect\n\nRules on design.\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "add personas"], dir);
+  // Two proposals, both agent-held. The first (created first, so ruled first by
+  // `--sort=creatordate`) gets a mock reply that tampers a tracked file; the second has
+  // no canned response in the mock dir at all, so it must never be attempted.
+  propose(dir, "first-one", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  propose(dir, "second-one", { gate: "G1", question: "Sound design?", recommendation: "Yes." });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-pending-dirty-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    text: '```json\n{"verdict":"approve","rationale":"looks fine","conditions":[]}\n```',
+    files: { "README.md": "tampered" },
+  }));
+  const prevEgress = process.env.SDLC_EGRESS_NAMES;
+  const emptyList = join(mkdtempSync(join(tmpdir(), "sdlc-egress-pending-dirty-")), "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const results = await rulePending(dir);
+    assert.match(results.stopped, /^first-one: working tree dirty after the ruling agent's turn; inspect and clean before continuing$/);
+    const byName = Object.fromEntries(results.map((r) => [r.name, r]));
+    assert.equal(byName["first-one"].failed, true);
+    assert.match(byName["first-one"].error, /rule: the ruling agent modified the working tree/);
+    assert.equal(byName["second-one"], undefined, "the second proposal must not have been attempted");
+    // The checkout is left on the offending branch, tampering visible, not swept onto main.
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/first-one");
+    assert.match(git(["status", "--porcelain"], dir), /README\.md/);
+    assert.equal(readFileSync(join(dir, "README.md"), "utf8"), "tampered");
+    // The second proposal's branch was never touched: no gate file was written to it.
+    assert.equal(gitOk(["cat-file", "-e", "proposal/second-one:.sdlc/gates/second-one.yaml"], dir), false);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
