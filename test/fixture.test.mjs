@@ -37,8 +37,10 @@ test("fixture project: create, fill constitution, checks green, propose, approve
     propose(dir, "harness-ready", { gate: "G1", question: "Is the harness ready?", recommendation: "Yes: all structural checks pass on an empty proposal." });
     rule(dir, "harness-ready", "approve", { by: "tech-lead", note: "phase 0 exit" });
     const { pages } = buildSite(dir);
-    assert.equal(pages.length, 3);
+    // index, gates, runs, journal, and one proposal page (harness-ready).
+    assert.equal(pages.length, 5);
     assert.ok(existsSync(join(dir, "site/gates.md")));
+    assert.ok(existsSync(join(dir, "site/proposals/harness-ready.md")));
   } finally {
     if (prev === undefined) delete process.env.SDLC_EGRESS_NAMES;
     else process.env.SDLC_EGRESS_NAMES = prev;
