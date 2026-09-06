@@ -35,3 +35,17 @@ export function stagePaths(projectDir, paths) {
   const present = paths.filter((p) => existsSync(join(projectDir, p)));
   if (present.length) git(["add", "--", ...present], projectDir);
 }
+
+// The porcelain status lines as bare project-relative paths, with the two status
+// characters and the separating space git prints before each one stripped off. This
+// calls git directly rather than going through `git()` above: that helper's blanket
+// `.trim()` is meant for single-value output (a branch name, a commit hash) and, given
+// multi-line porcelain output, eats only the first line's leading status character —
+// exactly the character a fixed-width slice needs to find the path. A stage run uses
+// this to discover exactly which files an agent turn actually touched, so only those
+// are staged rather than sweeping in whatever else is on disk.
+export function changedPaths(projectDir) {
+  const out = execFileSync("git", ["status", "--porcelain"], { cwd: projectDir, encoding: "utf8" });
+  if (!out.trim()) return [];
+  return out.replace(/\n$/, "").split("\n").map((l) => l.slice(3).trim());
+}

@@ -11,6 +11,8 @@ const HELP = `sdlc <command> [args] [--flags]
   checks [dir] [--self] [--json]   run the structural checks
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."]
   rule <name> approve|return --by <role> [--note "..."]
+  run <stage> [--slice N] [--domain X] [--dry-run] [--again]   run one pipeline stage
+  resume [--again]                 continue an interrupted run
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails
 `;
@@ -27,7 +29,7 @@ const HELP = `sdlc <command> [args] [--flags]
 // its own top level, so `COMMANDS` is already the real object by the time they assign to it.
 let commandsLoaded = null;
 function loadCommands() {
-  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/status.mjs")]);
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs")]);
   return commandsLoaded;
 }
 
