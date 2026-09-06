@@ -15,7 +15,24 @@ const HELP = `sdlc <command> [args] [--flags]
   doctor [dir]                     check tools, config and guardrails
 `;
 
+// Command modules (new.mjs, init.mjs, ...) import `COMMANDS` back from this module to
+// register themselves, which makes this a genuine import cycle. A *static* bottom import
+// here (`import "./commands/new.mjs"`) would evaluate those modules — and their top-level
+// `COMMANDS.new = ...` assignment — before this module's own `export const COMMANDS = {}`
+// line has run, since ES module evaluation always finishes a module's dependencies before
+// running its own body, regardless of where the import appears in the file. That throws
+// "Cannot access 'COMMANDS' before initialization" when this file is the entry point (e.g.
+// `node bin/sdlc.mjs ...`, which imports this module first). Loading the command modules
+// dynamically instead defers their evaluation until after this module has finished running
+// its own top level, so `COMMANDS` is already the real object by the time they assign to it.
+let commandsLoaded = null;
+function loadCommands() {
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs")]);
+  return commandsLoaded;
+}
+
 export async function main(argv) {
+  await loadCommands();
   const { pos, flags } = parseArgs(argv);
   const [cmd, ...rest] = pos;
   if (!cmd || cmd === "help" || flags.help) { console.log(HELP); return 0; }
