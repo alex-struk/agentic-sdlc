@@ -46,10 +46,20 @@ On `return`, the proposal branch is left exactly as it is — not merged — so 
 another round.
 
 `sdlc status` (`buildSite`) runs after every ruling, human or agent, so the state site's gate log
-and coverage numbers are never more than one ruling stale. The site is a tracked artifact:
-`site/index.md`, `site/gates.md` and `site/runs.md` are folded into the same commit the ruling
-made — the merge commit on `main` for an approval, the plain ruling commit otherwise — rather than
-left as an uncommitted diff.
+and coverage numbers are never more than one ruling stale. The site is a tracked artifact: every
+page it generates —
+
+- `site/index.md` (coverage, the page list, and the cost, ruling, escalation and open-proposal
+  totals),
+- `site/gates.md` (the gate log, this ruling now its newest row),
+- `site/runs.md` (the run log),
+- `site/journal.md` (the stage journal), and
+- `site/proposals/<name>.md`, one page per proposal, ruled or open, including this one
+
+— is folded into the same commit the ruling made: the merge commit on `main` for an approval, the
+plain ruling commit otherwise, rather than left as an uncommitted diff. A project whose
+`.gitignore` still hides `site/` has that line reconciled away first (`docs/stages/init.md`), so
+the pages are committed rather than silently regenerated and dropped.
 
 ## The agent path
 

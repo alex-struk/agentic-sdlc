@@ -9,7 +9,7 @@ const HELP = `sdlc <command> [args] [--flags]
   new <dir> --answers <brief.md>   run the interview against a written stakeholder brief (no person needed)
   init [dir]                       install the pipeline into a project (lockfile, packs, callers)
   checks [dir] [--self] [--json]   run the structural checks
-  propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."]
+  propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."] [--tier HIGH]
   rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>
   rule --pending                   rule every open proposal an agent holds the gate for
   run <stage> [--slice N] [--domain X] [--dry-run]   run one pipeline stage

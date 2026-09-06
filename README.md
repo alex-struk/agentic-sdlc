@@ -26,8 +26,10 @@ allows 22 or later.
   egress); `--self` checks this pipeline repository itself.
 - `sdlc doctor [dir]` — check that required and optional tools, the agent deny list, the egress
   name list, and the project configuration are all in place.
-- `sdlc propose <name> --gate G<n> --question "..." --recommendation "..."` — open a decision as a
-  `proposal/<name>` branch with a decision page.
+- `sdlc propose <name> --gate G<n> --question "..." --recommendation "..." [--tier HIGH]` — open a
+  decision as a `proposal/<name>` branch with a decision page. `--tier` records the proposal's risk
+  tier on that page; `HIGH` and `CRITICAL` make the gate's persona agent escalate to a human
+  instead of ruling.
 - `sdlc rule <name> approve|return --by <role>` — record a verdict on an open proposal and merge it
   into `main` on approval.
 - `sdlc rule <name> --by agent:<persona>` — let the gate's own persona agent rule instead of a
