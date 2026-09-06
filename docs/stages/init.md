@@ -3,8 +3,9 @@
 ## Purpose
 
 Install or refresh the pipeline inside an existing project directory: pin the pipeline and skill
-pack versions, install the configured skill packs, generate the CI caller workflow, and seed the
-machine-local egress name list.
+pack versions, install the configured skill packs, install the agent guardrails (the deny list,
+the implement-guard hook and the run-record merge attribute), generate the CI caller workflow,
+and seed the machine-local egress name list.
 
 ## Inputs
 
@@ -17,12 +18,19 @@ machine-local egress name list.
   the configured ref.
 - Each configured skill pack cloned (or already present) under `.sdlc/packs/<name>`, checked out
   at its pinned commit.
-- The skills each pack lists copied into `.claude/skills/<skill>`, once, on first install.
-- `.github/workflows/sdlc-checkpoint.yml`, generated from the template with the pipeline repo and
-  ref filled in.
+- The skills each pack lists copied into `.claude/skills/<skill>`. A skill folder is copied when
+  it is not there; when a pack's pinned commit differs from the commit in the previous lockfile,
+  that pack's skill folders are removed first so the new version replaces the old one.
+- `.claude/settings.json` (the agent deny list and the `PreToolUse` hook registration),
+  `.sdlc/hooks/implement-guard.sh` (made executable) and `.gitattributes` (which marks
+  `.sdlc/runs/*.md` as `merge=union`), each written from the pipeline's templates when missing or
+  different.
+- `.github/workflows/sdlc-checkpoint.yml`, generated from the template with the pipeline repo
+  filled in and the pipeline pinned to the commit recorded in `.sdlc/lock.json`, not to the
+  floating ref.
 - An appended `.sdlc/runs/<date>.md` entry and a commit — but only when the lockfile, the caller
-  workflow, or the installed skills actually changed. A re-run against unchanged inputs writes
-  nothing and commits nothing.
+  workflow, the guardrail files, or the installed skills actually changed. A re-run against
+  unchanged inputs writes nothing and commits nothing.
 - `~/.config/agentic-sdlc/egress-names.txt`, created once per machine if it does not already
   exist. This file lives outside every project directory, so it never affects whether `init`
   considers anything "changed", and it is never part of the commit above.
@@ -46,8 +54,8 @@ Exits 0 and prints `init ok: N skills installed`.
 
 Idempotent. Running `init` again against the same configuration and the same pack commits detects
 no change, installs nothing further, and leaves the working tree and run record untouched. It
-only writes and commits again when the configuration, the resolved pack commits, or the generated
-workflow actually differ from what is already on disk.
+only writes and commits again when the configuration, the resolved pack commits, the installed
+guardrail files, or the generated workflow actually differ from what is already on disk.
 
 ## Failure modes
 
@@ -59,9 +67,16 @@ workflow actually differ from what is already on disk.
 
 ## The implement-guard table
 
-`templates/hooks/implement-guard.sh` is installed by `new` as a Claude Code `PreToolUse` hook. It
-reads the `SDLC_STAGE` environment variable and blocks edits to paths outside the current stage's
-territory. An unset `SDLC_STAGE` defaults to `build`, the most restrictive default.
+`templates/hooks/implement-guard.sh` is installed by `init` as `.sdlc/hooks/implement-guard.sh`
+and registered as a Claude Code `PreToolUse` hook by `.claude/settings.json`. It reads the
+`SDLC_STAGE` environment variable and blocks edits to paths outside the current stage's territory.
+An unset `SDLC_STAGE` defaults to `build`, the most restrictive default.
+
+The path an edit names is resolved and made relative to the project directory before it is
+matched, so `./spec/spec.md`, `spec/../spec/spec.md` and an absolute path inside the project are
+all matched as `spec/spec.md`. A path that resolves outside the project is allowed through: a
+stage's territory is a statement about the project tree, and agents legitimately write scratch
+files elsewhere.
 
 | Stage | Blocked paths |
 | --- | --- |
@@ -76,8 +91,8 @@ else exits 0 and the edit proceeds.
 
 ## The deny list
 
-`templates/project/.claude/settings.json` sets `permissions.deny` for every agent session running
-inside a project. Each entry:
+`templates/project/.claude/settings.json` is installed as `.claude/settings.json` by `init`, and
+sets `permissions.deny` for every agent session running inside a project. Each entry:
 
 | Deny rule | Prevents |
 | --- | --- |

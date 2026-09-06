@@ -78,3 +78,61 @@ egress: { rules: [E-1, E-2, E-3, E-4] }
     else process.env.SDLC_EGRESS_NAMES = prevEgressNames;
   }
 });
+
+function makeTwoCommitPack() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-pack2-"));
+  git(["init", "-q", "-b", "main"], d); git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  mkdirSync(join(d, "skills/tdd"), { recursive: true });
+  writeFileSync(join(d, "skills/tdd/SKILL.md"), "version: A\n");
+  git(["add", "."], d); git(["commit", "-q", "-m", "commit A"], d);
+  const commitA = git(["rev-parse", "HEAD"], d);
+  writeFileSync(join(d, "skills/tdd/SKILL.md"), "version: B\n");
+  git(["add", "."], d); git(["commit", "-q", "-m", "commit B"], d);
+  return { dir: d, commitA, commitB: git(["rev-parse", "HEAD"], d) };
+}
+
+function projectConfig(packRepo, packRef) {
+  return `
+pipeline: { repo: agentic-sdlc, ref: main }
+profile: rebuild
+stack: openshift-ts
+project: { name: example-service, domains: [accounts] }
+targets: { new: { base_url: http://localhost:8080, identity: sandbox-idp } }
+policy:
+  gates:
+    G0: { holder: "agent:product-owner", escalate_to: tech-lead }
+    G1: { holder: tech-lead }
+    G-DESIGN: { holder: ux-reviewer }
+    G2: { holder: tech-lead }
+    G3: { holder: tech-lead }
+    G-POL: { holder: tech-lead }
+  default_tier: STANDARD
+skills: { packs: [ { repo: ${packRepo}, ref: ${packRef}, skills: [tdd] } ] }
+egress: { rules: [E-2] }
+`;
+}
+
+test("init reinstalls a pack's skills when its pinned commit moves", async () => {
+  const prevEgressNames = process.env.SDLC_EGRESS_NAMES;
+  const egressDir = mkdtempSync(join(tmpdir(), "sdlc-egress-"));
+  const emptyList = join(egressDir, "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
+  try {
+    const pack = makeTwoCommitPack();
+    const cfgPath = join(mkdtempSync(join(tmpdir(), "sdlc-cfg-")), "example.yaml");
+    writeFileSync(cfgPath, projectConfig(pack.dir, pack.commitA));
+    const dir = join(mkdtempSync(join(tmpdir(), "sdlc-bump-")), "example-service");
+    await newProject({ dir, from: cfgPath });
+    const skill = join(dir, ".claude/skills/tdd/SKILL.md");
+    assert.equal(readFileSync(skill, "utf8"), "version: A\n");
+
+    writeFileSync(join(dir, ".sdlc/config.yaml"), projectConfig(pack.dir, pack.commitB));
+    const second = await init(dir);
+    assert.equal(second.changed, true, "a moved pack commit is a change");
+    assert.equal(readFileSync(skill, "utf8"), "version: B\n", "the installed skill is refreshed to commit B");
+  } finally {
+    if (prevEgressNames === undefined) delete process.env.SDLC_EGRESS_NAMES;
+    else process.env.SDLC_EGRESS_NAMES = prevEgressNames;
+  }
+});

@@ -9,4 +9,6 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: "24" }
-      - run: npx --yes github:{{PIPELINE_REPO}}#{{PIPELINE_REF}} checks --json
+      # Pinned by `sdlc init` to the commit recorded in .sdlc/lock.json.
+      # Configured ref: {{PIPELINE_REF}}
+      - run: npx --yes github:{{PIPELINE_REPO}}#{{PIPELINE_COMMIT}} checks --json

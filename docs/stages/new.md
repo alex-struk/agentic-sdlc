@@ -23,15 +23,20 @@ A new git repository at `<dir>` on branch `main`, containing:
 
 - the `templates/project` tree, copied in;
 - `.sdlc/config.yaml`, the validated configuration text;
-- `.sdlc/hooks/implement-guard.sh`, copied from the pipeline and made executable;
 - `constitution.md`, `spec/spec.md`, `spec/contract/openapi.yaml` and `plan/tasks.md`, with
   `{{PROJECT_NAME}}`, `{{DATE}}` and, for `spec/spec.md`, `{{DOMAIN_SECTIONS}}` (one `## <domain>`
   heading per configured domain) filled in;
 - one commit containing all of the above.
 
 `new` then calls `init` (see `docs/stages/init.md`), so its outputs — the lockfile, installed
-skill packs, the CI caller workflow, and the machine-local egress name list — follow immediately
-in the same run.
+skill packs, `.claude/settings.json`, `.sdlc/hooks/implement-guard.sh`, `.gitattributes`, the CI
+caller workflow, and the machine-local egress name list — follow immediately in the same run, in
+a second commit.
+
+`constitution.md` keeps its project-article placeholders after `new`: the platform articles are
+filled in, but the project's own articles are left as `{{placeholders}}` for the team to write.
+Until they are filled, `sdlc checks` reports the constitution check red, which is the intended
+state of a freshly created project rather than a fault.
 
 ## Workspace the agent sees
 

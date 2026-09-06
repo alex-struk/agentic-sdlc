@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, chmodSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { git, gitOk } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
@@ -8,6 +8,39 @@ import { appendRun } from "../lib/runrecord.mjs";
 import { DEFAULT_NAMES } from "../checks/egress.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { PIPELINE_ROOT } from "./new.mjs";
+
+// Files copied verbatim out of the pipeline's templates into the project. Each is
+// written when it is missing or differs, so a project picks up a template change on
+// the next `sdlc init` without an upgrade step of its own.
+const TEMPLATE_FILES = [
+  { src: ["templates", "project", ".claude", "settings.json"], dst: [".claude", "settings.json"] },
+  { src: ["templates", "hooks", "implement-guard.sh"], dst: [".sdlc", "hooks", "implement-guard.sh"], mode: 0o755 },
+  { src: ["templates", "project", ".gitattributes"], dst: [".gitattributes"] },
+];
+
+function installTemplateFiles(projectDir) {
+  let changed = false;
+  for (const f of TEMPLATE_FILES) {
+    const dst = join(projectDir, ...f.dst);
+    const text = readText(join(PIPELINE_ROOT, ...f.src));
+    if (!existsSync(dst) || readText(dst) !== text) { writeText(dst, text); changed = true; }
+    if (f.mode !== undefined) chmodSync(dst, f.mode);
+  }
+  return changed;
+}
+
+// A pack's skills are copied once and `copyTree` never overwrites, so a pack whose
+// pinned commit moved would otherwise keep serving the old skill text forever. The
+// previous lockfile says which commit each pack was installed from; where that differs
+// from the commit now resolved, the pack's target skill folders are removed so the
+// copy below writes the new version.
+function clearMovedPackSkills(projectDir, packs, prev) {
+  const before = new Map((prev?.packs ?? []).map((p) => [p.name, p.commit]));
+  for (const p of packs) {
+    if (before.get(p.name) === p.commit) continue;
+    for (const s of p.skills) rmSync(join(projectDir, ".claude", "skills", s), { recursive: true, force: true });
+  }
+}
 
 export async function init(projectDir = process.cwd()) {
   projectDir = resolve(projectDir);
@@ -25,11 +58,16 @@ export async function init(projectDir = process.cwd()) {
     changed = true;
   }
 
+  clearMovedPackSkills(projectDir, packs, prev);
   const r = installPacks(projectDir, packs);
   if (r.installed.length) changed = true;
 
+  if (installTemplateFiles(projectDir)) changed = true;
+
   const wf = readText(join(PIPELINE_ROOT, "templates", "workflows", "sdlc-checkpoint.yml"))
-    .replaceAll("{{PIPELINE_REPO}}", config.pipeline.repo).replaceAll("{{PIPELINE_REF}}", config.pipeline.ref);
+    .replaceAll("{{PIPELINE_REPO}}", config.pipeline.repo)
+    .replaceAll("{{PIPELINE_REF}}", config.pipeline.ref)
+    .replaceAll("{{PIPELINE_COMMIT}}", pipelineCommit);
   const wfPath = join(projectDir, ".github", "workflows", "sdlc-checkpoint.yml");
   if (!existsSync(wfPath) || readText(wfPath) !== wf) {
     writeText(wfPath, wf);

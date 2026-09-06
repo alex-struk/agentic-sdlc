@@ -7,7 +7,15 @@ export function packUrl(repo) {
   if (repo.includes("://") || repo.startsWith("/") || repo.startsWith(".")) return repo;
   return `https://github.com/${repo}.git`;
 }
-const packName = (repo) => basename(repo.replace(/\.git$/, "")).replace(/[^a-z0-9-]/gi, "-");
+// Two packs called "skills" under different owners would otherwise share one folder
+// under .sdlc/packs/, so an <owner>/<name> shorthand keeps both halves. A path or a
+// URL keeps its basename, which is what a developer sees on disk.
+export function packName(repo) {
+  const clean = repo.replace(/\.git$/, "");
+  const shorthand = !clean.includes("://") && !clean.startsWith("/") && !clean.startsWith(".") && clean.includes("/");
+  const name = shorthand ? clean.split("/").slice(-2).join("-") : basename(clean);
+  return name.replace(/[^a-z0-9-]/gi, "-");
+}
 
 export function resolvePacks(packs, cwd) {
   return packs.filter((p) => p.enabled !== false).map((p) => {

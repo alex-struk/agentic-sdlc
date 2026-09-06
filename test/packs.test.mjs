@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
-import { resolvePacks, installPacks, packUrl } from "../src/commands/packs.mjs";
+import { resolvePacks, installPacks, packUrl, packName } from "../src/commands/packs.mjs";
 
 function makePack() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-pack-"));
@@ -35,6 +35,14 @@ test("packUrl maps owner/name to GitHub and leaves paths alone", () => {
   assert.equal(packUrl("mattpocock/skills"), "https://github.com/mattpocock/skills.git");
   assert.equal(packUrl("/tmp/x"), "/tmp/x");
   assert.equal(packUrl("https://example.org/a.git"), "https://example.org/a.git");
+});
+
+test("packName keeps the owner so two packs of the same name do not collide", () => {
+  assert.equal(packName("mattpocock/skills"), "mattpocock-skills");
+  assert.equal(packName("bcgov/skills"), "bcgov-skills");
+  assert.equal(packName("bcgov/agent-skills.git"), "bcgov-agent-skills");
+  assert.equal(packName("/tmp/sdlc-pack-abc"), "sdlc-pack-abc");
+  assert.equal(packName("https://example.org/a.git"), "a");
 });
 
 test("resolve pins a branch ref to a commit; install copies the named skills", () => {

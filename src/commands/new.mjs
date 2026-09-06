@@ -1,4 +1,4 @@
-import { existsSync, copyFileSync, chmodSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { git } from "../lib/git.mjs";
@@ -23,10 +23,6 @@ export async function newProject({ dir, from, interactive = false, answers = nul
   git(["init", "-q", "-b", "main"], dir);
   copyTree(join(PIPELINE_ROOT, "templates", "project"), dir);
   writeText(join(dir, ".sdlc", "config.yaml"), text);
-  ensureDir(join(dir, ".sdlc", "hooks"));
-  copyFileSync(join(PIPELINE_ROOT, "templates", "hooks", "implement-guard.sh"), join(dir, ".sdlc", "hooks", "implement-guard.sh"));
-  chmodSync(join(dir, ".sdlc", "hooks", "implement-guard.sh"), 0o755);
-
   const fill = (p, map) => writeText(p, Object.entries(map).reduce((t, [k, v]) => t.replaceAll(`{{${k}}}`, v), readText(p)));
   const date = new Date().toISOString().slice(0, 10);
   fill(join(dir, "constitution.md"), { PROJECT_NAME: config.project.name, DATE: date });
