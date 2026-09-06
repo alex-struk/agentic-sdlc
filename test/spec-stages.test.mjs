@@ -132,3 +132,29 @@ test("sdlc run intent: a mock that writes two intent files fails post-checks", a
     restoreEgress(prevEgress);
   }
 });
+
+test("sdlc run intent: a mock that writes outside intent/ fails scope check", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-intent-scope-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  commitBrief(dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-intent-scope-mock-"));
+  writeFileSync(join(mockDir, "intent.json"), JSON.stringify({
+    text: "wrote a file outside intent",
+    files: {
+      "intent/permit-intake.md": "# Intent: Permit intake\nStatus: draft\n\n## Open questions\n- [ ]\n",
+      "app/oops.md": "This should not be here",
+    },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "intent");
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m.includes("app/oops.md")), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(intent\): post-checks failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});

@@ -92,8 +92,12 @@ function checkIntentScope(projectDir) {
 function firstSentence(text) {
   const trimmed = (text ?? "").trim();
   if (!trimmed) return "no journal text was recorded";
-  const match = trimmed.match(/^[^.!?]*[.!?]/);
-  return (match ? match[0] : trimmed).trim();
+  const match = trimmed.match(/^[\s\S]*?[.!?](?=\s|$)/);
+  let sentence = match ? match[0] : trimmed;
+  if (sentence.length > 200) {
+    sentence = sentence.slice(0, 200) + "…";
+  }
+  return sentence.trim();
 }
 
 // `intent` interviews `intent/brief.md` — the written stakeholder brief a tech lead
