@@ -1,6 +1,6 @@
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitOk } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, stagePaths } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -8,10 +8,28 @@ import { COMMANDS } from "../cli.mjs";
 
 const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
 
+function mergeApproved(projectDir, branch, message) {
+  git(["checkout", "-q", "main"], projectDir);
+  try {
+    git([...SDLC_AUTHOR, "merge", "-q", "--no-ff", "-m", message, branch], projectDir);
+  } catch (e) {
+    // A failed merge leaves main mid-merge, which is the worst place to stop: the
+    // ruling is recorded, main is unbuildable, and nothing says why. Unwind it, put the
+    // caller back on the proposal branch, and name the files a person has to reconcile.
+    const conflicted = gitOk(["diff", "--name-only", "--diff-filter=U"], projectDir)
+      ? git(["diff", "--name-only", "--diff-filter=U"], projectDir) : "";
+    git(["merge", "--abort"], projectDir);
+    git(["checkout", "-q", branch], projectDir);
+    const files = conflicted ? `\nconflicted files:\n  ${conflicted.split("\n").join("\n  ")}` : "";
+    throw new Error(`merging ${branch} into main failed; main was left unchanged and you are back on ${branch}.${files}\n${e.message}`);
+  }
+}
+
 export function rule(projectDir, name, verdict, { by, note = "" }) {
   projectDir = resolve(projectDir);
   if (!["approve", "return"].includes(verdict)) throw new Error("verdict must be approve or return");
   if (!by) throw new Error("rule needs --by <role or agent:persona>");
+  assertCleanTree(projectDir, "rule");
   const branch = `proposal/${name}`;
   if (!gitOk(["rev-parse", "--verify", branch], projectDir)) throw new Error(`no proposal branch ${branch}`);
   git(["checkout", "-q", branch], projectDir);
@@ -26,15 +44,13 @@ export function rule(projectDir, name, verdict, { by, note = "" }) {
   const allowed = [g.holder, g.escalate_to].filter(Boolean);
   if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
   const heldBy = by.startsWith("agent:") ? "agent" : "human";
-  writeText(join(projectDir, ".sdlc", "gates", `${name}.yaml`),
+  const gatePath = join(".sdlc", "gates", `${name}.yaml`);
+  writeText(join(projectDir, gatePath),
     `gate: ${gate}\nverdict: ${verdict}\nby: ${by}\nheld_by: ${heldBy}\nnote: ${JSON.stringify(note)}\nat: ${new Date().toISOString()}\n`);
-  appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
-  git(["add", "-A"], projectDir);
+  const runPath = appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
+  stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${verdict} by ${by}`], projectDir);
-  if (verdict === "approve") {
-    git(["checkout", "-q", "main"], projectDir);
-    git([...SDLC_AUTHOR, "merge", "-q", "--no-ff", "-m", `merge: ${name} approved at ${gate} by ${by}`, branch], projectDir);
-  }
+  if (verdict === "approve") mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
   return { gate, verdict, heldBy };
 }
 

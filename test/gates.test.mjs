@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { rule } from "../src/commands/rule.mjs";
+import { newProject } from "../src/commands/new.mjs";
 
 const CONFIG = `
 pipeline: { repo: agentic-sdlc, ref: main }
@@ -89,4 +90,75 @@ test("two proposals in sequence keep separate run-record entries in their own co
   const addedLines = added.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
   assert.ok(addedLines.some((l) => l.includes("second-one")));
   assert.ok(!addedLines.some((l) => l.includes("first-one")));
+});
+
+test("propose refuses a dirty working tree and names what is dirty", () => {
+  const d = project();
+  writeFileSync(join(d, "scratch-note.txt"), "half-finished work\n");
+  assert.throws(() => propose(d, "dirty-tree", { gate: "G1", question: "?", recommendation: "?" }),
+    (e) => /uncommitted changes/.test(e.message) && e.message.includes("scratch-note.txt"));
+  // Nothing was started: no branch, and the scratch file is untouched.
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+  assert.equal(readFileSync(join(d, "scratch-note.txt"), "utf8"), "half-finished work\n");
+});
+
+test("the proposal commit contains the proposal and the run record and nothing else", () => {
+  const d = project();
+  writeFileSync(join(d, ".gitignore"), "scratch.txt\n");
+  git(["add", "-A"], d); git(["commit", "-q", "-m", "ignore scratch"], d);
+  writeFileSync(join(d, "scratch.txt"), "an agent's working file\n");
+  propose(d, "only-mine", { gate: "G1", question: "?", recommendation: "?" });
+  const files = git(["show", "HEAD", "--name-only", "--format="], d).split("\n").filter(Boolean).sort();
+  assert.deepEqual(files.filter((f) => !f.startsWith(".sdlc/runs/")), [".sdlc/proposals/only-mine.md"]);
+  assert.ok(files.some((f) => f.startsWith(".sdlc/runs/")));
+  assert.ok(!files.includes("scratch.txt"));
+});
+
+test("rule refuses a dirty working tree", () => {
+  const d = project();
+  propose(d, "ruled-clean", { gate: "G1", question: "?", recommendation: "?" });
+  writeFileSync(join(d, "scratch-note.txt"), "x\n");
+  assert.throws(() => rule(d, "ruled-clean", "approve", { by: "tech-lead" }),
+    (e) => /uncommitted changes/.test(e.message) && e.message.includes("scratch-note.txt"));
+});
+
+test("propose rejects a gate the policy does not define", () => {
+  const d = project();
+  assert.throws(() => propose(d, "bad-gate", { gate: "G9", question: "?", recommendation: "?" }), /gate G9 is not in policy/);
+  assert.equal(git(["branch", "--list", "proposal/bad-gate"], d), "", "no branch is left behind");
+});
+
+test("two proposals opened the same day both merge into main", async () => {
+  // Both proposals append to the same dated run record, so the second merge is a
+  // content conflict on a file where both sides are right. `.gitattributes` marks
+  // .sdlc/runs/*.md as merge=union, and `init` installs it.
+  const prevEgressNames = process.env.SDLC_EGRESS_NAMES;
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-sameday-"));
+  const emptyList = join(tmp, "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
+  try {
+    const cfgPath = join(tmp, "example.yaml");
+    writeFileSync(cfgPath, CONFIG);
+    const d = join(tmp, "same-day");
+    await newProject({ dir: d, from: cfgPath });
+    assert.ok(existsSync(join(d, ".gitattributes")), "init installs the merge attribute");
+
+    propose(d, "first-gate", { gate: "G1", question: "First?", recommendation: "Yes." });
+    propose(d, "second-gate", { gate: "G2", question: "Second?", recommendation: "Yes." });
+    rule(d, "first-gate", "approve", { by: "tech-lead" });
+    rule(d, "second-gate", "approve", { by: "tech-lead" });
+
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+    assert.equal(git(["status", "--porcelain"], d), "", "main is not left mid-merge");
+    assert.ok(existsSync(join(d, ".sdlc/gates/first-gate.yaml")));
+    assert.ok(existsSync(join(d, ".sdlc/gates/second-gate.yaml")));
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = readFileSync(join(d, `.sdlc/runs/${day}.md`), "utf8");
+    assert.ok(runs.includes("first-gate"), "the run record keeps the first proposal's lines");
+    assert.ok(runs.includes("second-gate"), "the run record keeps the second proposal's lines");
+  } finally {
+    if (prevEgressNames === undefined) delete process.env.SDLC_EGRESS_NAMES;
+    else process.env.SDLC_EGRESS_NAMES = prevEgressNames;
+  }
 });

@@ -1,6 +1,7 @@
-import { join, resolve } from "node:path";
-import { git } from "../lib/git.mjs";
+import { join, relative, resolve } from "node:path";
+import { git, assertCleanTree, stagePaths } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
+import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { COMMANDS } from "../cli.mjs";
 
@@ -10,14 +11,23 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   projectDir = resolve(projectDir);
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error("proposal name: lowercase letters, digits, hyphens");
   if (!gate || !question || !recommendation) throw new Error("propose needs --gate, --question and --recommendation");
+  // The gate is checked against the same policy `sdlc rule` will check it against, and
+  // before any git command runs: a proposal opened at a gate nobody holds can never be
+  // ruled, and there is no reason to leave a branch behind saying otherwise.
+  const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+  if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
+  if (!config.policy.gates[gate]) throw new Error(`gate ${gate} is not in policy`);
+  assertCleanTree(projectDir, "propose");
+
   const branch = `proposal/${name}`;
   git(["checkout", "-q", "main"], projectDir);
   git(["checkout", "-q", "-b", branch], projectDir);
   const opened = new Date().toISOString();
-  writeText(join(projectDir, ".sdlc", "proposals", `${name}.md`),
+  const proposalPath = join(".sdlc", "proposals", `${name}.md`);
+  writeText(join(projectDir, proposalPath),
     `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`);
-  appendRun(projectDir, `propose ${name} at ${gate}`);
-  git(["add", "-A"], projectDir);
+  const runPath = appendRun(projectDir, `propose ${name} at ${gate}`);
+  stagePaths(projectDir, [proposalPath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `propose(${gate}): ${name}`], projectDir);
   return { branch };
 }

@@ -1,6 +1,6 @@
 import { existsSync, chmodSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { git, gitOk } from "../lib/git.mjs";
+import { join, relative, resolve } from "node:path";
+import { git, gitOk, stagePaths } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
@@ -83,9 +83,20 @@ export async function init(projectDir = process.cwd()) {
   for (const s of r.skipped) console.warn(`warning: ${s}`);
 
   if (changed) {
-    appendRun(projectDir, `init: pipeline ${pipelineCommit.slice(0, 7)}, packs ${packs.length}, skills installed ${r.installed.length}, skipped ${r.skipped.length}`);
-    if (git(["status", "--porcelain"], projectDir)) {
-      git(["add", "-A"], projectDir);
+    const runPath = appendRun(projectDir, `init: pipeline ${pipelineCommit.slice(0, 7)}, packs ${packs.length}, skills installed ${r.installed.length}, skipped ${r.skipped.length}`);
+    // `init` is the one command that may run on a dirty tree — a team runs it in the
+    // middle of ordinary work — so it stages the files it owns by name and leaves
+    // everything else exactly as it found it.
+    stagePaths(projectDir, [
+      join(".sdlc", "lock.json"),
+      join(".github", "workflows", "sdlc-checkpoint.yml"),
+      join(".claude", "skills"),
+      join(".claude", "settings.json"),
+      join(".sdlc", "hooks"),
+      ".gitattributes",
+      relative(projectDir, runPath),
+    ]);
+    if (git(["diff", "--cached", "--name-only"], projectDir)) {
       git(["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost", "commit", "-q", "-m", "chore(sdlc): init"], projectDir);
     }
   }

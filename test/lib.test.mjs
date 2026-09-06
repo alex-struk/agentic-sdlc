@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, gitOk } from "../src/lib/git.mjs";
+import { git, gitOk, assertCleanTree } from "../src/lib/git.mjs";
 import { copyTree, writeText, readText } from "../src/lib/fsx.mjs";
 import { appendRun } from "../src/lib/runrecord.mjs";
 
@@ -17,6 +17,22 @@ test("git wrapper runs and reports", () => {
   git(["commit", "-q", "-m", "init"], d);
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
   assert.equal(gitOk(["rev-parse", "--verify", "nope"], d), false);
+});
+
+test("a failed git command reports the command and what git said", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-giterr-"));
+  git(["init", "-q", "-b", "main"], d);
+  assert.throws(() => git(["rev-parse", "--verify", "nope"], d),
+    (e) => /git rev-parse --verify nope failed/.test(e.message) && /fatal|Needed a single revision/.test(e.message));
+});
+
+test("assertCleanTree names every dirty path", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-dirty-"));
+  git(["init", "-q", "-b", "main"], d);
+  assert.doesNotThrow(() => assertCleanTree(d, "propose"));
+  writeFileSync(join(d, "left-over.txt"), "x");
+  assert.throws(() => assertCleanTree(d, "propose"),
+    (e) => /^propose: the working tree has uncommitted changes/.test(e.message) && e.message.includes("left-over.txt"));
 });
 
 test("copyTree copies without overwriting", () => {

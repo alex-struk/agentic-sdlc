@@ -128,9 +128,16 @@ test("init reinstalls a pack's skills when its pinned commit moves", async () =>
     assert.equal(readFileSync(skill, "utf8"), "version: A\n");
 
     writeFileSync(join(dir, ".sdlc/config.yaml"), projectConfig(pack.dir, pack.commitB));
+    // `init` runs on a dirty tree by design, so it must stage only the files it owns:
+    // an agent's scratch file sitting in the tree is not part of the init commit.
+    writeFileSync(join(dir, "scratch.txt"), "an agent's working file\n");
     const second = await init(dir);
     assert.equal(second.changed, true, "a moved pack commit is a change");
     assert.equal(readFileSync(skill, "utf8"), "version: B\n", "the installed skill is refreshed to commit B");
+    const committed = git(["show", "HEAD", "--name-only", "--format="], dir).split("\n").filter(Boolean);
+    assert.ok(!committed.includes("scratch.txt"), "the scratch file is not in the init commit");
+    assert.ok(!committed.includes(".sdlc/config.yaml"), "the edited config is not swept into the init commit");
+    assert.match(git(["status", "--porcelain"], dir), /scratch\.txt/, "the scratch file is left untracked");
   } finally {
     if (prevEgressNames === undefined) delete process.env.SDLC_EGRESS_NAMES;
     else process.env.SDLC_EGRESS_NAMES = prevEgressNames;
