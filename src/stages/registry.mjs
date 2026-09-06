@@ -89,7 +89,7 @@ function checkIntentScope(projectDir) {
 // journal text, not a re-derivation of it: whatever the agent decided to say first is
 // what a reader sees first. Falls back to the whole (trimmed) text when it holds no
 // sentence-ending punctuation, and to a fixed line when there is no text at all.
-function firstSentence(text) {
+export function firstSentence(text) {
   const trimmed = (text ?? "").trim();
   if (!trimmed) return "no journal text was recorded";
   const match = trimmed.match(/^[\s\S]*?[.!?](?=\s|$)/);

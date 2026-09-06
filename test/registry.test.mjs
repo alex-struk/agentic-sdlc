@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STAGES } from "../src/profiles.mjs";
-import { stageFor, skillText } from "../src/stages/registry.mjs";
+import { stageFor, skillText, firstSentence } from "../src/stages/registry.mjs";
 
 test("probe has no gate and is implemented", () => {
   const probe = stageFor("probe");
@@ -68,4 +68,21 @@ test("skillText concatenates the preamble and the stage skill", () => {
   const text = skillText("probe");
   assert.match(text, /one stage of a longer pipeline/);
   assert.match(text, /app\/PROBE\.md/);
+});
+
+test("firstSentence extracts the first sentence, handling dots in filenames", () => {
+  const result = firstSentence("Read intent/brief.md and wrote intent/x.md. Then more.");
+  assert.equal(result, "Read intent/brief.md and wrote intent/x.md.");
+});
+
+test("firstSentence returns whole trimmed text when no terminator is present", () => {
+  const result = firstSentence("This text has no sentence terminator");
+  assert.equal(result, "This text has no sentence terminator");
+});
+
+test("firstSentence caps sentences longer than 200 characters with ellipsis", () => {
+  const longText = "x".repeat(250) + ". More text.";
+  const result = firstSentence(longText);
+  assert.equal(result.length, 201);
+  assert.ok(result.endsWith("…"));
 });
