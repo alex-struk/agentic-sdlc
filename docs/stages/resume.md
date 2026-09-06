@@ -30,14 +30,23 @@ the stage's post-checks exactly as they would judge a fresh agent turn's output.
 
 No agent session runs here at all. `resume` reads `.sdlc/run-state.json` and the project's
 `.sdlc/config.yaml`, then calls `finishStage` directly against the project directory — the same
-`cwd` every other command operates on. There is no workspace to materialise a second time: whatever
-workspace mode the interrupted run used has already been torn down (`ws.cleanup()` runs in a
-`finally` inside `run`, so a killed *runner* process that still lets that `finally` execute leaves
-no workspace behind either way) or, for the `project` mode every implemented stage uses today, was
-the project directory itself and needs no cleanup.
+`cwd` every other command operates on.
+
+**That only makes sense for a stage whose workspace is `project`**, which is the mode every
+implemented stage uses today. A `spec-only` or `blind-adapter` stage does its work in a temporary
+directory that the interrupted run's own `finally` (`ws.cleanup()`) has already removed, and
+whatever its agent produced went with it: there is nothing left on disk for post-checks to judge,
+and judging the project directory instead would pass or fail on files that stage never touched.
+So `resume` looks the recorded stage up in the registry and, when its `workspace` is anything but
+`project`, refuses with `resume cannot continue a <mode> stage; run it again` and exits 1 without
+reading the config, running a check, or touching the working tree. `.sdlc/run-state.json` is left
+where it is; running the stage again overwrites it.
 
 ## Checks that block
 
+- The stage named in `.sdlc/run-state.json` must have `workspace: "project"` (see above). Checked
+  first, before the interrupted-phase check below, so a temporary-workspace stage is never told to
+  pass `--again` for something `--again` cannot fix.
 - `.sdlc/run-state.json` must exist. If it does not, `resume` prints `nothing to resume` and exits
   0 — there is nothing to continue, and that is a normal outcome, not a failure.
 - If the recorded `phase` is `"agent"` (the agent session itself was still running, or had not yet
@@ -50,8 +59,8 @@ the project directory itself and needs no cleanup.
 ## Exit criterion
 
 Exits 0 when `finishStage` reports `{ ok: true }` (including the "nothing to resume" case above),
-1 when it reports `{ ok: false }` or when an interrupted agent step is refused for lack of
-`--again`.
+1 when it reports `{ ok: false }`, when the recorded stage's workspace was a temporary directory,
+or when an interrupted agent step is refused for lack of `--again`.
 
 ## Re-run behaviour
 
@@ -65,6 +74,8 @@ person to fix it by hand and let `resume` pick the result up.
 ## Failure modes
 
 - No run-state file: not a failure — prints `nothing to resume` and exits 0.
+- The recorded stage's workspace is not `project`: prints `resume cannot continue a <mode> stage;
+  run it again` and exits 1, having changed nothing.
 - Run-state is at `phase: "agent"` and `--again` was not given: prints the guidance above and exits
   1, leaving `.sdlc/run-state.json` untouched.
 - Invalid `.sdlc/config.yaml`: throws listing every schema error.

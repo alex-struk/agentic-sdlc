@@ -358,3 +358,37 @@ test("runStage: an agent turn that reports failure is recorded with the agent's 
     restoreEgress(prevEgress);
   }
 });
+
+test("resume refuses a stage whose workspace was a temporary directory", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-ws-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "spec-only-stage",
+    title: "spec only stage",
+    skill: PROBE_SKILL,
+    workspace: "spec-only",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  writeFileSync(join(dir, ".sdlc", "run-state.json"),
+    JSON.stringify({ stage: "spec-only-stage", ctx: {}, phase: "post-checks" }) + "\n");
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const code = await resume(dir, { again: true });
+    assert.equal(code, 1);
+    assert.ok(logs.some((l) => l === "resume cannot continue a spec-only stage; run it again"), logs.join(" | "));
+    // Nothing was judged and nothing was committed: no journal entry, run-state intact.
+    assert.ok(!existsSync(join(dir, ".sdlc/journal")));
+    assert.ok(existsSync(join(dir, ".sdlc/run-state.json")));
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
