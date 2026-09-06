@@ -1,0 +1,14 @@
+name: sdlc checkpoint
+on: { pull_request: {} }
+permissions: { contents: read, pull-requests: write }
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      # Pinned by `sdlc init` to the commit recorded in .sdlc/lock.json.
+      # Configured ref: {{PIPELINE_REF}}
+      - run: npx --yes github:{{PIPELINE_REPO}}#{{PIPELINE_COMMIT}} checks --json
