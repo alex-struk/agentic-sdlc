@@ -311,7 +311,7 @@ test("bad profile is an error", () => {
 });
 
 test("a person-looking holder is rejected: holders are roles or agent:persona", () => {
-  const { errors } = parseConfig(GOOD.replace("G1: { holder: tech-lead }", "G1: { holder: alex.struk }"));
+  const { errors } = parseConfig(GOOD.replace("G1: { holder: tech-lead }", "G1: { holder: jane.doe }"));
   assert.ok(errors.length > 0);
 });
 ```
@@ -390,7 +390,7 @@ Expected: FAIL, cannot find module `src/config/load.mjs`
 }
 ```
 
-The holder pattern is what enforces "roles, not people": `alex.struk` fails because of the dot, and the docs (Task 13) say role names are lowercase words joined by hyphens.
+The holder pattern is what enforces "roles, not people": `jane.doe` fails because of the dot, and the docs (Task 13) say role names are lowercase words joined by hyphens.
 
 ```js
 // src/config/load.mjs
