@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
+import { init } from "../src/commands/init.mjs";
 import { runChecks } from "../src/checks/index.mjs";
 
 function makePack() {
@@ -65,6 +66,13 @@ egress: { rules: [E-1, E-2, E-3, E-4] }
     assert.deepEqual(failing.map((r) => [r.id, r.messages]), []);
     // constitution still has {{placeholders}} for project articles: expected to fail until filled
     assert.equal(results.find((r) => r.id === "constitution").ok, false);
+
+    // Re-running init on an unchanged project must be a no-op: no new commit, no dirty tree.
+    const commitCountBefore = git(["rev-list", "--count", "HEAD"], dir);
+    const second = await init(dir);
+    assert.equal(git(["rev-list", "--count", "HEAD"], dir), commitCountBefore, "no new commit on an unchanged re-run");
+    assert.equal(git(["status", "--porcelain"], dir), "", "tree stays clean on an unchanged re-run");
+    assert.equal(second.changed, false);
   } finally {
     if (prevEgressNames === undefined) delete process.env.SDLC_EGRESS_NAMES;
     else process.env.SDLC_EGRESS_NAMES = prevEgressNames;

@@ -1,4 +1,4 @@
-import { existsSync, copyFileSync, chmodSync } from "node:fs";
+import { existsSync, copyFileSync, chmodSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { git } from "../lib/git.mjs";
@@ -57,7 +57,9 @@ async function onboardingInterview(dir, { answers = null } = {}) {
   const args = ["-p", "--allowedTools", "Write", "--", prompt];
   execFileSync("claude", args, { stdio: answers ? "pipe" : "inherit" });
   if (!existsSync(out)) throw new Error("onboarding did not produce a config file");
-  return readText(out);
+  const text = readText(out);
+  unlinkSync(out);
+  return text;
 }
 
 COMMANDS.new = async ({ pos, flags }) => {
