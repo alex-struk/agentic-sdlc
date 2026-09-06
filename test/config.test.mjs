@@ -51,6 +51,6 @@ test("bad profile is an error", () => {
 });
 
 test("a person-looking holder is rejected: holders are roles or agent:persona", () => {
-  const { errors } = parseConfig(GOOD.replace("G1: { holder: tech-lead }", "G1: { holder: alex.struk }"));
+  const { errors } = parseConfig(GOOD.replace("G1: { holder: tech-lead }", "G1: { holder: jane.doe }"));
   assert.ok(errors.length > 0);
 });

@@ -46,7 +46,7 @@ Optional. Container describing the reference system (usually the legacy system t
 
 ## targets
 
-Required (allowed to be empty). Container of deployment targets.
+Optional. Container of deployment targets.
 
 - Each key is a target name (e.g., `new`). Each value is an object:
   - `base_url` (string, format URI): A URL starting with `http://` or `https://`.
