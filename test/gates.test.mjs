@@ -64,3 +64,29 @@ test("an agent-held gate records held_by agent and can escalate to the human", (
   rule(d2, "intent-2", "approve", { by: "tech-lead" });
   assert.match(readFileSync(join(d2, ".sdlc/gates/intent-2.yaml"), "utf8"), /held_by: human/);
 });
+
+test("propose leaves the working tree clean and commits the run record on its own branch", () => {
+  const d = project();
+  propose(d, "clean-tree", { gate: "G1", question: "Clean?", recommendation: "Yes." });
+  assert.equal(git(["status", "--porcelain"], d), "");
+  const files = git(["log", "-1", "--name-only"], d);
+  assert.match(files, /\.sdlc\/runs\//);
+});
+
+test("rule approve leaves main's working tree clean", () => {
+  const d = project();
+  propose(d, "clean-main", { gate: "G1", question: "Clean?", recommendation: "Yes." });
+  rule(d, "clean-main", "approve", { by: "tech-lead" });
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+  assert.equal(git(["status", "--porcelain"], d), "");
+});
+
+test("two proposals in sequence keep separate run-record entries in their own commits", () => {
+  const d = project();
+  propose(d, "first-one", { gate: "G1", question: "First?", recommendation: "Yes." });
+  propose(d, "second-one", { gate: "G2", question: "Second?", recommendation: "Yes." });
+  const added = git(["show", "HEAD", "--format=", "--", ".sdlc/runs/"], d);
+  const addedLines = added.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+  assert.ok(addedLines.some((l) => l.includes("second-one")));
+  assert.ok(!addedLines.some((l) => l.includes("first-one")));
+});

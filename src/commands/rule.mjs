@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { git, gitOk } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
@@ -14,7 +15,10 @@ export function rule(projectDir, name, verdict, { by, note = "" }) {
   const branch = `proposal/${name}`;
   if (!gitOk(["rev-parse", "--verify", branch], projectDir)) throw new Error(`no proposal branch ${branch}`);
   git(["checkout", "-q", branch], projectDir);
-  const gate = readText(join(projectDir, ".sdlc", "proposals", `${name}.md`)).match(/^gate:\s*(\S+)/m)[1];
+  const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
+  const gateMatch = existsSync(proposalPath) ? readText(proposalPath).match(/^gate:\s*(\S+)/m) : null;
+  if (!gateMatch) throw new Error(`proposal ${name} has no gate line`);
+  const gate = gateMatch[1];
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
   const g = config.policy.gates[gate];
@@ -24,13 +28,13 @@ export function rule(projectDir, name, verdict, { by, note = "" }) {
   const heldBy = by.startsWith("agent:") ? "agent" : "human";
   writeText(join(projectDir, ".sdlc", "gates", `${name}.yaml`),
     `gate: ${gate}\nverdict: ${verdict}\nby: ${by}\nheld_by: ${heldBy}\nnote: ${JSON.stringify(note)}\nat: ${new Date().toISOString()}\n`);
+  appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
   git(["add", "-A"], projectDir);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${verdict} by ${by}`], projectDir);
   if (verdict === "approve") {
     git(["checkout", "-q", "main"], projectDir);
     git([...SDLC_AUTHOR, "merge", "-q", "--no-ff", "-m", `merge: ${name} approved at ${gate} by ${by}`, branch], projectDir);
   }
-  appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
   return { gate, verdict, heldBy };
 }
 

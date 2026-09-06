@@ -16,13 +16,13 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   const opened = new Date().toISOString();
   writeText(join(projectDir, ".sdlc", "proposals", `${name}.md`),
     `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`);
+  appendRun(projectDir, `propose ${name} at ${gate}`);
   git(["add", "-A"], projectDir);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `propose(${gate}): ${name}`], projectDir);
-  appendRun(projectDir, `propose ${name} at ${gate}`);
   return { branch };
 }
 
 COMMANDS.propose = async ({ pos, flags }) => {
-  const r = propose(process.cwd(), pos[0], { gate: flags.gate, question: flags.question, recommendation: flags.recommendation });
+  const r = propose(process.cwd(), pos[0], { gate: flags.gate, question: flags.question, recommendation: flags.recommendation, page: flags.page ?? "" });
   console.log(`opened ${r.branch}`); return 0;
 };
