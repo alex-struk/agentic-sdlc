@@ -31,8 +31,8 @@ and seed the machine-local egress name list.
 - An appended `.sdlc/runs/<date>.md` entry and a commit — but only when the lockfile, the caller
   workflow, the guardrail files, or the installed skills actually changed. A re-run against
   unchanged inputs writes nothing and commits nothing.
-- `~/.config/agentic-sdlc/egress-names.txt`, created once per machine if it does not already
-  exist. This file lives outside every project directory, so it never affects whether `init`
+- The machine's egress name list (see "Egress name list" below for how its path resolves),
+  created once if it does not already exist. This file lives outside every project directory, so it never affects whether `init`
   considers anything "changed", and it is never part of the commit above.
 
 ## Workspace the agent sees
@@ -121,6 +121,7 @@ installed" and warns to re-run `sdlc init` if it is missing.
 
 ## Egress name list
 
-`sdlc init` creates `~/.config/agentic-sdlc/egress-names.txt` once per machine. Add colleagues'
-names, one per line. The file is never committed; the egress check fails any tracked file that
+`sdlc init` creates the machine's egress name list once, at the path the check reads:
+`SDLC_EGRESS_NAMES` if that is set, otherwise `<XDG_CONFIG_HOME>/agentic-sdlc/egress-names.txt`,
+with `XDG_CONFIG_HOME` defaulting to `~/.config`. Add colleagues' names, one per line. The file is never committed; the egress check fails any tracked file that
 contains one of them. `sdlc doctor` warns while the list is missing or empty.

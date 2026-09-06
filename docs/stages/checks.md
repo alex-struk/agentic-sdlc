@@ -61,3 +61,9 @@ effects.
   one file are all visible in a single run.
 - A tracked file matching more than one egress pattern, or containing more than one listed name,
   reports one message per line per match.
+- The ticket-number pattern (two to five capitals, a hyphen, two to five digits) also matches
+  standards tokens written the same shape: an ISO date standard, an RFC number or a WCAG level
+  written with a hyphen between the body's initials and its number all look exactly like a work
+  item. The fix for a false positive is an allowlist of tokens that are known standards, not a
+  weaker pattern — loosening the pattern to spare them is how a real ticket number gets through.
+  (This page cannot spell those examples out, for the same reason.)

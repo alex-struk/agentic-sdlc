@@ -17,8 +17,9 @@ To stdout, one line each for:
   version.
 - Whether `<dir>/.claude/settings.json` has a deny rule starting `Bash(git push`, used as a proxy
   for "the deny list from `sdlc init` is present".
-- The egress name list's state (`missing`, `empty`, or `<n> names`) and its path
-  (`~/.config/agentic-sdlc/egress-names.txt`).
+- The egress name list's state (`missing`, `empty`, or `<n> names`) and the path it resolved to:
+  `SDLC_EGRESS_NAMES` if set, otherwise `<XDG_CONFIG_HOME>/agentic-sdlc/egress-names.txt`, with
+  `XDG_CONFIG_HOME` defaulting to `~/.config`.
 - The result of `checkConfig(dir)` (see `docs/stages/checks.md`).
 
 ## Workspace the agent sees

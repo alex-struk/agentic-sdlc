@@ -9,7 +9,7 @@ const HELP = `sdlc <command> [args] [--flags]
   new <dir> --answers <brief.md>   run the interview against a written stakeholder brief (no person needed)
   init [dir]                       install the pipeline into a project (lockfile, packs, callers)
   checks [dir] [--self] [--json]   run the structural checks
-  propose <name> --gate G1 --question "..." --recommendation "..."
+  propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."]
   rule <name> approve|return --by <role> [--note "..."]
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails

@@ -13,7 +13,8 @@ project templates — and never a particular project's own code.
 npm ci
 ```
 
-Requires Node 22 or later (see `.nvmrc` for the version this repository is developed against).
+Developed and tested on Node 24 (the version CI runs, and the one in `.nvmrc`); `engines`
+allows 22 or later.
 
 ## Commands
 
