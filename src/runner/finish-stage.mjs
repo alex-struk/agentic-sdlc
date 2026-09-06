@@ -1,5 +1,5 @@
 import { relative } from "node:path";
-import { git, changedPaths, stageAll } from "../lib/git.mjs";
+import { git, changedPaths, stageAll, stageSite } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { writeJournal } from "./journal.mjs";
 import { propose } from "../commands/propose.mjs";
@@ -47,10 +47,16 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
 
   buildSite(projectDir);
   // The site is regenerated on every successful run so it is always current on disk,
-  // and it is a tracked artifact: `changedPaths()` reflects `git status --porcelain`,
-  // so the freshly written `site/*.md` files are picked up here the same as any other
-  // change and staged and committed below alongside the journal and run record.
-  const changed = changedPaths(projectDir);
+  // and it is a tracked artifact: staging it here (which un-ignores it first on a
+  // project whose `.gitignore` still hides it) means `changedPaths()` below reports the
+  // freshly written `site/*.md` files the same as any other change, so they are
+  // committed alongside the journal and run record.
+  stageSite(projectDir);
+  // `.sdlc/run-state.json` is this run's own scratch and is never part of a stage's
+  // commit. A project that has it ignored never shows it here at all; one that does not
+  // would otherwise commit a half-finished run's bookkeeping into the stage's own
+  // record, so it is dropped from the list by name either way.
+  const changed = changedPaths(projectDir).filter((p) => p !== ".sdlc/run-state.json");
 
   let proposal = null;
   if (stage.gate) {

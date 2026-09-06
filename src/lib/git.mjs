@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // The untrimmed form: needed by any caller that parses porcelain output by position
@@ -84,4 +84,48 @@ export function changedPaths(projectDir) {
     if (status.includes("R") || status.includes("C")) paths.push(records[++i]);
   }
   return paths;
+}
+
+// The lines a project's own `.gitignore` must carry, reconciled one line at a time.
+// `site/` is deliberately absent: the generated state site is a tracked artifact (see
+// docs/stages/status.md), so a project carrying that line has it removed.
+const REQUIRED_IGNORES = [
+  "node_modules/",
+  ".sdlc/packs/",
+  ".sdlc/run-state.json",
+  ".sdlc/*.local.yaml",
+  ".sdlc/*.local.txt",
+];
+const UNIGNORE = "site/";
+
+// Reconciles `<projectDir>/.gitignore` by line rather than by overwrite: a project's
+// own entries — a build directory, an editor's scratch file, whatever a team added —
+// are none of the pipeline's business and are left exactly where they are. Only two
+// edits are ever made: append a required line that is missing, and drop a line that is
+// exactly `site/`. Returns true when the file was rewritten.
+export function reconcileGitignore(projectDir) {
+  const path = join(projectDir, ".gitignore");
+  const before = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const lines = before.split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const kept = lines.filter((l) => l.trim() !== UNIGNORE);
+  for (const want of REQUIRED_IGNORES) if (!kept.some((l) => l.trim() === want)) kept.push(want);
+  const after = kept.length ? `${kept.join("\n")}\n` : "";
+  if (after === before) return false;
+  writeFileSync(path, after);
+  return true;
+}
+
+// Stages the generated state site for whatever commit the caller is about to make.
+// A project whose `.gitignore` still ignores `site/` would otherwise commit nothing at
+// all here and silently keep an untracked site, so the ignore is reconciled away first
+// and the reconciled `.gitignore` staged alongside. Staging goes through `stageAll`, so
+// a page the site no longer generates is recorded as removed rather than left behind.
+export function stageSite(projectDir) {
+  if (gitOk(["check-ignore", "-q", "--", "site"], projectDir)) reconcileGitignore(projectDir);
+  const paths = [];
+  if (existsSync(join(projectDir, "site"))) paths.push("site");
+  else if (git(["ls-files", "--", "site"], projectDir)) paths.push("site");
+  if (existsSync(join(projectDir, ".gitignore"))) paths.push(".gitignore");
+  stageAll(projectDir, paths);
 }

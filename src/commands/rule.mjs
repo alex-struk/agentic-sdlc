@@ -1,6 +1,6 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitOk, assertCleanTree, stagePaths, stageAll } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, stagePaths, stageSite } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -71,7 +71,7 @@ function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, 
 // on every concurrent approval.
 function commitSite(projectDir) {
   buildSite(projectDir);
-  stageAll(projectDir, ["site"]);
+  stageSite(projectDir);
   git([...SDLC_AUTHOR, "commit", "-q", "--amend", "--no-edit"], projectDir);
 }
 

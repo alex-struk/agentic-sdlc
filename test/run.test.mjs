@@ -302,3 +302,32 @@ test("turnsFor: a budget at or above 1000 is a token count, unconverted, so it f
   assert.equal(turnsFor({ policy: { budgets: { design: 4000000 } } }, "design"), 40);
   assert.equal(turnsFor({}, "design"), 40);
 });
+
+test("runStage never stages run-state, even in a project that does not ignore it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-state-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  // The ignore line is what normally keeps a run's own scratch out of a commit; without
+  // it, `finishStage` has to keep it out by name.
+  const ignore = join(dir, ".gitignore");
+  writeFileSync(ignore, readFileSync(ignore, "utf8").split("\n").filter((l) => l !== ".sdlc/run-state.json").join("\n"));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "unignore run-state"], dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-state-"));
+  writeFileSync(join(mockDir, "probe.json"), JSON.stringify({
+    text: "wrote the probe file",
+    files: { "app/PROBE.md": "2026-09-06 the runner works\n" },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "probe");
+    assert.equal(r.ok, true);
+    const committed = git(["show", "--name-only", "--format=", "HEAD"], dir).split("\n").filter(Boolean);
+    assert.ok(!committed.includes(".sdlc/run-state.json"), committed.join(", "));
+    assert.equal(git(["ls-files", "--", ".sdlc/run-state.json"], dir), "");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});

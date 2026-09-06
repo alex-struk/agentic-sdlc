@@ -5,7 +5,7 @@
 Install or refresh the pipeline inside an existing project directory: pin the pipeline and skill
 pack versions, install the configured skill packs, install the agent guardrails (the deny list,
 the implement-guard hook and the run-record merge attribute), generate the CI caller workflow,
-and seed the machine-local egress name list.
+reconcile the project's `.gitignore`, and seed the machine-local egress name list.
 
 ## Inputs
 
@@ -32,8 +32,15 @@ and seed the machine-local egress name list.
 - `.github/workflows/sdlc-checkpoint.yml`, generated from the template with the pipeline repo
   filled in and the pipeline pinned to the commit recorded in `.sdlc/lock.json`, not to the
   floating ref.
+- A reconciled `.gitignore` (see "The ignore file" below) and, on a project that still tracks
+  `.sdlc/run-state.json`, that file dropped from the index with `git rm --cached
+  --ignore-unmatch` — staged with the init commit, with the file itself left on disk because a
+  run in progress may be using it.
+- The regenerated state site, staged through the same helper every other command uses, so a
+  project whose `.gitignore` used to hide `site/` starts tracking it here.
 - An appended `.sdlc/runs/<date>.md` entry and a commit — but only when the lockfile, the caller
-  workflow, the guardrail files, or the installed skills actually changed. A re-run against
+  workflow, the guardrail files, the ignore file, the tracked state of `.sdlc/run-state.json`, or
+  the installed skills actually changed. A re-run against
   unchanged inputs writes nothing and commits nothing.
 - The machine's egress name list (see "Egress name list" below for how its path resolves),
   created once if it does not already exist. This file lives outside every project directory, so it never affects whether `init`
@@ -59,7 +66,9 @@ Exits 0 and prints `init ok: N skills installed`.
 Idempotent. Running `init` again against the same configuration and the same pack commits detects
 no change, installs nothing further, and leaves the working tree and run record untouched. It
 only writes and commits again when the configuration, the resolved pack commits, the installed
-guardrail files, or the generated workflow actually differ from what is already on disk.
+guardrail files, the ignore file, the tracked state of `.sdlc/run-state.json`, or the generated
+workflow actually differ from what is already on disk. The ignore reconciliation and the
+run-state untracking are both no-ops on a project already in that shape.
 
 ## Failure modes
 
@@ -68,6 +77,34 @@ guardrail files, or the generated workflow actually differ from what is already 
 - A skill named in a pack's `skills` list that is not found inside the cloned pack: reported as a
   warning (`warning: <pack>: skill <name> not found`) rather than a failure — installation of the
   other packs and skills continues.
+
+## The ignore file
+
+`init` reconciles `<dir>/.gitignore` **by line, never by overwrite**: a project's own entries — a
+build directory, a local tool's scratch file, whatever a team added — are none of the pipeline's
+business and are left exactly where they are. Only two edits are ever made.
+
+**Lines that must exist** (appended when missing, in this order, at the end of the file):
+
+| Line | Why |
+| --- | --- |
+| `node_modules/` | Installed dependencies are never committed. |
+| `.sdlc/packs/` | Cloned skill pack repositories: pinned by commit in `.sdlc/lock.json`, re-cloned on demand. |
+| `.sdlc/run-state.json` | A run's own scratch — which stage it is on and how far it got. Never a project artifact. |
+| `.sdlc/*.local.yaml` | Machine-local configuration overrides. |
+| `.sdlc/*.local.txt` | Machine-local lists, including the per-project egress name list. |
+
+**The one line that must not exist**: a line that is exactly `site/`. The generated state site is
+a tracked artifact — a run or a ruling folds the freshly regenerated `site/*.md` into the same
+commit it makes — so a project carrying that line (an earlier version of the pipeline wrote it)
+has it removed, and the site starts being committed from this `init` onward.
+
+Two consequences worth naming. `.sdlc/run-state.json` may already be *tracked* on such a project,
+and an ignore line does nothing about a file git already knows: `init` drops it from the index
+with `git rm --cached --ignore-unmatch` and stages that removal, leaving the file itself alone in
+case a run is using it right now. And `sdlc run`'s own commit filters `.sdlc/run-state.json` out
+by name regardless of what any ignore file says, so a half-finished run's bookkeeping can never
+land in a stage's record.
 
 ## The implement-guard table
 
