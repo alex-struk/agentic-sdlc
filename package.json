@@ -1,0 +1,14 @@
+{
+  "name": "agentic-sdlc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agentic SDLC pipeline: skills, checks, workflows and a runner a project installs by reference.",
+  "type": "module",
+  "bin": { "sdlc": "bin/sdlc.mjs" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test test/",
+    "check": "node bin/sdlc.mjs checks --self"
+  },
+  "license": "Apache-2.0"
+}
