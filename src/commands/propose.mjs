@@ -41,7 +41,16 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   writeText(join(projectDir, proposalPath),
     `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n${tierLine}---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`);
   const runPath = appendRun(projectDir, `propose ${name} at ${gate}`);
-  stageAll(projectDir, [proposalPath, relative(projectDir, runPath), ...(paths ?? [])]);
+  // `paths` (a stage's own `changedPaths()` list, when this is called from
+  // `finishStage`) may include `site` and `.gitignore` — `stageSite` runs before this
+  // and already staged both, forcing `site` if the project's own ignore still hides it.
+  // Naming either again in a plain `git add -A` would make `stageAll` refuse the whole
+  // batch (see its own comment) for a path that has nothing further to record anyway,
+  // so both are always left out of what actually gets passed to `stageAll` here — the
+  // dirty-check above still sees them via `paths`, which is where they belong.
+  const toStage = [proposalPath, relative(projectDir, runPath), ...(paths ?? [])]
+    .filter((p) => p !== ".gitignore" && p !== "site" && !p.startsWith("site/"));
+  stageAll(projectDir, toStage);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `propose(${gate}): ${name}`], projectDir);
   return { branch };
 }

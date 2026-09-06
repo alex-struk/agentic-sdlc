@@ -50,8 +50,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
   // and it is a tracked artifact: staging it here (which un-ignores it first on a
   // project whose `.gitignore` still hides it) means `changedPaths()` below reports the
   // freshly written `site/*.md` files the same as any other change, so they are
-  // committed alongside the journal and run record.
-  stageSite(projectDir);
+  // committed alongside the journal and run record. The returned list is exactly what
+  // it staged (a subset of ["site", ".gitignore"]) and is used below to keep those paths
+  // out of this function's own `stageAll` batch — naming an already-staged, still-
+  // ignored `site` again there would make `stageAll` refuse the whole batch.
+  const stagedBySite = stageSite(projectDir);
   // `.sdlc/run-state.json` is this run's own scratch and is never part of a stage's
   // commit. A project that has it ignored never shows it here at all; one that does not
   // would otherwise commit a half-finished run's bookkeeping into the stage's own
@@ -66,7 +69,12 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     });
     proposal = { name: p.name, gate: stage.gate, branch };
   } else {
-    stageAll(projectDir, changed);
+    // `changed` still carries whatever `stageSite` already staged above — `.gitignore`,
+    // and every `site/*` file if the site itself needed staging — so those are filtered
+    // back out here rather than named a second time in a plain `git add -A` batch.
+    const batch = changed.filter((p) => !stagedBySite.includes(p)
+      && !(stagedBySite.includes("site") && p.startsWith("site/")));
+    stageAll(projectDir, batch);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${stage.title ?? stage.name}`], projectDir);
   }
 

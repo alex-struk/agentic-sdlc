@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
@@ -8,6 +8,7 @@ import { newProject } from "../src/commands/new.mjs";
 import { runStage, turnsFor } from "../src/commands/run.mjs";
 import { resume } from "../src/commands/resume.mjs";
 import { registerStage } from "../src/stages/registry.mjs";
+import { finishStage } from "../src/runner/finish-stage.mjs";
 
 const PROBE_SKILL = new URL("../src/stages/skills/probe.md", import.meta.url).pathname;
 
@@ -407,4 +408,37 @@ test("turnsFor warns once, by name, when a token-sized budget is ignored", () =>
   assert.equal(warnings.length, 1, warnings.join(" | "));
   assert.match(warnings[0], /policy\.budgets\.budget-warn is 250000/);
   assert.match(warnings[0], /default of 40 turns/);
+});
+
+test("finishStage fails and names the path when a tracked file has since been excluded, and commits nothing", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-finish-ignored-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  mkdirSync(join(dir, "secrets"), { recursive: true });
+  writeFileSync(join(dir, "secrets", "creds.env"), "super-secret\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "oops, committed a secret"], dir);
+  try {
+    // Standing in for what an agent turn just did in the working tree, before
+    // `finishStage` is asked to commit it: added the secret to `.gitignore` and
+    // untracked it with `git rm --cached`, neither committed yet — the "committed by
+    // accident, now excluded" pattern src/lib/git.mjs's `stageAll` now refuses instead
+    // of silently force-staging.
+    writeFileSync(join(dir, ".gitignore"), `${readFileSync(join(dir, ".gitignore"), "utf8")}secrets/creds.env\n`);
+    git(["rm", "--cached", "-q", "--", "secrets/creds.env"], dir);
+    const lastCommit = git(["log", "-1", "--pretty=%s"], dir);
+
+    const stage = { name: "ignore-repro", title: "ignore repro", gate: null, postChecks: () => [], proposal: () => null };
+    const agentResult = { text: "removed the secret from tracking", cost: 0, turns: 1, sessionId: "mock" };
+    await assert.rejects(
+      () => finishStage(dir, stage, {}, agentResult),
+      (e) => /stageAll: refusing to add/.test(e.message) && e.message.includes("secrets/creds.env"));
+
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["log", "-1", "--pretty=%s"], dir), lastCommit, "nothing new was committed");
+    assert.notEqual(git(["status", "--porcelain"], dir), "", "the tree is left dirty for inspection");
+    assert.ok(existsSync(join(dir, "secrets", "creds.env")), "the file itself is left on disk");
+    assert.equal(readFileSync(join(dir, "secrets", "creds.env"), "utf8"), "super-secret\n");
+  } finally {
+    restoreEgress(prevEgress);
+  }
 });

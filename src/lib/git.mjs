@@ -56,22 +56,28 @@ export function stagePaths(projectDir, paths) {
 // naming files itself. Skips the call entirely when the list is empty, since
 // `git add -A --` with no further pathspec means "the whole tree" rather than "nothing".
 //
-// The retry exists for one specific caller shape: a path `stageSite` already
-// force-added (`git add -Af`) because some `.gitignore` rule still matches it, showing
-// up again here as part of a stage's or ruling's wider `changedPaths()` list. Naming an
-// ignored path explicitly makes plain `git add -A` refuse the *entire* call, even though
-// the path is already staged and there is nothing further to record for it —
-// `git check-ignore` can't be asked instead, because it reports an already-tracked path
-// as not ignored regardless of any rule that would otherwise match it, which is the
-// opposite of what `git add` does. Retrying with `-f` only after the plain attempt fails
-// keeps every other caller's error (a real mistake elsewhere in the list) unchanged.
+// This never retries with `-f`, and must not: git refusing a named path here because it
+// is ignored is a safety property, not friction to route around. The one path this
+// pipeline itself deliberately force-adds is `site`, handled by `stageSite` below
+// *before* a caller builds its own batch — a caller that excludes what `stageSite`
+// returned never names an ignored path here at all. Every other refusal means the named
+// path was tracked and has since been added to `.gitignore` (the "committed by
+// accident, now excluded" pattern, or an equivalent `git rm --cached` a person or an
+// agent ran without committing it): silently forcing it back into the index is exactly
+// the failure this function exists to not have. The error is re-thrown naming the
+// offending path(s), parsed out of git's own message where its shape matches, falling
+// back to git's raw message otherwise.
 export function stageAll(projectDir, paths) {
   if (paths.length === 0) return;
   try {
     git(["add", "-A", "--", ...paths], projectDir);
   } catch (e) {
     if (!/ignored by one of your \.gitignore files/.test(e.message)) throw e;
-    git(["add", "-A", "-f", "--", ...paths], projectDir);
+    const match = e.message.match(/ignored by one of your \.gitignore files:\n([\s\S]*?)\n(?:hint:)/);
+    const named = match ? match[1].split("\n").filter(Boolean).join(", ") : null;
+    throw new Error(named
+      ? `stageAll: refusing to add ${named} — tracked before and now matched by .gitignore. If it was committed by accident and is meant to stay excluded, run 'git rm --cached' on it and commit that first; if it belongs in the repo, remove the rule from .gitignore instead. Nothing was staged for it.`
+      : `stageAll: git refused a path in this batch as ignored by .gitignore, but its message did not parse:\n${e.message}`);
   }
 }
 
@@ -131,7 +137,13 @@ export function reconcileGitignore(projectDir) {
   return true;
 }
 
-// Stages the generated state site for whatever commit the caller is about to make.
+// Stages the generated state site for whatever commit the caller is about to make, and
+// returns the project-relative paths it staged (a subset of ["site", ".gitignore"]) so
+// a caller that goes on to stage a wider batch of its own through `stageAll` can leave
+// these back out of it — naming an already-staged, still-ignored path there would make
+// `stageAll` refuse the whole batch (see its own comment), even though nothing further
+// needs recording for it here.
+//
 // A project whose `.gitignore` still ignores `site/` would otherwise commit nothing at
 // all here and silently keep an untracked site, so the ignore is reconciled away first.
 // `.gitignore` itself is only staged when `reconcileGitignore` actually rewrote it — a
@@ -143,7 +155,9 @@ export function reconcileGitignore(projectDir) {
 // `.gitignore` — survives untouched. Rather than leave the site silently untracked in
 // that case, `check-ignore` is asked again after reconciling and, if it still says the
 // path is ignored, the site is force-added and the rule responsible is named on stderr
-// so a person can go fix their own ignore file instead of it happening invisibly.
+// so a person can go fix their own ignore file instead of it happening invisibly. This
+// is the one place in the whole pipeline allowed to force an add: `stageAll` itself
+// never does.
 export function stageSite(projectDir) {
   const gitignoreChanged = reconcileGitignore(projectDir);
   const paths = [];
@@ -158,4 +172,5 @@ export function stageSite(projectDir) {
   }
   stageAll(projectDir, stillIgnored ? paths.filter((p) => p !== "site") : paths);
   if (stillIgnored) git(["add", "-Af", "--", "site"], projectDir);
+  return paths;
 }
