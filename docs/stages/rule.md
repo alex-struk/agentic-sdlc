@@ -65,7 +65,11 @@ When `--by agent:<persona>` names the gate's own `holder`, `sdlc rule` builds a 
   prompt budget;
 - the four structural checks, run on the proposal branch's current checkout.
 
-The agent turn runs with `maxTurns: 12` and must end its reply with one fenced JSON block and
+The agent turn runs with `maxTurns: 12` and a tool list of `Read`, `Grep`, `Glob`, `Bash(git
+diff*)`, `Bash(git log*)` and `Bash(git status*)` — enough to look further into the branch than
+the diff in the prompt, and nothing that writes. `SDLC_STAGE=rule` also blocks every path in the
+implement guard (`docs/stages/init.md`), so a ruling that tries to edit is stopped twice before
+the clean-tree check below ever sees it. It must end its reply with one fenced JSON block and
 nothing after it:
 
 ```json

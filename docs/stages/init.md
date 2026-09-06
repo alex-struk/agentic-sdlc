@@ -125,10 +125,18 @@ files elsewhere.
 | `derive-tests` | `app/`, `tests/adapters/`, `tests/seed/`, `spec/`, `constitution.md`, all of `.sdlc/` |
 | `bind-adapter` | `app/`, `tests/acceptance/`, `spec/`, `constitution.md`, all of `.sdlc/` |
 | `intent`, `archaeology`, `ratify`, `design`, `plan` | `app/`, `tests/acceptance/`, `tests/adapters/`, `.github/workflows/`, `.sdlc/config.yaml` |
-| any other stage name (`calibrate`, `deploy`, `operate`, `status`, `init`, …) | nothing blocked |
+| `probe` | everything except `app/` — the probe stage writes one file there to prove the runner and has no other territory |
+| `rule` | everything: a persona ruling on a proposal reads and answers, and `sdlc rule` rejects a ruling turn that wrote anything at all |
+| any other stage name (`calibrate`, `deploy`, `operate`, …) | everything |
 
 A blocked edit exits the hook with status 2 and a message naming the stage and the path; anything
 else exits 0 and the edit proceeds.
+
+**A stage with no row of its own is blocked outright**, with the message `unknown stage
+'<stage>'; add it to the guard table`, rather than allowed through. The default used to be the
+other way round, which meant a typo in `SDLC_STAGE` — or a stage whose row nobody had written
+yet — turned the guard off without saying so. Adding a stage to this pipeline therefore means
+adding its row here as well.
 
 ## The deny list
 

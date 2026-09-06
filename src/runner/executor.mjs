@@ -4,9 +4,13 @@ import { join } from "node:path";
 import { ensureConfigHome } from "./config-home.mjs";
 import { writeText } from "../lib/fsx.mjs";
 
-export function buildArgs({ prompt, stage, maxTurns = 40, systemPromptFile, addDirs = [], env = {} }, configHome) {
+export function buildArgs({ prompt, stage, maxTurns = 40, systemPromptFile, addDirs = [], allowedTools = [], env = {} }, configHome) {
   const args = ["-p", prompt, "--output-format", "json", "--permission-mode", "acceptEdits",
     "--strict-mcp-config", "--no-session-persistence", "--max-turns", String(maxTurns)];
+  // `--allowedTools` takes a space-separated list, so each entry is its own argument.
+  // Omitted entirely when the caller names none: the flag with an empty list would read
+  // as "allow nothing" to the session rather than "the caller did not narrow this".
+  if (allowedTools.length) args.push("--allowedTools", ...allowedTools);
   if (systemPromptFile) args.push("--append-system-prompt-file", systemPromptFile);
   for (const d of addDirs) args.push("--add-dir", d);
   return { args, env: { ...process.env, ...env, CLAUDE_CONFIG_DIR: configHome, SDLC_STAGE: stage } };
@@ -20,7 +24,10 @@ function runMock({ cwd, stage }) {
   // A canned response can also delete a tracked file, so tests can exercise how a stage
   // stages and commits a deletion without a real agent turn actually removing anything.
   for (const rel of m.delete ?? []) rmSync(join(cwd, rel), { force: true });
-  return { ok: true, text: m.text ?? "", cost: 0, turns: 1, sessionId: "mock", raw: m };
+  // A canned response can declare `ok: false` to stand in for an agent turn that ran
+  // and failed (an error result, a turn limit hit), which is a different outcome from
+  // the mock throwing — that stands in for the executor itself failing to run.
+  return { ok: m.ok !== false, text: m.text ?? "", cost: 0, turns: 1, sessionId: "mock", raw: m };
 }
 
 export async function runAgent(opts) {

@@ -180,7 +180,12 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   }
 
   const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier });
-  const result = await runAgent({ cwd: projectDir, prompt, stage: "rule", maxTurns: 12 });
+  // A ruling reads and answers; it never writes. The tool list says so up front rather
+  // than relying on the clean-tree check below to catch a turn that wrote anyway: the
+  // read-only git commands are there because a persona legitimately wants to look
+  // further into the branch than the diff the prompt already carries.
+  const result = await runAgent({ cwd: projectDir, prompt, stage: "rule", maxTurns: 12,
+    allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
   // A ruling is a read-only turn: the agent is asked for a verdict, not permitted to
   // change the project. Checked before the verdict is even parsed, so a verdict text
   // that looks fine cannot mask files the turn left behind — and left in place (not

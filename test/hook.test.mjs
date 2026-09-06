@@ -41,3 +41,21 @@ test("paths are normalised before matching, and paths outside the project are al
   // Resolving outside the project is allowed: agents legitimately write to temp directories.
   assert.equal(run("/tmp/x/spec/spec.md", "build").status, 0, "/tmp/x/spec/spec.md");
 });
+
+test("probe may write inside app/ and nowhere else", () => {
+  assert.equal(run("app/PROBE.md", "probe").status, 0);
+  for (const p of ["spec/spec.md", "tests/acceptance/x.spec.ts", "constitution.md", ".sdlc/journal/001-probe.md", "README.md"])
+    assert.equal(run(p, "probe").status, 2, p);
+});
+
+test("rule blocks every path: a ruling turn reads and answers, it does not write", () => {
+  for (const p of ["app/x.ts", "spec/spec.md", ".sdlc/gates/p1.yaml", "README.md"])
+    assert.equal(run(p, "rule").status, 2, p);
+});
+
+test("an unknown stage blocks everything and names the guard table", () => {
+  const r = run("app/x.ts", "not-a-stage");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /unknown stage 'not-a-stage'; add it to the guard table/);
+  assert.equal(run("README.md", "not-a-stage").status, 2);
+});

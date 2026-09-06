@@ -23,6 +23,27 @@ test("buildArgs carries isolation flags and the stage", () => {
   assert.deepEqual(args.slice(0, 2), ["-p", "hi"]);
   for (const f of ["--output-format", "json", "--permission-mode", "acceptEdits", "--strict-mcp-config", "--no-session-persistence", "--max-turns", "7", "--append-system-prompt-file", "/x/skill.md", "--add-dir", "/tmp/a"]) assert.ok(args.includes(f), f);
   assert.equal(env.CLAUDE_CONFIG_DIR, "/cfg"); assert.equal(env.SDLC_STAGE, "build");
+  // No caller-supplied tool list, so the flag is absent rather than present and empty.
+  assert.ok(!args.includes("--allowedTools"));
+});
+
+test("buildArgs passes an allowed tool list as one flag followed by each tool", () => {
+  const tools = ["Read", "Grep", "Bash(git diff*)"];
+  const { args } = buildArgs({ prompt: "hi", stage: "rule", allowedTools: tools }, "/cfg");
+  const at = args.indexOf("--allowedTools");
+  assert.ok(at >= 0);
+  assert.deepEqual(args.slice(at + 1, at + 1 + tools.length), tools);
+});
+
+test("the mock executor reports a failed agent turn when the canned response says ok: false", async () => {
+  const mock = mkdtempSync(join(tmpdir(), "sdlc-mock-notok-")); const cwd = mkdtempSync(join(tmpdir(), "sdlc-cwd-notok-"));
+  writeFileSync(join(mock, "probe.json"), JSON.stringify({ ok: false, text: "hit the turn limit" }));
+  process.env.SDLC_EXECUTOR = "mock"; process.env.SDLC_MOCK_DIR = mock;
+  try {
+    const r = await runAgent({ cwd, prompt: "x", stage: "probe" });
+    assert.equal(r.ok, false);
+    assert.equal(r.text, "hit the turn limit");
+  } finally { delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; }
 });
 
 test("mock executor writes files and returns the canned text", async () => {
