@@ -33,9 +33,14 @@ An experiment on a new repository, with no business owner. The existing
 `bcgov/digital_marketplace` is a read-only input. Nothing ships to the live
 product. The outputs are a working rebuild in a sandbox, a measured record of
 how the pipeline behaved, and the pipeline itself, improved by that record.
-The system will be rebuilt more than once as the pipeline improves. That is why
-the spec and the test suite are the durable assets and every implementation is
-disposable.
+The system will be rebuilt more than once as the pipeline improves. Two kinds
+of re-run are supported. A **rebuild** reuses the ratified spec and test suite
+and re-runs design, plan and build, which measures the build side of the
+pipeline. A **replay** starts again from the old repository with an improved
+pipeline and diffs the new archaeology output against the ratified baseline,
+which measures the spec side: criteria recovered, missed, or stated
+differently. The ratified spec and tests are therefore both the durable
+assets and the oracle for later replays.
 
 ### 1.3 Goals
 
@@ -160,9 +165,24 @@ agentic-sdlc/
 
 ### 3.4 Installation and upgrade
 
+The project repository is created by the pipeline, never by hand, so a run
+can be reproduced. `sdlc new <name>` creates the directory and git repository,
+runs an onboarding interview (the one place the pipeline is conversational by
+design: it asks about profile, sources, stack, gate holders and oracle, and
+proposes a config), writes `.sdlc/config.yaml` and the constitution from
+templates, and then runs `sdlc init`. `sdlc new --from <config.yaml>` skips the
+interview and reproduces a project from a saved config, which is how the
+marketplace is rebuilt a second time.
+
 `sdlc init` reads `.sdlc/config.yaml`, writes `lock.json`, generates the caller
 workflows, copies templates that do not yet exist, and installs the listed skill
-packs at their pinned versions into the agent's skill location. `sdlc upgrade`
+packs at their pinned versions into the agent's skill location.
+
+The pipeline repository is edited by hand. The project repository is only ever
+produced and changed by the pipeline. Nothing in the pipeline repository, its
+schema, skills or scripts may name the marketplace; the fixture project in the
+pipeline's own CI (section 14) is a second, unrelated application, and it is
+the guard against building a marketplace-specific pipeline. `sdlc upgrade`
 bumps the pipeline version in the lockfile, regenerates callers, and opens a
 pull request. Nothing in the pipeline repo is copied into the project except
 templates the project is expected to fill in.
@@ -184,9 +204,15 @@ that validates its shape.
 
 ### 4.1 Constitution
 
-`constitution.md`. Platform articles that no project may loosen, and project
-articles the team fills in. The platform articles for BC Gov, taken from
-Kaegan's tier2-v3 pack and kept: accessibility to WCAG 2.1 AA; the BC Design
+`constitution.md`. Structure from spec-kit's constitution template (principles,
+constraints, workflow, governance and amendment), content from two sources:
+platform articles that no project may loosen, and project articles the team
+fills in. The project articles include the domain glossary that mattpocock's
+skills read as the shared vocabulary. Each platform article cites the BC Gov
+policy or standard it comes from, and phase 0 verifies every citation; an
+article that cannot be traced to a policy is marked as a team convention, not
+a platform rule. The platform articles for BC Gov, taken from Kaegan's tier2-v3
+pack and kept: accessibility to WCAG 2.1 AA; the BC Design
 System for new services; no personal information before a privacy assessment;
 OpenShift as deploy target unless an exception is recorded; spec in git as
 source of truth; three human checkpoints with no agent self-merge; test
@@ -238,17 +264,23 @@ observe. It is spec content, not implementation, and it is what lets a blind
 test and a blind implementation meet.
 
 - `personas.yaml`: each role, what it can do, and how a test signs in as it.
-  The old application exposes a development-only session route per role; the
-  new application must provide an equivalent test identity mechanism, defined
-  here, never enabled outside sandbox environments.
+  Sign-in for tests goes through a sandbox identity provider: a Keycloak
+  container (or an OpenID Connect mock) seeded with one user per persona, run
+  next to the application in every non-production environment. The application
+  code is unchanged and production-shaped; nothing test-only is added to it.
+  The old application has a development-only session route per role, which the
+  old adapter uses; that is a property of the old application, not a pattern
+  the new one copies.
 - `surface.yaml`: routes, page titles, the actions and observations each page
   offers, and for the new application the test ID of each. Example: page
   `opportunity`, action `publish`, observation `status`.
 - `openapi.yaml`: the API contract. Recovered from the old application's
   OpenAPI description, then ratified and versioned like any criterion.
 - `observables.yaml`: side effects a test may observe and how: outgoing
-  email via a mail catcher, files via the file endpoint, notifications via a
-  test subscriber.
+  email via a mail catcher (a local SMTP sink with an API, such as Mailpit,
+  which both the old and new applications are pointed at by environment
+  variable in non-production), files via the file endpoint, notifications via
+  a test subscriber.
 - `tests/seed/` (referenced from the contract): personas and fixture data as SQL, loadable into any target because
   the schema is shared.
 
@@ -326,7 +358,10 @@ page it should be judged against.
 
 A stage is defined by six things: inputs, outputs, the skill the agent runs
 with, the workspace the agent may see, the deterministic checks that block, and
-its exit criterion. Every stage is re-runnable: it reads its inputs from git,
+its exit criterion. The shape of that contract is fixed. Everything inside it
+is configurable per project: a profile selects which stages run, a project may
+replace a stage's skill or add checks, and the verification loop's routing and
+retry bounds are policy values in config. Every stage is re-runnable: it reads its inputs from git,
 writes its outputs as a branch and a draft pull request, and never mutates
 another stage's outputs. Re-running a stage on unchanged inputs produces a
 no-op PR, which the runner closes.
@@ -842,24 +877,35 @@ content.
 
 ---
 
-## 16. Open questions and risks
+## 16. Decisions taken on recommendation, and remaining risks
 
-1. **Test identity on the new target.** The old application uses a
-   development-only session route per role. The new one needs an equivalent
-   that is safe to ship disabled. Decided at G2.
-2. **Observing email.** The old application sends real mail. Calibration of
-   notification criteria may be limited to the API surface. Decided at ratify.
-3. **Kaegan's pack source.** Not public. The pipeline ports the ideas and the
-   scripts from the installed copy. Asking Kaegan for the source and his two
-   MCP servers is worthwhile but not blocking.
-4. **Storybook for page stories.** Legitimate and common, but page stories
-   with mocked data can drift from real data shapes. The catalogue's stories
-   use the same seed fixtures the tests use.
-5. **Ponytail with reasoning models.** May increase tokens. Off by default,
-   measured on one slice before a decision.
-6. **Public repositories.** The egress filter is a pattern filter. The private
-   run record is the safe default; publish selectively.
-7. **Old fixtures containing real-looking data.** Scan before reuse.
+Each of these was an open question on the first draft. The recommendation was
+adopted on 2026-09-05 and stands unless Alex objects.
+
+1. **Test identity on the new target.** A sandbox identity provider seeded
+   with test users, run beside the application in non-production. The
+   application stays production-shaped. No test-only entrance in the code.
+2. **Observing email.** A mail catcher as the SMTP target for both old and new
+   applications in non-production, set by environment variable, so
+   notification criteria calibrate like any other.
+3. **Kaegan's pack source.** Port the ideas and scripts from the installed
+   copy now; Alex asks Kaegan for the source and the two MCP servers when
+   convenient. Not blocking.
+4. **Storybook page stories.** Use the same seed fixtures the tests use, so
+   the catalogue cannot drift from real data shapes.
+5. **Ponytail.** Off by default; measured on one slice in phase 4; kept only if
+   tokens and verify attempts both fall.
+6. **Public repositories.** Push both repositories to the bcgov organisation
+   at the end of phase 0, with Alex's go-ahead at that moment, so others can
+   watch it work. Private run record by default; the egress filter runs on
+   everything that posts.
+7. **Old fixtures.** Scanned for real-looking personal data before reuse.
+8. **Agent-held gate sampling.** Five decisions per gate per week reviewed by
+   a human, adjusted once the run record shows the miss rate.
+
+Remaining risks: the egress filter is a pattern filter and will miss novel
+shapes; retry bounds are starting values; Storybook page stories are a
+convention rather than a guarantee.
 
 ---
 
