@@ -1,3 +1,4 @@
+const router = require("express").Router();
 const applications = new Map();
 
 router.post("/applications", (req, res) => {

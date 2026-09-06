@@ -11,7 +11,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test 'test/**/*.test.mjs'",
     "check": "node bin/sdlc.mjs checks --self"
   },
   "license": "Apache-2.0",

@@ -34,11 +34,11 @@ test("intent may write intent/ and the constitution glossary, not app, tests, sp
     assert.equal(run(p, "intent").status, 2, p);
 });
 
-test("archaeology may write spec/, reading sources/ read-only, not app, tests, intent or .sdlc/", () => {
+test("archaeology may write only spec/, reading sources/ read-only", () => {
   assert.equal(run("spec/domains/x.md", "archaeology").status, 0);
   assert.equal(run("spec/contract/surface.yaml", "archaeology").status, 0);
-  for (const p of ["app/x", "tests/acceptance/x.ts", "intent/x.md", ".github/workflows/a.yml",
-    ".sdlc/config.yaml", "sources/old/README.md"])
+  for (const p of ["app/x", "tests/acceptance/x.ts", "intent/x.md", "constitution.md",
+    ".github/workflows/a.yml", ".sdlc/config.yaml", "sources/old/README.md"])
     assert.equal(run(p, "archaeology").status, 2, p);
 });
 

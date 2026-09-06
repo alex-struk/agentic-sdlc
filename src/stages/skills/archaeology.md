@@ -24,9 +24,9 @@ depends on:
 - **`sources/old/tests`.** A test suite encodes what its own authors believed the code should do,
   which is a second opinion about intent — exactly the kind of thing archaeology exists to
   recover independently, from the code's actual behaviour, so that a spec built from tests can
-  never simply rediscover the tests it was compared against. Whatever the old application
-  excluded here, it stays excluded before your session even starts; you do not need to check
-  which paths that was, only to never go looking for a `tests/` directory yourself.
+  never simply rediscover the tests it was compared against. Anything the project excluded is
+  already gone before your session even starts; never go looking for a `tests/` directory
+  regardless.
 - **Anything outside `sources/old`**, except `constitution.md`, `spec/` (to see what earlier
   domains already recovered), and `intent/` (to see what problem this project is solving). No
   private notes, no paths belonging to a later stage, no reaching into the pipeline's own

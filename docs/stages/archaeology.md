@@ -40,9 +40,9 @@ agent session starts — plus `constitution.md`, `spec/`, and `intent/` for cont
 `config.sources.old.repo` into `sources/old` if it is not there yet, checking it out at
 `config.sources.old.commit`, and removing every excluded path from the working tree. `sources/` is
 untracked (`.gitignore` carries it, so cloning it never touches the project's own history) and the
-`implement-guard` hook (`docs/stages/init.md`) restricts an `archaeology` run to `spec/` —
-`app/`, `tests/`, `intent/`, `.github/`, `.sdlc/`, and `sources/` itself are all blocked, so the
-old application archaeology reads stays exactly as read-only in practice as it is in name.
+`implement-guard` hook (`docs/stages/init.md`) allows an `archaeology` run to write only under
+`spec/` — every other path, including `sources/` itself, is blocked, so the old application
+archaeology reads stays exactly as read-only in practice as it is in name.
 
 ## Checks that block
 
@@ -57,8 +57,10 @@ old application archaeology reads stays exactly as read-only in practice as it i
     every `recovered` criterion has a `cites`, every citation resolves under `sources/old`, and no
     criterion is `accepted` while still `inferred` or `open`.
   - `spec/domains/<d>.md` exists, parses with no errors, and holds at least one criterion.
-  - `spec/domains/<d>.md` mints no `R-` ID — a permanent ID is ratify's to write, once a human has
-    ruled on what this run recovered, never archaeology's own to assign.
+  - No domain file this run actually changed mints an `R-` ID — a permanent ID is ratify's to
+    write, once a human has ruled on what this run recovered, never archaeology's own to assign.
+    Checked across every `spec/domains/*.md` this run touched, not only `spec/domains/<d>.md`,
+    since the scope check below allows a run to change any path under `spec/`.
   - Nothing changed outside `spec/`, checked against `git status --porcelain`.
 
 ## Exit criterion
@@ -70,17 +72,24 @@ inspection.
 
 ## Re-run behaviour
 
-Re-running `archaeology --domain <d>` after its own proposal has already been opened is not
-blocked by this stage itself — `sdlc run` starts from `main`, which the still-open proposal branch
-has not yet merged into, so `spec/domains/<d>.md` is exactly as it was (or absent, on a first
-attempt that failed) and a second run recovers the domain again, most likely producing the same
-file and opening a second, separately-branched proposal for the same domain. Rule the open
-proposal first rather than relying on anything here to stop that. Running the stage against a
-different `--domain` on the same project is ordinary and expected — one run, one domain, one
-proposal.
+Re-running `archaeology --domain <d>` while its own proposal (`proposal/archaeology-<d>`) is still
+open — opened, but not yet ruled — is refused before a workspace is materialised or an agent
+session starts: `run` returns `{ ok: false }` with the message `proposal archaeology-<d> is still
+open; rule it (or delete the branch) before running archaeology again`, and commits that outcome
+to the run record the same way a pre-check failure is. Rule the open proposal (`sdlc rule
+archaeology-<d> approve --by tech-lead`, or `return`) or delete its branch first. Once ruled, the
+same domain can be run again — `spec/domains/<d>.md` on `main` reflects whatever the ruling
+decided, and a fresh run recovers the domain again from there. An approved proposal's now-merged
+branch is deleted as part of that next run's own pre-flight check, so opening a fresh
+`proposal/archaeology-<d>` under the same name does not collide with the old one; a returned or
+escalated proposal's branch, never merged, is left for a person to clean up. Running the stage
+against a different `--domain` on the same project is ordinary and expected — one run, one domain, one
+proposal, and only a domain whose own proposal is currently open is refused.
 
 ## Failure modes
 
+- The domain's own proposal (`proposal/archaeology-<d>`) is still open: refused before a workspace
+  is materialised (see "Re-run behaviour" above).
 - `--domain` is missing, or names a domain not in `project.domains`: the pre-check fails before
   anything else runs (see above).
 - `config.sources.old` is not configured: the pre-check fails the same way, before any clone is

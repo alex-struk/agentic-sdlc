@@ -72,6 +72,13 @@ sets.
 - The project's `.sdlc/config.yaml` must load and validate.
 - The stage's own `preChecks(projectDir, ctx)` must all pass. `probe` declares none; a stage that
   does declare pre-checks fails before a workspace is ever materialised.
+- For a gated stage, the proposal this run would open must not already be open and unruled: `run`
+  calls `stage.proposal({ ...ctx, agentText: "" })` to learn the name a real run would use and,
+  when that name resolves to a `proposal/<name>` branch that exists with no `.sdlc/gates/<name>.yaml`
+  on it yet, refuses to start (see "Re-run behaviour" below). A stage whose proposal name is not
+  yet knowable before the agent has run (`intent`, keyed on the file it interviews into) returns
+  `null` from `proposal(ctx)` when the context it needs is missing, and this check is skipped for
+  it.
 - The stage's own `postChecks(projectDir, ctx)`, run after the agent session, must all pass —
   `probe`'s post-check requires `app/PROBE.md` to exist and contain the sentence "the runner
   works".
@@ -94,6 +101,19 @@ identical file is simply not part of what changed. A failing pre-check is safe t
 its own failure is committed to the run record before `run` returns, so the working tree is clean
 again for the next attempt.
 
+For a gated stage, this is only true once its previous run's proposal has been ruled. A successful
+gated run leaves the working tree checked out on the fresh `proposal/<name>` branch, not `main`, so
+a same-named second run before that proposal is ruled would otherwise try to open a second proposal
+on top of the first one and fail messily partway through (`propose`'s own `git checkout -q main`
+refuses once the newly-written files conflict with what `main` already has, leaving the tree
+dirty). `run` checks for this itself — see "Checks that block" above — and refuses the second run
+outright, before a workspace is materialised or an agent session starts, rather than letting it
+fail partway through. Once the proposal is ruled, running the stage again under the same name is
+safe: the same pre-flight check also deletes an approved proposal's now-merged branch (with the
+safe `git branch -d`, which itself refuses anything not fully merged) so a fresh `propose` call can
+recreate a branch of the same name without colliding with the old one; a returned or escalated
+proposal's branch, never merged into `main`, is left in place for a person to deal with.
+
 ## Failure modes
 
 - The working tree is dirty at the start: throws before any check or workspace runs, listing the
@@ -103,6 +123,10 @@ again for the next attempt.
 - Invalid `.sdlc/config.yaml`: throws listing every schema error.
 - A pre-check fails: `run` commits `run(<stage>): pre-checks failed` to the run record (so a later
   `run` is not blocked by this run's own leftover state) and returns `{ ok: false, messages }`
+  without materialising a workspace or starting an agent session.
+- A gated stage's own proposal from a previous run is still open (opened, but not yet ruled): `run`
+  commits `run(<stage>): proposal still open` to the run record and returns `{ ok: false, messages:
+  ["proposal <name> is still open; rule it (or delete the branch) before running <stage> again"] }`,
   without materialising a workspace or starting an agent session.
 - The agent session itself fails to run at all (the `claude` binary is missing, authentication is
   not in place, or its process exits with no JSON on stdout): `runAgent` throws

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
+import { rule } from "../src/commands/rule.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -229,6 +230,42 @@ test("sdlc run archaeology --domain applications: the mock run opens proposal/ar
     const proposalText = readFileSync(join(dir, ".sdlc/proposals/archaeology-applications.md"), "utf8");
     assert.match(proposalText, /gate: G1/);
     assert.match(proposalText, /Is this what the applications domain does, and which of it is the contract\?/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run archaeology --domain applications: a second run while the proposal is open is refused; ruling it lets a fresh run through", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-rerun-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const first = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+
+    // The proposal is still open: a second run must not touch the workspace or run an
+    // agent turn at all, only report the block and leave the tree exactly as it was.
+    const second = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(second.ok, false);
+    assert.deepEqual(second.messages, [
+      "proposal archaeology-applications is still open; rule it (or delete the branch) before running archaeology again",
+    ]);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(archaeology\): proposal still open/);
+
+    // G1's holder is the human role tech-lead, not an agent, so this rules directly
+    // rather than through the mock executor.
+    const ruled = rule(dir, "archaeology-applications", "approve", { by: "tech-lead" });
+    assert.equal(ruled.verdict, "approve");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+
+    const third = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(third.ok, true, JSON.stringify(third.messages));
+    assert.equal(third.proposal.branch, "proposal/archaeology-applications");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

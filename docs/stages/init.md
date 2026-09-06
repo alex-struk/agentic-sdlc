@@ -126,7 +126,7 @@ files elsewhere.
 | `derive-tests` | `app/`, `tests/adapters/`, `tests/seed/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
 | `bind-adapter` | `app/`, `tests/acceptance/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
 | `intent` | `app/`, all of `tests/`, `spec/`, all of `.github/`, `.sdlc/config.yaml`, `sources/` — may write `intent/` and the `constitution.md` glossary |
-| `archaeology` | `app/`, all of `tests/`, `intent/`, all of `.github/`, all of `.sdlc/`, `sources/` — reads the old application under `sources/old/` and writes `spec/` |
+| `archaeology` | everything except `spec/` — reads the old application under `sources/old/` read-only and writes only `spec/` |
 | `ratify` | everything: a deterministic gate with no agent behind it, so nothing is ever written |
 | `design`, `plan` | `app/`, `tests/acceptance/`, `tests/adapters/`, `.github/workflows/`, `.sdlc/config.yaml`, `sources/` |
 | `probe` | everything except `app/` — the probe stage writes one file there to prove the runner and has no other territory |

@@ -44,9 +44,9 @@ case "$stage" in
     # intent may write intent/ and the constitution glossary, nothing else.
     blocked='^(app/|tests/|spec/|\.github/|\.sdlc/config\.yaml$|sources/)' ;;
   archaeology)
-    # archaeology reads the old app under sources/ and writes spec/, never the app,
-    # the intent stage's own territory, or the pipeline's own config.
-    blocked='^(app/|tests/|intent/|\.github/|\.sdlc/|sources/)' ;;
+    # archaeology reads the old app under sources/ read-only and may write only spec/ —
+    # every other path, named or not, is out of its territory.
+    allowed='^spec/' ;;
   ratify)
     # A deterministic gate with no agent: nothing is written here at all.
     blocked='^' ;;

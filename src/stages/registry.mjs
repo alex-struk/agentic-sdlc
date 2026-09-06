@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { readText } from "../lib/fsx.mjs";
 import { changedPaths } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
-import { parseDomainFile } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll } from "../spec/criteria.mjs";
 import { checkCriteria } from "../checks/criteria.mjs";
 
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
@@ -122,9 +122,13 @@ const intent = {
       "Finish with your journal entry.",
     ].join("\n\n");
   },
+  // Named only once a post-check has stashed `ctx.intentFile`: a caller that asks for a
+  // name before the file exists (the pre-flight open-proposal check `runStage` runs
+  // before an agent turn) has nothing to name, so it gets `null` — a proposal to check
+  // for, not a guess dressed up as `intent-untitled`.
   proposal(ctx) {
-    const file = ctx.intentFile ?? "intent/untitled.md";
-    const slug = file.slice("intent/".length, -".md".length);
+    if (!ctx.intentFile) return null;
+    const slug = ctx.intentFile.slice("intent/".length, -".md".length);
     return {
       name: `intent-${slug}`,
       question: "Is this the right problem and outcome?",
@@ -166,19 +170,40 @@ function checkSourcesConfigured(ctx) {
 }
 
 // The domain file this run is judged by: parsed fresh (not just checked for existence)
-// so the same read can also catch a criterion this run itself must never mint — an `R-`
-// ID, which only `ratify` is allowed to write.
+// so the file exists, parses, and holds at least one criterion.
 function checkArchaeologyDomainFile(projectDir, domain) {
   const id = "archaeology-domain-file";
   const file = `spec/domains/${domain}.md`;
   const full = join(projectDir, file);
-  if (!existsSync(full)) return { id, ok: false, messages: [`${file} is missing`], file };
+  if (!existsSync(full)) return { id, ok: false, messages: [`${file} is missing`] };
   const { criteria, errors } = parseDomainFile(readText(full), domain);
   const messages = errors.map((e) => `${file}:${e.line}: ${e.message}`);
   if (criteria.length === 0) messages.push(`${file} has no criteria`);
-  const minted = criteria.filter((c) => c.id.startsWith("R-"));
-  if (minted.length) messages.push(`${file} mints a permanent id (${minted.map((c) => c.id).join(", ")}); minting is ratify's job, not archaeology's`);
-  return { id, ok: messages.length === 0, messages, file };
+  return { id, ok: messages.length === 0, messages };
+}
+
+// An `R-` ID is a permanent one, minted only by `ratify` once a human has ruled on what
+// archaeology recovered — never archaeology's own to assign. The scope check below
+// allows an archaeology run to touch any path under `spec/`, not only
+// `spec/domains/<domain>.md`, so a mint slipped into some *other* domain file this run
+// happened to change would escape a check scoped to just the target file. Every domain
+// file is parsed (`parseAll`), but only the ones this run actually changed are judged —
+// a domain file `ratify` legitimately minted `R-` IDs into on an earlier run is not this
+// run's business and must not fail it.
+function checkArchaeologyNoMintedIds(projectDir) {
+  const id = "archaeology-no-minted-ids";
+  const changed = new Set(changedPaths(projectDir).filter((p) => p.startsWith("spec/domains/") && p.endsWith(".md")));
+  const messages = [];
+  if (changed.size) {
+    const { domains } = parseAll(projectDir);
+    for (const [domain, criteria] of Object.entries(domains)) {
+      const file = `spec/domains/${domain}.md`;
+      if (!changed.has(file)) continue;
+      const minted = criteria.filter((c) => c.id.startsWith("R-"));
+      if (minted.length) messages.push(`${file} mints a permanent id (${minted.map((c) => c.id).join(", ")}); minting is ratify's job, not archaeology's`);
+    }
+  }
+  return { id, ok: messages.length === 0, messages };
 }
 
 // archaeology may only ever change files under spec/ — the old application it reads is
@@ -224,7 +249,12 @@ const archaeology = {
     return [checkDomainOption(ctx), checkSourcesConfigured(ctx)];
   },
   postChecks(projectDir, ctx) {
-    return [checkCriteria(projectDir, ctx), checkArchaeologyDomainFile(projectDir, ctx.domain), checkArchaeologyScope(projectDir)];
+    return [
+      checkCriteria(projectDir, ctx),
+      checkArchaeologyDomainFile(projectDir, ctx.domain),
+      checkArchaeologyNoMintedIds(projectDir),
+      checkArchaeologyScope(projectDir),
+    ];
   },
 };
 

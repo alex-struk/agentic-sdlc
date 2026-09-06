@@ -59,12 +59,17 @@ intent document, if the agent wrote one, stays in the working tree, untracked, f
 
 ## Re-run behaviour
 
-Re-running `intent` after its own proposal has already been opened is not blocked by this stage
-itself — `sdlc run` starts from `main`, which the still-open proposal branch has not yet merged
-into, so `intent/brief.md` is exactly as it was and a second run interviews it again, most likely
-producing the same `intent/<slug>.md` and opening a second, separately-branched proposal for the
-same slug. Nothing in `intent`'s own checks stops that; avoiding it is a process matter (rule the
-open proposal first) rather than something the stage enforces.
+Re-running `intent` while its own proposal is still open — opened, but not yet ruled — is, for
+most gated stages, refused up front by `run`'s own pre-flight check (`docs/stages/run.md`): it
+names the proposal the coming run would open and checks whether that one is already sitting open
+and unruled. `intent` is the one stage that check cannot cover, because the proposal name
+(`intent-<slug>`) is only known once the agent has written `intent/<slug>.md` — nothing before the
+run starts can name it. So a second `intent` run is not blocked by anything here: `sdlc run` starts
+from `main`, which the still-open proposal branch has not yet merged into, so `intent/brief.md` is
+exactly as it was and a second run interviews it again, most likely producing the same
+`intent/<slug>.md` and opening a second, separately-branched proposal for the same slug. Rule the
+open proposal first (`sdlc rule intent-<slug> approve --by agent:product-owner`, or `return`)
+rather than relying on anything here to stop that.
 
 ## Failure modes
 
