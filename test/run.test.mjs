@@ -331,3 +331,30 @@ test("runStage never stages run-state, even in a project that does not ignore it
     restoreEgress(prevEgress);
   }
 });
+
+test("runStage: an agent turn that reports failure is recorded with the agent's own reason", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-agentfail-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-agentfail-"));
+  writeFileSync(join(mockDir, "probe.json"), JSON.stringify({
+    ok: false,
+    text: "reached the turn limit before writing anything",
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "probe");
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, ["reached the turn limit before writing anything"]);
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-probe.md"), "utf8");
+    assert.match(journal, /title: "probe: agent turn failed"/);
+    assert.match(journal, /reached the turn limit before writing anything/);
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(probe\): agent turn failed/);
+    const day = new Date().toISOString().slice(0, 10);
+    assert.match(readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8"), /run probe: agent turn failed/);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});

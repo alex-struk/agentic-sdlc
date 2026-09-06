@@ -9,6 +9,7 @@ import { stageFor, skillText } from "../stages/registry.mjs";
 import { materialise, collect } from "../runner/workspace.mjs";
 import { runAgent } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
+import { writeJournal } from "../runner/journal.mjs";
 import { finishStage } from "../runner/finish-stage.mjs";
 import { COMMANDS } from "../cli.mjs";
 
@@ -25,6 +26,27 @@ export function turnsFor(config, name) {
   const budget = config.policy?.budgets?.[name];
   if (budget && budget < 1000) return Math.min(budget, 200);
   return 40;
+}
+
+// An agent turn can come back having failed — an error result from the CLI, the turn
+// limit reached — and what it says about that is the only account of it there is.
+// Running post-checks on a turn that already reported failure would replace that
+// account with a second, less informative one ("app/PROBE.md is missing"), so the run
+// stops here and records the turn's own text the same way a post-check failure is
+// recorded: a journal entry and a run-record line, committed on their own, with
+// whatever the session left in the working tree untouched for a person to look at.
+function agentTurnFailed(projectDir, stage, r) {
+  const reason = r.text?.trim() ? r.text : "the agent turn reported failure with no output";
+  const journal = writeJournal(projectDir, {
+    stage: stage.name,
+    title: `${stage.name}: agent turn failed`,
+    body: reason,
+    metrics: { cost: r.cost, turns: r.turns, session: r.sessionId },
+  });
+  const runPath = appendRun(projectDir, `run ${stage.name}: agent turn failed`);
+  stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): agent turn failed`], projectDir);
+  return { ok: false, journal, messages: [reason] };
 }
 
 export async function runStage(projectDir, name, { slice, domain, dryRun = false, again = false } = {}) {
@@ -75,6 +97,7 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
       writeRunState(projectDir, state);
 
       const r = await runAgent({ cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name) });
+      if (!r.ok) return agentTurnFailed(projectDir, stage, r);
 
       if (ws.mode !== "project") collect(projectDir, ws.dir, stage.collect);
 

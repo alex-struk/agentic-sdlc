@@ -186,6 +186,12 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // further into the branch than the diff the prompt already carries.
   const result = await runAgent({ cwd: projectDir, prompt, stage: "rule", maxTurns: 12,
     allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
+  // A turn that reports failure has no verdict to read, and its own text is the only
+  // account of why. Checked before the tree and before `parseVerdict`, whose "no verdict
+  // block in persona reply" would otherwise be the error a person sees for what is
+  // actually a failed session. Nothing has been written at this point, so the tree and
+  // the proposal branch are exactly as they were.
+  if (!result.ok) throw new Error(`ruling agent turn failed: ${result.text}`);
   // A ruling is a read-only turn: the agent is asked for a verdict, not permitted to
   // change the project. Checked before the verdict is even parsed, so a verdict text
   // that looks fine cannot mask files the turn left behind — and left in place (not

@@ -27,8 +27,8 @@ text, then exits without writing anything. `--again` is accepted for symmetry wi
 - One journal entry, `.sdlc/journal/<NNN>-<stage>.md` (`sdlc resume`'s contract below shows the
   shape).
 - An appended `.sdlc/runs/<date>.md` line: `run <stage>: ok, cost <usd>, turns <n>` on success, or
-  `run <stage>: pre-checks failed` / a post-check failure recorded by the stage's own failure
-  commit (see "Failure modes").
+  `run <stage>: pre-checks failed`, `run <stage>: agent turn failed`, or a post-check failure
+  recorded by the stage's own failure commit (see "Failure modes").
 - The regenerated state site (`site/index.md`, `site/gates.md`, `site/runs.md`, and now
   `site/journal.md` and `site/proposals/*.md`), rebuilt by `buildSite` on every successful run so
   it is never more than one run stale.
@@ -109,6 +109,14 @@ again for the next attempt.
   `claude failed: <stderr>` or `claude returned non-JSON output: <excerpt>`, and `run` propagates
   that error — nothing is committed, and `.sdlc/run-state.json` is left at `phase: "agent"` for
   `sdlc resume` to find.
+- The agent session runs but reports failure (an error result, the `--max-turns` ceiling reached):
+  post-checks are not run at all, since a turn that already said why it failed should not have
+  that account replaced by a check message about a file it never got to write. `run` writes a
+  journal entry titled `<stage>: agent turn failed` holding the turn's own text and its cost,
+  turn count and session id, appends `run <stage>: agent turn failed` to the run record, commits
+  `stage(<stage>): agent turn failed` with only those two staged, and returns `{ ok: false,
+  journal, messages: [<the agent's text>] }`. Anything the session did leave in the working tree
+  stays there, untracked and visible.
 - A post-check fails: `finishStage` writes a journal entry recording the agent's own text plus the
   check messages, commits `stage(<stage>): post-checks failed` with only the journal and run record
   staged (everything the agent actually produced is left untracked in the working tree, visible in

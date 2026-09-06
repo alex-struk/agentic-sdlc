@@ -412,3 +412,28 @@ test("ruleByAgent records what the ruling turn cost in the gate file and the sit
     restoreEgress(prevEgress);
   }
 });
+
+test("ruleByAgent: an agent turn that reports failure throws with the turn's own text", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-turnfail-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p12", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-rule-turnfail-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    ok: false,
+    text: "the session ended before a verdict",
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    await assert.rejects(() => ruleByAgent(dir, "p12", { persona: "product-owner" }),
+      /ruling agent turn failed: the session ended before a verdict/);
+    // Nothing was ruled and nothing was written: no gate file, tree clean, still on the
+    // proposal branch.
+    assert.ok(!existsSync(join(dir, ".sdlc/gates/p12.yaml")));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/p12");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});

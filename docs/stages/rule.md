@@ -82,6 +82,12 @@ in persona reply`; a block that isn't valid JSON throws `bad verdict block: <par
 `verdict` outside the three named values throws `bad verdict: <value>`; a verdict with no
 non-empty `rationale` throws `verdict has no rationale`.
 
+A turn that comes back reporting failure (an error result, the turn ceiling) has no verdict to
+read, so it is rejected first of all with `ruling agent turn failed: <the turn's own text>`:
+`parseVerdict`'s `no verdict block in persona reply` would otherwise be the error a person sees
+for what is actually a failed session. Nothing has been written at that point — no gate file, no
+commit — so the proposal branch and the working tree are exactly as they were.
+
 Right after the agent turn returns and before its verdict is even parsed, the working tree is
 checked for edits the turn left behind (`assertCleanTree`): a ruling is a read-only turn, and a
 persona that edited files is rejected with `rule: the ruling agent modified the working tree`
@@ -177,7 +183,8 @@ the gate log will show both. Treat a proposal as ruled once its verdict is recor
 - The working tree is dirty: throws before anything is checked out, listing the dirty paths.
 - The approval merge conflicts: the merge is aborted, `main` is left as it was, the working tree
   returns to the proposal branch, and the error names the conflicted files.
-- Agent path: no persona brief at `.sdlc/personas/<persona>.md`: throws `no persona brief for
+- Agent path: the ruling turn reports failure: throws `ruling agent turn failed: <text>`, having
+  written nothing. No persona brief at `.sdlc/personas/<persona>.md`: throws `no persona brief for
   <persona>`. The persona is not the gate's `holder`: throws naming who is (`is not a holder of
   <gate>`). The gate has no `escalate_to`: throws `gate <name> has an agent holder but no
   escalate_to`. The agent turn edited the working tree: throws `rule: the ruling agent modified
