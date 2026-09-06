@@ -116,6 +116,7 @@ const REQUIRED_IGNORES = [
   ".sdlc/run-state.json",
   ".sdlc/*.local.yaml",
   ".sdlc/*.local.txt",
+  "sources/",
 ];
 const UNIGNORE = "site/";
 

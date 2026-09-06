@@ -35,13 +35,23 @@ blocked=''
 reason=''
 case "$stage" in
   build|verify|review-and-ship)
-    blocked='^(spec/|tests/acceptance/|constitution\.md$|\.sdlc/config\.yaml$|\.github/workflows/)' ;;
+    blocked='^(spec/|tests/acceptance/|constitution\.md$|\.sdlc/config\.yaml$|\.github/workflows/|sources/)' ;;
   derive-tests)
-    blocked='^(app/|tests/adapters/|tests/seed/|spec/|constitution\.md$|\.sdlc/)' ;;
+    blocked='^(app/|tests/adapters/|tests/seed/|spec/|constitution\.md$|\.sdlc/|sources/)' ;;
   bind-adapter)
-    blocked='^(app/|tests/acceptance/|spec/|constitution\.md$|\.sdlc/)' ;;
-  intent|archaeology|ratify|design|plan)
-    blocked='^(app/|tests/acceptance/|tests/adapters/|\.github/workflows/|\.sdlc/config\.yaml$)' ;;
+    blocked='^(app/|tests/acceptance/|spec/|constitution\.md$|\.sdlc/|sources/)' ;;
+  intent)
+    # intent may write intent/ and the constitution glossary, nothing else.
+    blocked='^(app/|tests/|spec/|\.github/|\.sdlc/config\.yaml$|sources/)' ;;
+  archaeology)
+    # archaeology reads the old app under sources/ and writes spec/, never the app,
+    # the intent stage's own territory, or the pipeline's own config.
+    blocked='^(app/|tests/|intent/|\.github/|\.sdlc/|sources/)' ;;
+  ratify)
+    # A deterministic gate with no agent: nothing is written here at all.
+    blocked='^' ;;
+  design|plan)
+    blocked='^(app/|tests/acceptance/|tests/adapters/|\.github/workflows/|\.sdlc/config\.yaml$|sources/)' ;;
   probe)
     # The probe stage exists to prove the runner: one file under app/, nothing else.
     allowed='^app/' ;;

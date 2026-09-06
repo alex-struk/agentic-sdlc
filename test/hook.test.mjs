@@ -21,10 +21,35 @@ test("derive-tests stage cannot see app or adapters", () => {
   assert.equal(run("tests/acceptance/x.spec.ts", "derive-tests").status, 0);
 });
 
-test("spec stages may edit spec but not app or tests", () => {
-  assert.equal(run("spec/spec.md", "archaeology").status, 0);
-  assert.equal(run("app/x.ts", "archaeology").status, 2);
-  assert.equal(run("tests/acceptance/x.ts", "ratify").status, 2);
+test("spec stages (design, plan) may edit spec but not app or tests", () => {
+  assert.equal(run("spec/spec.md", "design").status, 0);
+  assert.equal(run("app/x.ts", "plan").status, 2);
+});
+
+test("intent may write intent/ and the constitution glossary, not app, tests, spec, sources or config", () => {
+  assert.equal(run("intent/x.md", "intent").status, 0);
+  assert.equal(run("constitution.md", "intent").status, 0);
+  for (const p of ["app/x", "tests/acceptance/x.ts", "spec/spec.md", ".github/workflows/a.yml",
+    ".sdlc/config.yaml", "sources/old/README.md"])
+    assert.equal(run(p, "intent").status, 2, p);
+});
+
+test("archaeology may write spec/, reading sources/ read-only, not app, tests, intent or .sdlc/", () => {
+  assert.equal(run("spec/domains/x.md", "archaeology").status, 0);
+  assert.equal(run("spec/contract/surface.yaml", "archaeology").status, 0);
+  for (const p of ["app/x", "tests/acceptance/x.ts", "intent/x.md", ".github/workflows/a.yml",
+    ".sdlc/config.yaml", "sources/old/README.md"])
+    assert.equal(run(p, "archaeology").status, 2, p);
+});
+
+test("ratify is deterministic and writes nothing at all", () => {
+  for (const p of ["app/x.ts", "spec/spec.md", "intent/x.md", "sources/old/README.md", "README.md"])
+    assert.equal(run(p, "ratify").status, 2, p);
+});
+
+test("every stage blocks sources/, the read-only checkout of the old application", () => {
+  for (const stage of ["build", "derive-tests", "bind-adapter", "intent", "archaeology", "design", "plan"])
+    assert.equal(run("sources/old/README.md", stage).status, 2, stage);
 });
 
 test("unset stage behaves like build", () => {
