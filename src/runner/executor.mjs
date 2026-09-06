@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ensureConfigHome } from "./config-home.mjs";
 import { writeText } from "../lib/fsx.mjs";
@@ -17,6 +17,9 @@ function runMock({ cwd, stage }) {
   if (!existsSync(p)) throw new Error(`mock executor: no canned response at ${p}`);
   const m = JSON.parse(readFileSync(p, "utf8"));
   for (const [rel, content] of Object.entries(m.files ?? {})) writeText(join(cwd, rel), content);
+  // A canned response can also delete a tracked file, so tests can exercise how a stage
+  // stages and commits a deletion without a real agent turn actually removing anything.
+  for (const rel of m.delete ?? []) rmSync(join(cwd, rel), { force: true });
   return { ok: true, text: m.text ?? "", cost: 0, turns: 1, sessionId: "mock", raw: m };
 }
 

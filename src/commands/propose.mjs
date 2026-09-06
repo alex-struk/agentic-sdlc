@@ -1,5 +1,5 @@
 import { join, relative, resolve } from "node:path";
-import { git, assertCleanTree, stagePaths, changedPaths } from "../lib/git.mjs";
+import { git, assertCleanTree, stageAll, changedPaths } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -40,7 +40,7 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   writeText(join(projectDir, proposalPath),
     `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`);
   const runPath = appendRun(projectDir, `propose ${name} at ${gate}`);
-  stagePaths(projectDir, [proposalPath, relative(projectDir, runPath), ...(paths ?? [])]);
+  stageAll(projectDir, [proposalPath, relative(projectDir, runPath), ...(paths ?? [])]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `propose(${gate}): ${name}`], projectDir);
   return { branch };
 }

@@ -1,12 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
-import { runStage } from "../src/commands/run.mjs";
+import { runStage, turnsFor } from "../src/commands/run.mjs";
 import { resume } from "../src/commands/resume.mjs";
+import { registerStage } from "../src/stages/registry.mjs";
+
+const PROBE_SKILL = new URL("../src/stages/skills/probe.md", import.meta.url).pathname;
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 
@@ -114,4 +117,185 @@ test("runStage rejects an unimplemented stage by name", async () => {
   } finally {
     restoreEgress(prevEgress);
   }
+});
+
+test("sdlc run --dry-run prints the prompt and leaves no trace on disk or in git", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-dry-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const r = await runStage(dir, "probe", { dryRun: true });
+    assert.equal(r.ok, true);
+    assert.equal(r.dryRun, true);
+    assert.ok(logs.some((l) => l.includes("the runner works")));
+    assert.ok(!existsSync(join(dir, ".sdlc/run-state.json")));
+    assert.ok(!existsSync(join(dir, ".sdlc/journal")));
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("runStage passes --slice and --domain through to the stage's ctx", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-ctx-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "ctx-echo",
+    title: "ctx echo",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: (ctx) => `slice=${ctx.slice} domain=${ctx.domain}`,
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const r = await runStage(dir, "ctx-echo", { dryRun: true, slice: 3, domain: "fees" });
+    assert.equal(r.ok, true);
+    assert.ok(logs.some((l) => l === "slice=3 domain=fees"));
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("runStage: a failing pre-check commits the run record so a later run stays unblocked", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-prefail-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "precheck-fail",
+    title: "precheck fail",
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [{ id: "always-fails", ok: false, messages: ["nope"] }],
+    postChecks: () => [],
+  });
+  try {
+    const r = await runStage(dir, "precheck-fail");
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, ["nope"]);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(precheck-fail\): pre-checks failed/);
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
+    assert.match(runs, /run precheck-fail: pre-checks failed/);
+    // The record from the first failure is already committed, so a second run against
+    // the same still-failing stage must not die at `assertCleanTree`.
+    const r2 = await runStage(dir, "precheck-fail");
+    assert.equal(r2.ok, false);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run probe: a file the agent deletes is staged and committed as gone", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-del-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  writeFileSync(join(dir, "app", "OLD.md"), "stale content\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "seed app/OLD.md"], dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-del-"));
+  writeFileSync(join(mockDir, "probe.json"), JSON.stringify({
+    text: "wrote the probe file and removed the stale one",
+    files: { "app/PROBE.md": "2026-09-06 the runner works\n" },
+    delete: ["app/OLD.md"],
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "probe");
+    assert.equal(r.ok, true);
+    assert.ok(!existsSync(join(dir, "app", "OLD.md")));
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.equal(git(["ls-files", "app/OLD.md"], dir), "");
+    assert.match(git(["log", "-1", "--name-status"], dir), /D\s+app\/OLD\.md/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("runStage: a renamed file ends up moved, staged and committed with a clean tree", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-ren-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "rename-ok",
+    title: "rename ok",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "rename app/PROBE.md",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  const content = "2026-09-06 the runner works\n";
+  writeFileSync(join(dir, "app", "PROBE.md"), content);
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "seed app/PROBE.md"], dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-ren-"));
+  writeFileSync(join(mockDir, "rename-ok.json"), JSON.stringify({
+    text: "moved the probe file",
+    files: { "app/PROBE-renamed.md": content },
+    delete: ["app/PROBE.md"],
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "rename-ok");
+    assert.equal(r.ok, true);
+    assert.ok(!existsSync(join(dir, "app", "PROBE.md")));
+    assert.ok(existsSync(join(dir, "app", "PROBE-renamed.md")));
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.equal(git(["ls-files", "app/PROBE.md"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("runStage cleans up the temp workspace and skill dir when the agent turn throws", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-throw-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const emptyMockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-empty-"));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = emptyMockDir; // no probe.json in here, so the mock throws
+  const before = new Set(readdirSync(tmpdir()).filter((n) => n.startsWith("sdlc-skill-probe-")));
+  try {
+    await assert.rejects(() => runStage(dir, "probe"), /no canned response/);
+    const newSkillDirs = readdirSync(tmpdir()).filter((n) => n.startsWith("sdlc-skill-probe-") && !before.has(n));
+    assert.deepEqual(newSkillDirs, []);
+    // `run-state.json` is written before the agent turn and a throw does not clear it —
+    // that is what lets `sdlc resume` pick the run back up — but nothing else changed.
+    assert.ok(existsSync(join(dir, ".sdlc/run-state.json")));
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("turnsFor: a budget under 1000 reads as a turn count, clamped to 200", () => {
+  assert.equal(turnsFor({ policy: { budgets: { design: 12 } } }, "design"), 12);
+  assert.equal(turnsFor({ policy: { budgets: { design: 500 } } }, "design"), 200);
+});
+
+test("turnsFor: a budget at or above 1000 is a token count, unconverted, so it falls back to 40", () => {
+  assert.equal(turnsFor({ policy: { budgets: { design: 4000000 } } }, "design"), 40);
+  assert.equal(turnsFor({}, "design"), 40);
 });

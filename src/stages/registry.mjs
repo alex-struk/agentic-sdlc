@@ -24,6 +24,7 @@ function checkProbeFile(projectDir) {
 // src/profiles.mjs and is added to the registry only, never to STAGES there.
 const probe = {
   name: "probe",
+  title: "probe the runner",
   skill: skillPath("probe"),
   workspace: "project",
   gate: null,
@@ -50,6 +51,7 @@ const probe = {
 function stub(name) {
   return {
     name,
+    title: name,
     skill: skillPath(name),
     workspace: "project",
     gate: null,
@@ -77,6 +79,14 @@ export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];
   if (!stage) throw new Error(`unknown stage: ${name}`);
   return stage;
+}
+
+// Test-only escape hatch: registers a stage object under its own name so a test can
+// exercise `runStage`/`finishStage` against behaviour (a failing pre-check, a
+// deliberately unimplemented stub) that no real stage in `profiles.mjs` exhibits yet,
+// without needing a new task to land first.
+export function registerStage(stage) {
+  STAGES_BY_NAME[stage.name] = stage;
 }
 
 export function skillText(name) {

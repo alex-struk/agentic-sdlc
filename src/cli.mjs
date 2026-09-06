@@ -11,7 +11,7 @@ const HELP = `sdlc <command> [args] [--flags]
   checks [dir] [--self] [--json]   run the structural checks
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."]
   rule <name> approve|return --by <role> [--note "..."]
-  run <stage> [--slice N] [--domain X] [--dry-run] [--again]   run one pipeline stage
+  run <stage> [--slice N] [--domain X] [--dry-run]   run one pipeline stage
   resume [--again]                 continue an interrupted run
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails

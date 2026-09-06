@@ -1,5 +1,5 @@
 import { relative } from "node:path";
-import { git, gitOk, changedPaths, stagePaths } from "../lib/git.mjs";
+import { git, changedPaths, stageAll } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { writeJournal } from "./journal.mjs";
 import { propose } from "../commands/propose.mjs";
@@ -32,7 +32,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     const runPath = appendRun(projectDir, `run ${stage.name}: post-checks failed`);
     // Only the journal and the run record are staged: the agent's other files stay in
     // the working tree, untracked, so a person can see exactly what it produced.
-    stagePaths(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
+    stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): post-checks failed`], projectDir);
     return { ok: false, journal, messages };
   }
@@ -46,12 +46,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
   appendRun(projectDir, `run ${stage.name}: ok, cost ${agentResult.cost}, turns ${agentResult.turns}`);
 
   buildSite(projectDir);
-  // The site is regenerated on every successful run so it is always current on disk,
-  // but until Task 6 makes it a tracked artifact it is gitignored in the project
-  // template — check-ignore says whether that is still true rather than assuming
-  // today's .gitignore holds forever.
-  const siteIgnored = gitOk(["check-ignore", "-q", "site"], projectDir);
-  const changed = changedPaths(projectDir).filter((p) => !(siteIgnored && p.startsWith("site/")));
+  // The site is regenerated on every successful run so it is always current on disk.
+  // `changedPaths()` already reflects `git status --porcelain`, which never lists an
+  // ignored path in the first place, so nothing here needs to special-case `site/` —
+  // doing so would also drop it once a later task makes the site a tracked artifact.
+  const changed = changedPaths(projectDir);
 
   let proposal = null;
   if (stage.gate) {
@@ -61,11 +60,10 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     });
     proposal = { name: p.name, gate: stage.gate, branch };
   } else {
-    stagePaths(projectDir, changed);
-    git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${stage.name}`], projectDir);
+    stageAll(projectDir, changed);
+    git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${stage.title ?? stage.name}`], projectDir);
   }
 
-  state.phase = "done";
   clearRunState(projectDir);
   return { ok: true, proposal, journal, cost: agentResult.cost, turns: agentResult.turns };
 }
