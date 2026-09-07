@@ -36,9 +36,9 @@ test("probe post-check fails when app/PROBE.md is missing the sentence", () => {
   assert.ok(results.some((r) => !r.ok));
 });
 
-test("every stage name from profiles.mjs other than probe, intent, archaeology, ratify, contract and derive-tests is an unimplemented stub", () => {
+test("every stage name from profiles.mjs other than probe, intent, archaeology, ratify, contract, derive-tests and bind-adapter is an unimplemented stub", () => {
   for (const name of STAGES) {
-    if (["intent", "archaeology", "ratify", "contract", "derive-tests"].includes(name)) continue;
+    if (["intent", "archaeology", "ratify", "contract", "derive-tests", "bind-adapter"].includes(name)) continue;
     const stage = stageFor(name);
     assert.equal(stage.implemented, false, name);
     assert.equal(stage.workspace, "project", name);
@@ -82,6 +82,19 @@ test("derive-tests holds gate G3, is implemented, workspace spec-only, and its p
   assert.equal(typeof stage.prepare, "function");
   const missing = stage.preChecks(".", { domain: undefined, config: { project: { domains: ["applications"] } } });
   assert.ok(missing.some((r) => !r.ok && /--domain/.test(r.messages.join(" "))));
+});
+
+test("bind-adapter holds gate G3, is implemented, workspace blind-adapter, and its pre-checks fail without --target", () => {
+  const stage = stageFor("bind-adapter");
+  assert.equal(stage.implemented, true);
+  assert.equal(stage.gate, "G3");
+  assert.equal(stage.workspace, "blind-adapter");
+  assert.deepEqual(stage.collect, ["tests/adapters"]);
+  assert.equal(typeof stage.prepare, "function");
+  assert.deepEqual(stage.allowedTools, ["Read", "Write", "Edit", "Glob", "Grep", "mcp__playwright__*"]);
+  assert.deepEqual(Object.keys(stage.mcp()), ["playwright"]);
+  const missing = stage.preChecks(".", { target: undefined, config: {} });
+  assert.ok(missing.some((r) => !r.ok && /--target/.test(r.messages.join(" "))));
 });
 
 test("ratify holds no gate, is implemented, runs no agent, and its pre-checks fail without --domain", () => {

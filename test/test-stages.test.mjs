@@ -13,6 +13,7 @@ import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule } from "../src/commands/rule.mjs";
 import { propose } from "../src/commands/propose.mjs";
+import { writeLocal } from "../src/oracle/ports.mjs";
 import { STAGES, PROFILES } from "../src/profiles.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
@@ -364,6 +365,175 @@ test("sdlc run derive-tests --domain applications --stale: after bumping one cri
   } finally {
     console.log = origLog;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// --- bind-adapter ---
+//
+// `fixture.config.yaml` itself configures no oracle at all, only a `new` target, so
+// `--target old` needs a fixture-variant config carrying an `oracle` block before
+// bind-adapter's own pre-checks have anything to look for.
+const ORACLE_BLOCK = `
+oracle:
+  target: old
+  compose: sources/old/docker-compose.yml
+  seed: tests/seed/
+  base_url: http://localhost:3100
+  identity: sandbox-idp
+`;
+
+function addOracleConfig(dir) {
+  const cfgPath = join(dir, ".sdlc", "config.yaml");
+  writeFileSync(cfgPath, readFileSync(cfgPath, "utf8") + ORACLE_BLOCK);
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "add oracle config (test)"], dir);
+}
+
+async function makeProjectWithOracle(tmp) {
+  const { dir, prevEgress } = await makeProject(tmp);
+  addOracleConfig(dir);
+  return { dir, prevEgress };
+}
+
+// A project with `spec/contract` completed and approved (contract-v1, committed on
+// main — the `blind-adapter` workspace bind-adapter runs in archives only committed
+// content, the same reason `derive-tests`'s own `makeReadyForDeriveTests` needs it) and
+// the oracle configured only *after* that ruling: `contract`'s own post-checks judge a
+// project with `config.oracle` set on writing a compose override the fixture's canned
+// response never produces, and bind-adapter's own tests have nothing to do with that
+// check.
+async function makeReadyForBindAdapter(tmp) {
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  const contractRun = await runStage(dir, "contract");
+  if (!contractRun.ok) throw new Error(`contract failed: ${JSON.stringify(contractRun.messages)}`);
+  delete process.env.SDLC_EXECUTOR;
+  delete process.env.SDLC_MOCK_DIR;
+  rule(dir, "contract-v1", "approve", { by: "tech-lead" });
+  addOracleConfig(dir);
+  return { dir, prevEgress };
+}
+
+// `readLocal`/`writeLocal` round-trip exactly this shape (`src/oracle/ports.mjs`) —
+// standing in for what a real `sdlc oracle up` would have written, without spinning up
+// Docker for a stage test that only cares that the file is there.
+function writeOldOracleLocal(dir) {
+  writeLocal(dir, "old", {
+    target: "old",
+    base_url: "http://localhost:3100",
+    mail_api: "http://localhost:8025",
+    ports: { app: 3100, db: 5500, mail_api: 8025 },
+    compose_project: "sdlc-permit-intake-old",
+  });
+}
+
+const BIND_ADAPTER_MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
+
+test("sdlc run bind-adapter --target old: refused before any agent turn — the oracle has not been started", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-notup-"));
+  const { dir, prevEgress } = await makeProjectWithOracle(tmp);
+  process.env.SDLC_ORACLE = "mock";
+  try {
+    const r = await runStage(dir, "bind-adapter", { target: "old" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /bind-adapter: the old target is not up; run sdlc oracle up first/.test(m)), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_ORACLE;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run bind-adapter --target old: the mock run opens proposal/bind-adapter-old at G3 with the adapter and its bindings", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-ok-"));
+  const { dir, prevEgress } = await makeReadyForBindAdapter(tmp);
+  writeOldOracleLocal(dir);
+  process.env.SDLC_ORACLE = "mock";
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = BIND_ADAPTER_MOCK_DIR;
+  try {
+    const r = await runStage(dir, "bind-adapter", { target: "old" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(r.proposal);
+    assert.equal(r.proposal.name, "bind-adapter-old");
+    assert.equal(r.proposal.gate, "G3");
+    assert.equal(r.proposal.branch, "proposal/bind-adapter-old");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/bind-adapter-old");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+
+    const proposalText = readFileSync(join(dir, ".sdlc/proposals/bind-adapter-old.md"), "utf8");
+    assert.match(proposalText, /gate: G3/);
+    assert.match(proposalText, /"Does this adapter bind every surface action and observation on old, and nothing else\?"/);
+
+    assert.ok(existsSync(join(dir, "tests/adapters/old/index.ts")));
+    const bindings = readFileSync(join(dir, "tests/adapters/old/bindings.yaml"), "utf8");
+    assert.match(bindings, /applications-new/);
+    assert.match(bindings, /fees-quote/);
+
+    const committed = git(["show", "--name-only", "--format=", "HEAD"], dir);
+    assert.match(committed, /tests\/adapters\/old\/index\.ts/);
+    assert.match(committed, /tests\/adapters\/old\/bindings\.yaml/);
+    // Derived from the contract already on main, not part of this stage's own collect
+    // list, so it never lands in bind-adapter's own commit.
+    assert.ok(!committed.includes("tests/generated/"), committed);
+  } finally {
+    delete process.env.SDLC_ORACLE; delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run bind-adapter --target old: a mock bindings file missing one observation fails naming it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-missing-"));
+  const { dir, prevEgress } = await makeReadyForBindAdapter(tmp);
+  writeOldOracleLocal(dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-missing-mock-"));
+  writeFileSync(join(mockDir, "bind-adapter.json"), JSON.stringify({
+    text: "bound everything but forgot the fee amount observation",
+    files: {
+      "tests/adapters/old/index.ts": "export default function create() { return {} as unknown; }\n",
+      "tests/adapters/old/bindings.yaml":
+        "target: old\npages:\n  applications-new:\n    actions: { submit: bound }\n    observations: { status: bound }\n"
+        + "  fees-quote:\n    actions: { calculate: bound }\n    observations: {}\n",
+    },
+  }));
+  process.env.SDLC_ORACLE = "mock";
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "bind-adapter", { target: "old" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m.includes("fees-quote.amount")), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(bind-adapter\): post-checks failed/);
+  } finally {
+    delete process.env.SDLC_ORACLE; delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run bind-adapter --target old --dry-run: prints the mcp server and the env variable names, never the base URL value", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-dry-"));
+  const { dir, prevEgress } = await makeReadyForBindAdapter(tmp);
+  writeOldOracleLocal(dir);
+  process.env.SDLC_ORACLE = "mock";
+  const logs = [];
+  const origLog = console.log;
+  try {
+    console.log = (...a) => logs.push(a.join(" "));
+    const r = await runStage(dir, "bind-adapter", { target: "old", dryRun: true });
+    console.log = origLog;
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    const printed = logs.join("\n");
+    assert.match(printed, /^mcp: playwright$/m);
+    assert.match(printed, /^env: SDLC_TARGET_URL, SDLC_MAIL_API, SDLC_SANDBOX_PASSWORD$/m);
+    assert.ok(!printed.includes("http://localhost:3100"), printed);
+  } finally {
+    console.log = origLog;
+    delete process.env.SDLC_ORACLE;
     restoreEgress(prevEgress);
   }
 });

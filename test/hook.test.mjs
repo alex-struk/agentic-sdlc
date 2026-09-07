@@ -26,6 +26,17 @@ test("derive-tests may write only tests/acceptance/, and nothing else at all", (
     assert.equal(run(p, "derive-tests").status, 2, p);
 });
 
+test("bind-adapter may write only tests/adapters/, and nothing else at all", () => {
+  assert.equal(run("tests/adapters/old/index.ts", "bind-adapter").status, 0);
+  assert.equal(run("tests/adapters/old/bindings.yaml", "bind-adapter").status, 0);
+  // An allow rule, so a path nobody thought to name is refused rather than permitted —
+  // in particular tests/generated/, which `prepare` regenerates but the agent never
+  // writes to directly, and tests/acceptance/, which this stage must never touch.
+  for (const p of ["app/src/index.ts", "tests/acceptance/x.spec.ts", "tests/seed/001-users.sql",
+    "tests/generated/surface.d.ts", "spec/contract/surface.yaml", "constitution.md", ".sdlc/config.yaml"])
+    assert.equal(run(p, "bind-adapter").status, 2, p);
+});
+
 test("spec stages (design, plan) may edit spec but not app or tests", () => {
   assert.equal(run("spec/spec.md", "design").status, 0);
   assert.equal(run("app/x.ts", "plan").status, 2);

@@ -1,4 +1,5 @@
 import { existsSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -11,6 +12,7 @@ import { checkEgress } from "../checks/egress.mjs";
 import { checkTests, coverage } from "../checks/tests.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { loadContract, writeGenerated } from "../spec/surface.mjs";
+import { readLocal } from "../oracle/ports.mjs";
 import { propose } from "../commands/propose.mjs";
 
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
@@ -772,6 +774,254 @@ const deriveTests = {
   },
 };
 
+// `--target old` is the oracle this project's own config started (`sdlc oracle up`);
+// any other name has to be one `config.targets` actually configures — there is no
+// third way to name a running application this stage could bind against.
+function checkBindAdapterTargetOption(ctx) {
+  const id = "bind-adapter-target-option";
+  if (!ctx.target) return { id, ok: false, messages: ["bind-adapter needs --target <t>"] };
+  if (ctx.target === "old") {
+    if (ctx.config?.oracle?.target !== "old")
+      return { id, ok: false, messages: [`bind-adapter: target "old" needs config.oracle (with oracle.target: old)`] };
+    return { id, ok: true, messages: [] };
+  }
+  const targets = ctx.config?.targets ?? {};
+  if (!(ctx.target in targets))
+    return { id, ok: false, messages: [`target "${ctx.target}" is not "old" and not in config.targets: ${Object.keys(targets).join(", ") || "(none configured)"}`] };
+  return { id, ok: true, messages: [] };
+}
+
+// Everything the rest of this stage needs to know about the target it is binding
+// against, resolved once in `preChecks` (the only hook that sees the real project
+// directory before `prompt`/`mcp`/`env` run with nothing but `ctx`) and stashed there
+// for them to read back — the same pattern `derive-tests` stashes its own resolved
+// criteria in. `old`'s base URL and mail API only exist once `sdlc oracle up` has
+// actually started it and written `.sdlc/oracle-old.local.yaml` (`readLocal`,
+// `src/oracle/ports.mjs`); every other target's base URL is whatever its own config
+// entry names, and carries no mail catcher of its own to observe email through.
+function resolveBindAdapterTarget(projectDir, ctx) {
+  const t = ctx.target;
+  if (t === "old") {
+    const local = ctx.config?.oracle?.target === "old" ? readLocal(projectDir, "old") : null;
+    ctx.bindAdapterBaseUrl = local?.base_url;
+    ctx.bindAdapterMailApi = local?.mail_api ?? "";
+    ctx.bindAdapterIdentity = ctx.config?.oracle?.identity;
+  } else {
+    const target = ctx.config?.targets?.[t];
+    ctx.bindAdapterBaseUrl = target?.base_url;
+    ctx.bindAdapterMailApi = "";
+    ctx.bindAdapterIdentity = target?.identity;
+  }
+}
+
+// A one-shot "is anything answering here at all" probe, any HTTP status included —
+// `preChecks` is called synchronously (`sdlc run`'s own contract with every stage), and
+// Node has no synchronous `fetch`, so the check runs in a short-lived child process
+// instead of blocking the event loop itself. `AbortSignal.timeout` bounds it to 5s
+// either way: a target that never answers must not hang the pre-check forever.
+function probeHttp(url) {
+  const script = "fetch(process.argv[1], { signal: AbortSignal.timeout(5000) })"
+    + ".then(() => process.exit(0)).catch(() => process.exit(1));";
+  try {
+    execFileSync(process.execPath, ["-e", script, url], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The target must actually be reachable before an agent turn spends a session walking
+// it with a browser. `--target old` fails by name ("run sdlc oracle up first") when
+// nothing has started it yet; any other target already had its shape checked by
+// `checkBindAdapterTargetOption` above, so an invalid one reports nothing further here
+// rather than repeating that check's own message. `SDLC_ORACLE=mock` — the same escape
+// hatch every other oracle-facing call in this pipeline uses (`src/oracle/compose.mjs`)
+// — skips the real network probe entirely, since a mock run has no server to answer it.
+function checkBindAdapterTargetUp(ctx) {
+  const id = "bind-adapter-target-up";
+  if (!ctx.target) return { id, ok: true, messages: [] };
+  if (ctx.target === "old" && ctx.config?.oracle?.target !== "old") return { id, ok: true, messages: [] };
+  if (ctx.target !== "old" && !(ctx.target in (ctx.config?.targets ?? {}))) return { id, ok: true, messages: [] };
+  if (!ctx.bindAdapterBaseUrl) {
+    return ctx.target === "old"
+      ? { id, ok: false, messages: ["bind-adapter: the old target is not up; run sdlc oracle up first"] }
+      : { id, ok: false, messages: [`bind-adapter: target "${ctx.target}" has no base_url configured`] };
+  }
+  if (process.env.SDLC_ORACLE === "mock") return { id, ok: true, messages: [] };
+  if (!probeHttp(`${ctx.bindAdapterBaseUrl}/`))
+    return { id, ok: false, messages: [`bind-adapter: ${ctx.bindAdapterBaseUrl}/ did not answer`] };
+  return { id, ok: true, messages: [] };
+}
+
+// The proposal name a run opens: `bind-adapter-<t>` the first time, `bind-adapter-<t>-<n>`
+// after that — `n` counting up from every ruled `bind-adapter-<t>*` gate file already on
+// disk, the same "count rulings, not attempts" rule `contract`'s own `-v<n>` follows.
+// Unlike `contract`, the un-numbered name is the one a fresh target gets; a number only
+// appears once a first ruling already exists to count.
+function nextBindAdapterName(projectDir, target) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return `bind-adapter-${target}`;
+  const re = new RegExp(`^bind-adapter-${escapeRe(target)}(-\\d+)?\\.yaml$`);
+  const n = readdirSync(dir).filter((f) => re.test(f)).length;
+  return n === 0 ? `bind-adapter-${target}` : `bind-adapter-${target}-${n + 1}`;
+}
+
+// `bindings.yaml` names every action and observation the surface declares, on every
+// page, exactly once — `bound`, or `unbound: <reason>` — and names nothing the surface
+// does not. Checked against `loadContract`, the same source of truth `writeGenerated`
+// built `tests/generated/surface.d.ts` from, so an adapter can never quietly drift from
+// what the contract (and therefore the acceptance suite) actually names.
+function checkBindAdapterBindings(projectDir, target) {
+  const id = "bind-adapter-bindings";
+  const file = `tests/adapters/${target}/bindings.yaml`;
+  const full = join(projectDir, file);
+  if (!existsSync(full)) return { id, ok: false, messages: [`${file} is missing`] };
+  let doc;
+  try {
+    doc = parseYaml(readText(full)) ?? {};
+  } catch (e) {
+    return { id, ok: false, messages: [`${file} is not valid YAML: ${e.message}`] };
+  }
+  const { surface, errors } = loadContract(projectDir);
+  if (errors.length) return { id, ok: false, messages: errors.map((e) => `${e.file}: ${e.message}`) };
+
+  const messages = [];
+  const isVerdict = (v) => v === "bound" || (typeof v === "string" && v.startsWith("unbound:"));
+  const pages = doc.pages && typeof doc.pages === "object" && !Array.isArray(doc.pages) ? doc.pages : {};
+  const surfaceIds = new Set(surface.pages.map((p) => p.id));
+
+  for (const page of surface.pages) {
+    const entry = pages[page.id] ?? {};
+    for (const group of ["actions", "observations"]) {
+      const named = Object.keys(page[group] ?? {});
+      const bound = entry[group] && typeof entry[group] === "object" && !Array.isArray(entry[group]) ? entry[group] : {};
+      for (const name of named) {
+        const verdict = bound[name];
+        if (verdict === undefined) messages.push(`${file}: ${page.id}.${name} is missing`);
+        else if (!isVerdict(verdict)) messages.push(`${file}: ${page.id}.${name} must be "bound" or "unbound: <reason>", got ${JSON.stringify(verdict)}`);
+      }
+      for (const name of Object.keys(bound)) {
+        if (!named.includes(name)) messages.push(`${file}: ${page.id}.${group}.${name} is not in the surface`);
+      }
+    }
+  }
+  for (const pageId of Object.keys(pages)) {
+    if (!surfaceIds.has(pageId)) messages.push(`${file}: page "${pageId}" is not in the surface`);
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+function checkBindAdapterIndex(projectDir, target) {
+  const id = "bind-adapter-index";
+  const file = `tests/adapters/${target}/index.ts`;
+  if (!existsSync(join(projectDir, file))) return { id, ok: false, messages: [`${file} is missing`] };
+  return { id, ok: true, messages: [] };
+}
+
+// `bind-adapter` may only ever change its own target's corner of the adapter tree —
+// never another target's adapter, never `tests/acceptance` (which this workspace never
+// even materialises, so touching it would mean something else went wrong entirely).
+function checkBindAdapterScope(projectDir, target) {
+  const id = "bind-adapter-scope";
+  const allowed = new RegExp(`^tests/adapters/${escapeRe(target)}/`);
+  const outside = changedPaths(projectDir).filter((p) => !allowed.test(p));
+  if (outside.length)
+    return { id, ok: false, messages: [`bind-adapter may only change tests/adapters/${target}/, but also touched: ${outside.join(", ")}`] };
+  return { id, ok: true, messages: [] };
+}
+
+// The sign-in instructions for the prompt below, one paragraph per identity this
+// pipeline knows how to reach: `session-route` mints a session by URL alone, no form to
+// fill; `sandbox-idp` needs an actual form filled with the persona's username and the
+// sandbox password every target under test shares — read from the environment, never
+// invented, and never named as its own value here (the value lives only in `env`,
+// never printed by a dry run and never worth spelling out to an agent turn that only
+// ever needs the variable's name).
+function bindAdapterSignInInstructions(identity) {
+  if (identity === "sandbox-idp") {
+    return "This target signs in through sandbox-idp: find the identity provider's own sign-in form and fill it with the persona's username (persona.signIn[\"sandbox-idp\"].username) and the password in your SDLC_SANDBOX_PASSWORD environment variable — never a password you invent or find written down anywhere.";
+  }
+  if (identity === "session-route") {
+    return "This target signs in through session-route: page.goto(baseURL + persona.signIn[\"session-route\"].route) mints the session directly — there is no form to fill.";
+  }
+  return `This target's identity ("${identity ?? "unknown"}") is not one this pipeline names a sign-in method for; sign in the way the running application actually offers, and say in your journal what you found.`;
+}
+
+// `bind-adapter` writes the one binding of the abstract `Surface` for one target,
+// walking the *running* application with a real browser (the Playwright MCP server) —
+// never reading source, because its `blind-adapter` workspace never has any application
+// source to read. It holds gate G3, the same gate `derive-tests` holds: the reviewer
+// persona rules whether the binding is navigation and locators only, covers everything
+// the contract names, and touches nothing outside its own target's corner of the tree.
+const bindAdapter = {
+  name: "bind-adapter",
+  title: "bind adapter",
+  skill: skillPath("bind-adapter"),
+  workspace: "blind-adapter",
+  gate: "G3",
+  // Only the adapter itself: `tests/generated/*`, regenerated in the workspace by
+  // `prepare` below, is derived straight from the contract already committed on
+  // `main` and needs no commit of its own here.
+  collect: ["tests/adapters"],
+  implemented: true,
+  // Turns the contract this workspace archived (`spec/contract/`) into the same
+  // `tests/generated/surface.d.ts` a real adapter file imports, so the agent's very
+  // first read of `Surface` is the type it is about to implement, not a hand-derived
+  // guess at it.
+  prepare(wsDir) {
+    writeGenerated(wsDir);
+  },
+  mcp() {
+    return { playwright: { command: "npx", args: ["-y", "@playwright/mcp@0.0.80", "--headless", "--isolated"] } };
+  },
+  // No Bash: an adapter session drives the browser and edits files, and has no
+  // business reaching a shell.
+  allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "mcp__playwright__*"],
+  env(ctx) {
+    return {
+      SDLC_TARGET_URL: ctx.bindAdapterBaseUrl ?? "",
+      SDLC_MAIL_API: ctx.bindAdapterMailApi ?? "",
+      SDLC_SANDBOX_PASSWORD: process.env.SDLC_SANDBOX_PASSWORD ?? "",
+    };
+  },
+  prompt(ctx) {
+    const t = ctx.target;
+    const identity = ctx.bindAdapterIdentity;
+    return [
+      `Write tests/adapters/${t}/index.ts, exporting default function create(page: Page, ctx: { baseURL: string; persona: typeof persona }): Surface, implementing every page tests/generated/surface.d.ts declares for this project. This target is named "${t}"; its base URL is in your SDLC_TARGET_URL environment variable and is also handed to your own adapter as "baseURL" once it runs for real. Walk the actual running application with the browser tools and bind against what you find there — never a selector copied from source, because there is no source in this workspace to copy one from.`,
+      `signIn(persona) reads persona.signIn["${identity ?? "?"}"] for the persona it is given. ${bindAdapterSignInInstructions(identity)}`,
+      `Bind every action and observation by driving the browser: open the page at its route, find the control by its role, its label, its visible text, or the URL it lands you on — never a CSS selector, a test id, or anything else that only makes sense with the source open next to you. An action or observation nothing on the page actually does throws new Error("unbound: <page>.<member> — <reason>") from that method, naming what is missing.`,
+      `Write tests/adapters/${t}/bindings.yaml naming every action and observation on every page in the surface exactly once, as "bound" or "unbound: <reason>":\n\ntarget: ${t}\npages:\n  <pageId>:\n    actions: { <name>: bound }\n    observations: { <name>: "unbound: <why>" }`,
+      `Your territory is tests/adapters/${t}/ alone. Never write under tests/acceptance or spec/ — this workspace does not even have them for you to touch by mistake.`,
+      `Finish with your journal entry: what was bound, what was not and why, and any page whose route in surface.yaml did not resolve on the target.`,
+    ].join("\n\n");
+  },
+  proposal(ctx) {
+    const t = ctx.target;
+    return {
+      name: ctx.bindAdapterName ?? nextBindAdapterName(ctx.projectDir, t),
+      question: `Does this adapter bind every surface action and observation on ${t}, and nothing else?`,
+      recommendation: recommendationFrom(ctx.agentText),
+    };
+  },
+  preChecks(projectDir, ctx) {
+    if (ctx.target) resolveBindAdapterTarget(projectDir, ctx);
+    return [checkBindAdapterTargetOption(ctx), checkBindAdapterTargetUp(ctx)];
+  },
+  postChecks(projectDir, ctx) {
+    // Stashed the same way `contract` stashes its own version: the real `proposal(ctx)`
+    // call in `finishStage` does not carry `projectDir`, so the name has to be resolved
+    // here, while it is available, for `proposal` to read back.
+    ctx.bindAdapterName = nextBindAdapterName(projectDir, ctx.target);
+    return [
+      checkSeparation(projectDir),
+      checkBindAdapterBindings(projectDir, ctx.target),
+      checkBindAdapterIndex(projectDir, ctx.target),
+      checkBindAdapterScope(projectDir, ctx.target),
+    ];
+  },
+};
+
 function ratifyGateName(domain) {
   return `archaeology-${domain}`;
 }
@@ -1213,6 +1463,7 @@ STAGES_BY_NAME.archaeology = archaeology;
 STAGES_BY_NAME.ratify = ratify;
 STAGES_BY_NAME.contract = contract;
 STAGES_BY_NAME["derive-tests"] = deriveTests;
+STAGES_BY_NAME["bind-adapter"] = bindAdapter;
 
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];

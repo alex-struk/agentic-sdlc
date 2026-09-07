@@ -41,7 +41,10 @@ case "$stage" in
     # or spec/, and its own territory is only the acceptance suite it writes.
     allowed='^tests/acceptance/' ;;
   bind-adapter)
-    blocked='^(app/|tests/acceptance/|spec/|constitution\.md$|\.sdlc/|sources/)' ;;
+    # bind-adapter is blind the same way: its workspace never materialises app/,
+    # tests/acceptance/ or spec/ (only spec/contract/, read-only, for `prepare` to
+    # regenerate tests/generated/ from) — its own territory is the adapter it writes.
+    allowed='^tests/adapters/' ;;
   intent)
     # intent may write intent/ and the constitution glossary, and nothing else. Written
     # as an allow rule rather than a deny list: a deny list only refuses the paths
