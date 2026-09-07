@@ -19,7 +19,10 @@ const PROVENANCE_LINE_RE = /^\/\/ provenance: (blind|unverified), spec@([0-9a-fA
 // that let a `blind` claim stand once the file has real git history.
 const DERIVE_TESTS_SUBJECT_RE = /^(propose\(G3\): derive-tests-|stage\(derive-tests\)|merge: derive-tests-)/;
 
-function loadIndex(projectDir) {
+// Exported for `runSuite` (`src/testrun/playwright.mjs`), which needs the same
+// criterion-to-domain lookup to report a `not-testable` row's domain — the index has no
+// other reader, so there is nothing to duplicate by sharing this one.
+export function loadIndex(projectDir) {
   const p = join(projectDir, "spec", "criteria-index.json");
   if (!existsSync(p)) return null;
   try { return JSON.parse(readText(p)); } catch (e) {
@@ -46,8 +49,25 @@ function readYamlList(projectDir, relFile, key, messages) {
   return Array.isArray(parsed?.[key]) ? parsed[key] : [];
 }
 
-const readNotTestable = (projectDir, messages) => readYamlList(projectDir, "not-testable.yaml", "criteria", messages);
+// Exported for `runSuite`, which reports one row per not-testable entry the same way this
+// check validates them, and needs the same list rather than a second parse of the file.
+export const readNotTestable = (projectDir, messages) => readYamlList(projectDir, "not-testable.yaml", "criteria", messages);
 const readAttestations = (projectDir, messages) => readYamlList(projectDir, "attestations.yaml", "attestations", messages);
+
+// Parses a spec file's two-line provenance header: `// criterion: @<ID> v<n>` then
+// `// provenance: <blind|unverified>, spec@<sha>, derived <date>`. Shared by `checkTests`
+// below, which verifies the claim, and `runSuite` (`src/testrun/playwright.mjs`), which
+// maps a Playwright report row back to the criterion it exercises — so the header format
+// lives in one regex, not two. `label` is what an error names the file as; `checkTests`
+// passes the project-relative path it already reports everything else against.
+export function readHeader(absPath, label = absPath) {
+  const lines = readText(absPath).split("\n");
+  const m1 = CRITERION_LINE_RE.exec(lines[0] ?? "");
+  if (!m1) return { error: `${label}:1: expected "// criterion: @<ID> v<n>"` };
+  const m2 = PROVENANCE_LINE_RE.exec(lines[1] ?? "");
+  if (!m2) return { error: `${label}:2: expected "// provenance: <blind|unverified>, spec@<sha>, derived <YYYY-MM-DD>"` };
+  return { id: m1[1], version: Number(m1[2]), provenance: m2[1] };
+}
 
 // Whether a spec file claiming `blind` provenance actually earned it. A file whose header
 // says `unverified` is unverified regardless of what git says — the header is the claim
@@ -124,15 +144,9 @@ export function checkTests(projectDir, ctx = {}) {
       messages.push(`${f.relPath}: expected a *.spec.ts file`);
       continue;
     }
-    const lines = readText(f.abs).split("\n");
-    const m1 = CRITERION_LINE_RE.exec(lines[0] ?? "");
-    const m2 = PROVENANCE_LINE_RE.exec(lines[1] ?? "");
-    if (!m1) { messages.push(`${f.relPath}:1: expected "// criterion: @<ID> v<n>"`); continue; }
-    if (!m2) { messages.push(`${f.relPath}:2: expected "// provenance: <blind|unverified>, spec@<sha>, derived <YYYY-MM-DD>"`); continue; }
-
-    const [, headerId, versionStr] = m1;
-    const version = Number(versionStr);
-    const [, provenanceClaim] = m2;
+    const header = readHeader(f.abs, f.relPath);
+    if (header.error) { messages.push(header.error); continue; }
+    const { id: headerId, version, provenance: provenanceClaim } = header;
 
     if (f.filename !== `${headerId}.spec.ts`)
       messages.push(`${f.relPath}: filename must be ${headerId}.spec.ts for the criterion in its header`);
