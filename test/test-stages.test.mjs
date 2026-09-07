@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
@@ -534,6 +535,56 @@ test("sdlc run bind-adapter --target old --dry-run: prints the mcp server and th
   } finally {
     console.log = origLog;
     delete process.env.SDLC_ORACLE;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run bind-adapter --target old: probe fails promptly when no server listens on the configured port", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-probe-timeout-"));
+  const { dir, prevEgress } = await makeReadyForBindAdapter(tmp);
+
+  // Obtain an unused port by creating and immediately closing a server.
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const unusedPort = server.address().port;
+  server.close();
+
+  const baseUrlWithPort = `http://127.0.0.1:${unusedPort}`;
+
+  // Override both the oracle config and local oracle state to point to the unused port.
+  const cfgPath = join(dir, ".sdlc", "config.yaml");
+  const cfg = readFileSync(cfgPath, "utf8");
+  const updatedCfg = cfg.replace(/base_url: http:\/\/localhost:\d+/, `base_url: ${baseUrlWithPort}`);
+  writeFileSync(cfgPath, updatedCfg);
+
+  // Update the local oracle state with the same port.
+  writeLocal(dir, "old", {
+    target: "old",
+    base_url: baseUrlWithPort,
+    mail_api: `http://127.0.0.1:${unusedPort + 100}`,
+    ports: { app: unusedPort, db: unusedPort + 100, mail_api: unusedPort + 200 },
+    compose_project: "sdlc-permit-intake-old",
+  });
+
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "update oracle config with unused port (test)"], dir);
+
+  // Do NOT set SDLC_ORACLE=mock so the probe actually runs.
+  try {
+    const startTime = Date.now();
+    const r = await runStage(dir, "bind-adapter", { target: "old" });
+    const duration = Date.now() - startTime;
+
+    // Probe should fail because no server listens on the port.
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /did not answer/.test(m)), r.messages.join(" | "));
+
+    // Probe should complete within a reasonable time: 5s in-script timeout +
+    // 6s OS-level timeout, plus a small overhead, should resolve in ~6-7s max.
+    assert.ok(duration < 10000, `probe took ${duration}ms, expected < 10000ms`);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
     restoreEgress(prevEgress);
   }
 });

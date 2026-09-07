@@ -818,12 +818,13 @@ function resolveBindAdapterTarget(projectDir, ctx) {
 // `preChecks` is called synchronously (`sdlc run`'s own contract with every stage), and
 // Node has no synchronous `fetch`, so the check runs in a short-lived child process
 // instead of blocking the event loop itself. `AbortSignal.timeout` bounds it to 5s
-// either way: a target that never answers must not hang the pre-check forever.
+// and `execFileSync` has a 6s OS-level timeout so a stalled child never blocks the
+// pre-check forever; both layers ensure a target that never answers fails promptly.
 function probeHttp(url) {
   const script = "fetch(process.argv[1], { signal: AbortSignal.timeout(5000) })"
     + ".then(() => process.exit(0)).catch(() => process.exit(1));";
   try {
-    execFileSync(process.execPath, ["-e", script, url], { stdio: "ignore" });
+    execFileSync(process.execPath, ["-e", script, url], { timeout: 6000, stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -848,8 +849,9 @@ function checkBindAdapterTargetUp(ctx) {
       : { id, ok: false, messages: [`bind-adapter: target "${ctx.target}" has no base_url configured`] };
   }
   if (process.env.SDLC_ORACLE === "mock") return { id, ok: true, messages: [] };
-  if (!probeHttp(`${ctx.bindAdapterBaseUrl}/`))
-    return { id, ok: false, messages: [`bind-adapter: ${ctx.bindAdapterBaseUrl}/ did not answer`] };
+  const baseUrl = ctx.bindAdapterBaseUrl.replace(/\/$/, "");
+  if (!probeHttp(`${baseUrl}/`))
+    return { id, ok: false, messages: [`bind-adapter: ${baseUrl}/ did not answer`] };
   return { id, ok: true, messages: [] };
 }
 
