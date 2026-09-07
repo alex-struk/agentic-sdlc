@@ -27,6 +27,10 @@ archaeology --domain <d> --revise` revises the domain from a returned G1 ruling 
 recovering it from scratch (`docs/stages/archaeology.md`, "Revising after a return"); every other
 stage ignores it.
 
+`--dry-run` is threaded onto `ctx.dryRun` before `preChecks` runs, so a pre-check with a side
+effect on a real run — `archaeology`'s `checkRevisionSource` is the one that has one today — can
+tell a dry run apart and skip it.
+
 `--dry-run` writes nothing at all. For an agent stage it prints the prompt the stage would send
 and the path of the scratch file holding its skill text; for a stage with no agent turn it prints
 one line saying so. `--again` is accepted for symmetry with `sdlc resume --again` and does nothing

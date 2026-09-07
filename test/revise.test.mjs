@@ -104,13 +104,14 @@ test("archaeology --revise: with no returned ruling, fails the pre-check up fron
   }
 });
 
-test("archaeology --revise --dry-run: prints the return's rationale, and records the return on main even though nothing else is written", async () => {
+test("archaeology --revise --dry-run: prints the return's rationale, and leaves the branch and main untouched", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-revise-dryrun-"));
   const { dir, prevEgress } = await makeSourcesProject(tmp);
   const logs = [];
   const origLog = console.log;
   try {
     await buildReturnedFollowUp(dir);
+    const mainBefore = git(["rev-parse", "main"], dir);
 
     console.log = (...a) => logs.push(a.join(" "));
     const r = await runStage(dir, "archaeology", { domain: "applications", revise: true, dryRun: true });
@@ -120,21 +121,182 @@ test("archaeology --revise --dry-run: prints the return's rationale, and records
     assert.equal(r.dryRun, true);
     assert.ok(logs.some((l) => l.includes(RETURN_NOTE)), "the printed prompt quotes the return's rationale");
 
-    // The pre-check's own pre-flight runs before the dry-run print (the prompt needs the
-    // rationale), so — unlike an ordinary dry run, which writes nothing at all — the
-    // return itself is already recorded on `main` by the time this returns: the gate
-    // file and proposal page are copied over, and the spent follow-up branch is gone.
-    const gatePath = join(dir, ".sdlc/gates/ratify-applications-1.yaml");
-    assert.ok(existsSync(gatePath));
-    assert.equal(parseYaml(readFileSync(gatePath, "utf8")).verdict, "return");
-    assert.ok(existsSync(join(dir, ".sdlc/proposals/ratify-applications-1.md")));
-    assert.equal(gitOk(["rev-parse", "--verify", "proposal/ratify-applications-1"], dir), false);
+    // A dry run writes nothing at all — the same promise every stage's dry run makes
+    // (docs/stages/run.md). The returned ruling is only found and quoted, never recorded:
+    // its gate file and proposal page stay on the spent branch, `main` gains no commit,
+    // and the branch itself is not deleted.
+    assert.equal(existsSync(join(dir, ".sdlc/gates/ratify-applications-1.yaml")), false);
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/ratify-applications-1"], dir), true);
+    assert.equal(git(["show", "proposal/ratify-applications-1:.sdlc/gates/ratify-applications-1.yaml"], dir).includes("verdict: return"), true);
 
+    assert.equal(git(["rev-parse", "main"], dir), mainBefore, "main gained no commit");
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.equal(git(["status", "--porcelain"], dir), "");
-    assert.match(git(["log", "-1", "--pretty=%s"], dir), /record\(G1\): ratify-applications-1 returned/);
   } finally {
     console.log = origLog;
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("archaeology --revise: a failing earlier pre-check (in the same batch as a real returned ruling) leaves the branch and main untouched", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-revise-precheck-order-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  try {
+    await buildReturnedFollowUp(dir);
+
+    // `--domain applications` is exactly the domain with a real returned ruling to act
+    // on — the scenario the bug report described as the dangerous one, since
+    // `checkDomainOption` alone (a bad domain name) can never trigger it: a domain
+    // `checkDomainOption` rejects is never the domain `checkRevisionSource` would have
+    // found anything for anyway. `checkSourcesConfigured` is broken instead, by dropping
+    // `sources.old` from `.sdlc/config.yaml` and committing that — unrelated to whether a
+    // returned ruling exists, exactly like a real misconfiguration would be.
+    const configPath = join(dir, ".sdlc", "config.yaml");
+    const config = readFileSync(configPath, "utf8");
+    assert.match(config, /^sources:/m);
+    writeFileSync(configPath, config.replace(/^sources:[\s\S]*$/m, ""));
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "break sources.old"], dir);
+
+    // The two cheap checks ahead of `checkRevisionSource` in `archaeology.preChecks` are
+    // batched, and the batch is short-circuited on the first failure — `checkSourcesConfigured`
+    // fails here, so `checkRevisionSource` never runs at all, and the returned ruling for
+    // "applications" must be left exactly where it was, not recorded onto `main` as a side
+    // effect of a batch that failed for a different reason entirely. `runStage` still commits
+    // the ordinary "pre-checks failed" run-record line either way — that commit is expected,
+    // and is not the one this test is about.
+    const r = await runStage(dir, "archaeology", { domain: "applications", revise: true });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /sources\.old is not configured/.test(m)), r.messages.join(" | "));
+
+    assert.equal(existsSync(join(dir, ".sdlc/gates/ratify-applications-1.yaml")), false, "the returned ruling was not recorded");
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/ratify-applications-1"], dir), true, "its branch still exists");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(archaeology\): pre-checks failed/);
+    assert.equal(git(["log", "--all", "--pretty=%s"], dir).includes("record(G1): ratify-applications-1 returned"), false, "the return was never recorded");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("archaeology --revise: a real run still records the return onto main and deletes the branch", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-revise-real-record-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  try {
+    await buildReturnedFollowUp(dir);
+
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-revise-real-record-mock-"));
+    const before = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const revised = before.replace(
+      /### D-applications-2 · v1 · inferred · recovered[\s\S]*$/,
+      "### D-applications-2 · v1 · confirmed · recovered\nWhen a permit application is accepted, the system shall calculate an intake fee for it from the applicant's age, and recalculate it whenever the application is later edited.\n"
+      + "- cites: src/routes.js:22\n- reconciliation: implemented-only\n- given: an accepted permit application that is later edited\n"
+      + "- when: the application record is updated\n- then: the fee is recalculated from the current age and stored on the record\n"
+      + "- note: confirmed against the edit handler, which the earlier pass missed\n",
+    );
+    writeFileSync(join(mockDir, "archaeology.json"), JSON.stringify({
+      text: "revised the fee criterion per the return's rationale",
+      files: { "spec/domains/applications.md": revised },
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const r = await runStage(dir, "archaeology", { domain: "applications", revise: true });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    // The record commit landed on `main` before the agent turn even ran (it is part of
+    // the pre-check), and the spent branch is gone — the same outcome the prior
+    // implementation always produced for a real run, unaffected by the dry-run fix.
+    const log = git(["log", "--pretty=%s", "main"], dir).split("\n");
+    assert.ok(log.some((l) => l === "record(G1): ratify-applications-1 returned"), log.join(" | "));
+    assert.equal(gitOk(["cat-file", "-e", "main:.sdlc/gates/ratify-applications-1.yaml"], dir), true);
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/ratify-applications-1"], dir), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("archaeology --revise: a branch with no proposal page still records the gate file, and says so in the commit", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-revise-nopage-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  try {
+    await buildReturnedFollowUp(dir);
+
+    // Simulates a returned ruling whose branch never carried a proposal page — a human
+    // ruling made straight from the CLI, with no page ever opened for it. `git show` for
+    // the page has nothing to read; `recordReturnOnMain` must not let that stop the gate
+    // file (the part that actually matters for follow-up numbering) from landing on `main`.
+    git(["checkout", "-q", "proposal/ratify-applications-1"], dir);
+    git(["rm", "-q", ".sdlc/proposals/ratify-applications-1.md"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "remove the proposal page"], dir);
+    git(["checkout", "-q", "main"], dir);
+
+    const before = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const revised = before.replace(
+      /### D-applications-2 · v1 · inferred · recovered[\s\S]*$/,
+      "### D-applications-2 · v1 · confirmed · recovered\nWhen a permit application is accepted, the system shall calculate an intake fee for it from the applicant's age, and recalculate it whenever the application is later edited.\n"
+      + "- cites: src/routes.js:22\n- reconciliation: implemented-only\n- given: an accepted permit application that is later edited\n"
+      + "- when: the application record is updated\n- then: the fee is recalculated from the current age and stored on the record\n"
+      + "- note: confirmed against the edit handler, which the earlier pass missed\n",
+    );
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-revise-nopage-mock-"));
+    writeFileSync(join(mockDir, "archaeology.json"), JSON.stringify({
+      text: "revised the fee criterion per the return's rationale",
+      files: { "spec/domains/applications.md": revised },
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const r = await runStage(dir, "archaeology", { domain: "applications", revise: true });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    // The gate file — the part `readRulings`/`followUpState` actually depend on — landed
+    // on `main` regardless, and the commit says there was no page to carry over rather
+    // than silently dropping the fact.
+    assert.equal(gitOk(["cat-file", "-e", "main:.sdlc/gates/ratify-applications-1.yaml"], dir), true);
+    const log = git(["log", "--pretty=%s", "main"], dir).split("\n");
+    assert.ok(log.some((l) => l.startsWith("record(G1): ratify-applications-1 returned") && l.includes("no proposal page found")), log.join(" | "));
+    assert.equal(existsSync(join(dir, ".sdlc/proposals/ratify-applications-1.md")), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("archaeology --revise: a mock that also writes spec/contract/surface.yaml fails archaeology-revise-scope, naming the file", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-revise-scope-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  try {
+    await buildReturnedFollowUp(dir);
+    const before = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const revised = before.replace(
+      /### D-applications-2 · v1 · inferred · recovered[\s\S]*$/,
+      "### D-applications-2 · v1 · confirmed · recovered\nWhen a permit application is accepted, the system shall calculate an intake fee for it from the applicant's age, and recalculate it whenever the application is later edited.\n"
+      + "- cites: src/routes.js:22\n- reconciliation: implemented-only\n- given: an accepted permit application that is later edited\n"
+      + "- when: the application record is updated\n- then: the fee is recalculated from the current age and stored on the record\n"
+      + "- note: confirmed against the edit handler, which the earlier pass missed\n",
+    );
+    const surfaceBefore = readFileSync(join(dir, "spec/contract/surface.yaml"), "utf8");
+
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-revise-scope-mock-"));
+    writeFileSync(join(mockDir, "archaeology.json"), JSON.stringify({
+      text: "revised the fee criterion, and also appended to the contract surface by mistake",
+      files: {
+        "spec/domains/applications.md": revised,
+        "spec/contract/surface.yaml": `${surfaceBefore}# a page this revise run should not have added\n`,
+      },
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const r = await runStage(dir, "archaeology", { domain: "applications", revise: true });
+    assert.equal(r.ok, false);
+    assert.ok(
+      r.messages.some((m) => /archaeology --revise may only change spec\/domains\/applications\.md/.test(m) && m.includes("spec/contract/surface.yaml")),
+      r.messages.join(" | "),
+    );
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(archaeology\): post-checks failed/);
+  } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }

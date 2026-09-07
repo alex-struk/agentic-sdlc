@@ -331,6 +331,22 @@ function checkArchaeologyScope(projectDir) {
   return { id, ok: true, messages: [] };
 }
 
+// `--revise`'s own, narrower scope: a return names one criterion's evidence as wrong in
+// one domain file, never a reason to touch the contract surface (`spec/contract/*.yaml`)
+// an ordinary recovery writes to, or any domain file but the one being revised. Checked
+// separately from `checkArchaeologyScope` above, which still allows a first recovery to
+// touch any path under `spec/` — a revise run failing this one is named for the path it
+// should not have touched, not lumped in with an ordinary out-of-spec failure that does
+// not apply to it.
+function checkArchaeologyRevisionScope(projectDir, ctx) {
+  const id = "archaeology-revise-scope";
+  if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
+  const allowed = `spec/domains/${ctx.domain}.md`;
+  const outside = changedPaths(projectDir).filter((p) => p !== allowed);
+  if (outside.length) return { id, ok: false, messages: [`archaeology --revise may only change ${allowed}, but also touched: ${outside.join(", ")}`] };
+  return { id, ok: true, messages: [] };
+}
+
 // `archaeology` recovers one business domain's behaviour from the old application,
 // checked out read-only at `sources/old` by the `with-sources` workspace before the
 // agent session starts. It holds gate G1: the recovered domain file is not trusted as
@@ -355,6 +371,7 @@ const archaeology = {
         `The "${d}" domain was recovered before and partly ratified. A ruling returned it: one criterion's evidence — its citations, or its given/when/then — is wrong in a way no ratification condition can repair. Here is the rationale, verbatim:`,
         `\`\`\`\n${rationale}\n\`\`\``,
         `Revise spec/domains/${d}.md so the criteria this rationale names are correct: rewrite their statement, citations, given/when/then, note and confidence from the evidence you find in sources/old — its code, migrations, docs, README, and any OpenAPI/swagger file it has. Never read sources/old/tests, and never read anything outside sources/old except constitution.md, spec/, and intent/.`,
+        `This run changes spec/domains/${d}.md only. Unlike a first recovery, do not touch spec/contract/surface.yaml or spec/contract/personas.yaml, and do not touch any other domain's file — a return names one criterion's evidence as wrong, never a reason to add to the contract surface.`,
         `Leave every R-<n> criterion in the file byte-for-byte unchanged. Leave every other D-<n> criterion unchanged too, unless this rationale's evidence contradicts it. Never renumber any criterion, minted or provisional.`,
         `Finish with your journal entry: say which criteria you changed and why, and what the evidence now shows.`,
       ].join("\n\n");
@@ -376,8 +393,15 @@ const archaeology = {
       recommendation: recommendationFrom(ctx.agentText),
     };
   },
+  // `checkRevisionSource` has a side effect on a real run (recording the return onto
+  // `main`, deleting the spent branch — see its own comment), so it only runs once the two
+  // cheap checks ahead of it have both passed: a run with a bad `--domain` or an
+  // unconfigured `sources.old` fails on those alone, and the returned ruling — if this
+  // domain even has one — is left exactly where it was for a corrected re-run to find.
   preChecks(projectDir, ctx) {
-    return [checkDomainOption(ctx), checkSourcesConfigured(ctx), checkRevisionSource(projectDir, ctx)];
+    const cheap = [checkDomainOption(ctx), checkSourcesConfigured(ctx)];
+    if (cheap.some((r) => !r.ok)) return cheap;
+    return [...cheap, checkRevisionSource(projectDir, ctx)];
   },
   postChecks(projectDir, ctx) {
     return [
@@ -386,6 +410,7 @@ const archaeology = {
       checkArchaeologyNoMintedIds(projectDir),
       checkArchaeologyRevisionKeepsMinted(projectDir, ctx),
       checkArchaeologyScope(projectDir),
+      checkArchaeologyRevisionScope(projectDir, ctx),
     ];
   },
 };
@@ -541,39 +566,54 @@ function findReturnedRuling(projectDir, domain) {
   return found ? { name: archName, branch: `proposal/${archName}`, ...found } : null;
 }
 
-// The pre-flight `archaeology --revise` performs once it has found the returned ruling to
-// work from: the gate file and the proposal page that recorded the return are copied from
-// the spent branch onto `main` and committed there, and the branch — never merged, since
-// a return merges nothing — is deleted. This is what makes the return visible to
-// `readRulings`/`followUpState` (a `return` gate file on `main` counts as "ruled" for
-// follow-up numbering, so the next follow-up continues past it rather than reusing its
-// number) and to the state site, and it is what frees the name for the fresh
+// The side effect `archaeology --revise` performs, on a real run only, once it has found
+// the returned ruling to work from: the gate file and the proposal page that recorded the
+// return are copied from the spent branch onto `main` and committed there, and the branch
+// — never merged, since a return merges nothing — is deleted. This is what makes the
+// return visible to `readRulings`/`followUpState` (a `return` gate file on `main` counts
+// as "ruled" for follow-up numbering, so the next follow-up continues past it rather than
+// reusing its number) and to the state site, and it is what frees the name for the fresh
 // `archaeology-<d>` proposal this run is about to open. Run from `checkRevisionSource`,
-// the one pre-check hook that runs before the agent turn in every mode — dry run
-// included, since the prompt a dry run prints already needs the rationale this commit
-// makes permanent.
+// guarded there to a real run — a dry run only needs the rationale to print, never this
+// commit.
+//
+// The gate file always exists on the branch (`findReturnedRuling` would not have named it
+// otherwise), but the proposal page can be missing — a human ruling made straight from the
+// CLI, with no page ever opened for it. `git show` on that path is guarded rather than
+// left to throw, so a branch in that shape still records the gate file that matters and
+// says, in the commit message, that there was no page to carry over.
 function recordReturnOnMain(projectDir, { name, branch }) {
   const gateRel = join(".sdlc", "gates", `${name}.yaml`);
   const proposalRel = join(".sdlc", "proposals", `${name}.md`);
   writeText(join(projectDir, gateRel), `${git(["show", `${branch}:${gateRel}`], projectDir)}\n`);
-  writeText(join(projectDir, proposalRel), `${git(["show", `${branch}:${proposalRel}`], projectDir)}\n`);
-  stagePaths(projectDir, [gateRel, proposalRel]);
-  git([...SDLC_AUTHOR, "commit", "-q", "-m", `record(G1): ${name} returned`], projectDir);
+  const staged = [gateRel];
+  let proposalFound = true;
+  try {
+    writeText(join(projectDir, proposalRel), `${git(["show", `${branch}:${proposalRel}`], projectDir)}\n`);
+    staged.push(proposalRel);
+  } catch {
+    proposalFound = false;
+  }
+  stagePaths(projectDir, staged);
+  const subject = proposalFound ? `record(G1): ${name} returned` : `record(G1): ${name} returned (no proposal page found on ${branch})`;
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", subject], projectDir);
   git(["branch", "-D", branch], projectDir);
 }
 
 // `archaeology --revise`'s own pre-check: is there a returned ruling to revise from at
-// all? Reported here rather than left for the agent turn to discover, and its own
-// side effect — landing the return on `main`, deleting the spent branch — runs
-// immediately once one is found, since `preChecks` is the only hook `runStage` calls
-// before either the dry-run print or the agent turn.
+// all? Reported here rather than left for the agent turn to discover. Finding the ruling
+// and stashing its rationale on `ctx.revision` happens in every mode, since a dry run's
+// printed prompt needs the same rationale a real run's does; recording it onto `main` and
+// deleting the spent branch (`recordReturnOnMain`) happens only on a real run — `ctx`
+// carries `dryRun` (set by `runStage` before `preChecks` is called) for exactly this,
+// so a dry run leaves the branch and `main` exactly as it found them.
 function checkRevisionSource(projectDir, ctx) {
   const id = "archaeology-revise-source";
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
   const found = findReturnedRuling(projectDir, ctx.domain);
   if (!found) return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
   ctx.revision = found;
-  recordReturnOnMain(projectDir, found);
+  if (!ctx.dryRun) recordReturnOnMain(projectDir, found);
   return { id, ok: true, messages: [] };
 }
 

@@ -67,7 +67,10 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
 
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
-  const ctx = { slice, domain, config, revise };
+  // On `ctx` (rather than passed as a separate argument) so a stage's own pre-checks —
+  // `archaeology`'s `checkRevisionSource` in particular — can tell a dry run from a real
+  // one without `runStage` having to special-case any one stage's side effects itself.
+  const ctx = { slice, domain, config, revise, dryRun };
 
   const pre = stage.preChecks(projectDir, ctx);
   const preFail = pre.filter((r) => !r.ok);
