@@ -93,6 +93,50 @@ test("init on a project from an earlier pipeline version reconciles the ignore f
   }
 });
 
+// A project whose `.gitignore` was last reconciled before the acceptance harness
+// existed has every line an earlier pipeline version required, but neither of the two
+// the harness added (`tests/test-results/`, `tests/playwright-report/` — `node_modules/`
+// already covers `tests/node_modules/` and `.sdlc/*.local.yaml` already covers
+// `.sdlc/oracle-*.local.yaml`, so those two need no new line). `init` must reconcile
+// exactly those two in, and a second `init` right after must find nothing left to do.
+test("init on a project whose .gitignore predates the acceptance harness gains exactly the two lines it needs, and a second init changes nothing", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-brownfield-ignore-"));
+  const prevEgress = process.env.SDLC_EGRESS_NAMES;
+  const emptyList = join(tmp, "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
+  const dir = join(tmp, "permit-intake");
+  try {
+    await newProject({ dir, from: FROM });
+    const c = join(dir, "constitution.md");
+    writeFileSync(c, readFileSync(c, "utf8").replace(/\{\{[A-Z_]+\}\}/g, "filled"));
+    commit(dir, "fill constitution");
+
+    writeFileSync(join(dir, ".gitignore"),
+      "node_modules/\n.sdlc/packs/\n.sdlc/*.local.yaml\n.sdlc/*.local.txt\n.sdlc/run-state.json\nsources/\n");
+    commit(dir, "state of the project before the acceptance harness");
+    const before = readFileSync(join(dir, ".gitignore"), "utf8").split("\n").filter(Boolean);
+
+    await init(dir);
+    const afterFirst = readFileSync(join(dir, ".gitignore"), "utf8").split("\n").filter(Boolean);
+    const gained = afterFirst.filter((l) => !before.includes(l));
+    assert.deepEqual(gained, ["tests/test-results/", "tests/playwright-report/"],
+      "exactly the two lines nothing else already covers are added");
+    assert.equal(git(["status", "--porcelain"], dir), "", "the reconciling init leaves the tree clean");
+
+    const afterFirstText = readFileSync(join(dir, ".gitignore"), "utf8");
+    const commitCountBeforeSecond = git(["rev-list", "--count", "HEAD"], dir);
+    const second = await init(dir);
+    assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), afterFirstText,
+      "the file is unchanged by the second call");
+    assert.equal(second.changed, false, "a second init on an already-reconciled project is a no-op");
+    assert.equal(git(["rev-list", "--count", "HEAD"], dir), commitCountBeforeSecond, "no new commit on the no-op re-run");
+    assert.equal(git(["status", "--porcelain"], dir), "", "tree stays clean on the no-op re-run");
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
 // `reconcileGitignore` only ever removes a line that is exactly `site/` (see
 // src/lib/git.mjs), so a project that ignores the site with a different pattern —
 // `/site/`, here — keeps ignoring it even after reconciling. `stageSite` has to notice

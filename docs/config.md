@@ -40,9 +40,22 @@ Optional. Container describing the reference system (usually the legacy system t
 
 - `target` (string): The key in `sources` to use as the oracle (e.g., `old`).
 - `compose` (string): Path to a Docker Compose file for spinning up the oracle.
-- `seed` (string): Path to database seed files or scripts.
+- `seed` (string, optional): The directory `oracle up` loads `*.sql` files from, in ascending name order. Defaults to `tests/seed`, which is where the `contract` stage writes them; set it only for a project that keeps them elsewhere.
 - `base_url` (string, format URI): A URL starting with `http://` or `https://`.
 - `identity` (enum): One of `session-route` or `sandbox-idp`.
+- `compose_override` (string, optional): Path to the compose override the `contract` stage writes (mailpit, published ports, the app's non-production sign-in routes). Defaults to `.sdlc/oracle/compose.yml`, applied in code rather than in the schema.
+- `service` (string, optional): The base compose service that runs the application itself. Defaults to `app`.
+- `up` (array of strings, optional): Services to bring up, and build, before the migration runs and before the application itself is started. Left unset or empty, the list is derived at run time from `docker compose config --services` — every service the compose file and the override define, minus `service` and minus `migrate_service` — and those names are passed to `up` explicitly. Naming them is what keeps the application from starting before its database and its migration have run, which is what a bare `up` with no service names would do.
+- `migrate_service` (string, optional): A one-off compose service that applies database migrations, run once before the seed is loaded.
+- `db` (object, optional): Where to load the seed files into. All three keys are required inside `db` when it is present:
+  - `service` (string): The compose service running the database.
+  - `user` (string): The database user to connect as.
+  - `database` (string): The database name.
+- `env` (object of strings, optional): Extra environment variables passed to `docker compose` when the oracle comes up.
+
+The mailpit API port the oracle publishes is not a config key: it always reaches the running application as the environment variable `SDLC_MAIL_API_PORT`, chosen by the runner the same way the app and database ports are.
+
+`sdlc oracle up` records the ports and URLs it actually chose in `.sdlc/oracle-<target>.local.yaml` — untracked (`.gitignore` carries `.sdlc/oracle-*.local.yaml`), since it is a fact about this machine's current run, not project configuration. `bind-adapter` and `calibrate` read it to find the running oracle; see `docs/stages/oracle.md`.
 
 ## targets
 
@@ -65,7 +78,7 @@ Required. Container of governance gates, tiers, and budgets.
 - `triage` (object, optional): Thresholds for automatic triage.
   - `direct_max_files` (integer, optional, min 1): Maximum files changed to bypass triage.
   - `direct_allowed_paths` (array, optional): Paths that can bypass triage.
-- `budgets` (object, optional): Token budgets by category. Keys are category names, values are integers (min 1). The runner has no token-to-turn conversion yet, so it reads a value under 1000 as a turn ceiling for the stage of that name (clamped to 200) and ignores anything larger, warning once per stage that the run used the default of 40 turns instead. The key `rule` caps a persona's ruling turn the same way: without it a ruling runs with 12 turns, except at G1, where the persona has to rule on every criterion in a domain and gets the stage default of 40.
+- `budgets` (object, optional): Token budgets by category. Keys are category names, values are integers (min 1). The runner has no token-to-turn conversion yet, so it reads a value under 1000 as a turn ceiling for the stage of that name (clamped to 400) and ignores anything larger, warning once per stage that the run used the default of 40 turns instead. The key `rule` caps a persona's ruling turn the same way: without it a ruling runs with 12 turns, except at G1, where the persona has to rule on every criterion in a domain and gets the stage default of 40.
 
 ## skills
 

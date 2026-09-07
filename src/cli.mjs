@@ -12,10 +12,11 @@ const HELP = `sdlc <command> [args] [--flags]
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."] [--tier HIGH]
   rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>
   rule --pending                   rule every open proposal an agent holds the gate for
-  run <stage> [--slice N] [--domain X] [--dry-run]   run one pipeline stage
+  run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--dry-run]   run one pipeline stage
   resume [--again]                 continue an interrupted run
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails
+  oracle up|down|status [--target <t>]   start/stop/inspect the old application via Docker Compose
 `;
 
 // Command modules (new.mjs, init.mjs, ...) import `COMMANDS` back from this module to
@@ -30,7 +31,7 @@ const HELP = `sdlc <command> [args] [--flags]
 // its own top level, so `COMMANDS` is already the real object by the time they assign to it.
 let commandsLoaded = null;
 function loadCommands() {
-  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs")]);
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/oracle.mjs")]);
   return commandsLoaded;
 }
 

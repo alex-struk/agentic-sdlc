@@ -1,4 +1,4 @@
-export const STAGES = ["init","intent","archaeology","ratify","derive-tests","bind-adapter",
+export const STAGES = ["init","intent","archaeology","ratify","contract","derive-tests","bind-adapter",
   "calibrate","design","plan","build","verify","review-and-ship","deploy","operate","status"];
 
 const without = (...drop) => STAGES.filter((s) => !drop.includes(s));

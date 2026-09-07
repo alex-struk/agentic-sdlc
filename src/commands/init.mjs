@@ -22,17 +22,44 @@ const TEMPLATE_FILES = [
   { src: ["templates", "project", ".sdlc", "personas", "product-owner.md"], dst: [".sdlc", "personas", "product-owner.md"] },
   { src: ["templates", "project", ".sdlc", "personas", "architect.md"], dst: [".sdlc", "personas", "architect.md"] },
   { src: ["templates", "project", ".sdlc", "personas", "reviewer.md"], dst: [".sdlc", "personas", "reviewer.md"] },
+  // The acceptance harness: config, fixtures and generated-type re-exports are refreshed
+  // like every file above. The three `onlyIfAbsent` entries below are different — a
+  // starting copy is written once and then belongs to the project, so `derive-tests`'
+  // notes and a team's own attestations and seed handles are never overwritten by a
+  // later `init`.
+  { src: ["templates", "project", "tests", "package.json"], dst: ["tests", "package.json"] },
+  { src: ["templates", "project", "tests", "tsconfig.json"], dst: ["tests", "tsconfig.json"] },
+  { src: ["templates", "project", "tests", "playwright.config.ts"], dst: ["tests", "playwright.config.ts"] },
+  { src: ["templates", "project", "tests", "README.md"], dst: ["tests", "README.md"] },
+  { src: ["templates", "project", "tests", "fixtures", "index.ts"], dst: ["tests", "fixtures", "index.ts"] },
+  { src: ["templates", "project", "tests", "fixtures", "mail.ts"], dst: ["tests", "fixtures", "mail.ts"] },
+  { src: ["templates", "project", "tests", "fixtures", "env.d.ts"], dst: ["tests", "fixtures", "env.d.ts"] },
+  { src: ["templates", "project", "tests", "acceptance", "not-testable.yaml"], dst: ["tests", "acceptance", "not-testable.yaml"], onlyIfAbsent: true },
+  { src: ["templates", "project", "tests", "acceptance", "attestations.yaml"], dst: ["tests", "acceptance", "attestations.yaml"], onlyIfAbsent: true },
+  { src: ["templates", "project", "tests", "seed", "manifest.yaml"], dst: ["tests", "seed", "manifest.yaml"], onlyIfAbsent: true },
 ];
 
+// Writes every file above that is missing or differs from the pipeline's copy, skipping
+// an `onlyIfAbsent` entry entirely once the project has one — never comparing its
+// content, since a project's own edit to it is not drift to correct. `writtenOnlyIfAbsent`
+// names, of those, the ones this call actually created: the caller stages only those, so
+// a hand edit sitting uncommitted on a later run (when the file already existed and this
+// function never touched it) is never swept into an unrelated init commit.
 function installTemplateFiles(projectDir) {
   let changed = false;
+  const writtenOnlyIfAbsent = [];
   for (const f of TEMPLATE_FILES) {
     const dst = join(projectDir, ...f.dst);
+    if (f.onlyIfAbsent && existsSync(dst)) continue;
     const text = readText(join(PIPELINE_ROOT, ...f.src));
-    if (!existsSync(dst) || readText(dst) !== text) { writeText(dst, text); changed = true; }
+    if (!existsSync(dst) || readText(dst) !== text) {
+      writeText(dst, text);
+      changed = true;
+      if (f.onlyIfAbsent) writtenOnlyIfAbsent.push(join(...f.dst));
+    }
     if (f.mode !== undefined) chmodSync(dst, f.mode);
   }
-  return changed;
+  return { changed, writtenOnlyIfAbsent };
 }
 
 // A pack's skills are copied once and `copyTree` never overwrites, so a pack whose
@@ -94,7 +121,8 @@ export async function init(projectDir = process.cwd()) {
   const r = installPacks(projectDir, packs);
   if (r.installed.length) changed = true;
 
-  if (installTemplateFiles(projectDir)) changed = true;
+  const tf = installTemplateFiles(projectDir);
+  if (tf.changed) changed = true;
 
   const wf = readText(join(PIPELINE_ROOT, "templates", "workflows", "sdlc-checkpoint.yml"))
     .replaceAll("{{PIPELINE_REPO}}", config.pipeline.repo)
@@ -135,9 +163,18 @@ export async function init(projectDir = process.cwd()) {
       join(".claude", "settings.json"),
       join(".sdlc", "hooks"),
       join(".sdlc", "personas"),
+      join("tests", "package.json"),
+      join("tests", "tsconfig.json"),
+      join("tests", "playwright.config.ts"),
+      join("tests", "README.md"),
+      join("tests", "fixtures"),
       ".gitattributes",
       relative(projectDir, runPath),
       ...(gitignoreChanged ? [".gitignore"] : []),
+      // Each `onlyIfAbsent` harness file (see TEMPLATE_FILES) is staged only when this
+      // very call is the one that created it — never on a later run, where it is project
+      // content and a hand edit sitting uncommitted is none of this command's business.
+      ...tf.writtenOnlyIfAbsent,
     ]);
     if (git(["diff", "--cached", "--name-only"], projectDir)) {
       git([...SDLC_AUTHOR, "commit", "-q", "-m", "chore(sdlc): init"], projectDir);

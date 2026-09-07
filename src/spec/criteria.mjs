@@ -52,7 +52,10 @@ function idNumber(id) {
   return m ? Number(m[1]) : 0;
 }
 
-function compareIds(a, b) {
+// Exported so callers outside this module (the suite runner's row sort, at least) order
+// ids the same numeric way rather than falling back to a lexical sort that would put
+// `R-1.10` before `R-1.2`.
+export function compareIds(a, b) {
   return idNumber(a) - idNumber(b) || a.localeCompare(b);
 }
 
@@ -377,6 +380,117 @@ function parseCondition(line) {
   if ((m = /^drop\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "drop", id: m[1], text: collapseWhitespace(m[2]) };
   if ((m = /^spike\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "spike", id: m[1], text: collapseWhitespace(m[2]) };
   return null;
+}
+
+// The product owner's ruling vocabulary at a *calibration* proposal — a different
+// question from ratification's, so a different grammar: ratify asks which recovered
+// criteria become the contract, calibrate asks what a criterion the old target fails
+// actually means. `src/commands/rule.mjs` picks between the two by proposal name, and
+// the calibrate follow-up page (`src/stages/registry.mjs`) restates this verbatim.
+export const CALIBRATE_GRAMMAR = [
+  "One condition per line, and exactly one of these forms:",
+  "",
+  "- `defect-in-old <ID>` — the old application really does fail this and the criterion is right",
+  "  anyway. The test stands as written and the rebuild has to pass it; the criterion keeps a note",
+  "  saying so. No text after the ID.",
+  "- `spec-wrong <ID>: <corrected statement>` — the criterion misdescribes what the old application",
+  "  does. The statement is replaced and its version bumped, which marks the test stale so",
+  "  `derive-tests --stale` writes it again from the corrected criterion.",
+  "- `test-wrong <ID>: <why>` — the criterion is right and the test is not. The id goes to",
+  "  `tests/acceptance/redo.yaml` for `derive-tests` to redo, still blind, and `<why>` records what",
+  "  the test got wrong without describing how the application is built.",
+  "",
+  "The ID is the criterion's own id exactly as `spec/criteria-index.json` spells it. `defect-in-old`",
+  "takes no text; the other two require a colon and text on the same line. A condition may not span",
+  "more than one line.",
+].join("\n");
+
+// The note `defect-in-old` leaves on the criterion, without its date. Matched as a
+// suffix when deciding whether the note is already there, so re-applying the same ruling
+// on a later day appends nothing rather than a second, differently dated copy.
+const DEFECT_IN_OLD_NOTE = "the old target fails this; kept, the rebuild must pass it";
+
+// No `/s` flag, and a bare `$`, for the same reason `parseCondition` above has neither: a
+// value carrying an embedded newline fails to match at all rather than smuggling a second
+// line into the domain file as its own bullet.
+function parseCalibrateCondition(line) {
+  const t = line.trim();
+  let m;
+  if ((m = /^defect-in-old\s+(\S+)\s*$/.exec(t))) return { verb: "defect-in-old", id: m[1] };
+  if ((m = /^spec-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "spec-wrong", id: m[1], text: collapseWhitespace(m[2]) };
+  if ((m = /^test-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "test-wrong", id: m[1], text: collapseWhitespace(m[2]) };
+  return null;
+}
+
+export function calibrateConditionParses(line) {
+  return parseCalibrateCondition(line) !== null;
+}
+
+export function unparsedCalibrateConditions(lines) {
+  return (lines ?? []).filter((l) => !calibrateConditionParses(l));
+}
+
+// The criterion each readable condition line names, without applying anything. `calibrate`
+// uses it to say which conditions a domain file it refused to rewrite was holding up —
+// the ids are known from the line itself, while the criteria behind them are exactly what
+// a file that does not parse cannot supply.
+export function calibrateConditionIds(lines) {
+  return (lines ?? []).map((line) => ({ line, id: parseCalibrateCondition(line)?.id ?? null })).filter((e) => e.id);
+}
+
+// Applies one calibration ruling's conditions to a domain's parsed criteria, for the
+// `today` the run is happening on. A condition naming an id this domain does not hold is
+// simply not this domain's business — `calibrate` applies the same condition list to
+// every domain file in turn and reports the lines no domain claimed — so nothing is
+// collected here beyond what was actually applied.
+//
+// Every verb is idempotent against a row it has already changed, because `calibrate`
+// applies a ruling once and records that it did (`tests/results/<t>/applied.yaml`), and a
+// re-run must not be able to undo that promise by a different route: the note is appended
+// only when the row does not already carry one saying the same thing, and `spec-wrong`
+// bumps the version only when the statement actually differs. Confidence is untouched by
+// all three — a criterion's confidence is a claim about the evidence behind it, which a
+// failing test against the old target does not change.
+//
+// `test-wrong` changes no criterion at all: it returns a `redo` entry the caller writes
+// to `tests/acceptance/redo.yaml` (`src/spec/redo.mjs`), which is what `derive-tests
+// --stale` reads to know a criterion needs its test written again even though the
+// criterion itself has not moved.
+export function applyCalibrateRulings(criteria, conditions, today) {
+  const out = criteria.map((c) => ({ ...c, notes: [...(c.notes ?? [])] }));
+  const byId = new Map(out.map((c) => [c.id, c]));
+  const applied = [];
+  const redo = [];
+
+  for (const line of conditions) {
+    const parsed = parseCalibrateCondition(line);
+    const target = parsed ? byId.get(parsed.id) : null;
+    if (!parsed || !target) continue;
+    const { verb, id, text } = parsed;
+
+    switch (verb) {
+      case "defect-in-old":
+        if (!target.notes.some((n) => n.endsWith(DEFECT_IN_OLD_NOTE))) target.notes.push(`calibrate ${today}: ${DEFECT_IN_OLD_NOTE}`);
+        break;
+      case "spec-wrong":
+        if (target.statement !== text) {
+          target.statement = text;
+          target.version += 1;
+        }
+        break;
+      case "test-wrong":
+        // The version is the one the criterion carries now, so a `derive-tests --stale`
+        // run that later acts on the entry, and the person reading the file after it,
+        // both know which statement the test was judged wrong against.
+        redo.push({ id, version: target.version, why: text });
+        break;
+    }
+    // The version recorded is the one the criterion carries *after* the ruling, so a row
+    // is read as ruled only while the criterion is still the one that was ruled on.
+    applied.push({ line, id, verb, version: target.version });
+  }
+
+  return { criteria: out, applied, redo };
 }
 
 // Applies `ratify`'s gate-file conditions to a domain's parsed criteria. Every condition

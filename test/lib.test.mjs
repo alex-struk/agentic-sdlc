@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, gitOk, assertCleanTree, stageAll } from "../src/lib/git.mjs";
-import { copyTree, readText } from "../src/lib/fsx.mjs";
+import { copyTree, copyTreeOverwrite, readText } from "../src/lib/fsx.mjs";
 import { appendRun } from "../src/lib/runrecord.mjs";
 
 test("git wrapper runs and reports", () => {
@@ -70,6 +70,19 @@ test("copyTree copies without overwriting", () => {
   copyTree(src, dst);
   assert.equal(readFileSync(join(dst, "a/b/f.txt"), "utf8"), "existing");
   assert.ok(existsSync(join(dst, "keep.txt")));
+});
+
+test("copyTreeOverwrite replaces a file that already exists", () => {
+  const src = mkdtempSync(join(tmpdir(), "sdlc-src-"));
+  const dst = mkdtempSync(join(tmpdir(), "sdlc-dst-"));
+  mkdirSync(join(src, "a/b"), { recursive: true });
+  writeFileSync(join(src, "a/b/f.txt"), "new");
+  writeFileSync(join(dst, "keep.txt"), "old");
+  mkdirSync(join(dst, "a/b"), { recursive: true });
+  writeFileSync(join(dst, "a/b/f.txt"), "existing");
+  copyTreeOverwrite(src, dst);
+  assert.equal(readFileSync(join(dst, "a/b/f.txt"), "utf8"), "new");
+  assert.ok(existsSync(join(dst, "keep.txt")), "a file the source doesn't carry is left alone");
 });
 
 test("run record appends dated lines", () => {

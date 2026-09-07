@@ -1,0 +1,28 @@
+{
+  "rows": [
+    {
+      "id": "R-1.1",
+      "version": 1,
+      "domain": "applications",
+      "file": "tests/acceptance/applications/R-1.1.spec.ts",
+      "result": "pass",
+      "tests": [
+        { "title": "When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.", "status": "passed" }
+      ]
+    },
+    {
+      "id": "R-1.2",
+      "version": 1,
+      "domain": "applications",
+      "file": "tests/acceptance/applications/R-1.2.spec.ts",
+      "result": "fail",
+      "tests": [
+        {
+          "title": "When a permit application is accepted, the system shall change its status to accepted.",
+          "status": "failed",
+          "error": "expect(received).toBe(expected)\n\nExpected: \"accepted\"\nReceived: \"submitted\"\n    at tests/acceptance/applications/R-1.2.spec.ts:8:52"
+        }
+      ]
+    }
+  ]
+}

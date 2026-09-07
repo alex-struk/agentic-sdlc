@@ -137,3 +137,51 @@ test("a G0 prompt orders intent/ first", async () => {
   assert.ok(prompt.indexOf("+++ b/intent/permit-intake.md") < prompt.indexOf("+++ b/constitution.md"),
     "intent/ comes before the constitution change");
 });
+
+test("a G3 prompt orders the suite and the adapter first, leaves the proposal page out of the diff, and has room for a whole domain's tests", async () => {
+  const dir = microProject();
+  const name = "derive-tests-applications";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+
+  // A suite the size a real domain produces: 40 spec files of ~2.5 KB each is about
+  // 100 KB of diff, past the 60 KB every other gate is capped at and inside G3's own.
+  const body = "  // a line of a blind acceptance test that asserts one thing\n".repeat(40);
+  for (let i = 1; i <= 40; i++) {
+    write(dir, `tests/acceptance/applications/R-1.${i}.spec.ts`,
+      `// criterion: @R-1.${i} v1\n// provenance: blind, spec@0000000, derived 2026-09-07\ntest("R-1.${i}", async () => {\n${body}});\n`);
+  }
+  write(dir, "tests/adapters/old/index.ts", "export default function create() { return {}; }\n");
+  write(dir, "evidence/run.md", "the suite ran\n");
+  write(dir, ".gitattributes", "* text=auto\n");
+  write(dir, ".sdlc/proposals/" + name + ".md", `---\ngate: G3\nquestion: "Do these tests follow from the criteria?"\nrecommendation: "yes"\nopened: 2026-09-07T00:00:00.000Z\n---\n\n# Do these tests follow from the criteria?\n\nA sentence only the proposal page carries.\n`);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "derive tests"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G3" });
+
+  // The suite comes first, the adapter and the evidence after it, everything else last.
+  assert.ok(prompt.indexOf("+++ b/tests/acceptance/applications/R-1.1.spec.ts") < prompt.indexOf("+++ b/tests/adapters/old/index.ts"));
+  assert.ok(prompt.indexOf("+++ b/tests/adapters/old/index.ts") < prompt.indexOf("+++ b/evidence/run.md"));
+  assert.ok(prompt.indexOf("+++ b/evidence/run.md") < prompt.indexOf("+++ b/.gitattributes"));
+  // The raised cap is what lets the last spec file into the diff at all.
+  assert.match(prompt, /\+\+\+ b\/tests\/acceptance\/applications\/R-1\.40\.spec\.ts/);
+  // The proposal page is quoted in full above, so its diff is never spent on again.
+  assert.ok(!/^\+\+\+ b\/\.sdlc\/proposals\//m.test(prompt), "no proposal-page diff hunk");
+  assert.match(prompt, /A sentence only the proposal page carries/);
+});
+
+test("a G1 prompt keeps the 60 KB cap: a diff past it is cut and the cut is marked", async () => {
+  const dir = microProject();
+  const name = "archaeology-wide";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  const filler = "a line of ordinary changed text\n".repeat(2500);
+  for (let i = 1; i <= 4; i++) write(dir, `notes/n${i}.md`, filler);
+  write(dir, "spec/domains/wide.md", "# wide\n\n### D-wide-1 · v1 · confirmed · recovered\nA statement.\n- cites: src/a.js\n- state: proposed\n");
+  write(dir, ".sdlc/proposals/" + name + ".md", `---\ngate: G1\nquestion: "Is this wide?"\nrecommendation: "yes"\nopened: 2026-09-07T00:00:00.000Z\n---\n\n# Is this wide?\n`);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "wide"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G1" });
+  assert.match(prompt, /further changed file\(s\) not shown|\[truncated\]/);
+  assert.match(prompt, /A statement\./, "the domain file is still first, so it survives the cut");
+});

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkConfig } from "../checks/config.mjs";
 import { defaultNamesPath } from "../checks/egress.mjs";
+import { composeVersion } from "../oracle/compose.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 const VERSION_ARGS = { node: ["--version"], git: ["--version"], gh: ["--version"], claude: ["--version"], docker: ["--version"] };
@@ -31,10 +32,22 @@ COMMANDS.doctor = async ({ pos }) => {
     const status = t.found ? "ok  " : (OPTIONAL_TOOLS.has(t.name) ? "warn" : "FAIL");
     console.log(`${status} ${t.name} ${t.version ?? "(not found)"}`);
   }
+  // `docker compose` is a separate binary check from plain `docker` above (a machine can
+  // have one without the other — an old standalone `docker-compose` plugin, say) and
+  // `sdlc oracle up` needs it specifically, so it gets its own report line rather than
+  // being folded into the `docker --version` row.
+  const dc = composeVersion();
+  console.log(`${dc.found ? "ok  " : "warn"} docker compose ${dc.version ?? "(not found)"}`);
   const deny = denyListPresent(dir);
   console.log(`${deny ? "ok  " : "warn"} agent deny list ${deny ? "present in .claude/settings.json" : "missing: re-run sdlc init"}`);
   const nl = nameListState();
   console.log(`${nl === "missing" || nl === "empty" ? "warn" : "ok  "} egress name list ${nl} (${defaultNamesPath()})`);
+  // Whether the sandbox sign-in password is in the environment, never what it is: a
+  // `sandbox-idp` target cannot be bound or calibrated without it, and both stages refuse
+  // up front rather than spending a session on sign-in failures. A project with no
+  // `sandbox-idp` target never needs it, so an unset variable is a warning, not a failure.
+  const sandbox = !!process.env.SDLC_SANDBOX_PASSWORD;
+  console.log(`${sandbox ? "ok  " : "warn"} SDLC_SANDBOX_PASSWORD ${sandbox ? "set" : "not set (needed only for a sandbox-idp target)"}`);
   const cfg = checkConfig(dir);
   console.log(`${cfg.ok ? "ok  " : "FAIL"} config ${cfg.messages.join("; ")}`);
   const required = tools.filter((t) => ["node", "git"].includes(t.name)).every((t) => t.found);

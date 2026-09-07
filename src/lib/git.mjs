@@ -149,6 +149,11 @@ const REQUIRED_IGNORES = [
   ".sdlc/*.local.yaml",
   ".sdlc/*.local.txt",
   "sources/",
+  // The acceptance harness's own output, not caught by any pattern above: `node_modules/`
+  // matches at any depth so `tests/node_modules/` is already covered, but Playwright
+  // writes its results and HTML report to two directories of their own under `tests/`.
+  "tests/test-results/",
+  "tests/playwright-report/",
 ];
 const UNIGNORE = "site/";
 

@@ -11,17 +11,19 @@ export const DEFAULT_MAX_TURNS = 40;
 // `maxTurns` wants a turn count and there is no token-to-turn conversion yet (that is
 // its own later task). A configured value under 1000 is small enough to read as a turn
 // count already — a token budget for a whole stage would run into the thousands — so
-// it is used directly, clamped to 200; anything at or above 1000 is a token count we
-// cannot yet translate, so it falls back to `fallback`: the default of 40 turns for a
-// stage, or whatever the caller runs with when no budget is set at all (a ruling turn
-// passes its own, smaller ceiling).
+// it is used directly, clamped to 400 (a blind stage like `derive-tests` can legitimately
+// need one turn per criterion, well past the old 200-turn ceiling, for a domain with many
+// accepted criteria); anything at or above 1000 is a token count we cannot yet translate,
+// so it falls back to `fallback`: the default of 40 turns for a stage, or whatever the
+// caller runs with when no budget is set at all (a ruling turn passes its own, smaller
+// ceiling).
 // Warned names, so a run that calls `turnsFor` more than once for the same name says
 // this once rather than once per call.
 const warnedBudgets = new Set();
 
 export function turnsFor(config, name, fallback = DEFAULT_MAX_TURNS) {
   const budget = config.policy?.budgets?.[name];
-  if (budget && budget < 1000) return Math.min(budget, 200);
+  if (budget && budget < 1000) return Math.min(budget, 400);
   // A token-sized budget is configured, understood, and then ignored. Saying so out
   // loud is the difference between "this stage is capped where I set it" and the truth,
   // which is that it is capped at the default.
@@ -47,9 +49,15 @@ export function endedBecause(raw) {
   return `ended with ${reason}`;
 }
 
-export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {} }, configHome) {
+export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {}, mcpConfig }, configHome) {
   const args = ["-p", prompt, "--output-format", "json", "--permission-mode", "acceptEdits",
-    "--strict-mcp-config", "--no-session-persistence", "--max-turns", String(maxTurns)];
+    "--strict-mcp-config"];
+  // `--mcp-config` sits right after `--strict-mcp-config`: strict mode refuses any
+  // server not named in a config passed this way, so the two flags are read together —
+  // this is the one and only source of servers for the session. Omitted when the stage
+  // declares no `mcp`, the common case.
+  if (mcpConfig) args.push("--mcp-config", mcpConfig);
+  args.push("--no-session-persistence", "--max-turns", String(maxTurns));
   // `--allowedTools` takes a space-separated list, so each entry is its own argument.
   // Omitted entirely when the caller names none: the flag with an empty list would read
   // as "allow nothing" to the session rather than "the caller did not narrow this".

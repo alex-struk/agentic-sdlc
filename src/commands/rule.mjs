@@ -7,7 +7,7 @@ import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief } from "../runner/persona.mjs";
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { buildSite } from "./status.mjs";
-import { CONDITION_GRAMMAR, unparsedConditions } from "../spec/criteria.mjs";
+import { CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, unparsedCalibrateConditions, unparsedConditions } from "../spec/criteria.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 function mergeApproved(projectDir, branch, message) {
@@ -60,9 +60,9 @@ function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, 
       const list = conditions ?? [];
       text += list.length ? `conditions:\n${list.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n` : `conditions: []\n`;
       // Written only when there are some. A gate file carrying this key is a ruling whose
-      // conditions the ratification grammar could not read even after the persona was
-      // asked again, and `ratify` refuses to act on it — the lines are kept verbatim so a
-      // person can see exactly what was meant and correct it in place.
+      // conditions the grammar for its own proposal could not read even after the persona
+      // was asked again — the lines are kept verbatim so a person can see exactly what was
+      // meant and correct it in place, and `ratify` refuses to act on a ruling carrying any.
       if (unparsed?.length) text += `unparsed_conditions:\n${unparsed.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n`;
     }
   } else {
@@ -194,6 +194,19 @@ export function rulingTurns(config, gate) {
   return turnsFor(config, "rule", gate === "G1" ? DEFAULT_MAX_TURNS : 12);
 }
 
+// Which grammar a G1 ruling's conditions are read in. Two proposals reach G1 carrying
+// conditions and they ask different questions: an archaeology or ratify follow-up asks
+// which recovered criteria become the contract (the ratification grammar), and a
+// calibration proposal asks what a criterion the old target fails actually means (the
+// calibration grammar). The proposal's own name is what tells them apart — every
+// calibration proposal is `calibrate-<target>-<n>` — because a condition read in the
+// wrong grammar is not a parse error, it is a ruling that would be dropped in silence.
+function conditionGrammarFor(name) {
+  return name.startsWith("calibrate-")
+    ? { label: "calibration", text: CALIBRATE_GRAMMAR, unparsed: unparsedCalibrateConditions }
+    : { label: "ratification", text: CONDITION_GRAMMAR, unparsed: unparsedConditions };
+}
+
 // The agent path: no human types --by approve|return. A persona brief is handed to a
 // short-lived agent turn along with the proposal, the diff and the checks, and the
 // verdict it comes back with is trusted the same way a human's --by is trusted — phase 0
@@ -275,25 +288,26 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // still unreadable after that is written to the gate file under `unparsed_conditions`
   // and the ruling proceeds: the verdict was reached and the reasoning is worth keeping,
   // and `ratify` refuses to act on that gate file until a person fixes the lines.
-  let unparsed = gate === "G1" && verdict !== "escalate" ? unparsedConditions(conditions) : [];
+  const grammar = conditionGrammarFor(name);
+  let unparsed = gate === "G1" && verdict !== "escalate" ? grammar.unparsed(conditions) : [];
   if (unparsed.length) {
     const again = [
       prompt,
       "",
       "## Your previous reply had conditions I could not read",
       "",
-      `You ruled ${verdict}. These condition lines do not match the ratification grammar, so nothing`,
+      `You ruled ${verdict}. These condition lines do not match the ${grammar.label} grammar, so nothing`,
       "would be applied for them:",
       "",
       ...unparsed.map((c) => `- ${JSON.stringify(c)}`),
       "",
-      CONDITION_GRAMMAR,
+      grammar.text,
       "",
       "Rule again. Keep the conditions that were fine exactly as they were, rewrite these in the",
       "grammar above, and finish with the JSON block as before.",
     ].join("\n");
     ({ verdict, rationale, conditions, metrics } = await askOnce(again));
-    unparsed = verdict === "escalate" ? [] : unparsedConditions(conditions);
+    unparsed = verdict === "escalate" ? [] : grammar.unparsed(conditions);
     if (unparsed.length) console.warn(`warning: ${name}: ${unparsed.length} condition line(s) still unreadable after one re-prompt; recorded as unparsed_conditions`);
   }
 

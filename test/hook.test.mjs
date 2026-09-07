@@ -15,10 +15,26 @@ test("build stage cannot edit spec, acceptance tests, constitution or config", (
   assert.equal(run("app/src/index.ts", "build").status, 0);
 });
 
-test("derive-tests stage cannot see app or adapters", () => {
-  assert.equal(run("app/src/index.ts", "derive-tests").status, 2);
-  assert.equal(run("tests/adapters/new/a.ts", "derive-tests").status, 2);
-  assert.equal(run("tests/acceptance/x.spec.ts", "derive-tests").status, 0);
+test("derive-tests may write only tests/acceptance/, and nothing else at all", () => {
+  assert.equal(run("tests/acceptance/applications/R-1.1.spec.ts", "derive-tests").status, 0);
+  assert.equal(run("tests/acceptance/not-testable.yaml", "derive-tests").status, 0);
+  // An allow rule, so a path nobody thought to name is refused rather than permitted —
+  // in particular tests/generated/, which `prepare` regenerates but the agent never
+  // writes to directly.
+  for (const p of ["app/src/index.ts", "tests/adapters/new/a.ts", "tests/seed/001-users.sql",
+    "tests/generated/surface.d.ts", "spec/domains/x.md", "constitution.md", ".sdlc/config.yaml"])
+    assert.equal(run(p, "derive-tests").status, 2, p);
+});
+
+test("bind-adapter may write only tests/adapters/, and nothing else at all", () => {
+  assert.equal(run("tests/adapters/old/index.ts", "bind-adapter").status, 0);
+  assert.equal(run("tests/adapters/old/bindings.yaml", "bind-adapter").status, 0);
+  // An allow rule, so a path nobody thought to name is refused rather than permitted —
+  // in particular tests/generated/, which `prepare` regenerates but the agent never
+  // writes to directly, and tests/acceptance/, which this stage must never touch.
+  for (const p of ["app/src/index.ts", "tests/acceptance/x.spec.ts", "tests/seed/001-users.sql",
+    "tests/generated/surface.d.ts", "spec/contract/surface.yaml", "constitution.md", ".sdlc/config.yaml"])
+    assert.equal(run(p, "bind-adapter").status, 2, p);
 });
 
 test("spec stages (design, plan) may edit spec but not app or tests", () => {
@@ -45,13 +61,24 @@ test("archaeology may write only spec/, reading sources/ read-only", () => {
     assert.equal(run(p, "archaeology").status, 2, p);
 });
 
-test("ratify is deterministic and writes nothing at all", () => {
-  for (const p of ["app/x.ts", "spec/spec.md", "intent/x.md", "sources/old/README.md", "README.md"])
-    assert.equal(run(p, "ratify").status, 2, p);
+test("contract may write spec/contract/, tests/seed/ and .sdlc/oracle/, reading sources/ read-only", () => {
+  assert.equal(run("spec/contract/surface.yaml", "contract").status, 0);
+  assert.equal(run("tests/seed/001-users.sql", "contract").status, 0);
+  assert.equal(run(".sdlc/oracle/compose.yml", "contract").status, 0);
+  for (const p of ["app/x", "spec/domains/x.md", "intent/x.md", "constitution.md",
+    ".github/workflows/a.yml", ".sdlc/config.yaml", "sources/old/README.md"])
+    assert.equal(run(p, "contract").status, 2, p);
+});
+
+test("ratify and calibrate are deterministic and write nothing at all", () => {
+  for (const stage of ["ratify", "calibrate"])
+    for (const p of ["app/x.ts", "spec/spec.md", "intent/x.md", "sources/old/README.md", "README.md",
+      "tests/acceptance/redo.yaml", "tests/results/old/latest.json"])
+      assert.equal(run(p, stage).status, 2, `${stage} ${p}`);
 });
 
 test("every stage blocks sources/, the read-only checkout of the old application", () => {
-  for (const stage of ["build", "derive-tests", "bind-adapter", "intent", "archaeology", "design", "plan"])
+  for (const stage of ["build", "derive-tests", "bind-adapter", "intent", "archaeology", "contract", "design", "plan"])
     assert.equal(run("sources/old/README.md", stage).status, 2, stage);
 });
 

@@ -38,13 +38,22 @@ allows 22 or later.
   says to always escalate.
 - `sdlc rule --pending` — rule every open proposal whose gate is held by a persona agent, oldest
   branch first.
-- `sdlc run <stage> [--slice N] [--domain X] [--dry-run]` — run one pipeline stage as an isolated
-  headless session: materialise its workspace, run pre-checks, let the agent work, run
-  post-checks, and commit or open a proposal.
+- `sdlc run <stage> [--slice N] [--domain X] [--target <t>] [--stale] [--revise] [--dry-run]` — run
+  one pipeline stage as an isolated headless session: materialise its workspace, run pre-checks,
+  let the agent work, run post-checks, and commit or open a proposal. Implemented stages today:
+  `intent`, `archaeology`, `ratify`, `contract`, `derive-tests`, `bind-adapter` and `calibrate`,
+  plus `probe`, which proves the runner itself. `--domain` names the business domain a stage acts
+  on, `--target` the running application it acts against, `--stale` restricts `derive-tests` to the
+  criteria that have moved on since their tests were written, and `--revise` sends `archaeology`
+  back over a domain from a returned G1 ruling.
 - `sdlc resume [--again]` — continue a run an interrupted process left mid-stage, re-judging
   whatever the agent session left behind against the stage's post-checks.
 - `sdlc status [dir]` — regenerate the generated state site (`site/index.md`, `site/gates.md`,
   `site/runs.md`, `site/journal.md`, `site/proposals/*.md`).
+- `sdlc oracle up|down|status [--target <t>]` — start, stop or report on the old application
+  through Docker Compose, on ports chosen for this machine: `up` brings the services up, applies
+  migrations, loads `tests/seed/*.sql` and waits for the application to answer; `down` tears it
+  down and removes the port record; `status` prints what is running (`docs/stages/oracle.md`).
 
 Run `sdlc help` (or any unrecognised command) to print this list from the CLI itself.
 

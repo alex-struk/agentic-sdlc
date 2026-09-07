@@ -1,19 +1,23 @@
 import { existsSync, readdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR } from "../spec/criteria.mjs";
+import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
+import { checkEgress } from "../checks/egress.mjs";
+import { checkTests, coverage } from "../checks/tests.mjs";
+import { checkSeparation } from "../checks/separation.mjs";
+import { loadContract, writeGenerated } from "../spec/surface.mjs";
+import { turnsFor } from "../runner/executor.mjs";
+import { readLocal } from "../oracle/ports.mjs";
+import { oracleOverridePath } from "../oracle/paths.mjs";
 import { propose } from "../commands/propose.mjs";
-
-const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
-
-function skillPath(name) {
-  return join(SKILLS_DIR, `${name}.md`);
-}
+import { SKILLS_DIR, checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
+import { calibrate } from "./calibrate.mjs";
 
 function checkProbeFile(projectDir) {
   const id = "probe-file";
@@ -415,16 +419,728 @@ const archaeology = {
   },
 };
 
+// The proposal `contract` re-runs land on: `contract-v<n>`, `n` counting up from every
+// ruled `contract-v*` gate file already on disk — a gate file only exists once `sdlc
+// rule` has recorded a verdict, so this counts rulings, not attempts, the same way the
+// brief's naming rule reads. Unlike archaeology's `archaeology-<domain>` (one name per
+// domain, forever), `contract` has no natural per-run key of its own — a rebuild is a
+// rebuild — so the run itself is what versions the name.
+function nextContractVersion(projectDir) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return 1;
+  const re = /^contract-v(\d+)\.yaml$/;
+  return readdirSync(dir).filter((f) => re.test(f)).length + 1;
+}
+
+// Every identity a session might need to sign in through: the oracle's own, plus every
+// configured target's, de-duplicated. This is the set `contract`'s personas are judged
+// against — a persona is only obliged to carry a `sign_in` for an identity something in
+// this project actually uses.
+function configuredIdentities(config) {
+  const identities = new Set();
+  if (config?.oracle?.identity) identities.add(config.oracle.identity);
+  for (const target of Object.values(config?.targets ?? {})) if (target?.identity) identities.add(target.identity);
+  return [...identities];
+}
+
+function checkContractLoads(projectDir) {
+  const id = "contract-loads";
+  const { errors } = loadContract(projectDir);
+  if (!errors.length) return { id, ok: true, messages: [] };
+  return { id, ok: false, messages: errors.map((e) => `${e.file}: ${e.message}`) };
+}
+
+// A persona whose `sign_in` is exactly `null` is anonymous by design and exempt; every
+// other persona needs an entry for every identity the config actually uses, named so
+// whoever rules on the proposal knows exactly which persona and which identity is short.
+function checkPersonaSignIns(projectDir, config) {
+  const id = "contract-persona-sign-in";
+  const identities = configuredIdentities(config);
+  if (!identities.length) return { id, ok: true, messages: [] };
+  const { personas, errors } = loadContract(projectDir);
+  // A file that fails to load at all is `checkContractLoads`'s finding to report, not
+  // this check's — asking about sign-ins on personas that could not even be parsed would
+  // just repeat the same complaint in different words.
+  if (errors.length) return { id, ok: true, messages: [] };
+  const messages = [];
+  for (const p of personas.personas) {
+    if (p.sign_in === null) continue;
+    for (const identity of identities) {
+      if (!p.sign_in?.[identity]) messages.push(`persona "${p.id}" has no sign_in for identity "${identity}"`);
+    }
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+// Every domain with at least one `accepted` criterion needs somewhere in `surface.yaml`
+// for a test to act through — a criterion nobody can reach through a page is not
+// actually testable, whatever the domain file says about it. Skipped entirely when
+// `spec/criteria-index.json` does not exist yet: a project that has not ratified
+// anything has no accepted criteria to hold this stage to.
+function checkCriteriaDomainsHavePages(projectDir) {
+  const id = "contract-domain-pages";
+  const idxPath = join(projectDir, "spec", "criteria-index.json");
+  if (!existsSync(idxPath)) return { id, ok: true, messages: [] };
+  let index;
+  try {
+    index = JSON.parse(readText(idxPath));
+  } catch (e) {
+    return { id, ok: false, messages: [`spec/criteria-index.json does not parse: ${e.message}`] };
+  }
+  const acceptedDomains = new Set((index.criteria ?? []).filter((c) => c.state === "accepted").map((c) => c.domain));
+  if (!acceptedDomains.size) return { id, ok: true, messages: [] };
+  const { surface } = loadContract(projectDir);
+  const pageDomains = new Set(surface.pages.map((p) => p?.domain).filter(Boolean));
+  const missing = [...acceptedDomains].filter((d) => !pageDomains.has(d));
+  if (!missing.length) return { id, ok: true, messages: [] };
+  return { id, ok: false, messages: [`no page in spec/contract/surface.yaml carries domain: for accepted domain(s): ${missing.join(", ")}`] };
+}
+
+// `openapi.yaml` is only judged when there is an old application to have recovered it
+// from — a greenfield contract with nothing to reverse-engineer is not held to writing
+// an API description sight unseen.
+function checkOpenapi(projectDir, config) {
+  const id = "contract-openapi";
+  if (!config?.sources?.old) return { id, ok: true, messages: [] };
+  const file = "spec/contract/openapi.yaml";
+  const full = join(projectDir, file);
+  if (!existsSync(full)) return { id, ok: false, messages: [`${file} is missing`] };
+  let doc;
+  try {
+    doc = parseYaml(readText(full));
+  } catch (e) {
+    return { id, ok: false, messages: [`${file} is not valid YAML: ${e.message}`] };
+  }
+  const messages = [];
+  if (!doc || typeof doc !== "object" || !doc.openapi) messages.push(`${file} is missing the top-level "openapi" key`);
+  const paths = doc && typeof doc === "object" ? doc.paths : undefined;
+  if (!paths || typeof paths !== "object" || Array.isArray(paths) || Object.keys(paths).length === 0)
+    messages.push(`${file} has no paths`);
+  return { id, ok: messages.length === 0, messages };
+}
+
+// Every seed file the agent wrote has to actually insert something — an empty
+// `tests/seed/*.sql` file would apply cleanly and seed nothing, which is worse than
+// missing because nothing else would notice. `manifest.yaml`'s own parse errors are
+// already `checkContractLoads`'s to report (`loadContract` reads it too), so this does
+// not repeat them.
+function checkSeed(projectDir) {
+  const id = "contract-seed";
+  const dir = join(projectDir, "tests", "seed");
+  if (!existsSync(dir)) return { id, ok: true, messages: [] };
+  const messages = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".sql")) continue;
+    if (!readText(join(dir, f)).trim()) messages.push(`tests/seed/${f} is empty`);
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+// The compose override is only judged when the project configures an oracle at all, and
+// only for shape: it exists and parses as YAML. Nothing here brings up Docker — that is
+// `sdlc oracle`'s job, and it is not available in a check that runs in every test.
+function checkOracleOverride(projectDir, config) {
+  const id = "contract-oracle-override";
+  if (!config?.oracle) return { id, ok: true, messages: [] };
+  const rel = oracleOverridePath(config);
+  const full = join(projectDir, rel);
+  if (!existsSync(full)) return { id, ok: false, messages: [`${rel} is missing`] };
+  try {
+    parseYaml(readText(full));
+  } catch (e) {
+    return { id, ok: false, messages: [`${rel} is not valid YAML: ${e.message}`] };
+  }
+  return { id, ok: true, messages: [] };
+}
+
+// `contract` may only touch the paths the guard hook allows it: the contract itself, the
+// synthetic seed, and the oracle's compose override.
+function checkContractScope(projectDir) {
+  const id = "contract-scope";
+  const outside = changedPaths(projectDir).filter((p) => !/^(spec\/contract\/|tests\/seed\/|\.sdlc\/oracle\/)/.test(p));
+  if (!outside.length) return { id, ok: true, messages: [] };
+  return { id, ok: false, messages: [`contract may only change spec/contract/, tests/seed/ and .sdlc/oracle/, but also touched: ${outside.join(", ")}`] };
+}
+
+// `contract` completes `spec/contract/` — the pages, personas, API description and
+// observables the acceptance tests and the oracle will act through — from what the
+// ratified criteria say the system does, reading `sources/old` when this project has
+// one. It holds gate G1 again, alongside archaeology: the contract is spec content, not
+// implementation, and nothing later builds tests against it until the product-owner
+// persona rules it.
+const contract = {
+  name: "contract",
+  title: "contract",
+  skill: skillPath("contract"),
+  // `with-sources` only when there is actually an old application configured — a
+  // greenfield project has nothing under `sources/old` for `ensureSources` to check out,
+  // and asking for it would fail the workspace before the agent ever got a prompt.
+  workspace: (config) => (config?.sources?.old ? "with-sources" : "project"),
+  gate: "G1",
+  collect: [],
+  implemented: true,
+  prompt(ctx) {
+    const config = ctx.config;
+    const fromSources = !!config?.sources?.old;
+    const identities = configuredIdentities(config);
+    const oracle = config?.oracle;
+    const lines = [
+      fromSources
+        ? "Complete spec/contract/ from sources/old and the ratified criteria: this project has an old application to recover the contract from, so read it the same way archaeology did — code and docs, never sources/old/tests."
+        : "Complete spec/contract/ by authoring the contract from the ratified criteria: this project has no old application configured, so there is nothing under sources/old to read — write the contract from what the criteria in spec/domains/ (and spec/criteria-index.json, if ratify has already run) say the system does.",
+      "1. spec/contract/surface.yaml: one entry per page the criteria need, each carrying a \"domain:\" field, a route, a title, and actions/observations named in the vocabulary the criteria use — never a CSS selector or a test ID, which are filled in at the design gate, not here. Keep and normalise whatever archaeology already appended; delete nothing.",
+      identities.length
+        ? `2. spec/contract/personas.yaml: every role with a "can" list and a "sign_in" entry for every identity this project configures (${identities.join(", ")}). "session-route" needs { route: <path> }; "sandbox-idp" needs { username: <name> }. A persona with no sign-in at all (an anonymous visitor) writes "sign_in: null" rather than omitting the key.`
+        : "2. spec/contract/personas.yaml: every role with a \"can\" list. This project configures no identity at all (no oracle, no targets), so no persona needs a sign_in entry yet.",
+      fromSources
+        ? "3. spec/contract/openapi.yaml: assembled from the old application's own API description files if it has any, else written from its routes — one operationId per route — with a top comment \"# recovered from <path(s)> at <commit>\" naming exactly where it came from."
+        : "3. spec/contract/openapi.yaml: leave as is; there is no old application to recover an API description from.",
+      "4. spec/contract/observables.yaml: email observed through a mail catcher at ${SDLC_MAIL_API}, plus any file or notification endpoint the criteria depend on.",
+      "5. tests/seed/: one or more NNN-<name>.sql files, applied in name order, inserting one user per persona whose identity a session route or sandbox IdP looks up, plus whatever fixture records the accepted criteria's given-clauses need — all synthetic (example.test addresses, invented names that are not real people). Write tests/seed/manifest.yaml naming every inserted record a test will refer to by handle.",
+      oracle
+        ? `6. ${oracleOverridePath(config)}: a Compose override for ${oracle.compose} that publishes the app on \${SDLC_APP_PORT}, the database on \${SDLC_DB_PORT}, adds a "mailpit" service (axllent/mailpit:v1.28.0) publishing its API on \${SDLC_MAIL_API_PORT}, points the app's own mail settings at that mailpit service, sets whatever environment the app needs to run outside production with its test sign-in routes enabled (use "!override" for any env_file the base compose file declares, so this override's own environment actually wins), and defines the migration one-off service the config names (${oracle.migrate_service ?? "none configured"}), if any.`
+        : "6. This project configures no oracle, so there is nothing to write under .sdlc/oracle/.",
+      "Finish with your journal entry: say which pages exist, which sign-in method each persona uses, what the seed contains, and what could not be recovered.",
+    ];
+    return lines.join("\n\n");
+  },
+  proposal(ctx) {
+    const n = ctx.contractVersion ?? nextContractVersion(ctx.projectDir);
+    return {
+      name: `contract-v${n}`,
+      question: "Is this the contract the tests will act through?",
+      recommendation: recommendationFrom(ctx.agentText),
+    };
+  },
+  // Nothing beyond what the workspace itself needs — unlike archaeology, `contract`
+  // takes no `--domain`: a rebuild covers every domain's pages and personas at once, not
+  // one domain per run.
+  preChecks() {
+    return [];
+  },
+  postChecks(projectDir, ctx) {
+    // Stashed on `ctx` the same way `intent` stashes the file it discovers: the real
+    // proposal call in `finishStage` does not carry `projectDir`, so the version has to
+    // be resolved here, while it is available, for `proposal` to read back.
+    ctx.contractVersion = nextContractVersion(projectDir);
+    return [
+      checkContractLoads(projectDir),
+      checkPersonaSignIns(projectDir, ctx.config),
+      checkCriteriaDomainsHavePages(projectDir),
+      checkOpenapi(projectDir, ctx.config),
+      checkSeed(projectDir),
+      checkEgress(projectDir, ctx),
+      checkOracleOverride(projectDir, ctx.config),
+      checkContractScope(projectDir),
+    ];
+  },
+};
+
+// The accepted criteria of one domain, read straight from `spec/criteria-index.json` —
+// the same source `coverage` and `checkTests` judge a run's output against, so
+// `derive-tests`' own notion of "what needs a test" can never drift from what those
+// checks hold it to. A missing or unparseable index is not this function's business to
+// fail on — it returns an empty list, and the domain-ratified pre-check below is what
+// turns that into a real failure with a real message.
+function acceptedCriteria(projectDir, domain) {
+  const idxPath = join(projectDir, "spec", "criteria-index.json");
+  if (!existsSync(idxPath)) return { criteria: [], generatedFrom: "" };
+  let index;
+  try { index = JSON.parse(readText(idxPath)); } catch { return { criteria: [], generatedFrom: "" }; }
+  const criteria = (index.criteria ?? []).filter((c) => c.domain === domain && c.state === "accepted");
+  return { criteria, generatedFrom: index.generated_from ?? "" };
+}
+
+// Ids named in `tests/acceptance/redo.yaml` (`{ redo: [{ id, version, why }] }`) for one
+// domain. `calibrate` writes that file when the product owner rules `test-wrong <ID>` —
+// the criterion is right and the test is not — which is a reason to derive the test again
+// that `checkTests` cannot see for itself: the file's header version still matches the
+// index, so nothing about the criterion is stale. An id the file names that does not
+// belong to this domain's own accepted criteria is silently not this domain's business,
+// the same way a stray id elsewhere in the file is not an error here.
+function readRedoIds(projectDir, domain, byId) {
+  return readRedo(projectDir).map((r) => r?.id).filter((id) => byId.get(id)?.domain === domain);
+}
+
+// The criteria this run will actually write tests for: every accepted criterion of the
+// domain on a full run; on a `--stale` run, only the ones `checkTests` reports as stale
+// (a spec file whose header version trails the index) or named in
+// `tests/acceptance/redo.yaml` for this domain. Called once, in `preChecks` — the only
+// hook that ever sees the real project directory before `prompt(ctx)` runs with nothing
+// but `ctx` itself — and its result is stashed there for `prompt` to read back.
+function resolveCriteriaToDerive(projectDir, ctx) {
+  const { criteria, generatedFrom } = acceptedCriteria(projectDir, ctx.domain);
+  if (!ctx.stale) return { criteria, generatedFrom };
+  const byId = new Map(criteria.map((c) => [c.id, c]));
+  const { stale } = checkTests(projectDir, ctx);
+  const ids = new Set(stale.filter((id) => byId.has(id)));
+  for (const id of readRedoIds(projectDir, ctx.domain, byId)) ids.add(id);
+  return { criteria: criteria.filter((c) => ids.has(c.id)), generatedFrom };
+}
+
+function checkDeriveTestsDomainRatified(projectDir, ctx) {
+  const id = "derive-tests-domain-ratified";
+  if (!ctx.domain) return { id, ok: true, messages: [] };
+  const { criteria } = acceptedCriteria(projectDir, ctx.domain);
+  if (criteria.length === 0)
+    return { id, ok: false, messages: [`derive-tests: domain ${ctx.domain} has no accepted criteria; run ratify first`] };
+  return { id, ok: true, messages: [] };
+}
+
+// Reads `ctx.deriveTestsCriteria`, already resolved and stashed by `preChecks` above —
+// not recomputed here, so this reports on exactly the same set `prompt(ctx)` is about to
+// hand the agent, whatever the domain's ratified state turned out to be.
+function checkDeriveTestsStaleHasWork(ctx) {
+  const id = "derive-tests-stale-has-work";
+  if (!ctx.domain || !ctx.stale) return { id, ok: true, messages: [] };
+  if ((ctx.deriveTestsCriteria ?? []).length === 0)
+    return { id, ok: false, messages: [`derive-tests: nothing stale in ${ctx.domain}`] };
+  return { id, ok: true, messages: [] };
+}
+
+// The proposal name a `--stale` re-run opens: `n` counts up from every ruled
+// `derive-tests-<d>-stale-*` gate file already on disk — a gate file only exists once
+// `sdlc rule` has recorded a verdict, so this counts rulings, not attempts, the same
+// counting rule `contract`'s own versioning follows. A full run's own name
+// (`derive-tests-<d>`) needs no such counting: like `archaeology`'s, it is fixed per
+// domain, and a second full run is refused outright until the first is ruled.
+function nextDeriveTestsStaleVersion(projectDir, domain) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return 1;
+  const re = new RegExp(`^derive-tests-${escapeRe(domain)}-stale-(\\d+)\\.yaml$`);
+  return readdirSync(dir).filter((f) => re.test(f)).length + 1;
+}
+
+// `checkTests` resolves a spec file's `blind` claim against git history — a file this
+// run just wrote is still uncommitted at post-check time, so only `derive-tests`'s own
+// env var lets a `blind` claim on a dirty file stand (`resolveProvenance`,
+// `src/checks/tests.mjs`). Set for the duration of the call and restored after, rather
+// than left on `process.env` for the rest of the process, so a later check in the same
+// run (or a later stage entirely) never inherits it by accident.
+function checkTestsBlind(projectDir, ctx) {
+  const prev = process.env.SDLC_STAGE;
+  process.env.SDLC_STAGE = "derive-tests";
+  try {
+    return checkTests(projectDir, ctx);
+  } finally {
+    if (prev === undefined) delete process.env.SDLC_STAGE;
+    else process.env.SDLC_STAGE = prev;
+  }
+}
+
+// A derive-tests session writes one spec file per criterion, and no criterion costs less
+// than a read of the contract and a write of its file. So a run given fewer than two
+// turns per criterion is very likely to stop partway through the domain, and the way that
+// surfaces without this is a coverage failure that reads as bad work rather than as a
+// ceiling set too low. A warning and not a failure: the ceiling is the project's to set,
+// and a session that finishes early under a tight one is a perfectly good run.
+function checkDeriveTestsBudget(ctx) {
+  const id = "derive-tests-budget";
+  const n = (ctx.deriveTestsCriteria ?? []).length;
+  if (!n) return { id, ok: true, messages: [] };
+  const turns = turnsFor(ctx.config ?? {}, "derive-tests");
+  if (n <= turns / 2) return { id, ok: true, messages: [] };
+  return {
+    id, ok: true, messages: [],
+    warnings: [`derive-tests: ${n} criteria to derive with a ceiling of ${turns} turns; set policy.budgets.derive-tests`],
+  };
+}
+
+function checkDeriveTestsCoverage(projectDir, domain) {
+  const id = "derive-tests-coverage";
+  const { missing } = coverage(projectDir, domain);
+  if (missing.length)
+    return { id, ok: false, messages: [`${domain}: no test and no not-testable.yaml entry for: ${missing.join(", ")}`] };
+  return { id, ok: true, messages: [] };
+}
+
+// `derive-tests` may only ever change the acceptance suite for its own domain, the
+// shared `not-testable.yaml`, and the generated types `prepare` regenerated on its way
+// in — never `tests/adapters/`, never `app/`, and never another domain's own tests.
+function checkDeriveTestsScope(projectDir, domain) {
+  const id = "derive-tests-scope";
+  const allowed = new RegExp(`^(tests/acceptance/${domain}/|tests/acceptance/not-testable\\.yaml$|tests/generated/)`);
+  const outside = changedPaths(projectDir).filter((p) => !allowed.test(p));
+  if (outside.length)
+    return {
+      id, ok: false,
+      messages: [`derive-tests may only change tests/acceptance/${domain}/, tests/acceptance/not-testable.yaml and tests/generated/, but also touched: ${outside.join(", ")}`],
+    };
+  return { id, ok: true, messages: [] };
+}
+
+// The claim every spec file's header makes for itself (`checkTests` resolves whether it
+// actually earns it, against git history) still has to be the claim written on the file:
+// a `derive-tests` run can never leave a new or changed spec file's own header saying
+// `unverified` — that would be a blind stage quietly admitting its own output cannot be
+// trusted, rather than the stage that exists to make the claim true in the first place.
+function checkDeriveTestsBlindHeader(projectDir, domain) {
+  const id = "derive-tests-blind-header";
+  const changed = changedPaths(projectDir).filter((p) => p.startsWith(`tests/acceptance/${domain}/`) && p.endsWith(".spec.ts"));
+  const messages = [];
+  for (const rel of changed) {
+    const full = join(projectDir, rel);
+    if (!existsSync(full)) continue;
+    const second = readText(full).split("\n")[1] ?? "";
+    if (!second.includes("provenance: blind"))
+      messages.push(`${rel}: second line must declare "provenance: blind" — a derive-tests file can never claim unverified provenance`);
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+// The entries this run has answered, taken off `tests/acceptance/redo.yaml`. An entry is
+// a standing request to write a criterion's test again; once this run has derived that
+// criterion the request is met, and leaving it on the list would send the same id back
+// through `--stale` on every future run for as long as the file existed.
+//
+// Written here rather than in the workspace because the agent must never touch this file:
+// it is the pipeline's own bookkeeping, not part of the suite the agent is judged on.
+// A post-check may write — `finishStage` commits whatever the working tree holds once the
+// checks pass — and this runs after `checkDeriveTestsScope` has already judged the tree,
+// so clearing the file cannot widen what the agent was allowed to have touched. It runs
+// only when every check passed: a failing run commits nothing of the agent's work, and
+// the requests it did not answer have to still be there for the next attempt.
+function clearDeriveTestsRedo(projectDir, ctx) {
+  const derived = (ctx.deriveTestsCriteria ?? []).map((c) => c.id);
+  if (!derived.length) return;
+  removeRedo(projectDir, derived);
+  // The redo entry and the `test-wrong` ruling record that produced it are two halves of
+  // the same answer, so both are retired together: leaving the record behind would mark
+  // the freshly written test's next failure as already ruled on, and no new question
+  // would ever be asked about it.
+  dropTestWrongRulings(projectDir, derived);
+}
+
+// `derive-tests` is the blind stage: an agent that sees only the contract (generated
+// into `tests/generated/*` by its own `prepare` step) and the seed writes one Playwright
+// spec per accepted criterion, calling the abstract surface and never a locator. It holds
+// gate G3: the reviewer persona rules whether each test asserts only what its criterion
+// states and nothing about how the system is built.
+const deriveTests = {
+  name: "derive-tests",
+  title: "derive tests",
+  skill: skillPath("derive-tests"),
+  // A fresh temporary directory built from committed content only (`git archive HEAD`),
+  // so the agent writing tests never sees an uncommitted edit to the contract or to
+  // another domain's own criteria.
+  workspace: "spec-only",
+  gate: "G3",
+  // Copied back into the project once the session ends: the acceptance suite the agent
+  // wrote, and the generated types `prepare` (below) regenerated in the workspace before
+  // the agent ever saw it.
+  collect: ["tests/acceptance", "tests/generated"],
+  implemented: true,
+  // No Bash and no MCP server: a blind test-writing session reads the generated contract
+  // and writes spec files, and a shell is the one tool that could reach past the
+  // workspace to the application it is not allowed to see.
+  allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
+  // Generates `tests/generated/*` from the contract already sitting in the workspace
+  // (`git archive` put it there), so the agent's very first read of `surface`/`persona`/
+  // `seed` is the same TypeScript a real test file imports — never regenerated from a
+  // contract the agent could have edited itself, since this workspace never lets it.
+  prepare(wsDir) {
+    writeGenerated(wsDir);
+  },
+  prompt(ctx) {
+    const d = ctx.domain;
+    const criteria = ctx.deriveTestsCriteria ?? [];
+    const specSha = ctx.deriveTestsGeneratedFrom || "0000000000000000000000000000000000000000";
+    const today = new Date().toISOString().slice(0, 10);
+    const list = criteria.map((c) => `- ${c.id} (v${c.version}): ${c.statement}`).join("\n");
+    return [
+      `Write one Playwright acceptance test per criterion below, for the "${d}" domain, and nothing else. You see only the contract (tests/generated/*, generated from spec/contract) and the seed; there is no app/ in this workspace and nothing here lets you read one.`,
+      `The criteria to derive tests for:\n\n${list}`,
+      `For each one, write tests/acceptance/${d}/<ID>.spec.ts, starting with exactly these two header lines:\n\n// criterion: @<ID> v<version>\n// provenance: blind, spec@${specSha}, derived ${today}\n\nImport only from "../../fixtures" and "../../generated/*". Sign in through persona.<id> when the criterion needs a signed-in actor, act through surface.<page>.<action>(), read through surface.<page>.<observation>(), refer to a record through seed.<group>.<handle> rather than an id or a value you invented, and observe email through mail rather than a database row or a log line. Write one test() per given/when/then the criterion states, titled with the criterion's own statement. Never read or guess at how the system is built, and never write a selector, a test id, a locator call, or a hardcoded route — the surface is the whole world.`,
+      `A criterion nothing in surface reaches — no page, action or observation gets you there — gets an entry in tests/acceptance/not-testable.yaml instead of a file: { id: <ID>, version: <version>, reason: "<why>" }. A reason has to name what is actually missing, not that the criterion is hard.`,
+      `Finish with your journal entry: how many criteria got a test, which were not testable and why, and which surface actions or observations you needed but did not find — name them, so the contract can be extended to reach them.`,
+    ].join("\n\n");
+  },
+  proposal(ctx) {
+    const d = ctx.domain;
+    const name = ctx.stale
+      ? `derive-tests-${d}-stale-${ctx.deriveTestsStaleN ?? nextDeriveTestsStaleVersion(ctx.projectDir, d)}`
+      : `derive-tests-${d}`;
+    return {
+      name,
+      question: `Do these tests follow from the ${d} criteria and from nothing else?`,
+      recommendation: recommendationFrom(ctx.agentText),
+    };
+  },
+  preChecks(projectDir, ctx) {
+    // Resolved once here — the real project directory, before a workspace exists — and
+    // stashed on `ctx` for `prompt(ctx)` to read back later with nothing else to go on.
+    if (ctx.domain) {
+      const resolved = resolveCriteriaToDerive(projectDir, ctx);
+      ctx.deriveTestsCriteria = resolved.criteria;
+      ctx.deriveTestsGeneratedFrom = resolved.generatedFrom;
+    }
+    return [
+      checkDomainOption(ctx, "derive-tests"),
+      checkDeriveTestsDomainRatified(projectDir, ctx),
+      checkDeriveTestsStaleHasWork(ctx),
+      checkDeriveTestsBudget(ctx),
+    ];
+  },
+  postChecks(projectDir, ctx) {
+    // Stashed the same way `contract` stashes its own version: the real `proposal(ctx)`
+    // call in `finishStage` does not carry `projectDir`, so a `--stale` run's number has
+    // to be resolved here, while it is available, for `proposal` to read back.
+    if (ctx.stale) ctx.deriveTestsStaleN = nextDeriveTestsStaleVersion(projectDir, ctx.domain);
+    const checks = [
+      checkTestsBlind(projectDir, ctx),
+      checkSeparation(projectDir),
+      checkDeriveTestsCoverage(projectDir, ctx.domain),
+      checkDeriveTestsScope(projectDir, ctx.domain),
+      checkDeriveTestsBlindHeader(projectDir, ctx.domain),
+    ];
+    if (checks.every((c) => c.ok)) clearDeriveTestsRedo(projectDir, ctx);
+    return checks;
+  },
+};
+
+// Everything the rest of this stage needs to know about the target it is binding
+// against, resolved once in `preChecks` (the only hook that sees the real project
+// directory before `prompt`/`mcp`/`env` run with nothing but `ctx`) and stashed there
+// for them to read back — the same pattern `derive-tests` stashes its own resolved
+// criteria in. `old`'s base URL and mail API only exist once `sdlc oracle up` has
+// actually started it and written `.sdlc/oracle-old.local.yaml` (`readLocal`,
+// `src/oracle/ports.mjs`); every other target's base URL is whatever its own config
+// entry names, and carries no mail catcher of its own to observe email through.
+function resolveBindAdapterTarget(projectDir, ctx) {
+  const t = ctx.target;
+  if (t === "old") {
+    const local = ctx.config?.oracle?.target === "old" ? readLocal(projectDir, "old") : null;
+    ctx.bindAdapterBaseUrl = local?.base_url;
+    ctx.bindAdapterMailApi = local?.mail_api ?? "";
+    ctx.bindAdapterIdentity = ctx.config?.oracle?.identity;
+  } else {
+    const target = ctx.config?.targets?.[t];
+    ctx.bindAdapterBaseUrl = target?.base_url;
+    ctx.bindAdapterMailApi = "";
+    ctx.bindAdapterIdentity = target?.identity;
+  }
+}
+
+// A one-shot "is anything answering here at all" probe, any HTTP status included —
+// `preChecks` is called synchronously (`sdlc run`'s own contract with every stage), and
+// Node has no synchronous `fetch`, so the check runs in a short-lived child process
+// instead of blocking the event loop itself. `AbortSignal.timeout` bounds it to 5s
+// and `execFileSync` has a 6s OS-level timeout so a stalled child never blocks the
+// pre-check forever; both layers ensure a target that never answers fails promptly.
+function probeHttp(url) {
+  const script = "fetch(process.argv[1], { signal: AbortSignal.timeout(5000) })"
+    + ".then(() => process.exit(0)).catch(() => process.exit(1));";
+  try {
+    execFileSync(process.execPath, ["-e", script, url], { timeout: 6000, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The target must actually be reachable before an agent turn spends a session walking
+// it with a browser. `--target old` fails by name ("run sdlc oracle up first") when
+// nothing has started it yet; any other target already had its shape checked by
+// `checkBindAdapterTargetOption` above, so an invalid one reports nothing further here
+// rather than repeating that check's own message. `SDLC_ORACLE=mock` — the same escape
+// hatch every other oracle-facing call in this pipeline uses (`src/oracle/compose.mjs`)
+// — skips the real network probe entirely, since a mock run has no server to answer it.
+function checkBindAdapterTargetUp(ctx) {
+  const id = "bind-adapter-target-up";
+  if (!ctx.target) return { id, ok: true, messages: [] };
+  if (ctx.target === "old" && ctx.config?.oracle?.target !== "old") return { id, ok: true, messages: [] };
+  if (ctx.target !== "old" && !(ctx.target in (ctx.config?.targets ?? {}))) return { id, ok: true, messages: [] };
+  if (!ctx.bindAdapterBaseUrl) {
+    return ctx.target === "old"
+      ? { id, ok: false, messages: ["bind-adapter: the old target is not up; run sdlc oracle up first"] }
+      : { id, ok: false, messages: [`bind-adapter: target "${ctx.target}" has no base_url configured`] };
+  }
+  if (process.env.SDLC_ORACLE === "mock") return { id, ok: true, messages: [] };
+  const baseUrl = ctx.bindAdapterBaseUrl.replace(/\/$/, "");
+  if (!probeHttp(`${baseUrl}/`))
+    return { id, ok: false, messages: [`bind-adapter: ${baseUrl}/ did not answer`] };
+  return { id, ok: true, messages: [] };
+}
+
+// The proposal name a run opens: `bind-adapter-<t>` the first time, `bind-adapter-<t>-<n>`
+// after that — `n` counting up from every ruled `bind-adapter-<t>*` gate file already on
+// disk, the same "count rulings, not attempts" rule `contract`'s own `-v<n>` follows.
+// Unlike `contract`, the un-numbered name is the one a fresh target gets; a number only
+// appears once a first ruling already exists to count.
+function nextBindAdapterName(projectDir, target) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return `bind-adapter-${target}`;
+  const re = new RegExp(`^bind-adapter-${escapeRe(target)}(-\\d+)?\\.yaml$`);
+  const n = readdirSync(dir).filter((f) => re.test(f)).length;
+  return n === 0 ? `bind-adapter-${target}` : `bind-adapter-${target}-${n + 1}`;
+}
+
+// `bindings.yaml` names every action and observation the surface declares, on every
+// page, exactly once — `bound`, or `unbound: <reason>` — and names nothing the surface
+// does not. Checked against `loadContract`, the same source of truth `writeGenerated`
+// built `tests/generated/surface.d.ts` from, so an adapter can never quietly drift from
+// what the contract (and therefore the acceptance suite) actually names.
+function checkBindAdapterBindings(projectDir, target) {
+  const id = "bind-adapter-bindings";
+  const file = `tests/adapters/${target}/bindings.yaml`;
+  const full = join(projectDir, file);
+  if (!existsSync(full)) return { id, ok: false, messages: [`${file} is missing`] };
+  let doc;
+  try {
+    doc = parseYaml(readText(full)) ?? {};
+  } catch (e) {
+    return { id, ok: false, messages: [`${file} is not valid YAML: ${e.message}`] };
+  }
+  const { surface, errors } = loadContract(projectDir);
+  if (errors.length) return { id, ok: false, messages: errors.map((e) => `${e.file}: ${e.message}`) };
+
+  const messages = [];
+  const isVerdict = (v) => v === "bound" || (typeof v === "string" && v.startsWith("unbound:"));
+  const pages = doc.pages && typeof doc.pages === "object" && !Array.isArray(doc.pages) ? doc.pages : {};
+  const surfaceIds = new Set(surface.pages.map((p) => p.id));
+
+  for (const page of surface.pages) {
+    const entry = pages[page.id] ?? {};
+    for (const group of ["actions", "observations"]) {
+      const named = Object.keys(page[group] ?? {});
+      const bound = entry[group] && typeof entry[group] === "object" && !Array.isArray(entry[group]) ? entry[group] : {};
+      for (const name of named) {
+        const verdict = bound[name];
+        if (verdict === undefined) messages.push(`${file}: ${page.id}.${name} is missing`);
+        else if (!isVerdict(verdict)) messages.push(`${file}: ${page.id}.${name} must be "bound" or "unbound: <reason>", got ${JSON.stringify(verdict)}`);
+      }
+      for (const name of Object.keys(bound)) {
+        if (!named.includes(name)) messages.push(`${file}: ${page.id}.${group}.${name} is not in the surface`);
+      }
+    }
+  }
+  for (const pageId of Object.keys(pages)) {
+    if (!surfaceIds.has(pageId)) messages.push(`${file}: page "${pageId}" is not in the surface`);
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+function checkBindAdapterIndex(projectDir, target) {
+  const id = "bind-adapter-index";
+  const file = `tests/adapters/${target}/index.ts`;
+  if (!existsSync(join(projectDir, file))) return { id, ok: false, messages: [`${file} is missing`] };
+  return { id, ok: true, messages: [] };
+}
+
+// `bind-adapter` may only ever change its own target's corner of the adapter tree —
+// never another target's adapter, never `tests/acceptance` (which this workspace never
+// even materialises, so touching it would mean something else went wrong entirely).
+function checkBindAdapterScope(projectDir, target) {
+  const id = "bind-adapter-scope";
+  const allowed = new RegExp(`^tests/adapters/${escapeRe(target)}/`);
+  const outside = changedPaths(projectDir).filter((p) => !allowed.test(p));
+  if (outside.length)
+    return { id, ok: false, messages: [`bind-adapter may only change tests/adapters/${target}/, but also touched: ${outside.join(", ")}`] };
+  return { id, ok: true, messages: [] };
+}
+
+// The sign-in instructions for the prompt below, one paragraph per identity this
+// pipeline knows how to reach: `session-route` mints a session by URL alone, no form to
+// fill; `sandbox-idp` needs an actual form filled with the persona's username and the
+// sandbox password every target under test shares — read from the environment, never
+// invented, and never named as its own value here (the value lives only in `env`,
+// never printed by a dry run and never worth spelling out to an agent turn that only
+// ever needs the variable's name).
+function bindAdapterSignInInstructions(identity) {
+  if (identity === "sandbox-idp") {
+    return "This target signs in through sandbox-idp: find the identity provider's own sign-in form and fill it with the persona's username (persona.signIn[\"sandbox-idp\"].username) and the password in your SDLC_SANDBOX_PASSWORD environment variable — never a password you invent or find written down anywhere.";
+  }
+  if (identity === "session-route") {
+    return "This target signs in through session-route: page.goto(baseURL + persona.signIn[\"session-route\"].route) mints the session directly — there is no form to fill.";
+  }
+  return `This target's identity ("${identity ?? "unknown"}") is not one this pipeline names a sign-in method for; sign in the way the running application actually offers, and say in your journal what you found.`;
+}
+
+// `bind-adapter` writes the one binding of the abstract `Surface` for one target,
+// walking the *running* application with a real browser (the Playwright MCP server) —
+// never reading source, because its `blind-adapter` workspace never has any application
+// source to read. It holds gate G3, the same gate `derive-tests` holds: the reviewer
+// persona rules whether the binding is navigation and locators only, covers everything
+// the contract names, and touches nothing outside its own target's corner of the tree.
+const bindAdapter = {
+  name: "bind-adapter",
+  title: "bind adapter",
+  skill: skillPath("bind-adapter"),
+  workspace: "blind-adapter",
+  gate: "G3",
+  // Only the adapter itself: `tests/generated/*`, regenerated in the workspace by
+  // `prepare` below, is derived straight from the contract already committed on
+  // `main` and needs no commit of its own here.
+  collect: ["tests/adapters"],
+  implemented: true,
+  // Turns the contract this workspace archived (`spec/contract/`) into the same
+  // `tests/generated/surface.d.ts` a real adapter file imports, so the agent's very
+  // first read of `Surface` is the type it is about to implement, not a hand-derived
+  // guess at it.
+  prepare(wsDir) {
+    writeGenerated(wsDir);
+  },
+  mcp() {
+    return { playwright: { command: "npx", args: ["-y", "@playwright/mcp@0.0.80", "--headless", "--isolated"] } };
+  },
+  // No Bash: an adapter session drives the browser and edits files, and has no
+  // business reaching a shell.
+  allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "mcp__playwright__*"],
+  env(ctx) {
+    return {
+      SDLC_TARGET_URL: ctx.bindAdapterBaseUrl ?? "",
+      SDLC_MAIL_API: ctx.bindAdapterMailApi ?? "",
+      SDLC_SANDBOX_PASSWORD: process.env.SDLC_SANDBOX_PASSWORD ?? "",
+    };
+  },
+  prompt(ctx) {
+    const t = ctx.target;
+    const identity = ctx.bindAdapterIdentity;
+    return [
+      `Write tests/adapters/${t}/index.ts, exporting default function create(page: Page, ctx: { baseURL: string; persona: typeof persona }): Surface, implementing every page tests/generated/surface.d.ts declares for this project. This target is named "${t}"; its base URL is in your SDLC_TARGET_URL environment variable and is also handed to your own adapter as "baseURL" once it runs for real. Walk the actual running application with the browser tools and bind against what you find there — never a selector copied from source, because there is no source in this workspace to copy one from.`,
+      `signIn(persona) reads persona.signIn["${identity ?? "?"}"] for the persona it is given. ${bindAdapterSignInInstructions(identity)}`,
+      `Bind every action and observation by driving the browser: open the page at its route, find the control by its role, its label, its visible text, or the URL it lands you on — never a CSS selector, a test id, or anything else that only makes sense with the source open next to you. An action or observation nothing on the page actually does throws new Error("unbound: <page>.<member> — <reason>") from that method, naming what is missing.`,
+      `Write tests/adapters/${t}/bindings.yaml naming every action and observation on every page in the surface exactly once, as "bound" or "unbound: <reason>". Spell every page, action and observation exactly as spec/contract/surface.yaml spells it — "applications-new" and "submit_proposal", not the camelCased TypeScript members ("applicationsNew", "submitProposal") your adapter implements them as:\n\ntarget: ${t}\npages:\n  <pageId>:\n    actions: { <name>: bound }\n    observations: { <name>: "unbound: <why>" }`,
+      `Your territory is tests/adapters/${t}/ alone. Never write under tests/acceptance or spec/ — this workspace does not even have them for you to touch by mistake.`,
+      `Finish with your journal entry: what was bound, what was not and why, and any page whose route in surface.yaml did not resolve on the target.`,
+    ].join("\n\n");
+  },
+  proposal(ctx) {
+    const t = ctx.target;
+    return {
+      name: ctx.bindAdapterName ?? nextBindAdapterName(ctx.projectDir, t),
+      question: `Does this adapter bind every surface action and observation on ${t}, and nothing else?`,
+      recommendation: recommendationFrom(ctx.agentText),
+    };
+  },
+  preChecks(projectDir, ctx) {
+    if (ctx.target) resolveBindAdapterTarget(projectDir, ctx);
+    return [
+      checkTargetOption("bind-adapter", ctx),
+      checkSandboxPassword("bind-adapter", ctx, "binding against"),
+      checkBindAdapterTargetUp(ctx),
+    ];
+  },
+  postChecks(projectDir, ctx) {
+    // Stashed the same way `contract` stashes its own version: the real `proposal(ctx)`
+    // call in `finishStage` does not carry `projectDir`, so the name has to be resolved
+    // here, while it is available, for `proposal` to read back.
+    ctx.bindAdapterName = nextBindAdapterName(projectDir, ctx.target);
+    return [
+      checkSeparation(projectDir),
+      checkBindAdapterBindings(projectDir, ctx.target),
+      checkBindAdapterIndex(projectDir, ctx.target),
+      checkBindAdapterScope(projectDir, ctx.target),
+    ];
+  },
+};
+
 function ratifyGateName(domain) {
   return `archaeology-${domain}`;
 }
 
 function ratifyGatePath(projectDir, domain) {
   return join(projectDir, ".sdlc", "gates", `${ratifyGateName(domain)}.yaml`);
-}
-
-function escapeRe(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // The name of the nth follow-up proposal for a domain — the closing loop's own gate,
@@ -492,37 +1208,6 @@ function readRulings(projectDir, domain) {
 function followUpRulingsRead(read, domain) {
   const re = new RegExp(`^ratify-${escapeRe(domain)}-\\d+$`);
   return read.filter((n) => re.test(n)).length;
-}
-
-// A follow-up proposal already open — its branch exists with no gate file on it yet — is
-// the one this loop is waiting on, so no second one is opened alongside it. Returns the
-// highest follow-up number seen either way, so the next one continues the sequence rather
-// than reusing a number a ruled proposal already holds.
-function followUpState(projectDir, domain) {
-  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir)
-    ? git(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir).split("\n").filter(Boolean)
-    : [];
-  const re = new RegExp(`^proposal/ratify-${escapeRe(domain)}-(\\d+)$`);
-  let highest = 0;
-  let open = null;
-  for (const branch of refs) {
-    const m = re.exec(branch);
-    if (!m) continue;
-    highest = Math.max(highest, Number(m[1]));
-    const name = branch.slice("proposal/".length);
-    const ruledOnBranch = gitOk(["cat-file", "-e", `${branch}:.sdlc/gates/${name}.yaml`], projectDir);
-    const ruledOnMain = existsSync(join(projectDir, ".sdlc", "gates", `${name}.yaml`));
-    if (!ruledOnBranch && !ruledOnMain) open = name;
-  }
-  const dir = join(projectDir, ".sdlc", "gates");
-  if (existsSync(dir)) {
-    const gre = new RegExp(`^ratify-${escapeRe(domain)}-(\\d+)\\.yaml$`);
-    for (const f of readdirSync(dir)) {
-      const m = gre.exec(f);
-      if (m) highest = Math.max(highest, Number(m[1]));
-    }
-  }
-  return { open, highest };
 }
 
 // The one ruling `archaeology --revise` reads and acts on: a `return` verdict on either
@@ -900,7 +1585,7 @@ const ratify = {
     const { answered, unparsed } = readRulings(projectDir, domain);
     if (unresolved.length === 0 && unparsed.length === 0) return null;
 
-    const { open, highest } = followUpState(projectDir, domain);
+    const { open, highest } = followUpState(projectDir, `ratify-${domain}`);
     if (open) return null;
 
     const name = followUpName(domain, highest + 1);
@@ -946,6 +1631,10 @@ STAGES_BY_NAME.probe = probe;
 STAGES_BY_NAME.intent = intent;
 STAGES_BY_NAME.archaeology = archaeology;
 STAGES_BY_NAME.ratify = ratify;
+STAGES_BY_NAME.contract = contract;
+STAGES_BY_NAME["derive-tests"] = deriveTests;
+STAGES_BY_NAME["bind-adapter"] = bindAdapter;
+STAGES_BY_NAME.calibrate = calibrate;
 
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
@@ -11,6 +11,7 @@ import { propose } from "../src/commands/propose.mjs";
 import { rule } from "../src/commands/rule.mjs";
 import { registerStage } from "../src/stages/registry.mjs";
 import { finishStage } from "../src/runner/finish-stage.mjs";
+import { loadConfig } from "../src/config/load.mjs";
 
 const PROBE_SKILL = new URL("../src/stages/skills/probe.md", import.meta.url).pathname;
 
@@ -304,9 +305,9 @@ test("runStage cleans up the temp workspace and skill dir when the agent turn th
   }
 });
 
-test("turnsFor: a budget under 1000 reads as a turn count, clamped to 200", () => {
+test("turnsFor: a budget under 1000 reads as a turn count, clamped to 400", () => {
   assert.equal(turnsFor({ policy: { budgets: { design: 12 } } }, "design"), 12);
-  assert.equal(turnsFor({ policy: { budgets: { design: 500 } } }, "design"), 200);
+  assert.equal(turnsFor({ policy: { budgets: { design: 500 } } }, "design"), 400);
 });
 
 test("turnsFor: a budget at or above 1000 is a token count, unconverted, so it falls back to 40", () => {
@@ -669,6 +670,342 @@ test("finishStage fails and names the path when a tracked file has since been ex
     assert.ok(existsSync(join(dir, "secrets", "creds.env")), "the file itself is left on disk");
     assert.equal(readFileSync(join(dir, "secrets", "creds.env"), "utf8"), "super-secret\n");
   } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("runStage: --target and --stale reach ctx, and --stale defaults to false", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-target-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "target-echo",
+    title: "target echo",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: (ctx) => `target=${ctx.target} stale=${ctx.stale}`,
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const noFlags = await runStage(dir, "target-echo", { dryRun: true });
+    assert.equal(noFlags.ok, true);
+    assert.ok(logs.some((l) => l === "target=undefined stale=false"), logs.join(" | "));
+
+    logs.length = 0;
+    const withFlags = await runStage(dir, "target-echo", { dryRun: true, target: "old", stale: true });
+    assert.equal(withFlags.ok, true);
+    assert.ok(logs.some((l) => l === "target=old stale=true"), logs.join(" | "));
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("runStage resolves stage.workspace when it is a function of config, called with the loaded config", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-wsfn-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const { config: expectedConfig } = loadConfig(join(dir, ".sdlc", "config.yaml"));
+  let received;
+  registerStage({
+    name: "ws-fn-stage",
+    title: "ws fn stage",
+    skill: PROBE_SKILL,
+    // A function of config rather than a plain string: `runStage` must resolve it once,
+    // before `materialise`, or `materialise` throws "unknown workspace mode: function".
+    workspace: (config) => { received = config; return "project"; },
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-wsfn-"));
+  writeFileSync(join(mockDir, "ws-fn-stage.json"), JSON.stringify({ text: "ran in the resolved workspace" }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "ws-fn-stage");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.deepEqual(received, expectedConfig);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("resume resolves a function stage.workspace the same way runStage does", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-wsfn-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "resume-ws-fn-stage",
+    title: "resume ws fn stage",
+    skill: PROBE_SKILL,
+    // Resolves to a temporary-workspace mode, which `resume` refuses to continue —
+    // proving the message names the resolved mode, not the function itself.
+    workspace: () => "spec-only",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  writeFileSync(join(dir, ".sdlc", "run-state.json"),
+    JSON.stringify({ stage: "resume-ws-fn-stage", ctx: {}, phase: "post-checks" }) + "\n");
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const code = await resume(dir, { again: true });
+    assert.equal(code, 1);
+    assert.ok(logs.some((l) => l === "resume cannot continue a spec-only stage; run it again"), logs.join(" | "));
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a stage's prepare hook writes into the workspace before the agent turn, and its file is collected back", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-prepare-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  let sawWsDir;
+  registerStage({
+    name: "prepare-stage",
+    title: "prepare stage",
+    skill: PROBE_SKILL,
+    workspace: "spec-only",
+    gate: null,
+    // `collect` names a directory to copy back whole (`copyTree`), the same shape every
+    // real stage's `collect` list uses (e.g. `HARNESS`'s `tests/fixtures`) — not an
+    // individual file.
+    collect: ["generated"],
+    implemented: true,
+    prepare(wsDir, ctx, config) {
+      sawWsDir = wsDir;
+      assert.notEqual(wsDir, dir, "prepare must run in the temporary workspace, not the project directory");
+      assert.ok(config, "prepare receives the loaded config");
+      mkdirSync(join(wsDir, "generated"), { recursive: true });
+      writeFileSync(join(wsDir, "generated", "pre.txt"), "written by prepare\n");
+    },
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-prepare-"));
+  writeFileSync(join(mockDir, "prepare-stage.json"), JSON.stringify({ text: "used what prepare wrote" }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "prepare-stage");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(sawWsDir, "prepare was called");
+    assert.equal(readFileSync(join(dir, "generated", "pre.txt"), "utf8"), "written by prepare\n");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("prepare is skipped on --dry-run, printed after the prompt, and never called", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-prepare-dry-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  let called = false;
+  registerStage({
+    name: "prepare-dry-stage",
+    title: "prepare dry stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prepare() { called = true; },
+    mcp: () => ({ browser: { command: "browser-mcp", args: [] } }),
+    env: () => ({ SOME_SECRET: "value-not-printed" }),
+    prompt: () => "the prompt text",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const r = await runStage(dir, "prepare-dry-stage", { dryRun: true });
+    assert.equal(r.ok, true);
+    assert.equal(called, false, "prepare must not run on a dry run");
+    const promptIdx = logs.indexOf("the prompt text");
+    assert.ok(promptIdx >= 0);
+    assert.ok(logs.slice(promptIdx + 1).some((l) => l === "prepare: skipped on dry run"), logs.join(" | "));
+    assert.ok(logs.slice(promptIdx + 1).some((l) => l === "mcp: browser"), logs.join(" | "));
+    assert.ok(logs.slice(promptIdx + 1).some((l) => l === "env: SOME_SECRET"), logs.join(" | "));
+    assert.ok(!logs.some((l) => l.includes("value-not-printed")), "a value must never be printed, only the name");
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a prepare hook that throws fails the run before any agent turn, the same way a failing pre-check does", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-prepare-throw-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "prepare-throw-stage",
+    title: "prepare throw stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prepare() { throw new Error("could not generate the file"); },
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => { throw new Error("must never be reached: prepare failed before post-checks"); },
+  });
+  // No mock canned response at all, so if the agent turn ran at all the mock executor
+  // would throw "no canned response" instead of `runStage` returning the ordinary
+  // `{ ok: false, messages: [...] }` shape this test asserts below — proving the agent
+  // turn is never invoked when prepare throws.
+  const emptyMockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-prepare-throw-"));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = emptyMockDir;
+  try {
+    const r = await runStage(dir, "prepare-throw-stage");
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, ["could not generate the file"]);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(prepare-throw-stage\): prepare failed/);
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
+    assert.match(runs, /run prepare-throw-stage: prepare failed/);
+    assert.ok(!existsSync(join(dir, ".sdlc/journal")), "no journal entry: there is no agent turn to account for");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("resume carries target and stale through unchanged", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-target-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  let seenCtx;
+  registerStage({
+    name: "resume-target-stage",
+    title: "resume target stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: (projectDir, ctx) => { seenCtx = ctx; return []; },
+  });
+  writeFileSync(join(dir, ".sdlc", "run-state.json"),
+    JSON.stringify({ stage: "resume-target-stage", ctx: { target: "old", stale: true }, phase: "post-checks" }) + "\n");
+  try {
+    const code = await resume(dir, { again: true });
+    assert.equal(code, 0);
+    assert.equal(seenCtx.target, "old");
+    assert.equal(seenCtx.stale, true);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("runStage writes the MCP servers a stage declares to mcp.json in the skill scratch dir and passes it through to the agent turn", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-mcp-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const root = mkdtempSync(join(tmpdir(), "sdlc-mcp-fake-claude-"));
+  const captureFile = join(root, "capture.json");
+  const outFile = join(root, "out.json");
+  writeFileSync(outFile, JSON.stringify({ is_error: false, result: "used the browser mcp", num_turns: 1, session_id: "s1" }));
+  const bin = join(root, "fake-claude");
+  writeFileSync(bin, [
+    "#!/usr/bin/env node",
+    'import { readFileSync, writeFileSync } from "node:fs";',
+    "const args = process.argv.slice(2);",
+    'const mi = args.indexOf("--mcp-config");',
+    'const mcpConfig = mi === -1 ? null : readFileSync(args[mi + 1], "utf8");',
+    'const ai = args.indexOf("--allowedTools");',
+    'const allowedTools = ai === -1 ? [] : [args[ai + 1], args[ai + 2]];',
+    'writeFileSync(process.env.CAPTURE_FILE, JSON.stringify({ mcpConfig, allowedTools, extraEnv: process.env.EXTRA_ENV_FOR_STAGE ?? null }));',
+    'process.stdout.write(readFileSync(process.env.FAKE_OUT, "utf8"));',
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  registerStage({
+    name: "mcp-stage",
+    title: "mcp stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    allowedTools: ["Read", "Grep"],
+    mcp: () => ({ browser: { command: "browser-mcp", args: [] } }),
+    env: () => ({ EXTRA_ENV_FOR_STAGE: "carried-through" }),
+    prompt: () => "use the browser",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  process.env.SDLC_CLAUDE_BIN = bin;
+  process.env.SDLC_CLAUDE_HOME = join(root, "claude-home");
+  process.env.SDLC_CREDENTIALS = join(root, "no-such-credentials.json");
+  process.env.FAKE_OUT = outFile;
+  process.env.CAPTURE_FILE = captureFile;
+  try {
+    const r = await runStage(dir, "mcp-stage");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    const captured = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.deepEqual(JSON.parse(captured.mcpConfig), { mcpServers: { browser: { command: "browser-mcp", args: [] } } });
+    assert.deepEqual(captured.allowedTools, ["Read", "Grep"]);
+    assert.equal(captured.extraEnv, "carried-through");
+  } finally {
+    for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "CAPTURE_FILE"]) delete process.env[k];
+    restoreEgress(prevEgress);
+  }
+});
+
+test("runStage prints a passing pre-check's warnings before anything is spent", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-prewarn-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "precheck-warn",
+    title: "precheck warn",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [{ id: "roomy", ok: true, messages: [], warnings: ["the ceiling looks low for this much work"] }],
+    postChecks: () => [],
+  });
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
+  try {
+    // A dry run stops before any session starts, which is exactly where the warning has
+    // to have been printed for it to be worth anything.
+    const r = await runStage(dir, "precheck-warn", { dryRun: true });
+    assert.equal(r.dryRun, true);
+    assert.ok(warnings.some((w) => w === "warning: the ceiling looks low for this much work"), warnings.join(" | "));
+  } finally {
+    console.warn = origWarn;
     restoreEgress(prevEgress);
   }
 });

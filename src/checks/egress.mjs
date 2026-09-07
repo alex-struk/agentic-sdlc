@@ -16,7 +16,7 @@ const PATTERNS = [
   [new RegExp("\\." + "vtt\\b"), "transcript file reference (rule E-2)"],
   [new RegExp("(/" + "home/|/" + "Users/|[A-Za-z]:\\\\" + "Users\\\\)[A-Za-z0-9._-]+"), "local home path (rule E-2)"],
 ];
-const TEXT_EXT = /\.(md|mjs|js|ts|tsx|json|ya?ml|txt|sh|feature|svg|py|html|css)$/i;
+const TEXT_EXT = /\.(md|mjs|js|ts|tsx|json|ya?ml|txt|sh|sql|feature|svg|py|html|css)$/i;
 
 // Patterns that apply only when this repository checks itself, each with the paths it
 // does not apply to. The pipeline is generic and its documentation, code, tests and
@@ -29,9 +29,9 @@ const SELF_PATTERNS = [
     ["docs/specs/", "docs/poster/"]],
 ];
 
-// In self mode every tracked text file is scanned. An allow list of directories is the
-// wrong shape for a leak check: a file added to a directory nobody remembered to list
-// is silently unscanned. These are the only exclusions, and each is either not ours
+// In self mode every text file the scan lists is read. An allow list of directories is
+// the wrong shape for a leak check: a file added to a directory nobody remembered to
+// list is silently unscanned. These are the only exclusions, and each is either not ours
 // (dependencies) or a working note that never ships.
 const SELF_EXCLUDE = ["node_modules/", "package-lock.json", ".superpowers/", "docs/superpowers/"];
 
@@ -50,11 +50,27 @@ function nameList(projectDir) {
   return [];
 }
 
+// Every text file the check reads: what git tracks, plus what it does not track and does
+// not ignore. The untracked half is the point — a stage's own output is uncommitted at
+// the moment its post-checks run, so a leak in a seed file the `contract` stage just
+// wrote would be invisible to a tracked-only scan and reach the commit unexamined.
+// Ignored files stay out (that is what `--exclude-standard` means), so `node_modules`,
+// `sources/` and the acceptance harness's own results never enter the list.
+function scannedFiles(projectDir) {
+  const lines = [
+    ...git(["ls-files"], projectDir).split("\n"),
+    ...git(["ls-files", "--others", "--exclude-standard"], projectDir).split("\n"),
+  ];
+  const seen = new Set();
+  return lines.filter((f) => f && TEXT_EXT.test(f) && !f.startsWith(".sdlc/packs/")
+    && !seen.has(f) && seen.add(f));
+}
+
 export function checkEgress(projectDir, ctx = {}) {
   const id = "egress";
   const names = nameList(projectDir);
   const warnings = names.length ? [] : [`no egress name list found; add colleagues' names, one per line, to ${defaultNamesPath()}`];
-  const files = git(["ls-files"], projectDir).split("\n").filter((f) => f && TEXT_EXT.test(f) && !f.startsWith(".sdlc/packs/"));
+  const files = scannedFiles(projectDir);
   const scoped = ctx.self ? files.filter((f) => !SELF_EXCLUDE.some((x) => f === x || f.startsWith(x))) : files;
   const messages = [];
   for (const f of scoped) {

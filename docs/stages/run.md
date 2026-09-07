@@ -9,17 +9,23 @@ proposal, depending on whether the stage holds a gate.
 
 ## Inputs
 
-`sdlc run <stage> [--slice N] [--domain X] [--dry-run] [--again] [--revise]`, run from inside the
-project's working tree, on `main`.
+`sdlc run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--dry-run] [--again]
+[--revise]`, run from inside the project's working tree, on `main`.
 
-`<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Four are implemented:
+`<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Implemented today:
 `probe` (which proves the runner itself and is not one of the pipeline's own stages), `intent`,
-`archaeology` and `ratify`. Every other pipeline stage (`design`, `build`, …) is a named stub that
-throws `stage <name> is not implemented yet` before touching the working tree.
+`archaeology`, `ratify`, `contract`, `derive-tests`, `bind-adapter` and `calibrate`. Every other
+pipeline stage (`design`, `build`, …) is a named stub that throws `stage <name> is not implemented
+yet` before touching the working tree.
 
-`--slice` and `--domain` are threaded into the stage's context as `ctx.slice` and `ctx.domain`.
-`archaeology` and `ratify` both require `--domain <d>`, and `<d>` must be one of
-`config.project.domains`; `probe` and `intent` ignore both flags.
+`--slice`, `--domain`, `--target` and `--stale` are threaded into the stage's context as
+`ctx.slice`, `ctx.domain`, `ctx.target` and `ctx.stale`. `archaeology`, `ratify` and `derive-tests`
+all require `--domain <d>`, and `<d>` must be one of `config.project.domains`; `probe` and `intent`
+ignore all four. `--target` names the running application a stage acts against and reaches
+`ctx.target` as that string, or `undefined` when omitted: `bind-adapter` requires it, and
+`calibrate` defaults it to `config.oracle.target` when it is left out. `--stale` is a boolean flag
+and reaches `ctx.stale` as `true`, defaulting to `false`; `derive-tests` reads it as "write only the
+tests whose criteria have moved on since".
 
 `--revise` is threaded the same way, as `ctx.revise`, and carried through `.sdlc/run-state.json`
 for `resume` the same way `slice` and `domain` are. Only `archaeology` reads it — `sdlc run
@@ -31,10 +37,14 @@ stage ignores it.
 effect on a real run — `archaeology`'s `checkRevisionSource` is the one that has one today — can
 tell a dry run apart and skip it.
 
-`--dry-run` writes nothing at all. For an agent stage it prints the prompt the stage would send
-and the path of the scratch file holding its skill text; for a stage with no agent turn it prints
-one line saying so. `--again` is accepted for symmetry with `sdlc resume --again` and does nothing
-here — `resume` is the only place a re-run decision is made.
+`--dry-run` writes nothing at all. For an agent stage it prints the prompt the stage would send,
+the path of the scratch file holding its skill text, the resolved workspace mode, `prepare:
+skipped on dry run` when the stage has a `prepare` hook, `mcp: <server names>` when the stage's
+`mcp` returns servers, and `env: <variable names>` when its `env` returns any — names only, never
+values, since a dry run's output is meant to be shared freely and `env` exists precisely to carry
+things like API keys into the session. For a stage with no agent turn it prints one line saying
+so. `--again` is accepted for symmetry with `sdlc resume --again` and does nothing here — `resume`
+is the only place a re-run decision is made.
 
 ## Outputs
 
@@ -46,13 +56,14 @@ here — `resume` is the only place a re-run decision is made.
   turn's cost, turn count and session id.
 - An appended `.sdlc/runs/<date>.md` line: `run <stage>: ok, cost <usd>, turns <n>` on success, or
   one of the failure lines under "Failure modes".
-- **If the stage has no gate** (`probe`, `ratify`): everything the agent (or, for `ratify`,
-  `execute`) changed, plus the journal, the run record and the regenerated state site
+- **If the stage has no gate** (`probe`, `ratify`, `calibrate`): everything the agent (or, for a
+  stage with no agent turn, `execute`) changed, plus the journal, the run record and the regenerated state site
   (`docs/stages/status.md`), staged by name and committed on `main` as `stage(<stage>): <title>`.
-- **If the stage holds a gate** (`intent` at G0, `archaeology` at G1): the same files minus the
-  site, handed to `sdlc propose` as the paths a proposal is allowed to find already dirty, so they
-  land in the proposal's own commit on a new `proposal/<name>` branch instead of on `main`
-  (`docs/stages/propose.md`). The run leaves the working tree checked out on that branch.
+- **If the stage holds a gate** (`intent` at G0, `archaeology` and `contract` at G1, `derive-tests`
+  and `bind-adapter` at G3): the same files minus the site, handed to `sdlc propose` as the paths a
+  proposal is allowed to find already dirty, so they land in the proposal's own commit on a new
+  `proposal/<name>` branch instead of on `main` (`docs/stages/propose.md`). The run leaves the
+  working tree checked out on that branch.
 
   **A gated stage builds no state site.** Every page of the site is regenerated whole from the
   whole project, so a copy carried on a proposal branch would differ from every other open
@@ -61,28 +72,43 @@ here — `resume` is the only place a re-run decision is made.
 
 ## Workspace the agent sees
 
+A stage names its workspace mode as `stage.workspace`, either a plain string or a function of
+`config`, `(config) => mode`. `runStage` resolves it exactly once, right after `config` loads and
+before `materialise` is called, so a function is never evaluated twice and never leaks into
+`materialise` itself (which only knows the four mode strings below). Every later use of the mode —
+the run-state a crashed session leaves for `sdlc resume` to read, the dry run's `workspace: <mode>`
+line — reads this same resolved value. `resume` resolves it the same way, against the config it
+loads itself, so a resumed run and a fresh one always agree on which mode a stage used.
+
 `src/runner/workspace.mjs` materialises one of four modes, named by the stage:
 
 - **`project`** — the agent runs directly in the project's own working tree (`ws.dir ===
-  projectDir`); nothing is copied and nothing is collected back. `probe`, `intent` and `ratify`
-  use this.
+  projectDir`); nothing is copied and nothing is collected back. `probe`, `intent`, `ratify` and
+  `calibrate` always use this; `contract` uses it too, when the project configures no
+  `sources.old`.
 - **`with-sources`** — the project's own working tree again, with one addition made before the
   session starts: the old application is checked out read-only at `sources/old` (`ensureSources`,
-  `src/runner/sources.mjs`) from the `sources.old` repo and commit in `.sdlc/config.yaml`. This is
-  what `archaeology` uses, and it is why `sources.old` is one of its pre-checks.
+  `src/runner/sources.mjs`) from the `sources.old` repo and commit in `.sdlc/config.yaml`.
+  `archaeology` always uses this, and it is why `sources.old` is one of its pre-checks;
+  `contract` uses it too, when the project configures `sources.old` (`registry.mjs`'s `workspace:
+  (config) => config?.sources?.old ? "with-sources" : "project"`).
 - **`spec-only`** — a fresh temporary directory populated by `git archive HEAD` over `spec/`,
-  `tests/seed/`, `constitution.md` and `.sdlc/config.yaml` (only the paths that exist), plus an
-  empty `tests/acceptance/` directory. The archive reads committed content only, so an uncommitted
-  edit in the project neither leaks into the workspace nor is visible there.
+  `tests/seed/`, `constitution.md`, the harness (`tests/package.json`, `tests/tsconfig.json`,
+  `tests/playwright.config.ts`, `tests/README.md`, `tests/fixtures/`, `tests/generated/`) and
+  `tests/acceptance/` (only the paths that exist), plus `tests/acceptance/`, created empty when
+  nothing is committed there. `.sdlc/config.yaml` is not among them: it names the old
+  application's repository and commit, and nothing on this path reads it from the workspace. The
+  archive reads committed content only, so an uncommitted edit in the project neither leaks into
+  the workspace nor is visible there.
 - **`blind-adapter`** — the same archive mechanism over `spec/contract`, `tests/adapters`,
-  `tests/seed` and `constitution.md`.
+  `tests/seed`, `constitution.md` and the same harness.
 
 Materialising either temporary mode throws `blindness violated: app/ present in <mode> workspace`
 if `app/` somehow ended up in the workspace — the check that a blind stage never sees the
 application it is meant to be blind to. For those two modes, whatever the stage's `collect` list
 names is copied back into the project directory after the session ends, and the temporary
 directory is removed either way (`ws.cleanup()`, in a `finally`, whether the stage succeeded or
-threw). No implemented stage uses them yet.
+threw). `derive-tests` uses `spec-only`; `bind-adapter` uses `blind-adapter`.
 
 Inside the workspace, the agent session is isolated from the operator's own Claude Code
 configuration — see `docs/decisions/0004-isolated-stage-sessions.md` for what that means and why.
@@ -90,13 +116,52 @@ The project's own `.claude/settings.json` deny list and the `implement-guard` `P
 (`docs/stages/init.md`) still apply, scoped by the `SDLC_STAGE` environment variable the executor
 sets.
 
+## The `prepare` hook
+
+A stage may declare `stage.prepare(wsDir, ctx, config)`, run after `materialise` and before the
+agent turn, in the workspace directory (`wsDir` — the project directory itself for `project` and
+`with-sources` modes, a temporary directory for `spec-only` and `blind-adapter`). It exists for a
+stage that needs something generated and already sitting in the workspace before the agent can
+start — `derive-tests` and `bind-adapter` both do. Whatever it writes is collected back into the
+project exactly the way the agent's own output is: through the stage's `collect` list, for the two
+temporary modes, or because it is already in the project directory, for `project`/`with-sources`.
+
+`prepare` never runs on a dry run — a dry run writes nothing at all — and the dry run's only
+account of it is the line `prepare: skipped on dry run`, printed after the prompt, for a stage
+that has one.
+
+If `prepare` throws, the run fails immediately, the same way a failing pre-check does: a run-record
+line (`run <stage>: prepare failed`) and a commit (`run(<stage>): prepare failed`) with just that
+line staged, and `{ ok: false, messages: [<the error's message>] }` returned. There is no agent
+turn to have run and so no journal entry — a journal entry is the account of a turn, and none
+happened.
+
+## MCP servers, tools and environment
+
+A stage may declare `stage.mcp(ctx, config)`, returning an object of MCP servers (the value that
+would sit under an `mcpServers` key) or `null`. When it returns non-null, `runStage` writes `{
+"mcpServers": <that object> }` to `mcp.json` in the same scratch directory the run's skill file
+lives in (removed afterward in the existing `finally`, along with the skill file itself), and the
+agent turn runs with `--mcp-config <that path>` — placed right after `--strict-mcp-config`, which
+is always passed, so this file is the only source of MCP servers the session can reach. A stage
+that declares no `mcp` passes no `--mcp-config` at all. `bind-adapter`, which drives a browser
+against the running application, is the first stage to use this. The mock executor
+(`SDLC_EXECUTOR=mock`) ignores `mcp` entirely — it never spawns a real session to pass it to.
+
+A stage may also declare `stage.allowedTools` (an array) and `stage.env(ctx, config)` (an object of
+environment variables), both passed straight through to the agent turn. `allowedTools` narrows
+`--allowedTools` the same way any caller of `runAgent` can; `env` is merged into the child
+process's environment alongside `CLAUDE_CONFIG_DIR` and `SDLC_STAGE`. Neither is printed by a dry
+run except by name — `env`'s keys, via the `env: <names>` line described above, and never a value.
+
 ## Stages with no agent turn
 
-A stage may declare `agent: false`, which today only `ratify` does. There is no workspace and no
+A stage may declare `agent: false`, which `ratify` and `calibrate` do. There is no workspace and no
 session: `stage.execute(projectDir, ctx)` runs in process, in the project's own working tree, and
 its return (`{ text, changed }`) stands in for an agent result, with `cost: 0`, `turns: 0` and
 `sessionId: "deterministic"` synthesised around it. Nothing is spawned, so `.sdlc/run-state.json`
-is never written on this path.
+is never written on this path. The call is awaited, so `execute` may be asynchronous — `calibrate`'s
+is, since it has to start the oracle and run a suite before it has anything to report.
 
 `execute` reporting `changed: []` means it found its own work already done. That is not an error
 and not a journal entry — a journal entry is the account of a turn, and no turn happened — so the
@@ -106,8 +171,10 @@ and no journal entry. When regenerating changed nothing either, nothing is commi
 
 A stage may also declare a `followUp`, run after its commit has landed on `main` and only on
 success. `ratify`'s opens the G1 proposal that closes out criteria it could not mint
-(`docs/stages/ratify.md`, "The closing loop"); a run that opens one returns it as `proposal` and
-leaves the checkout on that branch, exactly as a gated stage does.
+(`docs/stages/ratify.md`, "The closing loop"); `calibrate`'s opens the G1 proposal that asks what
+each failing criterion's failure means (`docs/stages/calibrate.md`, "The ruling loop"). A run that
+opens one returns it as `proposal` and leaves the checkout on that branch, exactly as a gated stage
+does.
 
 ## Checks that block
 
@@ -126,8 +193,14 @@ In the order they are reached:
 4. **`.sdlc/config.yaml` must load and validate.**
 5. **The stage's own `preChecks(projectDir, ctx)` must all pass**, before a workspace is
    materialised or a session started. `probe` declares none; `intent` requires `intent/brief.md`;
-   `archaeology` requires `--domain` and `sources.old`; `ratify` requires `--domain`, an approved
-   and merged `archaeology-<d>` ruling, and a `spec/domains/<d>.md` that exists and parses.
+   `archaeology` requires `--domain` and `sources.old`, and — on a `--revise` run —
+   `archaeology-revise-source` (`registry.mjs` ~407), which finds the returned ruling to revise
+   from; `ratify` requires `--domain`, an approved and merged `archaeology-<d>` ruling, a
+   `spec/domains/<d>.md` that exists and parses, and `gate-conditions-parse` (~1517), which fails
+   if any ruling it would read carries `unparsed_conditions`; `derive-tests` requires a domain with
+   accepted criteria; `bind-adapter` requires a target that is configured and answering;
+   `calibrate` requires a target that is either the configured oracle or a `config.targets` entry
+   with a `base_url`.
 6. **For a gated stage, the proposal this run would open must not already be open.**
    `checkProposalNotOpen` (`src/runner/finish-stage.mjs`) calls `stage.proposal({ ...ctx,
    projectDir, agentText: "" })` to learn the name a real run would use. If a `proposal/<name>`
@@ -166,7 +239,10 @@ out byte-identical to what is already on `main`, only the new journal entry, run
 regeneration end up dirty and committed.
 
 **`ratify`** is the exception, because it has a cheap and exact way to tell whether anything
-changed — see "Stages with no agent turn" above and `docs/stages/ratify.md`.
+changed — see "Stages with no agent turn" above and `docs/stages/ratify.md`. **`calibrate`** is
+deterministic too but never a no-op: every run writes a fresh result set, because that file is
+evidence of what the target did on the day it ran rather than a derived artifact that should be
+stable (`docs/stages/calibrate.md`).
 
 **A failing pre-check** is safe to hit repeatedly: its own failure is committed to the run record
 before `run` returns, so the working tree is clean again for the next attempt.
@@ -201,6 +277,10 @@ the second, post-run check exists to catch.
   proposal still open` to the run record and returns `{ ok: false, messages: ["proposal <name> is
   still open; rule it (or delete the branch) before running <stage> again"] }`, without
   materialising a workspace or starting a session.
+- **A stage's `prepare` hook throws**: the workspace has already been materialised, but no agent
+  turn has run. `run` commits `run(<stage>): prepare failed` to the run record with just that line
+  staged and returns `{ ok: false, messages: [<the error's message>] }` — the same shape a failing
+  pre-check returns, and for the same reason: there is nothing agent-shaped to journal.
 - **The same collision, discoverable only after the agent has run** — the pre-flight had only
   `intent`'s brief-derived guess, and the agent titled its document differently: `finishStage`
   commits `stage(<stage>): post-checks failed` with a journal entry (the agent's own text plus the

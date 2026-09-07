@@ -36,9 +36,9 @@ test("probe post-check fails when app/PROBE.md is missing the sentence", () => {
   assert.ok(results.some((r) => !r.ok));
 });
 
-test("every stage name from profiles.mjs other than probe, intent, archaeology and ratify is an unimplemented stub", () => {
+test("every stage name from profiles.mjs other than the implemented ones is an unimplemented stub", () => {
   for (const name of STAGES) {
-    if (name === "intent" || name === "archaeology" || name === "ratify") continue;
+    if (["intent", "archaeology", "ratify", "contract", "derive-tests", "bind-adapter", "calibrate"].includes(name)) continue;
     const stage = stageFor(name);
     assert.equal(stage.implemented, false, name);
     assert.equal(stage.workspace, "project", name);
@@ -71,6 +71,39 @@ test("archaeology pre-checks fail without --domain, and with a domain not in con
   assert.ok(wrong.some((r) => !r.ok && /not in project\.domains/.test(r.messages.join(" "))));
   const noSources = stage.preChecks(".", { domain: "applications", config: { project: { domains: ["applications"] } } });
   assert.ok(noSources.some((r) => !r.ok && /sources\.old/.test(r.messages.join(" "))));
+});
+
+test("derive-tests holds gate G3, is implemented, workspace spec-only, and its pre-checks fail without --domain", () => {
+  const stage = stageFor("derive-tests");
+  assert.equal(stage.implemented, true);
+  assert.equal(stage.gate, "G3");
+  assert.equal(stage.workspace, "spec-only");
+  assert.deepEqual(stage.collect, ["tests/acceptance", "tests/generated"]);
+  assert.equal(typeof stage.prepare, "function");
+  const missing = stage.preChecks(".", { domain: undefined, config: { project: { domains: ["applications"] } } });
+  assert.ok(missing.some((r) => !r.ok && /--domain/.test(r.messages.join(" "))));
+});
+
+test("derive-tests runs with the file tools and no shell", () => {
+  const stage = stageFor("derive-tests");
+  // A blind session reads the generated contract and writes spec files. Bash is the one
+  // tool that could reach past the workspace to the application it must not see, and no
+  // MCP server is declared at all.
+  assert.deepEqual(stage.allowedTools, ["Read", "Write", "Edit", "Glob", "Grep"]);
+  assert.equal(stage.mcp, undefined);
+});
+
+test("bind-adapter holds gate G3, is implemented, workspace blind-adapter, and its pre-checks fail without --target", () => {
+  const stage = stageFor("bind-adapter");
+  assert.equal(stage.implemented, true);
+  assert.equal(stage.gate, "G3");
+  assert.equal(stage.workspace, "blind-adapter");
+  assert.deepEqual(stage.collect, ["tests/adapters"]);
+  assert.equal(typeof stage.prepare, "function");
+  assert.deepEqual(stage.allowedTools, ["Read", "Write", "Edit", "Glob", "Grep", "mcp__playwright__*"]);
+  assert.deepEqual(Object.keys(stage.mcp()), ["playwright"]);
+  const missing = stage.preChecks(".", { target: undefined, config: {} });
+  assert.ok(missing.some((r) => !r.ok && /--target/.test(r.messages.join(" "))));
 });
 
 test("ratify holds no gate, is implemented, runs no agent, and its pre-checks fail without --domain", () => {
@@ -147,4 +180,48 @@ test("recommendationFrom keeps the only sentence there is, however unhelpful", (
 test("recommendationFrom does not mistake a word starting with 'ive' for the bookkeeping opener", () => {
   assert.equal(recommendationFrom("Ivermectin dosing is recorded per patient. And more."),
     "Ivermectin dosing is recorded per patient.");
+});
+
+// A project whose criteria index holds `n` accepted criteria in one domain, which is
+// everything `derive-tests`' pre-checks read to work out how much writing this run is.
+function projectWithAcceptedCriteria(n) {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-derive-budget-"));
+  mkdirSync(join(d, "spec"), { recursive: true });
+  const criteria = [];
+  for (let i = 1; i <= n; i++) {
+    criteria.push({ id: `R-1.${i}`, version: 1, state: "accepted", domain: "applications", statement: `criterion ${i}`, file: "spec/domains/applications.md" });
+  }
+  writeFileSync(join(d, "spec", "criteria-index.json"), JSON.stringify({ generated_from: "abc1234", criteria }, null, 2) + "\n");
+  return d;
+}
+
+function budgetWarnings(dir, config) {
+  const ctx = { domain: "applications", config };
+  return stageFor("derive-tests").preChecks(dir, ctx)
+    .filter((r) => r.id === "derive-tests-budget")
+    .flatMap((r) => r.warnings ?? []);
+}
+
+test("derive-tests warns when the turn ceiling leaves fewer than two turns per criterion", () => {
+  const d = projectWithAcceptedCriteria(30);
+  // Ten turns for thirty criteria: the session will stop partway through the domain, and
+  // the failure that surfaces without this warning is a coverage failure that reads as
+  // bad work rather than as a ceiling set too low.
+  assert.deepEqual(budgetWarnings(d, { policy: { budgets: { "derive-tests": 10 } } }),
+    ["derive-tests: 30 criteria to derive with a ceiling of 10 turns; set policy.budgets.derive-tests"]);
+  // The check itself passes either way: the ceiling is the project's to set, and a
+  // session that finishes early under a tight one is a perfectly good run.
+  const config = { project: { name: "p", domains: ["applications"] }, policy: { budgets: { "derive-tests": 10 } } };
+  const results = stageFor("derive-tests").preChecks(d, { domain: "applications", config });
+  assert.ok(results.every((r) => r.ok), JSON.stringify(results));
+});
+
+test("derive-tests says nothing about the budget when the ceiling is two turns a criterion or more", () => {
+  const d = projectWithAcceptedCriteria(30);
+  assert.deepEqual(budgetWarnings(d, { policy: { budgets: { "derive-tests": 60 } } }), []);
+  // With no budget configured at all the stage runs at the default of 40 turns, which is
+  // enough for twenty criteria and not for thirty.
+  assert.deepEqual(budgetWarnings(d, {}),
+    ["derive-tests: 30 criteria to derive with a ceiling of 40 turns; set policy.budgets.derive-tests"]);
+  assert.deepEqual(budgetWarnings(projectWithAcceptedCriteria(20), {}), []);
 });

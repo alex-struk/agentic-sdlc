@@ -157,7 +157,8 @@ build against them — and nothing used to ask about them again: they sat in the
 indefinitely and closing them out depended on somebody noticing.
 
 So once the ratify commit has landed on `main`, `ratify` opens a G1 proposal named
-`ratify-<d>-<n>` (`n` = 1, 2, …, continuing past any follow-up already ruled) whenever the domain
+`ratify-<d>-<n>` (`n` = 1, 2, …, continuing past any follow-up already ruled, including one that
+was returned and recorded on `main` by `archaeology --revise`) whenever the domain
 still holds a criterion that is `inferred` or `open` and not `obsolete`. Its page lists exactly
 those criteria — id, version, confidence, origin, statement, reconciliation, given/when/then,
 citations and notes — restates the ratification grammar the answer has to be written in, and marks
@@ -167,10 +168,15 @@ it is. The persona rules it like any other G1 proposal, and the next `sdlc run r
 reads its conditions alongside the archaeology ruling's. Each pass therefore either resolves
 criteria or asks about fewer of them.
 
-A returned follow-up decides nothing — its conditions, if any, are never read, and the loop does
-not continue past it on its own. Its rationale says which criterion's evidence was wrong; run
-`sdlc run archaeology --domain <d> --revise` to act on it (`docs/stages/archaeology.md`, "Revising
-after a return").
+A returned follow-up decides nothing — its conditions, if any, are never read — but it does not
+hold the loop open: `followUpState` (`src/stages/shared.mjs`) only treats an *unruled* branch as
+open, and a return is a decision as far as it is concerned, so the next `sdlc run ratify --domain
+<d>` opens another follow-up under the next number, asking about the same still-`inferred`/`open`
+criteria again rather than waiting. Only an *escalated* follow-up stops a new one being opened,
+since escalation answers nothing and leaves its branch looking unruled. A return's rationale says
+which criterion's evidence was wrong; run `sdlc run archaeology --domain <d> --revise` to act on
+it (`docs/stages/archaeology.md`, "Revising after a return") instead of letting the loop keep
+asking the same question under a new number every pass.
 
 At most one follow-up is open at a time: while `ratify-<d>-<n>` is unruled it is the thing the loop
 is waiting on, and a second would ask the same question twice. A criterion marked `obsolete` is a

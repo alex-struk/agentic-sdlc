@@ -58,7 +58,7 @@ function followUp(projectDir, stage, ctx, result) {
   return { ...result, proposal: opened };
 }
 
-export async function runStage(projectDir, name, { slice, domain, dryRun = false, again = false, revise = false } = {}) {
+export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false } = {}) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
   assertOnMain(projectDir, "run");
@@ -67,12 +67,22 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
 
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
-  // On `ctx` (rather than passed as a separate argument) so a stage's own pre-checks —
-  // `archaeology`'s `checkRevisionSource` in particular — can tell a dry run from a real
-  // one without `runStage` having to special-case any one stage's side effects itself.
-  const ctx = { slice, domain, config, revise, dryRun };
+  // `revise` and `dryRun` ride on `ctx` (rather than being passed as separate arguments)
+  // so a stage's own pre-checks — `archaeology`'s `checkRevisionSource` in particular —
+  // can tell a dry run from a real one without `runStage` having to special-case any one
+  // stage's side effects itself.
+  const ctx = { slice, domain, target, stale, config, revise, dryRun };
+  // `stage.workspace` may be a plain string or a function of `config` — resolved once,
+  // here, so every later use (`materialise`, the run-state a crashed session leaves for
+  // `resume` to read, the dry-run print below) sees the same resolved mode rather than
+  // each re-deriving it from a possibly-impure function.
+  const wsMode = typeof stage.workspace === "function" ? stage.workspace(config) : stage.workspace;
 
   const pre = stage.preChecks(projectDir, ctx);
+  // A pre-check can pass and still have something to say — a turn ceiling that looks too
+  // low for the work in front of it, say. Printed before anything is spent, so the person
+  // running the stage sees it while there is still time to change the setting.
+  for (const r of pre) for (const w of r.warnings ?? []) console.warn(`warning: ${w}`);
   const preFail = pre.filter((r) => !r.ok);
   if (preFail.length) {
     // The pre-check failure itself has to land in the run record on disk, same as any
@@ -91,8 +101,8 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
   const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
   if (openProposal) return commitProposalStillOpen(projectDir, name, openProposal);
 
-  // `agent: false` (only `ratify` today) means there is no agent turn at all: the stage's
-  // work is mechanical and deterministic, so `stage.execute(projectDir, ctx)` runs in
+  // `agent: false` (`ratify` and `calibrate`) means there is no agent turn at all: the
+  // stage's work is mechanical and deterministic, so `stage.execute(projectDir, ctx)` runs in
   // process, in the project's own working tree, in place of materialising a workspace and
   // spawning `runAgent`. Nothing is spawned, so there is no crash mid-turn for `sdlc
   // resume` to pick up and `.sdlc/run-state.json` is never written for this path.
@@ -109,7 +119,10 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
       console.log(`stage ${name}: agent: false — runs stage.execute(projectDir, ctx) directly, no agent session`);
       return { ok: true, dryRun: true };
     }
-    const { text, changed } = stage.execute(projectDir, ctx);
+    // Awaited: `execute` is synchronous for `ratify` and returns a promise for
+    // `calibrate`, which has to start the oracle and run a suite before it has anything
+    // to report. Awaiting a plain object is the same object back.
+    const { text, changed } = await stage.execute(projectDir, ctx);
     // `text` is carried on the no-op return too — there is no journal entry for this
     // path, so this is the only place `execute`'s account of "already ratified" reaches
     // anyone; `COMMANDS.run` prints it below.
@@ -119,7 +132,7 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
     return finished.ok ? followUp(projectDir, stage, ctx, finished) : finished;
   }
 
-  const ws = materialise(projectDir, stage.workspace);
+  const ws = materialise(projectDir, wsMode);
   try {
     const skillDir = mkdtempSync(join(tmpdir(), `sdlc-skill-${name}-`));
     try {
@@ -129,18 +142,61 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
       writeText(skillPath, skillText(name));
 
       const prompt = stage.prompt(ctx);
+      const mcpServers = stage.mcp?.(ctx, config);
+      const envVars = stage.env?.(ctx, config);
       if (dryRun) {
         console.log(prompt);
         console.log(`skill: ${skillPath}`);
+        console.log(`workspace: ${wsMode}`);
+        // `prepare` writes real files, so it does not run on a dry run at all — this is
+        // the only account of it a dry run gives, and only for a stage that has one.
+        if (stage.prepare) console.log("prepare: skipped on dry run");
+        if (mcpServers) console.log(`mcp: ${Object.keys(mcpServers).join(", ")}`);
+        // Names only, never values: a dry run is printed to a terminal (or captured in a
+        // log) and `env` exists precisely to carry things like API keys into the session.
+        if (envVars && Object.keys(envVars).length) console.log(`env: ${Object.keys(envVars).join(", ")}`);
         return { ok: true, dryRun: true };
+      }
+
+      // `stage.prepare` writes generated files into the workspace before the agent turn
+      // sees it — the derive-tests and bind-adapter stages this runner now serves both
+      // need something already sitting in the workspace for the agent to work from. It
+      // runs after the dry-run return above (a dry run must write nothing) and before
+      // `.sdlc/run-state.json` exists, so a failure here is reported exactly like a
+      // failing pre-check: there is no agent turn to resume, so nothing agent-shaped
+      // should be recorded.
+      if (stage.prepare) {
+        try {
+          stage.prepare(ws.dir, ctx, config);
+        } catch (e) {
+          const runPath = appendRun(projectDir, `run ${name}: prepare failed`);
+          stageAll(projectDir, [relative(projectDir, runPath)]);
+          git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): prepare failed`], projectDir);
+          return { ok: false, messages: [e.message] };
+        }
+      }
+
+      // `stage.mcp` names MCP servers the agent turn is allowed to reach — written to its
+      // own scratch file (removed with the rest of `skillDir`, in the `finally` below)
+      // rather than to a project path, since it is run-specific and never anything a
+      // stage's own output. `--strict-mcp-config` (always passed) means this file is the
+      // *only* source of servers for the session; a stage that declares none passes no
+      // `mcpConfig` at all, and the session reaches none.
+      let mcpConfig;
+      if (mcpServers) {
+        mcpConfig = join(skillDir, "mcp.json");
+        writeText(mcpConfig, JSON.stringify({ mcpServers }, null, 2) + "\n");
       }
 
       // Written only once the dry-run return above is behind us: a dry run makes no
       // change of any kind, so nothing should exist for `sdlc resume` to find.
-      const state = { stage: name, ctx: { slice, domain, revise }, startedAt: new Date().toISOString(), phase: "agent" };
+      const state = { stage: name, ctx: { slice, domain, target, stale, revise }, startedAt: new Date().toISOString(), phase: "agent" };
       writeRunState(projectDir, state);
 
-      const r = await runAgent({ cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name) });
+      const r = await runAgent({
+        cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name),
+        mcpConfig, allowedTools: stage.allowedTools, env: envVars,
+      });
       if (!r.ok) return agentTurnFailed(projectDir, stage, r);
 
       if (ws.mode !== "project") collect(projectDir, ws.dir, stage.collect);
@@ -158,6 +214,8 @@ COMMANDS.run = async ({ pos, flags }) => {
   const r = await runStage(process.cwd(), pos[0], {
     slice: flags.slice !== undefined ? Number(flags.slice) : undefined,
     domain: flags.domain,
+    target: flags.target,
+    stale: !!flags.stale,
     dryRun: !!flags["dry-run"],
     again: !!flags.again,
     revise: !!flags.revise,

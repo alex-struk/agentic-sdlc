@@ -95,9 +95,13 @@ When `--by agent:<persona>` names the gate's own `holder`, `sdlc rule` builds a 
   shown]`;
 - the structural checks, run on the proposal branch's current checkout.
 
-The agent turn runs with `maxTurns: 12` and a tool list of `Read`, `Grep`, `Glob`, `Bash(git
-diff*)`, `Bash(git log*)` and `Bash(git status*)` — enough to look further into the branch than
-the diff in the prompt, and nothing that writes. `SDLC_STAGE=rule` also blocks every path in the
+The agent turn runs with a tool list of `Read`, `Grep`, `Glob`, `Bash(git diff*)`, `Bash(git
+log*)` and `Bash(git status*)` — enough to look further into the branch than the diff in the
+prompt, and nothing that writes. It runs with `maxTurns: 12` at every gate but G1; at G1 it gets
+the stage default (40 turns) instead, since a G1 ruling has to read a whole domain file and rule
+on every criterion in it rather than just a proposal and a diff. Either ceiling is overridden by
+`policy.budgets.rule`, read the same way a stage's own turn budget is (`rulingTurns`,
+`src/commands/rule.mjs`). `SDLC_STAGE=rule` also blocks every path in the
 implement guard (`docs/stages/init.md`), so a ruling that tries to edit is stopped twice before
 the clean-tree check below ever sees it. It must end its reply with one fenced JSON block and
 nothing after it:
@@ -113,10 +117,12 @@ in persona reply`; a block that isn't valid JSON throws `bad verdict block: <par
 non-empty `rationale` throws `verdict has no rationale`.
 
 A turn that comes back reporting failure (an error result, the turn ceiling) has no verdict to
-read, so it is rejected first of all with `ruling agent turn failed: <the turn's own text>`:
-`parseVerdict`'s `no verdict block in persona reply` would otherwise be the error a person sees
-for what is actually a failed session. Nothing has been written at that point — no gate file, no
-commit — so the proposal branch and the working tree are exactly as they were.
+read. A ruling turn is read-only and cheap, and a failure is often transient, so it is retried
+once automatically before anything is rejected. Only a second failure is rejected, with `ruling
+agent turn failed after one retry: <the turn's own text>`: `parseVerdict`'s `no verdict block in
+persona reply` would otherwise be the error a person sees for what is actually a failed session.
+Nothing has been written at that point — no gate file, no commit — so the proposal branch and the
+working tree are exactly as they were.
 
 Right after the agent turn returns and before its verdict is even parsed, the working tree is
 checked for edits the turn left behind (`assertCleanTree`): a ruling is a read-only turn, and a
@@ -165,6 +171,22 @@ on that gate file at all until a person rewrites the lines in place.
 
 What is still *not* checked here is whether a condition's ID exists in the domain: this command has
 no domain file in hand. `ratify` reports an unknown ID later, against the file it actually has.
+
+### Calibration conditions
+
+Not every G1 proposal asks the ratification question. A proposal whose name begins `calibrate-` asks
+a different one — which of the application, the criterion or the test is wrong, for a criterion the
+acceptance suite failed against a running target (`docs/stages/calibrate.md`) — and its conditions
+are read in the calibration grammar instead: `defect-in-old <ID>`, `spec-wrong <ID>: <corrected
+statement>`, `test-wrong <ID>: <why>`, described in the product owner's own brief under "Calibration
+rulings". The proposal's name is what selects the grammar, because a condition read in the wrong one
+is not a parse error, it is a ruling that would be dropped in silence: `confirm R-1.1` is a perfectly
+well-formed ratification condition and means nothing at all on a calibration proposal.
+
+Everything else about the mechanism is the same. The lines are parsed before the ruling is written,
+an unreadable line gets the persona one re-prompt with the calibration grammar restated, and
+whatever is still unreadable lands on the gate file under `unparsed_conditions` — where `calibrate`
+reports it as a dead condition on its next run rather than applying it.
 
 At G1 a `return` also carries no conditions in practice: its rationale paragraph says what
 archaeology has to go back and change instead.
@@ -263,8 +285,9 @@ the gate log will show both. Treat a proposal as ruled once its verdict is recor
 - The working tree is dirty: throws before anything is checked out, listing the dirty paths.
 - The approval merge conflicts: the merge is aborted, `main` is left as it was, the working tree
   returns to the proposal branch, and the error names the conflicted files.
-- Agent path: the ruling turn reports failure: throws `ruling agent turn failed: <text>`, having
-  written nothing. No persona brief at `.sdlc/personas/<persona>.md`: throws `no persona brief for
+- Agent path: the ruling turn reports failure, is retried once, and fails again: throws `ruling
+  agent turn failed after one retry: <text>`, having written nothing. No persona brief at
+  `.sdlc/personas/<persona>.md`: throws `no persona brief for
   <persona>`. The persona is not the gate's `holder`: throws naming who is (`is not a holder of
   <gate>`). The gate has no `escalate_to`: throws `gate <name> has an agent holder but no
   escalate_to`. The agent turn edited the working tree: throws `rule: the ruling agent modified

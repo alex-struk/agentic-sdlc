@@ -3,13 +3,14 @@
 ## Purpose
 
 Regenerate the generated state site — a readable run record — from the project's criteria
-index, journal, gate log, proposals and run log.
+index, journal, gate log, proposals, run log, and blind-test coverage and calibration results.
 
 ## Inputs
 
 `sdlc status [dir]`, defaulting to the current directory. Reads `.sdlc/config.yaml`,
 `spec/criteria-index.json` (if present), every `.sdlc/journal/*.md`, every `.sdlc/gates/*.yaml`,
-every `.sdlc/proposals/*.md`, and every `.sdlc/runs/*.md`.
+every `.sdlc/proposals/*.md`, every `.sdlc/runs/*.md`, `tests/acceptance/<domain>/*.spec.ts`,
+`tests/acceptance/not-testable.yaml`, and every `tests/results/<target>/*.json`.
 
 ## Outputs
 
@@ -24,6 +25,15 @@ every `.sdlc/proposals/*.md`, and every `.sdlc/runs/*.md`.
   a domain the config doesn't name sorted after every configured one. A project with no criteria
   at all still renders one zero row per configured domain — the board never collapses to an empty
   table just because nothing has been recovered or authored yet.
+
+  Two more columns follow `total`: `tests` and one column per target directory under
+  `tests/results/` (sorted; the header names the target, e.g. `old`, `new`) — a project with no
+  `tests/results/` directory yet gets no target columns at all, rather than one rendered blank.
+
+  | Column | What it shows |
+  | --- | --- |
+  | `tests` | `<covered>/<accepted>` from `coverage(projectDir, domain)`, plus ` (n/t <count>)` when any of the domain's accepted criteria are recorded not-testable. Blank when the domain has neither a `*.spec.ts` file under `tests/acceptance/<domain>/` nor a not-testable entry — a bare `0/0` would misread as "nothing accepted" rather than "coverage not run yet". |
+  | `<target>` | `<n> pass · <n> fail · <n> unbound · <n> stale`, counting this domain's rows in `tests/results/<target>/latest.json` (a `not-testable` row is not counted again here — the `tests` column already covers it). Blank when that target has no `latest.json` yet. |
 
   | Total | What it sums |
   | --- | --- |
@@ -54,14 +64,30 @@ every `.sdlc/proposals/*.md`, and every `.sdlc/runs/*.md`.
   `_Escalated to <escalate_to>: <rationale>_`.
 - `site/criteria/<domain>.md`: one page per domain that actually has a criterion in
   `spec/criteria-index.json` — a domain the config names but the index doesn't gets a zero row
-  on the coverage board but no page here, since there would be nothing to list. Each criterion
-  gets its own section, headed `### <id> · v<version> · <confidence> · <state>`, followed by the
-  statement and then whichever of these the criterion actually carries: a `given`/`when`/`then`
-  line each, `cites:` entries (`path:line`, or bare `path` when the recovery had no line) —
-  present on recovered criteria, empty for authored ones — `reconciliation:`, `replaces:` /
-  `superseded-by:`, and one `note:` line per note. `site/index.md` links every one of these pages
-  under its own "Criteria" heading, in the same domain order as the coverage board.
+  on the coverage board but no page here, since there would be nothing to list. The page opens
+  with a `## Tests` table, one row per criterion in the domain (in index order): a `test` column
+  (the spec file's path relative to `tests/`, e.g. `acceptance/<domain>/<id>.spec.ts`, when
+  `coverage` found one; `not testable: <reason>` when the criterion is recorded not-testable
+  instead; `—` otherwise) and one column per target directory under `tests/results/` (that
+  target's row for this criterion — its `result`, with ` (ruled: <verb>)` appended when the row
+  carries a calibration ruling — blank when the target's results have no row for this criterion).
+  Below the table, each criterion gets its own section, headed
+  `### <id> · v<version> · <confidence> · <state>`, followed by the statement and then whichever
+  of these the criterion actually carries: a `given`/`when`/`then` line each, `cites:` entries
+  (`path:line`, or bare `path` when the recovery had no line) — present on recovered criteria,
+  empty for authored ones — `reconciliation:`, `replaces:` / `superseded-by:`, and one `note:`
+  line per note. `site/index.md` links every one of these pages under its own "Criteria" heading,
+  in the same domain order as the coverage board.
 - `site/runs.md`: the concatenation of every run-record file, in reverse filename order (most recent day first).
+- `site/results.md`: one `## <target>` section per target directory under `tests/results/`, each
+  with a table of every dated results file in it (`<date>.json`, `<date>-2.json`, …; `latest.json`
+  and `applied.yaml` are not rows here — the first duplicates the newest dated file, the second is
+  calibration's own bookkeeping) — file name, the run's `at`, and a count per `result` value
+  (`pass`, `fail`, `unbound`, `stale`, `not-testable`) — sorted newest `at` first, followed by a
+  line naming the open calibration proposal for that target (`followUpState(projectDir,
+  "calibrate-<target>")`) or, when none is open, "no calibration ruling open." A project with no
+  `tests/results/` directory at all gets a page saying there are no results yet, instead of an
+  empty page with no sections.
 
 `loadConfig` supplies the policy used for gate holders and sampling rates; a config with schema
 errors still produces a site, with missing policy treated as empty (no holder, no sampling).
@@ -80,7 +106,10 @@ No agent.
 
 None. A missing `spec/criteria-index.json` is treated as zero criteria; a missing
 `.sdlc/gates/`, `.sdlc/journal/`, `.sdlc/proposals/` or `.sdlc/runs/` directory is treated as no
-rows, rather than as an error.
+rows, rather than as an error. A missing `tests/results/` directory is treated as no targets (no
+board columns beyond `tests`, and `site/results.md` says there are no results yet); a target's
+`latest.json` that is missing or does not parse is treated as no results for that target, not an
+error.
 
 ## Exit criterion
 

@@ -6,6 +6,12 @@ import { loadConfig } from "../config/load.mjs";
 import { readJournal } from "../runner/journal.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { STATES, orderDomains } from "../spec/criteria.mjs";
+import { coverage, readNotTestable } from "../checks/tests.mjs";
+import { followUpState } from "../stages/shared.mjs";
+
+// Every value a results row's `result` field can hold (`src/testrun/playwright.mjs`),
+// in the fixed order the board and the results page always report them in.
+const RESULT_VALUES = ["pass", "fail", "unbound", "stale", "not-testable"];
 
 // ISO 8601 week: Thursday of the same week decides the week-numbering year, which is
 // what makes the last days of December (or first days of January) land in the correct
@@ -54,6 +60,87 @@ function parseFrontMatter(text) {
   return { front: parse(m[1]) ?? {}, body: m[2] };
 }
 
+// A GitHub-flavoured Markdown table built from a column-array header and one array of
+// cells per row, rather than joining strings by hand at each call site: that is what
+// keeps an empty column list (no target directories yet) from leaving a dangling
+// `| ... |  |` with a phantom trailing column, since the separator row is always derived
+// from `headerCols.length` rather than from joining a possibly-empty list of its own.
+function mdTable(headerCols, rowsCols) {
+  return [`| ${headerCols.join(" | ")} |`, `| ${headerCols.map(() => "---").join(" | ")} |`,
+    ...rowsCols.map((cols) => `| ${cols.join(" | ")} |`)].join("\n");
+}
+
+// The target directories under `tests/results/`, sorted — `calibrate --target <t>`
+// writes one, so this is also the list of targets the site has anything to say about.
+// Sorted (not chronological, not config-ordered) since nothing elects an order for them:
+// a project adds a target by running calibration against it, not by declaring it.
+function resultTargets(projectDir) {
+  const dir = join(projectDir, "tests", "results");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+}
+
+function readResultsFile(path) {
+  if (!existsSync(path)) return null;
+  try { return JSON.parse(readText(path)); } catch { return null; }
+}
+
+// `<covered>/<accepted>`, with a not-testable count folded in when the domain has any —
+// blank when the domain has neither a spec file nor a not-testable entry, since a bare
+// `0/0` would misread as "nothing accepted" rather than "coverage not run yet".
+function testsColumn(projectDir, domain) {
+  const domainDir = join(projectDir, "tests", "acceptance", domain);
+  const hasSpecFile = existsSync(domainDir) && readdirSync(domainDir).some((f) => f.endsWith(".spec.ts"));
+  const { covered, missing, notTestable } = coverage(projectDir, domain);
+  if (!hasSpecFile && notTestable.length === 0) return "";
+  const accepted = covered.length + missing.length + notTestable.length;
+  const nt = notTestable.length ? ` (n/t ${notTestable.length})` : "";
+  return `${covered.length}/${accepted}${nt}`;
+}
+
+// A results file's rows, or an empty list when it has none the site can read. `latest.json`
+// is written by `calibrate` but read here from disk, where it can be anything — truncated
+// by an interrupted write, hand-edited, or an older shape entirely — and a `rows` that is
+// not an array would otherwise take the whole site build down with it.
+function resultRows(latest) {
+  return Array.isArray(latest?.rows) ? latest.rows : [];
+}
+
+// `<n> pass · <n> fail · <n> unbound · <n> stale` across this domain's rows in one
+// target's `latest.json` — `not-testable` rows are left out, since a not-testable
+// criterion is already accounted for in the `tests` column and counting it again here
+// would double-report it. Blank when the target has no results file at all yet, which is
+// a different claim from every count being zero (a results file that simply has no row
+// for this domain still prints zeros, honestly reporting "ran, found nothing here").
+function resultCountsColumn(latest, domain) {
+  if (!latest) return "";
+  const rows = resultRows(latest).filter((r) => r?.domain === domain);
+  return ["pass", "fail", "unbound", "stale"].map((k) => `${rows.filter((r) => r.result === k).length} ${k}`).join(" · ");
+}
+
+// A criterion's `test` cell on its domain page: the spec file's path relative to
+// `tests/` when `coverage` found one, the not-testable reason when it is recorded
+// instead, or `—` for a criterion coverage has nothing to say about (not accepted yet,
+// or accepted but missing both).
+function testCell(cov, notTestableEntries, domain, id) {
+  if (cov.covered.includes(id)) return `acceptance/${domain}/${id}.spec.ts`;
+  if (cov.notTestable.includes(id)) {
+    const entry = notTestableEntries.find((e) => e?.id === id);
+    return `not testable: ${entry?.reason ?? ""}`;
+  }
+  return "—";
+}
+
+// A criterion's cell in one target's column: the row's own result, with the ruling verb
+// appended when a calibration ruling already answered it, or blank when the target's
+// results carry no row for this criterion at all (never run against it, or a domain
+// nobody has derived tests for yet).
+function targetCell(latest, id) {
+  const row = resultRows(latest).find((r) => r?.id === id);
+  if (!row) return "";
+  return row.ruled ? `${row.result} (ruled: ${row.ruled})` : row.result;
+}
+
 export function buildSite(projectDir) {
   projectDir = resolve(projectDir);
   const { config: cfg, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
@@ -86,11 +173,19 @@ export function buildSite(projectDir) {
     openQuestions: rows.reduce((sum, r) => sum + r.openQuestions, 0),
     total: rows.reduce((sum, r) => sum + r.total, 0),
   };
-  const coverageLines = ["## Coverage", "",
-    `| Domain | ${STATES.join(" | ")} | open questions | total |`,
-    `| --- | ${STATES.map(() => "---").join(" | ")} | --- | --- |`,
-    ...rows.map((r) => `| ${r.domain} | ${r.stateCounts.join(" | ")} | ${r.openQuestions} | ${r.total} |`),
-    `| **Totals** | ${totals.stateCounts.join(" | ")} | ${totals.openQuestions} | ${totals.total} |`, ""];
+  // One `tests` column (blind-coverage progress) plus one column per target directory
+  // under `tests/results/` (calibration progress against that target) — generalised over
+  // the target list rather than hard-coded to `old`, so a later `new` target grows the
+  // board a column with no code change here.
+  const targets = resultTargets(projectDir);
+  const latestByTarget = new Map(targets.map((t) => [t, readResultsFile(join(projectDir, "tests", "results", t, "latest.json"))]));
+  const coverageHeader = ["Domain", ...STATES, "open questions", "total", "tests", ...targets];
+  const coverageRows = rows.map((r) => [
+    r.domain, ...r.stateCounts, r.openQuestions, r.total,
+    testsColumn(projectDir, r.domain), ...targets.map((t) => resultCountsColumn(latestByTarget.get(t), r.domain)),
+  ]);
+  const totalsRow = ["**Totals**", ...totals.stateCounts, totals.openQuestions, totals.total, "", ...targets.map(() => "")];
+  const coverageLines = ["## Coverage", "", mdTable(coverageHeader, [...coverageRows, totalsRow]), ""];
 
   // One page per domain that appears in the index, one section per criterion: the
   // heading names id/version/confidence/state, then the statement and whichever of
@@ -101,6 +196,10 @@ export function buildSite(projectDir) {
   // heading, not repeated as a bullet here).
   const criteriaPages = pageDomains.map((domain) => {
     const inDomain = criteria.filter((c) => c.domain === domain);
+    const cov = coverage(projectDir, domain);
+    const notTestableEntries = readNotTestable(projectDir);
+    const testsTable = mdTable(["id", "test", ...targets], inDomain.map((c) =>
+      [c.id, testCell(cov, notTestableEntries, domain, c.id), ...targets.map((t) => targetCell(latestByTarget.get(t), c.id))]));
     const blocks = inDomain.map((c) => {
       const lines = [`### ${c.id} · v${c.version} · ${c.confidence} · ${c.state}`, "", c.statement];
       for (const cite of c.cites ?? []) lines.push(`- cites: ${cite.line !== undefined ? `${cite.path}:${cite.line}` : cite.path}`);
@@ -113,7 +212,7 @@ export function buildSite(projectDir) {
       for (const note of c.notes ?? []) lines.push(`- note: ${note}`);
       return lines.join("\n");
     });
-    return [`site/criteria/${domain}.md`, [`# ${domain}`, "", ...blocks].join("\n\n") + "\n"];
+    return [`site/criteria/${domain}.md`, [`# ${domain}`, "## Tests", testsTable, ...blocks].join("\n\n") + "\n"];
   });
 
   const gatesDir = join(projectDir, ".sdlc", "gates");
@@ -130,6 +229,27 @@ export function buildSite(projectDir) {
   const runsDir = join(projectDir, ".sdlc", "runs");
   const runs = existsSync(runsDir) ? readdirSync(runsDir).filter((f) => f.endsWith(".md")).sort().reverse().map((f) => readText(join(runsDir, f))) : [];
   const runsMd = ["# Run log", "", ...runs].join("\n");
+
+  // One section per target: every dated results file `calibrate` wrote against it
+  // (`latest.json` and `applied.yaml` excluded — the first is a duplicate of the newest
+  // dated file, and the second is calibration's own bookkeeping, not a run record),
+  // newest first, plus whether a calibration ruling is still open for that target. No
+  // targets at all — a project that has never run `calibrate` — gets a page saying so
+  // rather than an empty "## " heading with nothing under it.
+  const resultsMd = targets.length === 0 ? "# Results\n\nThere are no results yet.\n" :
+    ["# Results", "", ...targets.map((target) => {
+      const dir = join(projectDir, "tests", "results", target);
+      const files = readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}(-\d+)?\.json$/.test(f));
+      const entries = files.map((f) => {
+        const data = readResultsFile(join(dir, f)) ?? {};
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        return { file: f, at: data.at ?? "", counts: RESULT_VALUES.map((k) => rows.filter((r) => r.result === k).length) };
+      }).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+      const table = mdTable(["file", "at", ...RESULT_VALUES], entries.map((e) => [e.file, e.at, ...e.counts]));
+      const { open } = followUpState(projectDir, `calibrate-${target}`);
+      const proposalLine = open ? `Open calibration proposal: ${open}.` : "no calibration ruling open.";
+      return [`## ${target}`, "", table, "", proposalLine].join("\n");
+    }), ""].join("\n\n");
 
   const journal = readJournal(projectDir);
   const journalCost = money(journal.reduce((sum, e) => sum + (Number(e.cost) || 0), 0));
@@ -176,7 +296,7 @@ export function buildSite(projectDir) {
   const index = [`# ${cfg.project.name} — state`, "", `Profile: ${cfg.profile}`, "",
     ...coverageLines,
     "## Pages", "",
-    "- [Journal](journal.md)", "- [Gates](gates.md)", "- [Runs](runs.md)",
+    "- [Journal](journal.md)", "- [Gates](gates.md)", "- [Runs](runs.md)", "- [Results](results.md)",
     ...proposalPages.map(([, , name]) => `- [${name}](proposals/${name}.md)`), "",
     "## Criteria", "",
     ...pageDomains.map((domain) => `- [${domain}](criteria/${domain}.md)`), "",
@@ -188,7 +308,7 @@ export function buildSite(projectDir) {
     `- Open escalations: ${openEscalations}`,
     `- Open proposals: ${openProposals}`, ""].join("\n");
 
-  const pages = [["site/index.md", index], ["site/gates.md", gatesMd], ["site/runs.md", runsMd], ["site/journal.md", journalMd],
+  const pages = [["site/index.md", index], ["site/gates.md", gatesMd], ["site/runs.md", runsMd], ["site/results.md", resultsMd], ["site/journal.md", journalMd],
     ...proposalPages.map(([p, t]) => [p, t]), ...criteriaPages];
   for (const [p, t] of pages) writeText(join(projectDir, p), t);
   return { pages: pages.map(([p]) => p) };
