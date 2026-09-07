@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer, Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
@@ -108,10 +108,16 @@ test("oracle up: writes the local file with three distinct ports and runs the co
     assert.equal(shapes[0], "up -d --build db mailpit");
     assert.equal(shapes[1], `exec -T db pg_isready -U postgres`);
     assert.equal(shapes[2], "run --rm migrate");
-    assert.match(shapes[3], /^exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d appdb < .*001-users\.sql$/);
-    assert.match(shapes[4], /^exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d appdb < .*002-fees\.sql$/);
+    assert.equal(shapes[3], "exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d appdb");
+    assert.match(calls[3].input, /001-users\.sql$/);
+    assert.equal(shapes[4], "exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d appdb");
+    assert.match(calls[4].input, /002-fees\.sql$/);
     assert.equal(shapes[5], "up -d app");
     assert.equal(calls.length, 6);
+    // The two service-bringup calls (and the migrate/pg_isready calls) never pipe a
+    // file, so `input` is absent from their recorded shape rather than present-but-empty.
+    assert.equal("input" in calls[0], false);
+    assert.equal("input" in calls[2], false);
 
     // Every compose call carries the same -p/-f prefix, and the env recorded on the
     // service-bringup calls carries the chosen ports.
@@ -199,6 +205,45 @@ test("oracle up: refuses when config.oracle is absent", async () => {
   });
 });
 
+test("oracle up: migrate_service without oracle.db still migrates, skips db waits/seeding, and warns about unloaded seed files", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-nodb-"));
+  const dir = join(tmp, "micro-oracle-nodb");
+  mkdirSync(join(dir, ".sdlc", "oracle"), { recursive: true });
+  mkdirSync(join(dir, "sources", "old"), { recursive: true });
+  mkdirSync(join(dir, "tests", "seed"), { recursive: true });
+  // Same config as the micro project above, minus the `db` block — a project can
+  // configure `migrate_service` without `db` (a migration service managing its own
+  // connection), which is exactly the case that must not be silently skipped.
+  const config = CONFIG.replace(/\n  db: \{[^}]*\}\n/, "\n");
+  writeFileSync(join(dir, ".sdlc", "config.yaml"), config);
+  writeFileSync(join(dir, "sources", "old", "docker-compose.yml"), "");
+  writeFileSync(join(dir, ".sdlc", "oracle", "compose.yml"), "");
+  writeFileSync(join(dir, "tests", "seed", "001-users.sql"), "-- seed users\n");
+  writeFileSync(join(dir, ".gitignore"), ".sdlc/oracle-*.local.yaml\n");
+  git(["init", "-q", "-b", "main"], dir);
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "micro oracle project without db"], dir);
+
+  await withMock(null, async (mockDir) => {
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...a) => warnings.push(a.join(" "));
+    let code;
+    try { code = await runOracle(dir, "up", {}); }
+    finally { console.warn = origWarn; }
+    assert.equal(code, 0);
+
+    const calls = readCalls(mockDir);
+    const shapes = calls.map((c) => c.args.slice(6).join(" "));
+    assert.deepEqual(shapes, ["up -d --build db mailpit", "run --rm migrate", "up -d app"]);
+    assert.ok(!shapes.some((s) => s.includes("psql") || s.includes("pg_isready")), shapes.join("\n"));
+
+    // A seed file exists but there is nowhere configured to load it into — a warning,
+    // not a silent skip and not a failure.
+    assert.ok(warnings.some((w) => w.includes("oracle.db")), warnings.join("\n"));
+  });
+});
+
 test("freePort skips a port a test is listening on", async () => {
   // Bind an ephemeral port (0 asks the OS to pick one) and hold it open, so freePort
   // scanning upward from exactly that port must skip it.
@@ -212,6 +257,32 @@ test("freePort skips a port a test is listening on", async () => {
     assert.notEqual(chosen, held);
     assert.ok(chosen > held, `expected a port above ${held}, got ${chosen}`);
   } finally {
+    await new Promise((res) => holder.close(res));
+  }
+});
+
+test("freePort does not re-test a taken port twice when prefer and from are the same port", async (t) => {
+  const holder = createServer();
+  const held = await new Promise((res, rej) => {
+    holder.once("error", rej);
+    holder.listen(0, "127.0.0.1", () => res(holder.address().port));
+  });
+  // Spy on every port a real listen attempt targets, without changing behaviour (the
+  // mock calls through to the original `listen`) — the fix is that `held` is bound once
+  // by the `prefer` check and never re-tested as the scan's own starting port.
+  const attempted = [];
+  const originalListen = Server.prototype.listen;
+  const listenSpy = t.mock.method(Server.prototype, "listen", function (...args) {
+    attempted.push(args[0]);
+    return originalListen.apply(this, args);
+  });
+  try {
+    const chosen = await freePort(held, held);
+    assert.notEqual(chosen, held);
+    assert.ok(chosen > held, `expected a port above ${held}, got ${chosen}`);
+    assert.equal(attempted.filter((p) => p === held).length, 1, `expected ${held} to be tried exactly once, tried: ${JSON.stringify(attempted)}`);
+  } finally {
+    listenSpy.mock.restore();
     await new Promise((res) => holder.close(res));
   }
 });

@@ -45,10 +45,12 @@ function tryPort(port) {
 
 // Picks a free port: `prefer` first when given (so a project's configured `base_url`
 // port is kept whenever nothing else is already using it), otherwise scanning upward
-// from `from` until one binds.
+// from `from` until one binds. When `prefer` and `from` are the same port and it is
+// taken, the scan starts one above it rather than re-testing the port the line above
+// already found taken.
 export async function freePort(prefer, from) {
   if (prefer && (await tryPort(prefer))) return prefer;
-  let port = from;
+  let port = from === prefer ? from + 1 : from;
   while (!(await tryPort(port))) port++;
   return port;
 }

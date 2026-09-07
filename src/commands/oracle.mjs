@@ -10,7 +10,7 @@ import { loadConfig } from "../config/load.mjs";
 import { git, SDLC_AUTHOR, stagePaths } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { freePort, readLocal, removeLocal, writeLocal } from "../oracle/ports.mjs";
-import { compose, composeVersion, loadSeed, waitForDb, waitForHttp } from "../oracle/compose.mjs";
+import { compose, composeVersion, loadSeed, seedFiles, waitForDb, waitForHttp } from "../oracle/compose.mjs";
 import { oracleOverridePath } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 
@@ -122,13 +122,26 @@ async function oracleUp(projectDir, config, target) {
   // listing it in a profile or dependency that `up` with no names would start early.
   compose([...base, "up", "-d", "--build", ...(config.oracle.up ?? [])], opts);
 
-  // Nothing to wait for or seed without a configured database — a project can run an
-  // oracle with no database at all (a static site, say), and `db` is optional for
-  // exactly that reason.
+  // Nothing to wait for without a configured database — a project can run an oracle with
+  // no database at all (a static site, say), and `db` is optional for exactly that
+  // reason.
+  if (config.oracle.db) await waitForDb(base, config.oracle.db, opts);
+
+  // The migration service is independent of `db`: a project can run migrations through
+  // a one-off compose service without the pipeline knowing that database's connection
+  // details (the service manages its own), so this runs whenever `migrate_service` is
+  // configured — after the db wait above when there is one, but not gated on it.
+  if (config.oracle.migrate_service) compose([...base, "run", "--rm", config.oracle.migrate_service], opts);
+
+  // Seeding, unlike migration, genuinely needs `db`: `loadSeed` connects with `psql`
+  // using `db.user`/`db.database`, which only exist when `db` is configured. When seed
+  // files are sitting in `tests/seed/` with no `db` to load them into, that is very
+  // likely a config a project didn't mean to leave half-set, so this warns rather than
+  // failing silently or refusing the whole `up`.
   if (config.oracle.db) {
-    await waitForDb(base, config.oracle.db, opts);
-    if (config.oracle.migrate_service) compose([...base, "run", "--rm", config.oracle.migrate_service], opts);
     loadSeed(projectDir, base, config.oracle.db, opts);
+  } else if (seedFiles(projectDir).length > 0) {
+    console.warn("oracle up: tests/seed/*.sql files exist but oracle.db is not configured — seed not loaded");
   }
 
   compose([...base, "up", "-d", config.oracle.service ?? "app"], opts);

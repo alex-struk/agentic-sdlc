@@ -13,8 +13,10 @@ function mockDir() {
 
 // Appends one call to `SDLC_MOCK_DIR/oracle-calls.json`, creating the file the first
 // time it is needed, so a test can assert on the exact sequence of compose calls a run
-// made without a real Docker daemon anywhere in reach.
-function recordMockCall(args, env) {
+// made without a real Docker daemon anywhere in reach. `input` (the path of a file piped
+// to stdin, when there is one) is recorded as its own field rather than folded into
+// `args`, since it was never part of the compose command line.
+function recordMockCall(args, env, input) {
   const p = join(mockDir(), "oracle-calls.json");
   const calls = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : [];
   // Only `SDLC_*` keys are recorded: everything else in a caller's `env` is either
@@ -22,7 +24,9 @@ function recordMockCall(args, env) {
   // `oracle.env` entry a project defined for its own application, neither of which a
   // test asserting on compose *calls* needs to see.
   const sdlcEnv = Object.fromEntries(Object.entries(env ?? {}).filter(([k]) => k.startsWith("SDLC_")));
-  calls.push({ args, env: sdlcEnv });
+  const call = { args, env: sdlcEnv };
+  if (input) call.input = input;
+  calls.push(call);
   writeFileSync(p, JSON.stringify(calls, null, 2));
 }
 
@@ -43,14 +47,13 @@ export function composeVersion() {
 // shelling out through a redirect the way a person would at a terminal).
 //
 // Under `SDLC_ORACLE=mock` nothing is spawned: the call is appended to
-// `oracle-calls.json` (with `input`'s path recorded as a trailing `< <path>` pair, the
-// same shape a real shell redirect would leave for a reader to recognise) and the
-// answer is `""`, except `ps --format json`, which answers with whatever
-// `SDLC_MOCK_DIR/oracle-ps.json` holds — a test's way of saying a container is already
-// running — or `""` when that file is not present.
+// `oracle-calls.json` as `{ args, env, input }` (`input` present only for calls that
+// pipe a file) and the answer is `""`, except `ps --format json`, which answers with
+// whatever `SDLC_MOCK_DIR/oracle-ps.json` holds — a test's way of saying a container is
+// already running — or `""` when that file is not present.
 export function compose(args, { cwd, env = {}, input } = {}) {
   if (process.env.SDLC_ORACLE === "mock") {
-    recordMockCall(input ? [...args, "<", input] : args, env);
+    recordMockCall(args, env, input);
     // `args[0]` is never "ps" here — every real call carries the `-p <project> -f ...`
     // prefix first — so this looks for the subcommand anywhere in the array rather than
     // assuming a position.
@@ -101,6 +104,14 @@ export async function waitForDb(baseArgs, db, opts) {
   }
 }
 
+// The `tests/seed/*.sql` files a load would apply, in ascending name order — shared
+// between `loadSeed` below and `oracle.mjs`'s check for seed files that exist but have
+// nowhere to load into (`oracle.db` not configured).
+export function seedFiles(projectDir) {
+  const seedDir = join(projectDir, "tests", "seed");
+  return existsSync(seedDir) ? readdirSync(seedDir).filter((f) => f.endsWith(".sql")).sort() : [];
+}
+
 // Loads every `tests/seed/*.sql` file, in ascending name order, through
 // `compose exec -T <db.service> psql -v ON_ERROR_STOP=1 -U <db.user> -d <db.database>`,
 // piping each file as stdin. `ON_ERROR_STOP=1` makes a broken seed file fail the call
@@ -108,7 +119,7 @@ export async function waitForDb(baseArgs, db, opts) {
 // Returns the list of files loaded, for the caller to report or assert on.
 export function loadSeed(projectDir, baseArgs, db, opts) {
   const seedDir = join(projectDir, "tests", "seed");
-  const files = existsSync(seedDir) ? readdirSync(seedDir).filter((f) => f.endsWith(".sql")).sort() : [];
+  const files = seedFiles(projectDir);
   for (const f of files) {
     const args = [...baseArgs, "exec", "-T", db.service, "psql", "-v", "ON_ERROR_STOP=1", "-U", db.user, "-d", db.database];
     compose(args, { ...opts, input: join(seedDir, f) });

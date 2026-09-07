@@ -58,8 +58,12 @@ every `tests/seed/*.sql` file, in ascending name order.
   `contract` stage's compose override defines) scans from 8025. The three are checked for
   distinctness before anything is started.
 - The database, when `oracle.db` is configured, has to answer `pg_isready` within 60 seconds
-  before migration and seeding run; the application has to answer any HTTP status at
-  `<base_url>/` within 180 seconds before `up` reports success. Either timeout fails the command.
+  before the migration service (when `migrate_service` is configured) runs — `migrate_service`
+  runs independently of `db` otherwise, since a migration service can manage its own database
+  connection. Seeding only runs when `oracle.db` is configured, since `psql` needs its
+  `service`/`user`/`database` to connect; seed files present without `oracle.db` produce a
+  warning, not a failure. The application has to answer any HTTP status at `<base_url>/` within
+  180 seconds before `up` reports success. Either timeout fails the command.
 - Every `tests/seed/*.sql` file is loaded with `psql -v ON_ERROR_STOP=1`, so a broken seed file
   fails the load (and so the whole `up`) instead of applying partway and reporting success.
 
