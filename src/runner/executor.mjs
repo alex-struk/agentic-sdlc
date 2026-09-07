@@ -4,10 +4,33 @@ import { join } from "node:path";
 import { ensureConfigHome } from "./config-home.mjs";
 import { writeText } from "../lib/fsx.mjs";
 
-// The turn ceiling a session runs with when nothing else sets one. Exported so the one
-// place that falls back to it (`turnsFor`, in `src/commands/run.mjs`) names the same
-// number in its warning that the executor actually applies.
+// The turn ceiling a session runs with when nothing else sets one.
 export const DEFAULT_MAX_TURNS = 40;
+
+// `config.policy.budgets[<name>]` is documented as a token count, but `runAgent`'s
+// `maxTurns` wants a turn count and there is no token-to-turn conversion yet (that is
+// its own later task). A configured value under 1000 is small enough to read as a turn
+// count already — a token budget for a whole stage would run into the thousands — so
+// it is used directly, clamped to 200; anything at or above 1000 is a token count we
+// cannot yet translate, so it falls back to `fallback`: the default of 40 turns for a
+// stage, or whatever the caller runs with when no budget is set at all (a ruling turn
+// passes its own, smaller ceiling).
+// Warned names, so a run that calls `turnsFor` more than once for the same name says
+// this once rather than once per call.
+const warnedBudgets = new Set();
+
+export function turnsFor(config, name, fallback = DEFAULT_MAX_TURNS) {
+  const budget = config.policy?.budgets?.[name];
+  if (budget && budget < 1000) return Math.min(budget, 200);
+  // A token-sized budget is configured, understood, and then ignored. Saying so out
+  // loud is the difference between "this stage is capped where I set it" and the truth,
+  // which is that it is capped at the default.
+  if (budget && !warnedBudgets.has(name)) {
+    warnedBudgets.add(name);
+    console.warn(`warning: policy.budgets.${name} is ${budget}, which reads as a token budget, not a turn count. There is no token-to-turn conversion yet, so this budget is ignored and ${name} runs with the default ceiling of ${fallback} turns. To cap turns, set policy.budgets.${name} to a number below 1000.`);
+  }
+  return fallback;
+}
 
 // How the session ended, in words, when the CLI said something worth repeating. The
 // `subtype` on a result is the CLI's own account — `error_max_turns` when the turn

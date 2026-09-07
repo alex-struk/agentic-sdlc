@@ -65,7 +65,7 @@ Required. Container of governance gates, tiers, and budgets.
 - `triage` (object, optional): Thresholds for automatic triage.
   - `direct_max_files` (integer, optional, min 1): Maximum files changed to bypass triage.
   - `direct_allowed_paths` (array, optional): Paths that can bypass triage.
-- `budgets` (object, optional): Token budgets by category. Keys are category names, values are integers (min 1). The runner has no token-to-turn conversion yet, so it reads a value under 1000 as a turn ceiling for the stage of that name (clamped to 200) and ignores anything larger, warning once per stage that the run used the default of 40 turns instead.
+- `budgets` (object, optional): Token budgets by category. Keys are category names, values are integers (min 1). The runner has no token-to-turn conversion yet, so it reads a value under 1000 as a turn ceiling for the stage of that name (clamped to 200) and ignores anything larger, warning once per stage that the run used the default of 40 turns instead. The key `rule` caps a persona's ruling turn the same way: without it a ruling runs with 12 turns, except at G1, where the persona has to rule on every criterion in a domain and gets the stage default of 40.
 
 ## skills
 

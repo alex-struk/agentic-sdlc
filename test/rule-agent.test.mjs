@@ -8,7 +8,7 @@ import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { init } from "../src/commands/init.mjs";
 import { propose } from "../src/commands/propose.mjs";
-import { ruleByAgent, rulePending } from "../src/commands/rule.mjs";
+import { ruleByAgent, rulePending, rulingTurns } from "../src/commands/rule.mjs";
 import { buildSite } from "../src/commands/status.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
@@ -575,4 +575,11 @@ test("conditions still unreadable after the re-prompt are recorded, and the ruli
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }
+});
+
+test("rulingTurns: a G1 ruling gets the stage default, other gates a dozen, and policy.budgets.rule overrides both", () => {
+  assert.equal(rulingTurns({}, "G1"), 40);
+  assert.equal(rulingTurns({}, "G3"), 12);
+  assert.equal(rulingTurns({ policy: { budgets: { rule: 60 } } }, "G1"), 60);
+  assert.equal(rulingTurns({ policy: { budgets: { rule: 60 } } }, "G3"), 60);
 });

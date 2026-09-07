@@ -5,7 +5,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief } from "../runner/persona.mjs";
-import { runAgent, endedBecause } from "../runner/executor.mjs";
+import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { buildSite } from "./status.mjs";
 import { CONDITION_GRAMMAR, unparsedConditions } from "../spec/criteria.mjs";
 import { COMMANDS } from "../cli.mjs";
@@ -183,6 +183,17 @@ function rulingFailure(result) {
     : "the ruling turn reported failure with no output";
 }
 
+// How many turns a ruling turn may take. Most rulings read a proposal and a diff and
+// answer, so a dozen turns is plenty and keeps a runaway persona cheap. A G1 ruling is
+// different in kind: it has to read a whole domain file and rule on every criterion in
+// it, one condition line each, and a domain of fifty criteria whose citations the
+// persona wants to check does not fit in twelve turns — the ruling then fails at the
+// cap having written nothing. It runs with the stage default instead. Either ceiling is
+// overridden by `policy.budgets.rule`, read the same way a stage's budget is.
+export function rulingTurns(config, gate) {
+  return turnsFor(config, "rule", gate === "G1" ? DEFAULT_MAX_TURNS : 12);
+}
+
 // The agent path: no human types --by approve|return. A persona brief is handed to a
 // short-lived agent turn along with the proposal, the diff and the checks, and the
 // verdict it comes back with is trusted the same way a human's --by is trusted — phase 0
@@ -231,7 +242,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // whole ruling is abandoned. Only one: a turn that fails twice is failing for a reason
   // retrying will not fix, and `rule --pending` running a batch must not turn one broken
   // proposal into an unbounded loop.
-  const runRuling = (text) => runAgent({ cwd: projectDir, prompt: text, stage: "rule", maxTurns: 12,
+  const runRuling = (text) => runAgent({ cwd: projectDir, prompt: text, stage: "rule", maxTurns: rulingTurns(config, gate),
     allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
 
   // One turn, its failure retried once, and the verdict read out of whatever came back.

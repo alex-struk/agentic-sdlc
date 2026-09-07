@@ -7,35 +7,14 @@ import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
 import { materialise, collect } from "../runner/workspace.mjs";
-import { runAgent, endedBecause, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
+import { runAgent, endedBecause, turnsFor } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { COMMANDS } from "../cli.mjs";
 
-// `config.policy.budgets[<stage>]` is documented as a token count, but `runAgent`'s
-// `maxTurns` wants a turn count and there is no token-to-turn conversion yet (that is
-// its own later task). A configured value under 1000 is small enough to read as a turn
-// count already — a token budget for a whole stage would run into the thousands — so
-// it is used directly, clamped to 200; anything at or above 1000 is a token count we
-// cannot yet translate, so it falls back to the same default of 40 turns as no budget
-// at all.
-// Warned names, so a run that calls `turnsFor` more than once for the same stage says
-// this once rather than once per call.
-const warnedBudgets = new Set();
-
-export function turnsFor(config, name) {
-  const budget = config.policy?.budgets?.[name];
-  if (budget && budget < 1000) return Math.min(budget, 200);
-  // A token-sized budget is configured, understood, and then ignored. Saying so out
-  // loud is the difference between "this stage is capped where I set it" and the truth,
-  // which is that it is capped at the default.
-  if (budget && !warnedBudgets.has(name)) {
-    warnedBudgets.add(name);
-    console.warn(`warning: policy.budgets.${name} is ${budget}, which reads as a token budget, not a turn count. There is no token-to-turn conversion yet, so this budget is ignored and ${name} runs with the default ceiling of ${DEFAULT_MAX_TURNS} turns. To cap turns, set policy.budgets.${name} to a number below 1000.`);
-  }
-  return DEFAULT_MAX_TURNS;
-}
+// Re-exported for the tests and any caller that reaches it by way of `run`.
+export { turnsFor };
 
 // An agent turn can come back having failed — an error result from the CLI, the turn
 // limit reached — and what it says about that is the only account of it there is.
