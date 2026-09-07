@@ -10,8 +10,9 @@ import { loadConfig } from "../config/load.mjs";
 import { git, SDLC_AUTHOR, stagePaths } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { freePort, readLocal, removeLocal, writeLocal } from "../oracle/ports.mjs";
-import { compose, composeVersion, loadSeed, seedFiles, waitForDb, waitForHttp } from "../oracle/compose.mjs";
+import { compose, composeVersion, loadSeed, seedDirFor, seedFiles, waitForDb, waitForHttp } from "../oracle/compose.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
+import { ensureSources } from "../runner/sources.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 // `docker compose ps --format json` answers either one JSON array or one JSON object per
@@ -76,10 +77,42 @@ function recordRun(projectDir, line) {
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `chore(oracle): ${line}`], projectDir);
 }
 
+// Which services come up before the application itself. `oracle.up` names them when a
+// project wants a particular set; left unset, the list is every service the compose files
+// define minus the application and the one-off migration service, asked of compose itself
+// (`config --services`) and passed explicitly. Naming them is what keeps `up` from
+// starting the application before its database and migration have run — bare `up -d
+// --build` starts everything, the application included.
+function upServices(config, base, opts) {
+  const configured = config.oracle.up ?? [];
+  if (configured.length) return configured;
+  const defined = String(compose([...base, "config", "--services"], opts)).split("\n").map((l) => l.trim()).filter(Boolean);
+  const application = new Set([config.oracle.service ?? "app", config.oracle.migrate_service].filter(Boolean));
+  return defined.filter((s) => !application.has(s));
+}
+
 async function startOracle(projectDir, config, target) {
+  // A compose file under `sources/` belongs to the old application's clone, which the
+  // pipeline materialises rather than the project committing — so it may simply not be
+  // on disk yet on a fresh checkout, and checking out the configured commit is what puts
+  // it there. Under mock there is no clone to make and no daemon to run it.
+  if (config.oracle.compose.startsWith("sources/") && config.sources?.old && process.env.SDLC_ORACLE !== "mock") {
+    ensureSources(projectDir, config);
+  }
   const composePath = join(projectDir, config.oracle.compose);
   if (!existsSync(composePath)) {
-    console.error(`oracle up: compose file not found: ${config.oracle.compose}`);
+    console.error(`oracle up: compose file not found: ${config.oracle.compose}`
+      + (config.oracle.compose.startsWith("sources/")
+        ? " — sources/old holds the old application's clone, checked out by the pipeline from config.sources.old"
+        : ""));
+    return 1;
+  }
+  // The override is `contract`'s own output (mailpit, the published ports, the app's
+  // non-production sign-in routes). Without it every compose call below names a file
+  // that is not there, and compose fails on each one in turn rather than once, here.
+  const overrideRel = oracleOverridePath(config);
+  if (!existsSync(join(projectDir, overrideRel))) {
+    console.error(`oracle up: run sdlc run contract first: ${overrideRel} is missing`);
     return 1;
   }
   if (process.env.SDLC_ORACLE !== "mock") {
@@ -112,15 +145,7 @@ async function startOracle(projectDir, config, target) {
   const opts = { cwd: projectDir, env: composeEnv(config, ports) };
   const base = baseArgs(config, composeProject);
 
-  // Every service except `service` and `migrate_service` when `oracle.up` is empty: the
-  // pipeline reads that as "bring up everything the compose file defines except the
-  // application and the one-off migration service", but `docker compose up -d --build`
-  // with no service names already does exactly that — it brings up every service the
-  // compose file (base plus override) defines. Naming `service` and `migrate_service`
-  // explicitly here would start the application before its database and migration have
-  // run, so the override is expected to define the application service without also
-  // listing it in a profile or dependency that `up` with no names would start early.
-  compose([...base, "up", "-d", "--build", ...(config.oracle.up ?? [])], opts);
+  compose([...base, "up", "-d", "--build", ...upServices(config, base, opts)], opts);
 
   // Nothing to wait for without a configured database — a project can run an oracle with
   // no database at all (a static site, say), and `db` is optional for exactly that
@@ -139,16 +164,19 @@ async function startOracle(projectDir, config, target) {
   // likely a config a project didn't mean to leave half-set, so this warns rather than
   // failing silently or refusing the whole `up`.
   if (config.oracle.db) {
-    loadSeed(projectDir, base, config.oracle.db, opts);
-  } else if (seedFiles(projectDir).length > 0) {
-    console.warn("oracle up: tests/seed/*.sql files exist but oracle.db is not configured — seed not loaded");
+    loadSeed(projectDir, config, base, opts);
+  } else if (seedFiles(projectDir, config).length > 0) {
+    console.warn(`oracle up: ${seedDirFor(config)}/*.sql files exist but oracle.db is not configured — seed not loaded`);
   }
 
   compose([...base, "up", "-d", config.oracle.service ?? "app"], opts);
   await waitForHttp(`${baseUrl}/`, 180000);
 
   console.log(`oracle up: ${baseUrl} (mail API ${mailApi})`);
-  recordRun(projectDir, `oracle up ${target}: ${baseUrl}`);
+  // The run record is committed history, so it names the target's configured URL and the
+  // port only as a local fact: the port `pickPorts` landed on is whatever was free on
+  // this machine and means nothing on anybody else's.
+  recordRun(projectDir, `oracle up ${target}: ${config.oracle.base_url} (local port ${ports.app})`);
   return 0;
 }
 

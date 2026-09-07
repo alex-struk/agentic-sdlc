@@ -40,14 +40,14 @@ Optional. Container describing the reference system (usually the legacy system t
 
 - `target` (string): The key in `sources` to use as the oracle (e.g., `old`).
 - `compose` (string): Path to a Docker Compose file for spinning up the oracle.
-- `seed` (string): Path to database seed files or scripts.
+- `seed` (string, optional): The directory `oracle up` loads `*.sql` files from, in ascending name order. Defaults to `tests/seed`, which is where the `contract` stage writes them; set it only for a project that keeps them elsewhere.
 - `base_url` (string, format URI): A URL starting with `http://` or `https://`.
 - `identity` (enum): One of `session-route` or `sandbox-idp`.
 - `compose_override` (string, optional): Path to the compose override the `contract` stage writes (mailpit, published ports, the app's non-production sign-in routes). Defaults to `.sdlc/oracle/compose.yml`, applied in code rather than in the schema.
 - `service` (string, optional): The base compose service that runs the application itself. Defaults to `app`.
-- `up` (array of strings, optional): Services to bring up before running the migration. Defaults to `[]`, meaning every service except `service` and `migrate_service`.
+- `up` (array of strings, optional): Services to bring up, and build, before the migration runs and before the application itself is started. Left unset or empty, the list is derived at run time from `docker compose config --services` — every service the compose file and the override define, minus `service` and minus `migrate_service` — and those names are passed to `up` explicitly. Naming them is what keeps the application from starting before its database and its migration have run, which is what a bare `up` with no service names would do.
 - `migrate_service` (string, optional): A one-off compose service that applies database migrations, run once before the seed is loaded.
-- `db` (object, optional): Where to load `tests/seed/*.sql` into. All three keys are required inside `db` when it is present:
+- `db` (object, optional): Where to load the seed files into. All three keys are required inside `db` when it is present:
   - `service` (string): The compose service running the database.
   - `user` (string): The database user to connect as.
   - `database` (string): The database name.

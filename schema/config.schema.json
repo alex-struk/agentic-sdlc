@@ -15,7 +15,7 @@
         "domains": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[a-z0-9-]+$" } } } },
     "sources": { "type": "object", "additionalProperties": false,
       "properties": { "old": { "$ref": "#/definitions/source" } } },
-    "oracle": { "type": "object", "additionalProperties": false, "required": ["target", "compose", "seed", "base_url", "identity"],
+    "oracle": { "type": "object", "additionalProperties": false, "required": ["target", "compose", "base_url", "identity"],
       "properties": {
         "target": { "type": "string" }, "compose": { "type": "string" }, "seed": { "type": "string" },
         "base_url": { "type": "string", "format": "uri" }, "identity": { "enum": ["session-route", "sandbox-idp"] },

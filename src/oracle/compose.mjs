@@ -41,6 +41,45 @@ export function composeVersion() {
   } catch { return { found: false }; }
 }
 
+// A real `up --build` or `run` streams a container build's whole output — tens of
+// megabytes on a first build — and `execFileSync`'s default 1 MiB buffer would abort the
+// call with ENOBUFS long before the build finished. 256 MiB is past anything a compose
+// build has been observed to produce while still bounded.
+const MAX_BUFFER = 256 * 1024 * 1024;
+
+// The subcommands whose output is a progress report a person watches rather than a value
+// a caller parses. Both are long-running, so their stdout and stderr are inherited: the
+// build scrolls in the terminal as it happens instead of arriving all at once at the end,
+// or not at all if the call fails. Nothing reads their return value.
+const STREAMING = new Set(["up", "run"]);
+
+// The compose subcommand in `args`, past the `-p <project> -f <file> -f <file>` prefix
+// every call carries. Flags that take a value are skipped with their value, so the first
+// bare word left is the subcommand — `up`, `run`, `ps`, `exec`, `down`.
+function composeSubcommand(args) {
+  const takesValue = new Set(["-p", "--project-name", "-f", "--file", "--profile", "--env-file", "--project-directory"]);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (takesValue.has(a)) { i++; continue; }
+    if (a.startsWith("-")) continue;
+    return a;
+  }
+  return "";
+}
+
+// The child-process options one `docker compose` call runs with. Exported so a test can
+// assert on the buffer and the stream wiring without a Docker daemon anywhere in reach.
+export function composeOptions(args, { cwd, env = {}, input } = {}) {
+  const streaming = STREAMING.has(composeSubcommand(args));
+  return {
+    cwd,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    maxBuffer: MAX_BUFFER,
+    stdio: [input ? "pipe" : "ignore", streaming ? "inherit" : "pipe", streaming ? "inherit" : "pipe"],
+  };
+}
+
 // Runs `docker compose <args>` synchronously, in `cwd`, with `env` merged over the
 // ambient environment. `input` is a path to a file whose contents are piped to the
 // process's stdin (`loadSeed` below uses this to feed a `.sql` file to `psql` without
@@ -50,7 +89,8 @@ export function composeVersion() {
 // `oracle-calls.json` as `{ args, env, input }` (`input` present only for calls that
 // pipe a file) and the answer is `""`, except `ps --format json`, which answers with
 // whatever `SDLC_MOCK_DIR/oracle-ps.json` holds — a test's way of saying a container is
-// already running — or `""` when that file is not present.
+// already running — and `config --services`, which answers with
+// `SDLC_MOCK_DIR/oracle-services.txt`; either is `""` when its file is not present.
 export function compose(args, { cwd, env = {}, input } = {}) {
   if (process.env.SDLC_ORACLE === "mock") {
     recordMockCall(args, env, input);
@@ -61,13 +101,23 @@ export function compose(args, { cwd, env = {}, input } = {}) {
       const p = join(mockDir(), "oracle-ps.json");
       return existsSync(p) ? readFileSync(p, "utf8") : "";
     }
+    // `config --services` lists what the compose files define, which is how `oracle up`
+    // works out which services to start before the application. Under mock that list
+    // comes from `SDLC_MOCK_DIR/oracle-services.txt`, one service name per line.
+    if (args.includes("config") && args.includes("--services")) {
+      const p = join(mockDir(), "oracle-services.txt");
+      return existsSync(p) ? readFileSync(p, "utf8") : "";
+    }
     return "";
   }
   try {
-    const opts = { cwd, env: { ...process.env, ...env }, encoding: "utf8", stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] };
+    const opts = composeOptions(args, { cwd, env, input });
     if (input) opts.input = readFileSync(input, "utf8");
     return execFileSync("docker", ["compose", ...args], opts);
   } catch (e) {
+    // A streaming call's stderr went straight to the terminal, so there is nothing on
+    // the error to quote and the message stands on its own; a captured call's stderr is
+    // the whole account of the failure and is quoted.
     const stderr = (e.stderr ?? "").toString().trim();
     throw new Error(`docker compose ${args.join(" ")} failed:\n${stderr || e.message}`);
   }
@@ -104,25 +154,34 @@ export async function waitForDb(baseArgs, db, opts) {
   }
 }
 
-// The `tests/seed/*.sql` files a load would apply, in ascending name order — shared
-// between `loadSeed` below and `oracle.mjs`'s check for seed files that exist but have
-// nowhere to load into (`oracle.db` not configured).
-export function seedFiles(projectDir) {
-  const seedDir = join(projectDir, "tests", "seed");
-  return existsSync(seedDir) ? readdirSync(seedDir).filter((f) => f.endsWith(".sql")).sort() : [];
+// Where a project keeps the `.sql` files `oracle up` loads: `oracle.seed` when the config
+// sets it, `tests/seed` otherwise — the path `contract` writes to and everything else in
+// the pipeline reads. A trailing slash is tolerated, since that is how the key reads most
+// naturally in YAML.
+export function seedDirFor(config) {
+  return (config?.oracle?.seed || "tests/seed").replace(/\/+$/, "");
 }
 
-// Loads every `tests/seed/*.sql` file, in ascending name order, through
+// The seed files a load would apply, in ascending name order — shared between `loadSeed`
+// below and `oracle.mjs`'s check for seed files that exist but have nowhere to load into
+// (`oracle.db` not configured).
+export function seedFiles(projectDir, config) {
+  const dir = join(projectDir, seedDirFor(config));
+  return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".sql")).sort() : [];
+}
+
+// Loads every seed file, in ascending name order, through
 // `compose exec -T <db.service> psql -v ON_ERROR_STOP=1 -U <db.user> -d <db.database>`,
 // piping each file as stdin. `ON_ERROR_STOP=1` makes a broken seed file fail the call
 // (and so the whole `oracle up`) instead of loading partway and reporting success.
 // Returns the list of files loaded, for the caller to report or assert on.
-export function loadSeed(projectDir, baseArgs, db, opts) {
-  const seedDir = join(projectDir, "tests", "seed");
-  const files = seedFiles(projectDir);
+export function loadSeed(projectDir, config, baseArgs, opts) {
+  const db = config.oracle.db;
+  const dir = join(projectDir, seedDirFor(config));
+  const files = seedFiles(projectDir, config);
   for (const f of files) {
     const args = [...baseArgs, "exec", "-T", db.service, "psql", "-v", "ON_ERROR_STOP=1", "-U", db.user, "-d", db.database];
-    compose(args, { ...opts, input: join(seedDir, f) });
+    compose(args, { ...opts, input: join(dir, f) });
   }
   return files;
 }

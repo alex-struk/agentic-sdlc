@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, chmodSync, rmSync } from "node:fs";
 import { createServer, Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { freePort, readLocal } from "../src/oracle/ports.mjs";
+import { compose, composeOptions } from "../src/oracle/compose.mjs";
 import { runOracle } from "../src/commands/oracle.mjs";
 
 // A minimal config.yaml carrying just enough for the schema plus a fully-specified
@@ -48,12 +49,12 @@ egress: { rules: [E-1, E-2, E-3, E-4] }
 // `sdlc oracle` to work with — a config, the base compose file, an override, and two
 // seed files — committed so `oracle up`/`down` can exercise the "commit the run record
 // when the tree started clean" path.
-function makeMicroProject(tmp) {
+function makeMicroProject(tmp, config = CONFIG) {
   const dir = join(tmp, "micro-oracle");
   mkdirSync(join(dir, ".sdlc", "oracle"), { recursive: true });
   mkdirSync(join(dir, "sources", "old"), { recursive: true });
   mkdirSync(join(dir, "tests", "seed"), { recursive: true });
-  writeFileSync(join(dir, ".sdlc", "config.yaml"), CONFIG);
+  writeFileSync(join(dir, ".sdlc", "config.yaml"), config);
   // Empty is enough: under SDLC_ORACLE=mock nothing ever reads this file's contents,
   // only its existence (the pre-flight "compose file must exist" check).
   writeFileSync(join(dir, "sources", "old", "docker-compose.yml"), "");
@@ -132,7 +133,7 @@ test("oracle up: writes the local file with three distinct ports and runs the co
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /oracle up/);
     const day = new Date().toISOString().slice(0, 10);
     const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
-    assert.match(runs, new RegExp(`oracle up old: ${local.base_url}`));
+    assert.match(runs, new RegExp(`oracle up old: http://localhost:3100 \\(local port ${local.ports.app}\\)`));
   });
 });
 
@@ -285,4 +286,150 @@ test("freePort does not re-test a taken port twice when prefer and from are the 
     listenSpy.mock.restore();
     await new Promise((res) => holder.close(res));
   }
+});
+
+// --- what a real `docker compose` call is given ---
+
+test("compose options: every call carries a 256 MiB buffer; up and run stream, everything else is captured", () => {
+  const prefix = ["-p", "proj", "-f", "docker-compose.yml", "-f", ".sdlc/oracle/compose.yml"];
+  const up = composeOptions([...prefix, "up", "-d", "--build", "db"], { cwd: "/x" });
+  assert.equal(up.maxBuffer, 256 * 1024 * 1024);
+  assert.deepEqual(up.stdio, ["ignore", "inherit", "inherit"]);
+
+  const run = composeOptions([...prefix, "run", "--rm", "migrate"], { cwd: "/x" });
+  assert.deepEqual(run.stdio, ["ignore", "inherit", "inherit"]);
+
+  // `ps` output is parsed by the caller, so it has to come back rather than scroll past.
+  const ps = composeOptions([...prefix, "ps", "--format", "json"], { cwd: "/x" });
+  assert.equal(ps.maxBuffer, 256 * 1024 * 1024);
+  assert.deepEqual(ps.stdio, ["ignore", "pipe", "pipe"]);
+
+  // A piped seed file needs stdin open; the file name is not the subcommand.
+  const psql = composeOptions([...prefix, "exec", "-T", "db", "psql"], { cwd: "/x", input: "/seed/001.sql" });
+  assert.deepEqual(psql.stdio, ["pipe", "pipe", "pipe"]);
+});
+
+test("compose: a docker whose output is larger than the old 1 MiB default is read in full", () => {
+  // A stand-in `docker` on PATH that writes 2 MiB — what a real `up --build` does many
+  // times over, and what execFileSync's default buffer aborts on with ENOBUFS.
+  const binDir = mkdtempSync(join(tmpdir(), "sdlc-fake-docker-"));
+  writeFileSync(join(binDir, "docker"), "#!/usr/bin/env node\nprocess.stdout.write(\"x\".repeat(2 * 1024 * 1024));\n");
+  chmodSync(join(binDir, "docker"), 0o755);
+  const prevPath = process.env.PATH;
+  const prevOracle = process.env.SDLC_ORACLE;
+  delete process.env.SDLC_ORACLE;
+  process.env.PATH = `${binDir}:${prevPath}`;
+  try {
+    const out = compose(["-p", "proj", "-f", "docker-compose.yml", "ps", "--format", "json"], { cwd: binDir });
+    assert.equal(out.length, 2 * 1024 * 1024);
+  } finally {
+    process.env.PATH = prevPath;
+    if (prevOracle === undefined) delete process.env.SDLC_ORACLE;
+    else process.env.SDLC_ORACLE = prevOracle;
+  }
+});
+
+// --- which services come up, and in what order ---
+
+test("oracle up: with no oracle.up configured, the services come from compose config --services minus the app and migration services", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-services-"));
+  const dir = makeMicroProject(tmp, CONFIG.replace("  up: [db, mailpit]\n", ""));
+  await withMock(null, async (mockDir) => {
+    writeFileSync(join(mockDir, "oracle-services.txt"), "app\ndb\nmailpit\nmigrate\nredis\n");
+    const code = await runOracle(dir, "up", {});
+    assert.equal(code, 0);
+
+    const shapes = readCalls(mockDir).map((c) => c.args.slice(6).join(" "));
+    // `config --services` is asked first, then `up` names exactly what it answered minus
+    // `service` (app) and `migrate_service` (migrate).
+    assert.equal(shapes[0], "config --services");
+    assert.equal(shapes[1], "up -d --build db mailpit redis");
+    assert.equal(shapes[shapes.length - 1], "up -d app");
+  });
+});
+
+test("oracle up: a configured oracle.up is used as it stands, with no compose config call", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-services-configured-"));
+  const dir = makeMicroProject(tmp);
+  await withMock(null, async (mockDir) => {
+    writeFileSync(join(mockDir, "oracle-services.txt"), "app\ndb\nmailpit\nmigrate\nredis\n");
+    assert.equal(await runOracle(dir, "up", {}), 0);
+    const shapes = readCalls(mockDir).map((c) => c.args.slice(6).join(" "));
+    assert.ok(!shapes.some((x) => x.startsWith("config")), shapes.join(" | "));
+    assert.equal(shapes[0], "up -d --build db mailpit");
+  });
+});
+
+// --- what has to be on disk before anything is composed ---
+
+test("oracle up: refuses when the compose override the contract stage writes is missing", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-nooverride-"));
+  const dir = makeMicroProject(tmp);
+  rmSync(join(dir, ".sdlc", "oracle", "compose.yml"));
+  await withMock(null, async (mockDir) => {
+    const errors = [];
+    const orig = console.error;
+    console.error = (...a) => errors.push(a.join(" "));
+    try {
+      assert.equal(await runOracle(dir, "up", {}), 1);
+      assert.ok(errors.some((e) => e.includes("run sdlc run contract first: .sdlc/oracle/compose.yml is missing")), errors.join("\n"));
+    } finally { console.error = orig; }
+    assert.deepEqual(readCalls(mockDir), []);
+  });
+});
+
+test("oracle up: a compose file under sources/ that is not there names the pipeline-owned clone", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-nosources-"));
+  const dir = makeMicroProject(tmp);
+  rmSync(join(dir, "sources", "old", "docker-compose.yml"));
+  await withMock(null, async () => {
+    const errors = [];
+    const orig = console.error;
+    console.error = (...a) => errors.push(a.join(" "));
+    try {
+      assert.equal(await runOracle(dir, "up", {}), 1);
+      assert.ok(errors.some((e) => e.includes("compose file not found") && e.includes("sources/old holds the old application's clone")), errors.join("\n"));
+    } finally { console.error = orig; }
+  });
+});
+
+// --- what the run record says ---
+
+test("oracle up: the run record names the configured base_url and the port only as a local fact", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-record-"));
+  const dir = makeMicroProject(tmp);
+  await withMock(null, async () => {
+    assert.equal(await runOracle(dir, "up", {}), 0);
+    const local = readLocal(dir, "old");
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
+    assert.match(runs, new RegExp(`oracle up old: http://localhost:3100 \\(local port ${local.ports.app}\\)`));
+    // The machine-local URL itself is never written into committed history.
+    assert.ok(!runs.includes(`oracle up old: ${local.base_url}\n`), runs);
+  });
+});
+
+// --- where the seed files come from ---
+
+test("oracle up: oracle.seed points the loader at the directory it names, and defaults to tests/seed", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-seeddir-"));
+  const dir = join(tmp, "micro-oracle-seeddir");
+  mkdirSync(join(dir, ".sdlc", "oracle"), { recursive: true });
+  mkdirSync(join(dir, "sources", "old"), { recursive: true });
+  mkdirSync(join(dir, "db", "fixtures"), { recursive: true });
+  writeFileSync(join(dir, ".sdlc", "config.yaml"), CONFIG.replace("  seed: tests/seed/\n", "  seed: db/fixtures\n"));
+  writeFileSync(join(dir, "sources", "old", "docker-compose.yml"), "");
+  writeFileSync(join(dir, ".sdlc", "oracle", "compose.yml"), "");
+  writeFileSync(join(dir, "db", "fixtures", "010-widgets.sql"), "-- widgets\n");
+  writeFileSync(join(dir, ".gitignore"), ".sdlc/oracle-*.local.yaml\n");
+  git(["init", "-q", "-b", "main"], dir);
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "seed elsewhere"], dir);
+
+  await withMock(null, async (mockDir) => {
+    assert.equal(await runOracle(dir, "up", {}), 0);
+    const piped = readCalls(mockDir).filter((c) => c.input);
+    assert.equal(piped.length, 1);
+    assert.match(piped[0].input, /db\/fixtures\/010-widgets\.sql$/);
+  });
 });

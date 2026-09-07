@@ -22,8 +22,18 @@ Reads `.sdlc/config.yaml`'s `oracle` block (`docs/config.md`): `target`, `compos
 `compose_override` (default `.sdlc/oracle/compose.yml`, written by the `contract` stage),
 `base_url`, `service` (default `app`), `up` (which services to bring up before migrating and
 seeding), `migrate_service`, `db` (`service`/`user`/`database`, when this oracle has a database
-to seed), and `env` (extra environment variables passed to every compose call). `up` also reads
-every `tests/seed/*.sql` file, in ascending name order.
+to seed), `seed` (default `tests/seed`) and `env` (extra environment variables passed to every
+compose call). `up` also reads every `*.sql` file in the seed directory, in ascending name order.
+
+Left unset or empty, `up` is derived rather than defaulted to "no service names": `docker compose
+config --services` lists what the compose file and the override define, `service` and
+`migrate_service` are removed, and the rest are named explicitly on `up -d --build`. A bare `up`
+with no names would start the application too, before its database and its migration have run.
+
+`config.oracle.compose` under `sources/` names a file in the old application's clone, which the
+pipeline materialises from `config.sources.old` rather than the project committing — so `up`
+checks that clone out first (`ensureSources`, `src/runner/sources.mjs`) before looking for the
+file.
 
 ## Outputs
 
@@ -38,7 +48,9 @@ every `tests/seed/*.sql` file, in ascending name order.
   ```
   `down` removes this file. Later stages read it to find the running oracle: `bind-adapter`'s
   target-`old` run fails its own pre-check, naming this file, when it is not there.
-- A run-record line (`oracle up <target>: <base_url>` or `oracle down <target>`), committed with
+- A run-record line (`oracle up <target>: <configured base_url> (local port <n>)` or `oracle down
+  <target>`) — the target's configured URL, since the port is whatever was free on this machine
+  and means nothing on anybody else's, and the run record is committed history. Committed with
   the pipeline's own git identity when the working tree was already clean before the command ran
   (the same convention every stage follows) — printed but left uncommitted otherwise, so an
   `oracle up` run in the middle of other uncommitted work never sweeps that work into a commit it
@@ -51,7 +63,10 @@ every `tests/seed/*.sql` file, in ascending name order.
 
 - `up` refuses, before touching anything, when: `config.oracle` is not configured; `--target`
   names something other than `config.oracle.target`; `config.oracle.compose` does not exist on
-  disk; or `docker compose version` fails (Docker Compose is not installed, or not on `PATH`).
+  disk; the compose override does not exist on disk (`run sdlc run contract first: <path> is
+  missing` — the override is `contract`'s own output, and without it every compose call below
+  would name a file that is not there); or `docker compose version` fails (Docker Compose is not
+  installed, or not on `PATH`).
 - Ports are chosen to avoid colliding with anything already listening on this machine: the
   application keeps the port `oracle.base_url` names when that port is free, otherwise the first
   free port from 3100 up; the database scans from 5500; the mail API (a `mailpit` service the
@@ -64,8 +79,12 @@ every `tests/seed/*.sql` file, in ascending name order.
   `service`/`user`/`database` to connect; seed files present without `oracle.db` produce a
   warning, not a failure. The application has to answer any HTTP status at `<base_url>/` within
   180 seconds before `up` reports success. Either timeout fails the command.
-- Every `tests/seed/*.sql` file is loaded with `psql -v ON_ERROR_STOP=1`, so a broken seed file
-  fails the load (and so the whole `up`) instead of applying partway and reporting success.
+- Every seed `*.sql` file is loaded with `psql -v ON_ERROR_STOP=1`, so a broken seed file fails
+  the load (and so the whole `up`) instead of applying partway and reporting success.
+- `up` and `run` inherit the terminal's own stdout and stderr, so a container build scrolls past
+  as it happens rather than arriving all at once at the end. Every other compose call is captured,
+  with a 256 MiB buffer: the default 1 MiB is smaller than a real build's output and aborts the
+  call with `ENOBUFS` long before the build finishes.
 
 ## Exit criterion
 
