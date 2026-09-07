@@ -30,7 +30,11 @@ from the ratified criteria.
   vocabulary — never a selector or a test ID.
 - `spec/contract/personas.yaml` completed: every role with a `can` list and a `sign_in` entry for
   every identity `config.oracle?.identity` and every `config.targets[*].identity` name, deduplicated.
-  A persona with no sign-in at all carries `sign_in: null` explicitly.
+  A persona with no sign-in at all carries `sign_in: null` explicitly. A role the target genuinely
+  offers no way to act as carries `sign_in: { <identity>: { unavailable: "<reason>" } }` instead —
+  used only when the target truly has no way to act as that role, with a reason saying why.
+  `bind-adapter`'s `signIn` throws `unbound: signIn.<persona id> — <reason>` for an identity marked
+  this way, so calibrate reports every criterion that needs it as `unbound`.
 - `spec/contract/openapi.yaml`, assembled from the old application's own API description when one
   exists, or written from its routes, with a `# recovered from <path(s)> at <commit>` header — only
   when `config.sources.old` is configured.
@@ -68,7 +72,9 @@ Either way, the guard row for `contract` allows only `spec/contract/`, `tests/se
   - `loadContract` (`src/spec/surface.mjs`) reports no errors across `surface.yaml`,
     `personas.yaml`, `observables.yaml` and `tests/seed/manifest.yaml`.
   - Every persona (other than one whose `sign_in` is exactly `null`) carries a `sign_in` entry for
-    every identity this project's config actually uses.
+    every identity this project's config actually uses. An entry may declare
+    `{ unavailable: "<reason>" }` in place of real credentials; the reason has to be a non-empty
+    string, or this check fails the same way a missing entry does.
   - Every domain with at least one `accepted` criterion (read from `spec/criteria-index.json`, when
     it exists) has at least one page in `surface.yaml` carrying that `domain:`.
   - `openapi.yaml` parses as YAML with a top-level `openapi` key and at least one path — only when

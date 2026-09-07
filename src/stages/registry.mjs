@@ -453,6 +453,12 @@ function checkContractLoads(projectDir) {
 // A persona whose `sign_in` is exactly `null` is anonymous by design and exempt; every
 // other persona needs an entry for every identity the config actually uses, named so
 // whoever rules on the proposal knows exactly which persona and which identity is short.
+//
+// An entry may be real sign-in credentials, or `{ unavailable: "<reason>" }` for a role
+// the target genuinely offers no way to act as — an old application with three fixed
+// test users cannot host a second staff member, and that is a fact about the target, not
+// a gap in the contract. The reason has to be a non-empty string: `unavailable` with
+// nothing behind it is indistinguishable from a persona nobody got around to filling in.
 function checkPersonaSignIns(projectDir, config) {
   const id = "contract-persona-sign-in";
   const identities = configuredIdentities(config);
@@ -466,7 +472,15 @@ function checkPersonaSignIns(projectDir, config) {
   for (const p of personas.personas) {
     if (p.sign_in === null) continue;
     for (const identity of identities) {
-      if (!p.sign_in?.[identity]) messages.push(`persona "${p.id}" has no sign_in for identity "${identity}"`);
+      const entry = p.sign_in?.[identity];
+      if (!entry) {
+        messages.push(`persona "${p.id}" has no sign_in for identity "${identity}"`);
+        continue;
+      }
+      const isUnavailable = typeof entry === "object" && !Array.isArray(entry) && "unavailable" in entry;
+      if (isUnavailable && (typeof entry.unavailable !== "string" || entry.unavailable.trim() === "")) {
+        messages.push(`persona "${p.id}" marks identity "${identity}" unavailable but gives no reason`);
+      }
     }
   }
   return { id, ok: messages.length === 0, messages };
@@ -590,7 +604,7 @@ const contract = {
         : "Complete spec/contract/ by authoring the contract from the ratified criteria: this project has no old application configured, so there is nothing under sources/old to read — write the contract from what the criteria in spec/domains/ (and spec/criteria-index.json, if ratify has already run) say the system does.",
       "1. spec/contract/surface.yaml: one entry per page the criteria need, each carrying a \"domain:\" field, a route, a title, and actions/observations named in the vocabulary the criteria use — never a CSS selector or a test ID, which are filled in at the design gate, not here. Keep and normalise whatever archaeology already appended; delete nothing.",
       identities.length
-        ? `2. spec/contract/personas.yaml: every role with a "can" list and a "sign_in" entry for every identity this project configures (${identities.join(", ")}). "session-route" needs { route: <path> }; "sandbox-idp" needs { username: <name> }. A persona with no sign-in at all (an anonymous visitor) writes "sign_in: null" rather than omitting the key.`
+        ? `2. spec/contract/personas.yaml: every role with a "can" list and a "sign_in" entry for every identity this project configures (${identities.join(", ")}). "session-route" needs { route: <path> }; "sandbox-idp" needs { username: <name> }. A persona with no sign-in at all (an anonymous visitor) writes "sign_in: null" rather than omitting the key. A role the target genuinely offers no way to act as — not one you merely couldn't find — writes { unavailable: "<reason>" } instead, saying why.`
         : "2. spec/contract/personas.yaml: every role with a \"can\" list. This project configures no identity at all (no oracle, no targets), so no persona needs a sign_in entry yet.",
       fromSources
         ? "3. spec/contract/openapi.yaml: assembled from the old application's own API description files if it has any, else written from its routes — one operationId per route — with a top comment \"# recovered from <path(s)> at <commit>\" naming exactly where it came from."
@@ -1098,7 +1112,7 @@ const bindAdapter = {
     const identity = ctx.bindAdapterIdentity;
     return [
       `Write tests/adapters/${t}/index.ts, exporting default function create(page: Page, ctx: { baseURL: string; persona: typeof persona }): Surface, implementing every page tests/generated/surface.d.ts declares for this project. This target is named "${t}"; its base URL is in your SDLC_TARGET_URL environment variable and is also handed to your own adapter as "baseURL" once it runs for real. Walk the actual running application with the browser tools and bind against what you find there — never a selector copied from source, because there is no source in this workspace to copy one from.`,
-      `signIn(persona) reads persona.signIn["${identity ?? "?"}"] for the persona it is given. ${bindAdapterSignInInstructions(identity)}`,
+      `signIn(persona) reads persona.signIn["${identity ?? "?"}"] for the persona it is given. ${bindAdapterSignInInstructions(identity)} When that entry is { unavailable: "<reason>" } instead of real credentials, signIn must throw new Error("unbound: signIn.<persona id> — <reason>") rather than attempt to sign in — the same shape as an unbound action or observation, so calibrate reports every criterion that needs this persona as unbound instead of a real failure.`,
       `Bind every action and observation by driving the browser: open the page at its route, find the control by its role, its label, its visible text, or the URL it lands you on — never a CSS selector, a test id, or anything else that only makes sense with the source open next to you. An action or observation nothing on the page actually does throws new Error("unbound: <page>.<member> — <reason>") from that method, naming what is missing.`,
       `Write tests/adapters/${t}/bindings.yaml naming every action and observation on every page in the surface exactly once, as "bound" or "unbound: <reason>". Spell every page, action and observation exactly as spec/contract/surface.yaml spells it — "applications-new" and "submit_proposal", not the camelCased TypeScript members ("applicationsNew", "submitProposal") your adapter implements them as:\n\ntarget: ${t}\npages:\n  <pageId>:\n    actions: { <name>: bound }\n    observations: { <name>: "unbound: <why>" }`,
       `Your territory is tests/adapters/${t}/ alone. Never write under tests/acceptance or spec/ — this workspace does not even have them for you to touch by mistake.`,

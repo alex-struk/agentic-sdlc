@@ -20,7 +20,11 @@ baseURL: string; persona: typeof persona }): Surface`, implementing every page
   `page.goto(baseURL + persona.signIn["session-route"].route)` mints the session directly, no form
   involved. `sandbox-idp`: find the identity provider's own sign-in form and fill it with the
   persona's username and the password in your `SDLC_SANDBOX_PASSWORD` environment variable — never
-  a password you invent, and never the literal value written anywhere in the file you produce.
+  a password you invent, and never the literal value written anywhere in the file you produce. When
+  the entry is `{ unavailable: "<reason>" }` instead of real credentials, `signIn` throws
+  `new Error("unbound: signIn.<persona id> — <reason>")` rather than attempting to sign in — the
+  same shape as an unbound action or observation, so calibrate reports every criterion this persona
+  is needed for as `unbound` rather than as a real failure.
 - **`open(params)`** on each page navigates to that page's route, with any params substituted.
 - **Every action and observation** is bound by driving the browser: open the page, find the
   control by its role, its label, its visible text, or the URL it lands you on. Never a CSS

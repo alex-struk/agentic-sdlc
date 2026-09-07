@@ -128,6 +128,78 @@ test("sdlc run contract: a mock whose applicant persona has no sign_in for the c
   }
 });
 
+test("sdlc run contract: a persona may mark an identity unavailable with a reason, and the post-check accepts it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-unavailable-ok-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-unavailable-ok-mock-"));
+  writeFileSync(join(mockDir, "contract.json"), JSON.stringify({
+    text: "wrote the contract; the sandbox seeds only one applicant account, so a second reviewer role has no way to sign in",
+    files: {
+      "spec/contract/surface.yaml":
+        "pages:\n  - id: applications-new\n    domain: applications\n    route: /applications\n    title: \"New permit application\"\n"
+        + "    actions: { submit: { test_id: null } }\n    observations: { status: { test_id: null } }\n"
+        + "  - id: fees-quote\n    domain: fees\n    route: /fees/quote\n    title: \"Fee quote\"\n"
+        + "    actions: { calculate: { test_id: null } }\n    observations: { amount: { test_id: null } }\n",
+      "spec/contract/personas.yaml":
+        "personas:\n  - id: applicant\n    can: [submit a permit application]\n    sign_in: { sandbox-idp: { username: applicant-1 } }\n"
+        + "  - id: second-reviewer\n    can: [countersign an application]\n"
+        + "    sign_in: { sandbox-idp: { unavailable: \"the sandbox seeds only one applicant account\" } }\n"
+        + "  - id: anonymous-visitor\n    can: [view a fee quote]\n    sign_in: null\n",
+      "spec/contract/observables.yaml": "email: { via: mail-catcher, api: \"${SDLC_MAIL_API}\" }\n",
+      "tests/seed/001-users.sql": "INSERT INTO users (id, email) VALUES ('1', 'applicant-1@example.test');\n",
+      "tests/seed/manifest.yaml": "users:\n  applicantOne: { id: \"1\", email: \"applicant-1@example.test\" }\n",
+    },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "contract");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(r.proposal.name, "contract-v1");
+    const personasText = readFileSync(join(dir, "spec/contract/personas.yaml"), "utf8");
+    assert.match(personasText, /unavailable: "the sandbox seeds only one applicant account"/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run contract: a persona marking an identity unavailable with an empty reason fails the post-check", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-unavailable-empty-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-unavailable-empty-mock-"));
+  writeFileSync(join(mockDir, "contract.json"), JSON.stringify({
+    text: "wrote the contract but left the unavailable reason blank",
+    files: {
+      "spec/contract/surface.yaml":
+        "pages:\n  - id: applications-new\n    domain: applications\n    route: /applications\n    title: \"New permit application\"\n"
+        + "    actions: { submit: { test_id: null } }\n    observations: { status: { test_id: null } }\n"
+        + "  - id: fees-quote\n    domain: fees\n    route: /fees/quote\n    title: \"Fee quote\"\n"
+        + "    actions: { calculate: { test_id: null } }\n    observations: { amount: { test_id: null } }\n",
+      "spec/contract/personas.yaml":
+        "personas:\n  - id: applicant\n    can: [submit a permit application]\n    sign_in: { sandbox-idp: { username: applicant-1 } }\n"
+        + "  - id: second-reviewer\n    can: [countersign an application]\n"
+        + "    sign_in: { sandbox-idp: { unavailable: \"\" } }\n"
+        + "  - id: anonymous-visitor\n    can: [view a fee quote]\n    sign_in: null\n",
+      "spec/contract/observables.yaml": "email: { via: mail-catcher, api: \"${SDLC_MAIL_API}\" }\n",
+      "tests/seed/001-users.sql": "INSERT INTO users (id, email) VALUES ('1', 'applicant-1@example.test');\n",
+      "tests/seed/manifest.yaml": "users:\n  applicantOne: { id: \"1\", email: \"applicant-1@example.test\" }\n",
+    },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "contract");
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m.includes("second-reviewer") && m.includes("unavailable")), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(contract\): post-checks failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("sdlc run contract: re-run after approving contract-v1 opens contract-v2", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-rerun-"));
   const { dir, prevEgress } = await makeProject(tmp);

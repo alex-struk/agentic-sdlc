@@ -37,6 +37,14 @@ nobody ever signs in as — an anonymous visitor a page's own logic distinguishe
 session at all — writes `sign_in: null` explicitly, not a missing key: a missing key looks like an
 omission, and `null` says on purpose that there is nothing to sign in with.
 
+A role the target genuinely offers no way to act as writes `sign_in: { <identity>: { unavailable:
+"<reason>" } }` instead — an old application with three fixed test users cannot host a second
+staff member, and no amount of looking harder will find a fourth. Use this only when the target
+truly has no way to act as this role, never as a shortcut past one you have not found yet; say why
+in the reason, since whoever rules on the proposal reads it to judge whether the gap is real.
+`bind-adapter` throws from `signIn` for an identity marked this way, so every criterion needing the
+persona reports as `unbound` in calibrate rather than as a failure that looks like a real defect.
+
 **`spec/contract/openapi.yaml`.** Only when this project has `sources.old`. Assemble it from the
 old application's own API description files if it carries any (an OpenAPI or Swagger document,
 even a partial one); otherwise write it from the routes you find, one `operationId` per route.

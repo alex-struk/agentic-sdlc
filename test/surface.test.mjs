@@ -297,6 +297,26 @@ test("generateTypes: kebab-case page ids become camelCase properties and PascalC
   assert.match(dts, /filterByProgram\(input\?: unknown\): Promise<void>;/);
 });
 
+test("generateTypes: a persona's sign_in unavailable reason passes through personas.ts unchanged", () => {
+  const contract = {
+    surface: { pages: [] },
+    personas: {
+      personas: [
+        {
+          id: "second-staff-reviewer",
+          can: ["countersign an award"],
+          sign_in: { "sandbox-idp": { unavailable: "the old application seeds only one staff account" } },
+        },
+      ],
+    },
+    observables: {},
+    manifest: {},
+  };
+  const ts = generateTypes(contract)["tests/generated/personas.ts"];
+  assert.match(ts, /"unavailable": "the old application seeds only one staff account"/);
+  assert.match(ts, /"sandbox-idp": \{/);
+});
+
 // ---- writeGenerated ----
 
 test("writeGenerated: writes tests/generated/* into the project and reports the paths written", () => {
