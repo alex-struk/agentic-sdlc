@@ -345,6 +345,8 @@ export async function rulePending(projectDir) {
     // checkout, no run-record commit (there is nothing clean to commit it onto), just
     // the failure already pushed above plus a `stopped` marker on the returned summary,
     // leaving the caller on the offending proposal branch with the tampering visible.
+    // This is the one way a batch can end off `main`: every other way out of the loop
+    // below returns to it before `rulePending` hands control back.
     try {
       const r = await ruleByAgent(projectDir, name, { persona });
       results.push({ name, ...r });
@@ -374,6 +376,15 @@ export async function rulePending(projectDir) {
       } catch { /* the failure is already in `results` and printed; recording it is best-effort */ }
     }
   }
+  // A `return` or `escalate` ruling ends its own turn back on the proposal branch (see
+  // `regenerateSiteOnMain`), which is right for a single `sdlc rule <name>` but wrong
+  // for a batch: the next `sdlc run` requires `main` (`assertOnMain`), and there is no
+  // reason a batch that ruled ten proposals should fail that check just because the
+  // last one happened to be a return rather than an approve. The ruling itself is not
+  // at risk by switching away — a return's or an escalation's commit lives on its own
+  // branch and stays reachable there regardless of what the working tree is checked out
+  // to next.
+  if (currentBranch(projectDir) !== "main") git(["checkout", "-q", "main"], projectDir);
   return results;
 }
 

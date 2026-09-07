@@ -220,6 +220,14 @@ only ever rejects a persona ruling a gate it does not hold. An agent-held gate w
 bad verdict block, an escalation with no target) is printed and written to the run record, and the
 loop moves on to the next branch rather than aborting the whole batch.
 
+Once every branch has been considered — whether every proposal ruled cleanly or some failed along
+the way — `--pending` ends the batch back on `main`, regardless of what the last ruling in it was.
+A `return` or an `escalate` normally leaves the working tree checked out on the proposal branch
+(see "Return or escalate" above), which is right for a single `sdlc rule <name>` but would leave a
+batch on whatever branch its last proposal happened to be, and the next `sdlc run` requires `main`.
+Nothing about the ruling depends on this: a return's or an escalation's commit lives on its own
+branch and stays reachable there no matter what the working tree is checked out to afterwards.
+
 A failure that leaves the working tree dirty (an agent's turn tampering with a file) is different
 and stops the batch instead of continuing. `git checkout -q main` succeeds even with uncommitted
 changes present whenever the file is identical on both branches, so switching back to `main` to
@@ -231,7 +239,7 @@ commit it onto), and stops — no further proposals are ruled. The failure is st
 returned results, and the summary carries a `stopped: "<name>: working tree dirty after the ruling
 agent's turn; inspect and clean before continuing"` entry. The checkout is left on the offending
 `proposal/<name>` branch with the tampered file visible, for a person to inspect and clean up
-before running `--pending` again.
+before running `--pending` again — the one way a batch can end off `main` on its own.
 
 ## Exit criterion
 
