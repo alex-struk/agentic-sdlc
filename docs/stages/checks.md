@@ -63,6 +63,12 @@ No agent.
   read from `SDLC_EGRESS_NAMES`, then `<project>/.sdlc/egress.local.txt`, then
   `$XDG_CONFIG_HOME/agentic-sdlc/egress-names.txt` (defaulting to `~/.config`).
 
+  Under `--self` one further pattern applies, case-insensitively, to every tracked file
+  except those under `docs/specs/` and `docs/poster/`: the name of the application this
+  pipeline was first built against. The pipeline is generic, and its code, tests, fixtures
+  and stage documentation must not carry the name of one engagement; the design spec that
+  records that engagement and the poster drawn from it are the two places it belongs.
+
 ## Exit criterion
 
 Exits 0 when every check's `ok` is true, else 1.

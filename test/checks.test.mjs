@@ -211,3 +211,37 @@ test("criteria-index check: an index that does not parse fails", () => {
   assert.equal(r.ok, false);
   assert.match(r.messages[0], /does not parse/);
 });
+
+test("egress --self flags the application name this pipeline must not carry, except in the two places it belongs", () => {
+  const d = repo();
+  const emptyNames = join(d, "names.txt");
+  writeFileSync(emptyNames, "");
+  const prev = process.env.SDLC_EGRESS_NAMES;
+  process.env.SDLC_EGRESS_NAMES = emptyNames;
+  // Assembled rather than written out, for the same reason the check's own pattern is:
+  // this test file is scanned by `npm run check` too.
+  const word = "market" + "place";
+  try {
+    mkdirSync(join(d, "docs", "specs"), { recursive: true });
+    mkdirSync(join(d, "docs", "poster"), { recursive: true });
+    writeFileSync(join(d, "docs/specs/design.md"), `the ${word} rebuild\n`);
+    writeFileSync(join(d, "docs/poster/walkthrough.md"), `the ${word} rebuild\n`);
+    writeFileSync(join(d, "docs/other.md"), `the ${word} rebuild\n`);
+    writeFileSync(join(d, "src.mjs"), `// A ${word.toUpperCase()} reference in code\n`);
+    git(["add", "-A"], d);
+
+    const self = checkEgress(d, { self: true });
+    assert.equal(self.ok, false);
+    assert.ok(self.messages.some((m) => m.startsWith("docs/other.md:1:")), self.messages.join("\n"));
+    // Case-insensitive.
+    assert.ok(self.messages.some((m) => m.startsWith("src.mjs:1:")), self.messages.join("\n"));
+    // The design spec and the poster legitimately name it.
+    assert.ok(!self.messages.some((m) => m.startsWith("docs/specs/")), self.messages.join("\n"));
+    assert.ok(!self.messages.some((m) => m.startsWith("docs/poster/")), self.messages.join("\n"));
+
+    // A project being checked is not this repository: the pattern is self-mode only.
+    assert.equal(checkEgress(d, {}).ok, true);
+  } finally {
+    if (prev === undefined) delete process.env.SDLC_EGRESS_NAMES; else process.env.SDLC_EGRESS_NAMES = prev;
+  }
+});

@@ -8,8 +8,8 @@
 // archaeology` opening a G1 proposal the same persona rules with the product owner's
 // own ratification-condition vocabulary (`confirm`, `defect`), and `runStage ratify`
 // turning those conditions into permanent `R-` ids, a regenerated index, and the
-// coverage site — the same chain Part B of Task 8 runs for real, on one domain, in the
-// digital-marketplace-next project.
+// coverage site — the same chain a live run exercises for real, on one domain, against a
+// project outside this repository.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, cpSync } from "node:fs";
