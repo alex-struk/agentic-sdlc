@@ -52,7 +52,10 @@ function idNumber(id) {
   return m ? Number(m[1]) : 0;
 }
 
-function compareIds(a, b) {
+// Exported so callers outside this module (the suite runner's row sort, at least) order
+// ids the same numeric way rather than falling back to a lexical sort that would put
+// `R-1.10` before `R-1.2`.
+export function compareIds(a, b) {
   return idNumber(a) - idNumber(b) || a.localeCompare(b);
 }
 

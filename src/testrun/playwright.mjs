@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { readText } from "../lib/fsx.mjs";
 import { checkTests, loadIndex, readHeader, readNotTestable } from "../checks/tests.mjs";
+import { compareIds } from "../spec/criteria.mjs";
 
 // A failing test's error message is how an unbound adapter member is told apart from a
 // real defect: `bind-adapter` throws `Error("unbound: <page>.<member> — <reason>")` from
@@ -44,6 +45,8 @@ function ensureDeps(projectDir, exec) {
   const testsDir = join(projectDir, "tests");
   const lockfile = join(testsDir, "package-lock.json");
   if (!existsSync(lockfile)) {
+    // The lockfile this produces is committed by the calling stage (`calibrate`), as part
+    // of its own changed-paths commit — nothing here stages or commits it.
     exec("npm", ["install", "--prefix", "tests"], { cwd: projectDir, env: {} });
     return;
   }
@@ -85,7 +88,12 @@ function specOutcomes(spec) {
   return (spec.tests ?? []).map((t) => {
     const results = t.results ?? [];
     const last = results[results.length - 1] ?? {};
-    return { title: spec.title, status: last.status ?? "skipped", error: last.error?.message };
+    const status = last.status ?? "skipped";
+    // An `interrupted` result (the run was aborted mid-test — a worker crash, `Ctrl-C`)
+    // carries no assertion error of its own, so a failing interrupted test would otherwise
+    // report a blank `error`.
+    const error = last.error?.message ?? (status === "interrupted" ? "interrupted" : undefined);
+    return { title: spec.title, status, error };
   });
 }
 
@@ -119,14 +127,27 @@ function buildRows(report, projectDir, staleIds) {
       continue;
     }
 
-    const failing = tests.filter((t) => t.status === "failed" || t.status === "timedOut");
-    let result;
-    if (failing.length === 0) result = "pass";
-    else if (failing.every((t) => t.error && UNBOUND_RE.test(t.error))) result = "unbound";
-    else result = "fail";
+    // A spec whose every result is `skipped` (or that recorded no result at all) never ran
+    // the criterion's assertions, so it has not passed — reported as a failure rather than
+    // silently defaulting to `pass` for lack of any failing entry to point at.
+    const neverRan = tests.length === 0 || tests.every((t) => t.status === "skipped");
+    const failing = tests.filter((t) => t.status === "failed" || t.status === "timedOut" || t.status === "interrupted");
+    let result, rowError;
+    if (neverRan) {
+      result = "fail";
+      rowError = "no result recorded";
+    } else if (failing.length === 0) {
+      result = "pass";
+    } else if (failing.every((t) => t.error && UNBOUND_RE.test(t.error))) {
+      result = "unbound";
+    } else {
+      result = "fail";
+    }
     if (staleIds.has(header.id)) result = "stale";
 
-    rows.push({ id: header.id, version: header.version, domain, file: relFile, result, tests });
+    const row = { id: header.id, version: header.version, domain, file: relFile, result, tests };
+    if (rowError) row.error = rowError;
+    rows.push(row);
   }
   return rows;
 }
@@ -146,12 +167,13 @@ function notTestableRows(projectDir) {
   }));
 }
 
+// Sorted by domain, then numerically within it via the criteria module's own id compare
+// (`R-1.10` after `R-1.2`, not before it as a lexical sort would place it).
 function sortRows(rows) {
   return [...rows].sort((a, b) => {
     const da = a.domain ?? "", db = b.domain ?? "";
     if (da !== db) return da < db ? -1 : 1;
-    const ia = a.id ?? "", ib = b.id ?? "";
-    return ia < ib ? -1 : ia > ib ? 1 : 0;
+    return compareIds(a.id ?? "", b.id ?? "");
   });
 }
 
@@ -189,11 +211,24 @@ export function runSuite(opts) {
     SDLC_TARGET_URL: baseUrl,
     SDLC_MAIL_API: mailApi,
     ...env,
-    // Resolved by Playwright relative to `cwd` below, landing the report at
-    // `tests/test-results/results.json` under `projectDir` either way.
+    // Playwright resolves a relative JSON reporter output name against the resolved
+    // config file's own directory (`tests/`, via `--config` below), not against `cwd` —
+    // so this lands at `tests/test-results/results.json` under `projectDir` regardless of
+    // where the process runs from.
     PLAYWRIGHT_JSON_OUTPUT_NAME: "test-results/results.json",
   };
-  const run = exec("npx", ["--prefix", "tests", "playwright", "test", "--reporter=json"], { cwd: testsDir, env: runEnv });
+  // `cwd: projectDir` matches `ensureDeps`/`ensureBrowsers` above, so `--prefix tests`
+  // means the same thing in all three calls (npm/npx resolve a relative `--prefix`
+  // against `cwd`; pairing it with `cwd: testsDir` here would have pointed it at a
+  // nonexistent `tests/tests`). Because the process itself then starts in `projectDir`,
+  // not `tests/`, Playwright would otherwise fail to find `tests/playwright.config.ts` (it
+  // only looks in its own `cwd`, never a parent) and silently fall back to an unconfigured
+  // default run — `--config` points it at the real config explicitly.
+  const run = exec(
+    "npx",
+    ["--prefix", "tests", "playwright", "test", "--reporter=json", "--config=tests/playwright.config.ts"],
+    { cwd: projectDir, env: runEnv },
+  );
 
   const reportPath = join(testsDir, "test-results", "results.json");
   if (!existsSync(reportPath)) {

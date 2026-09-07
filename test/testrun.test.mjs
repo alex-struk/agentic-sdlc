@@ -102,6 +102,30 @@ test("runSuite: maps a pass, a fail and an unbound spec file to rows", () => {
   assert.deepEqual(result.rows.map((r) => r.id), ["R-1.1", "R-1.2", "R-1.3"]);
 });
 
+test("runSuite: the playwright test call runs from projectDir with --prefix tests exactly once and the target env", () => {
+  const d = project();
+  writeIndex(d, []);
+  writeReport(d, []);
+
+  const calls = [];
+  withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "http://mail", env: { EXTRA: "1" }, exec: recordingExec(calls) }));
+
+  const run = calls.find((c) => c.cmd === "npx" && c.args.includes("test"));
+  assert.ok(run, `expected a playwright test call, got ${JSON.stringify(calls)}`);
+  // cwd matches ensureDeps/ensureBrowsers, so a relative --prefix means the same thing in
+  // every npm/npx call this module makes — pairing it with a `tests/` cwd instead would
+  // resolve to a nonexistent `tests/tests`.
+  assert.equal(run.cwd, d);
+  const prefixIdx = run.args.indexOf("--prefix");
+  assert.equal(run.args.filter((a) => a === "--prefix").length, 1);
+  assert.equal(run.args[prefixIdx + 1], "tests");
+  assert.equal(run.env.SDLC_TARGET, "old");
+  assert.equal(run.env.SDLC_TARGET_URL, "http://x");
+  assert.equal(run.env.SDLC_MAIL_API, "http://mail");
+  assert.equal(run.env.EXTRA, "1");
+});
+
 test("runSuite: a file with one real failure alongside an unbound one is fail, not unbound", () => {
   const d = project();
   writeIndex(d, [accepted("R-1.1")]);
@@ -121,6 +145,47 @@ test("runSuite: a file with one real failure alongside an unbound one is fail, n
   assert.equal(result.rows[0].result, "fail");
 });
 
+test("runSuite: a spec whose last result is interrupted is fail, not pass", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  writeReport(d, [fileSuite("opportunities", "R-1.1.spec.ts", "applies as a vendor", "interrupted")]);
+
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "http://mail", exec: recordingExec([]) }));
+  assert.equal(result.rows[0].result, "fail");
+  assert.equal(result.rows[0].tests[0].error, "interrupted", "an interrupted result with no error message of its own gets a fallback error text");
+});
+
+test("runSuite: a spec whose only result is skipped is fail with 'no result recorded', not pass", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  writeReport(d, [fileSuite("opportunities", "R-1.1.spec.ts", "views a listing", "skipped")]);
+
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "http://mail", exec: recordingExec([]) }));
+  assert.equal(result.rows[0].result, "fail");
+  assert.equal(result.rows[0].error, "no result recorded");
+});
+
+test("runSuite: a spec with no recorded test entries at all is fail with 'no result recorded'", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  write(d, "tests/test-results/results.json", JSON.stringify({
+    suites: [{
+      title: "R-1.1.spec.ts", file: "opportunities/R-1.1.spec.ts",
+      specs: [{ title: "a", file: "opportunities/R-1.1.spec.ts", line: 1, tests: [] }],
+    }],
+  }));
+
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "http://mail", exec: recordingExec([]) }));
+  assert.equal(result.rows[0].result, "fail");
+  assert.equal(result.rows[0].error, "no result recorded");
+});
+
 test("runSuite: a spec file whose header does not parse is reported with id null and result fail, not dropped", () => {
   const d = project();
   writeIndex(d, [accepted("R-1.1")]);
@@ -133,6 +198,23 @@ test("runSuite: a spec file whose header does not parse is reported with id null
   assert.equal(result.rows[0].id, null);
   assert.equal(result.rows[0].result, "fail");
   assert.match(result.rows[0].error, /expected "\/\/ criterion:/);
+});
+
+// ---- row order ----
+
+test("runSuite: rows are sorted numerically within a domain, not lexically (R-1.2 before R-1.10)", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.10"), accepted("R-1.2")]);
+  write(d, "tests/acceptance/opportunities/R-1.10.spec.ts", specHeader("R-1.10", 1));
+  write(d, "tests/acceptance/opportunities/R-1.2.spec.ts", specHeader("R-1.2", 1));
+  writeReport(d, [
+    fileSuite("opportunities", "R-1.10.spec.ts", "views a listing", "passed"),
+    fileSuite("opportunities", "R-1.2.spec.ts", "views a listing", "passed"),
+  ]);
+
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "http://mail", exec: recordingExec([]) }));
+  assert.deepEqual(result.rows.map((r) => r.id), ["R-1.2", "R-1.10"]);
 });
 
 // ---- stale detection ----
@@ -230,7 +312,7 @@ test("runSuite: a run that produces no report throws, naming the runner's stderr
   writeIndex(d, []);
   // No tests/test-results/results.json written at all — simulates a run that crashed
   // before the reporter could flush.
-  const overrides = { "--prefix tests playwright test --reporter=json": { status: 1, stdout: "", stderr: "browserType.launch: executable doesn't exist" } };
+  const overrides = { "--prefix tests playwright test --reporter=json --config=tests/playwright.config.ts": { status: 1, stdout: "", stderr: "browserType.launch: executable doesn't exist" } };
 
   assert.throws(
     () => withBrowsersPath(true, () =>
