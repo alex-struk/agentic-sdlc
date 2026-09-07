@@ -57,7 +57,9 @@ is out of its territory.
 --headless --isolated` — the first stage in this pipeline to declare `mcp` at all
 (`docs/stages/run.md`, "MCP servers, tools and environment"). `stage.allowedTools` narrows the
 session to `Read`, `Write`, `Edit`, `Glob`, `Grep` and `mcp__playwright__*`: no `Bash`, since an
-adapter session drives a browser and edits files and has no business reaching a shell.
+adapter session drives a browser and edits files and has no business reaching a shell. Why a
+browser rather than a script the session runs itself, and why the server is pinned rather than
+tracked: `docs/decisions/0006-contract-stage-and-oracle.md`.
 
 `stage.env` carries three variables into the session, none of them printed by a dry run except by
 name: `SDLC_TARGET_URL` (the target's base URL), `SDLC_MAIL_API` (its mail catcher, `old` only —

@@ -12,7 +12,7 @@ const HELP = `sdlc <command> [args] [--flags]
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."] [--tier HIGH]
   rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>
   rule --pending                   rule every open proposal an agent holds the gate for
-  run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--dry-run]   run one pipeline stage
+  run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--dry-run]   run one pipeline stage
   resume [--again]                 continue an interrupted run
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails

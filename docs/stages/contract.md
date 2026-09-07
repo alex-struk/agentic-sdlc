@@ -8,7 +8,9 @@ the ratified criteria say the system does, reading `sources/old` when this proje
 also writes synthetic seed data (`tests/seed/`) and, when this project configures an oracle, the
 Compose override the oracle needs (`.sdlc/oracle/`). It holds gate G1, the same gate archaeology
 holds: the contract is spec content, not implementation, and nothing later builds tests against it
-until the product-owner persona rules it.
+until the product-owner persona rules it. Why this is a stage of its own rather than part of
+archaeology or ratify, and why the Compose override is project content ruled at G1 rather than
+something the pipeline generates: `docs/decisions/0006-contract-stage-and-oracle.md`.
 
 ## Inputs
 

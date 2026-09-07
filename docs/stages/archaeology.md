@@ -101,7 +101,8 @@ A ruling at G1 can find that one criterion's evidence — its citations, or its 
 wrong in a way no ratification condition can repair, and return the proposal instead of approving
 it. Neither `sdlc rule` nor `sdlc run archaeology --domain <d>` on its own does anything with that:
 the ruling's rationale says what archaeology has to go back and redo, and `--revise` is what acts
-on it.
+on it. Why a return leaves the ratification loop entirely rather than becoming another condition
+verb: `docs/decisions/0006-contract-stage-and-oracle.md`.
 
 `archaeology.preChecks` runs `--domain` and `sources.old` first; only once both pass does it look
 for a returned ruling — its own side effect (below) never fires as a side channel of a batch that

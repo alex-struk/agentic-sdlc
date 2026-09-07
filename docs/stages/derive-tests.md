@@ -6,7 +6,9 @@ Write one Playwright acceptance test per accepted criterion of one business doma
 stage: the agent sees only the contract (`spec/contract/`, generated into `tests/generated/*`)
 and the seed, never `app/` and never a locator, so a test can only assert what the criteria
 themselves say. It holds gate G3: a test that leaks an implementation detail, or asserts something
-its own criterion does not state, is exactly what the reviewer persona rules on there.
+its own criterion does not state, is exactly what the reviewer persona rules on there. Why a test
+is ruled at G3 by a persona rather than at G1 by the product owner:
+`docs/decisions/0006-contract-stage-and-oracle.md`.
 
 ## Inputs
 
