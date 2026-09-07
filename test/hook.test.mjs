@@ -26,11 +26,14 @@ test("spec stages (design, plan) may edit spec but not app or tests", () => {
   assert.equal(run("app/x.ts", "plan").status, 2);
 });
 
-test("intent may write intent/ and the constitution glossary, not app, tests, spec, sources or config", () => {
+test("intent may write intent/ and the constitution glossary, and nothing else at all", () => {
   assert.equal(run("intent/x.md", "intent").status, 0);
   assert.equal(run("constitution.md", "intent").status, 0);
+  // An allow rule, so a path nobody thought to name is refused rather than permitted:
+  // `design/`, `plan/` and `evidence/` are as much outside intent's territory as `app/`.
   for (const p of ["app/x", "tests/acceptance/x.ts", "spec/spec.md", ".github/workflows/a.yml",
-    ".sdlc/config.yaml", "sources/old/README.md"])
+    ".sdlc/config.yaml", "sources/old/README.md",
+    "design/DESIGN.md", "plan/tasks.md", "evidence/pr-evidence.md", "README.md", "constitution.md.bak"])
     assert.equal(run(p, "intent").status, 2, p);
 });
 

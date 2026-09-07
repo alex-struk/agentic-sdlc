@@ -31,7 +31,10 @@ earlier one's. A follow-up that was returned or escalated decided nothing and is
   first `### ` block — the file's title and whatever prose or tables were written under it —
   carried across byte for byte (`docs/spec-format.md`, "Above the first criterion"). Every
   criterion the ruling's conditions named has been changed as that condition says
-  (`applyConditions`, `src/spec/criteria.mjs`), and every criterion
+  (`applyConditions`, `src/spec/criteria.mjs`) — `contract` alone changes nothing at all, being the
+  marker for a criterion the persona looked at and left as it stands, while `confirm` is the verb
+  that raises confidence and so the only one that makes an `inferred` or `open` criterion eligible
+  to mint — and every criterion
   left `confirmed` and not `obsolete` — whether a condition named it or not — has been minted a
   permanent `R-<k>.<n>` id (`mintIds`), `k` the domain's 1-based position in `project.domains` and
   `n` continuing from the highest `n` already minted under that ordinal *anywhere in the project*,

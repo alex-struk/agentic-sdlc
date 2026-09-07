@@ -125,7 +125,7 @@ files elsewhere.
 | `build`, `verify`, `review-and-ship` (and unset, which defaults to `build`) | `spec/`, `tests/acceptance/`, `constitution.md`, `.sdlc/config.yaml`, `.github/workflows/`, `sources/` |
 | `derive-tests` | `app/`, `tests/adapters/`, `tests/seed/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
 | `bind-adapter` | `app/`, `tests/acceptance/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
-| `intent` | `app/`, all of `tests/`, `spec/`, all of `.github/`, `.sdlc/config.yaml`, `sources/` — may write `intent/` and the `constitution.md` glossary |
+| `intent` | everything except `intent/` and `constitution.md` — the brief is turned into one intent document and a glossary row, and nothing else in the tree is its business |
 | `archaeology` | everything except `spec/` — reads the old application under `sources/old/` read-only and writes only `spec/` |
 | `ratify` | everything: a deterministic gate with no agent behind it, so nothing is ever written |
 | `design`, `plan` | `app/`, `tests/acceptance/`, `tests/adapters/`, `.github/workflows/`, `.sdlc/config.yaml`, `sources/` |

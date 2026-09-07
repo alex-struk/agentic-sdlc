@@ -34,12 +34,15 @@ export function checkProposalNotOpen(projectDir, stage, ctx) {
     // next run that opens a proposal under this same name: `propose`'s `git checkout -b`
     // refuses to recreate a branch that already exists. Deleted here with the safe form
     // (`-d`, which itself refuses anything not fully merged into the current branch) so
-    // an approved proposal's spent branch clears the way silently; an unmerged one (a
-    // `return`, whose ruling commit lives only on the branch itself, or a branch this
-    // pre-flight check is not currently sitting on top of) is left for a person to deal
-    // with rather than force-deleted.
-    gitOk(["branch", "-d", branch], projectDir);
-    return null;
+    // an approved proposal's spent branch clears the way silently.
+    if (gitOk(["branch", "-d", branch], projectDir)) return null;
+    // `-d` refused, so the branch holds commits `main` does not — which for a ruled
+    // proposal means a `return` or an `escalate`, whose ruling commit lives only on the
+    // branch. Force-deleting it would throw that ruling away, and leaving it while
+    // reporting nothing would let the run reach `propose` and die there on a branch it
+    // cannot recreate, having already spent an agent turn. Reported as open instead, so
+    // the run is refused up front and a person decides what to do with the branch.
+    return p.name;
   }
   return p.name;
 }

@@ -357,6 +357,40 @@ test("sdlc run archaeology --domain applications: a second run while the proposa
   }
 });
 
+test("a returned proposal's branch still blocks the next run: reported up front, not at propose", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-returned-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const first = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+
+    // A return records its ruling on the proposal branch and merges nothing, so the
+    // branch holds commits main does not and `git branch -d` refuses it. `propose`
+    // cannot recreate a branch that still exists, so a run that read this as "ruled,
+    // carry on" would spend a whole agent turn and then die on the checkout.
+    rule(dir, "archaeology-applications", "return", { by: "tech-lead", note: "the fee criterion has no evidence" });
+    git(["checkout", "-q", "main"], dir);
+
+    const second = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(second.ok, false);
+    assert.deepEqual(second.messages, [
+      "proposal archaeology-applications is still open; rule it (or delete the branch) before running archaeology again",
+    ]);
+    assert.equal(git(["rev-parse", "--verify", "proposal/archaeology-applications"], dir).length, 40,
+      "the branch is left alone, ruling and all");
+
+    // Deleting the branch by hand is what unblocks it.
+    git(["branch", "-D", "proposal/archaeology-applications"], dir);
+    const third = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(third.ok, true, JSON.stringify(third.messages));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("sdlc run archaeology: without --domain, fails pre-checks", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-nodomain-"));
   const { dir, prevEgress } = await makeProject(tmp);

@@ -41,8 +41,11 @@ case "$stage" in
   bind-adapter)
     blocked='^(app/|tests/acceptance/|spec/|constitution\.md$|\.sdlc/|sources/)' ;;
   intent)
-    # intent may write intent/ and the constitution glossary, nothing else.
-    blocked='^(app/|tests/|spec/|\.github/|\.sdlc/config\.yaml$|sources/)' ;;
+    # intent may write intent/ and the constitution glossary, and nothing else. Written
+    # as an allow rule rather than a deny list: a deny list only refuses the paths
+    # somebody thought to name, so `design/`, `plan/`, `evidence/` and every path added
+    # later were all writable by an intent turn that wandered.
+    allowed='^(intent/|constitution\.md$)' ;;
   archaeology)
     # archaeology reads the old app under sources/ read-only and may write only spec/ —
     # every other path, named or not, is out of its territory.

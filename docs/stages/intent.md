@@ -37,9 +37,10 @@ one brief.
 
 `project` mode: the agent works directly in the project's own working tree, with the
 `implement-guard` hook (`docs/stages/init.md`) restricting an `intent` run to `intent/` and
-`constitution.md` — `app/`, `tests/`, `spec/`, `.github/`, `.sdlc/config.yaml` and `sources/` are
-all blocked, the same isolation every stage gets, scoped to what `intent`'s own contract allows
-it to touch.
+`constitution.md` and refusing every other path in the tree — not a list of blocked directories
+but the inverse, so a path nobody thought to name (`design/`, `plan/`, `evidence/`, anything added
+later) is refused rather than permitted. The same isolation every stage gets, scoped to what
+`intent`'s own contract allows it to touch.
 
 ## Checks that block
 

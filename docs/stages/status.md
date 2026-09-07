@@ -66,7 +66,11 @@ every `.sdlc/proposals/*.md`, and every `.sdlc/runs/*.md`.
 `loadConfig` supplies the policy used for gate holders and sampling rates; a config with schema
 errors still produces a site, with missing policy treated as empty (no holder, no sampling).
 
-Files are written directly; nothing is committed by this command.
+Files are written directly; nothing is committed by this command. The site is a tracked artifact
+of `main` and of nothing else: a gate-less stage run commits it alongside its own work
+(`docs/stages/run.md`), and a ruling regenerates and commits it after a merge
+(`docs/stages/rule.md`). A stage that holds a gate deliberately builds no site, because every page
+is regenerated whole and two proposals open at once would conflict on all of them.
 
 ## Workspace the agent sees
 
@@ -94,4 +98,5 @@ and expected — to call after every checkpoint.
 
 - `.sdlc/config.yaml` missing or invalid: throws. Unlike the criteria index, gates and runs,
   `status` has no fallback for this file.
-- A `spec/criteria-index.json` present but without a top-level `criteria` array: throws when counting criteria.
+- A `spec/criteria-index.json` present but without a top-level `criteria` array is treated as zero
+  criteria, the same as a missing file. A file that is not valid JSON at all throws.
