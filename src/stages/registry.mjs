@@ -6,6 +6,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR } from "../spec/criteria.mjs";
+import { readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
 import { checkTests, coverage } from "../checks/tests.mjs";
@@ -557,19 +558,15 @@ function acceptedCriteria(projectDir, domain) {
   return { criteria, generatedFrom: index.generated_from ?? "" };
 }
 
-// Ids named in `tests/acceptance/redo.yaml` (`{ redo: [{ id, why }] }`) for one domain —
-// an optional, hand-maintained file a person uses to ask `--stale` to redo a criterion
-// `checkTests` would not otherwise flag as stale (its header version already matches the
-// index, but something else about it needs another pass). An id the file names that does
-// not belong to this domain's own accepted criteria is silently not this domain's
-// business, the same way a stray id elsewhere in the file is not an error here.
+// Ids named in `tests/acceptance/redo.yaml` (`{ redo: [{ id, version, why }] }`) for one
+// domain. `calibrate` writes that file when the product owner rules `test-wrong <ID>` —
+// the criterion is right and the test is not — which is a reason to derive the test again
+// that `checkTests` cannot see for itself: the file's header version still matches the
+// index, so nothing about the criterion is stale. An id the file names that does not
+// belong to this domain's own accepted criteria is silently not this domain's business,
+// the same way a stray id elsewhere in the file is not an error here.
 function readRedoIds(projectDir, domain, byId) {
-  const p = join(projectDir, "tests", "acceptance", "redo.yaml");
-  if (!existsSync(p)) return [];
-  let parsed;
-  try { parsed = parseYaml(readText(p)); } catch { return []; }
-  const redo = Array.isArray(parsed?.redo) ? parsed.redo : [];
-  return redo.map((r) => r?.id).filter((id) => byId.get(id)?.domain === domain);
+  return readRedo(projectDir).map((r) => r?.id).filter((id) => byId.get(id)?.domain === domain);
 }
 
 // The criteria this run will actually write tests for: every accepted criterion of the
@@ -680,6 +677,23 @@ function checkDeriveTestsBlindHeader(projectDir, domain) {
   return { id, ok: messages.length === 0, messages };
 }
 
+// The entries this run has answered, taken off `tests/acceptance/redo.yaml`. An entry is
+// a standing request to write a criterion's test again; once this run has derived that
+// criterion the request is met, and leaving it on the list would send the same id back
+// through `--stale` on every future run for as long as the file existed.
+//
+// Written here rather than in the workspace because the agent must never touch this file:
+// it is the pipeline's own bookkeeping, not part of the suite the agent is judged on.
+// A post-check may write — `finishStage` commits whatever the working tree holds once the
+// checks pass — and this runs after `checkDeriveTestsScope` has already judged the tree,
+// so clearing the file cannot widen what the agent was allowed to have touched. It runs
+// only when every check passed: a failing run commits nothing of the agent's work, and
+// the requests it did not answer have to still be there for the next attempt.
+function clearDeriveTestsRedo(projectDir, ctx) {
+  const derived = (ctx.deriveTestsCriteria ?? []).map((c) => c.id);
+  if (derived.length) removeRedo(projectDir, derived);
+}
+
 // `derive-tests` is the blind stage: an agent that sees only the contract (generated
 // into `tests/generated/*` by its own `prepare` step) and the seed writes one Playwright
 // spec per accepted criterion, calling the abstract surface and never a locator. It holds
@@ -750,13 +764,15 @@ const deriveTests = {
     // call in `finishStage` does not carry `projectDir`, so a `--stale` run's number has
     // to be resolved here, while it is available, for `proposal` to read back.
     if (ctx.stale) ctx.deriveTestsStaleN = nextDeriveTestsStaleVersion(projectDir, ctx.domain);
-    return [
+    const checks = [
       checkTestsBlind(projectDir, ctx),
       checkSeparation(projectDir),
       checkDeriveTestsCoverage(projectDir, ctx.domain),
       checkDeriveTestsScope(projectDir, ctx.domain),
       checkDeriveTestsBlindHeader(projectDir, ctx.domain),
     ];
+    if (checks.every((c) => c.ok)) clearDeriveTestsRedo(projectDir, ctx);
+    return checks;
   },
 };
 

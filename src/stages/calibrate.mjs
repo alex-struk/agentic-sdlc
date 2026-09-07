@@ -10,6 +10,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
 import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR } from "../spec/criteria.mjs";
+import { addRedo } from "../spec/redo.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp } from "../commands/oracle.mjs";
@@ -98,30 +99,6 @@ function calibrateGateNames(projectDir, target) {
     .map(([f]) => f.replace(/\.yaml$/, ""));
 }
 
-// `tests/acceptance/redo.yaml` is the list `derive-tests --stale` reads to know a
-// criterion needs its test written again even though the criterion itself has not moved.
-// A `test-wrong` ruling adds to it; an id already there is left exactly as it is, since
-// the first reason recorded is the one a person wrote about.
-function writeCalibrateRedo(projectDir, entries) {
-  if (entries.length === 0) return null;
-  const rel = "tests/acceptance/redo.yaml";
-  const p = join(projectDir, rel);
-  let existing = {};
-  if (existsSync(p)) { try { existing = parseYaml(readText(p)) ?? {}; } catch { existing = {}; } }
-  const list = Array.isArray(existing.redo) ? [...existing.redo] : [];
-  const seen = new Set(list.map((r) => r?.id));
-  let added = false;
-  for (const entry of entries) {
-    if (seen.has(entry.id)) continue;
-    list.push(entry);
-    seen.add(entry.id);
-    added = true;
-  }
-  if (!added) return null;
-  writeText(p, stringifyYaml({ redo: list }));
-  return rel;
-}
-
 // Applies every approved calibration ruling for this target that has not been applied
 // before, across every domain file — a ruling names criteria by id, and an id belongs to
 // exactly one domain, so each domain file is read once and offered the whole condition
@@ -201,7 +178,7 @@ function applyCalibrateGates(projectDir, target, today) {
     }
   }
 
-  const redoPath = writeCalibrateRedo(projectDir, redo);
+  const redoPath = addRedo(projectDir, redo);
   if (redoPath) result.changed.push(redoPath);
 
   // A condition no domain claimed names an id the project does not have — a typo, or an

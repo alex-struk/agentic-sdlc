@@ -288,7 +288,7 @@ test("sdlc run calibrate --target old: the second run applies the ruling — a n
     assert.equal(index.criteria.find((c) => c.id === "R-1.1").version, 2);
     // test-wrong: back to derive-tests for that criterion, with the reason.
     const redo = parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8"));
-    assert.deepEqual(redo.redo, [{ id: "R-1.3", why: "the test asserts a fee amount the fee page never shows" }]);
+    assert.deepEqual(redo.redo, [{ id: "R-1.3", version: 1, why: "the test asserts a fee amount the fee page never shows" }]);
 
     const results = latest(dir);
     // The edited criterion's own test is now a version behind, which is what sends it
@@ -606,6 +606,56 @@ test("an escalated calibration ruling leaves the question open rather than count
     assert.ok(!second.proposal, "a question waiting on a person is not re-asked as calibrate-old-2");
     assert.ok(!existsSync(join(dir, ".sdlc/proposals/calibrate-old-2.md")));
     assert.match(lastCalibrateText(dir), /proposal\/calibrate-old-1 is still open/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("derive-tests --stale takes the ids it has just derived off redo.yaml", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-redo-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    await ruleCalibration(dir, "calibrate-old-1", {
+      rationale: "the status wording is the old system's own defect; the fee criterion's test asserts the wrong thing",
+      conditions: [
+        "defect-in-old R-1.2",
+        "spec-wrong R-1.1: The system shall reject a permit application from an applicant under 19 years old.",
+        "test-wrong R-1.3: the test asserts a fee amount the fee page never shows",
+      ],
+    });
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+    const asked = parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8"));
+    assert.deepEqual(asked.redo.map((r) => r.id), ["R-1.3"]);
+    clearCalibrateEnv();
+
+    // Two criteria go back through the blind stage for two different reasons: R-1.1
+    // because `spec-wrong` moved it to v2 and left its test behind, R-1.3 because
+    // `test-wrong` put it on redo.yaml. The agent rewrites R-1.1's test and leaves R-1.3
+    // not-testable, the surface still exposing no fee amount.
+    const staleMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-redo-mock-"));
+    writeFileSync(join(staleMock, "derive-tests.json"), JSON.stringify({
+      text: "Rewrote R-1.1 against the corrected statement. R-1.3 still has no observable fee amount, so its not-testable entry stands.",
+      files: {
+        "tests/acceptance/applications/R-1.1.spec.ts":
+          "// criterion: @R-1.1 v2\n// provenance: blind, spec@000000000000000000000000000000000000000b, derived 2026-09-07\n"
+          + 'import { test, expect, persona } from "../../fixtures";\n\n'
+          + 'test("The system shall reject a permit application from an applicant under 19 years old.", async ({ surface }) => {\n'
+          + "  await surface.signIn(persona.applicant);\n"
+          + "  await surface.applicationsNew.submit({ age: 17 });\n"
+          + '  expect(await surface.applicationsNew.status()).toBe("rejected");\n});\n',
+      },
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = staleMock;
+    const derived = await runStage(dir, "derive-tests", { domain: "applications", stale: true });
+    assert.equal(derived.ok, true, JSON.stringify(derived.messages));
+
+    const after = parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8"));
+    assert.deepEqual(after.redo, [], "the request has been answered, so it is off the list");
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);

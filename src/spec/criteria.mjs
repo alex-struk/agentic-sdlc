@@ -453,8 +453,9 @@ export function calibrateConditionIds(lines) {
 // failing test against the old target does not change.
 //
 // `test-wrong` changes no criterion at all: it returns a `redo` entry the caller writes
-// to `tests/acceptance/redo.yaml`, which is what `derive-tests --stale` reads to know a
-// criterion needs its test written again even though the criterion itself has not moved.
+// to `tests/acceptance/redo.yaml` (`src/spec/redo.mjs`), which is what `derive-tests
+// --stale` reads to know a criterion needs its test written again even though the
+// criterion itself has not moved.
 export function applyCalibrateRulings(criteria, conditions, today) {
   const out = criteria.map((c) => ({ ...c, notes: [...(c.notes ?? [])] }));
   const byId = new Map(out.map((c) => [c.id, c]));
@@ -478,7 +479,10 @@ export function applyCalibrateRulings(criteria, conditions, today) {
         }
         break;
       case "test-wrong":
-        redo.push({ id, why: text });
+        // The version is the one the criterion carries now, so a `derive-tests --stale`
+        // run that later acts on the entry, and the person reading the file after it,
+        // both know which statement the test was judged wrong against.
+        redo.push({ id, version: target.version, why: text });
         break;
     }
     // The version recorded is the one the criterion carries *after* the ruling, so a row

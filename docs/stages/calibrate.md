@@ -86,10 +86,13 @@ What it reads:
   <n> condition(s) not applied` instead, and does not record the ruling those conditions came from as
   applied, so the next run — once the file is fixed — reads it again.
 
-- **`tests/acceptance/redo.yaml`** — `{ redo: [{ id, why }] }`, appended by `test-wrong`. It is the
-  list `derive-tests --stale` reads to know a criterion needs its test written again even though the
-  criterion itself has not moved. An id already on it is left as it is; nothing here ever removes an
-  entry.
+- **`tests/acceptance/redo.yaml`** — `{ redo: [{ id, version, why }] }`, appended by `test-wrong`
+  (`src/spec/redo.mjs`). It is the list `derive-tests --stale` reads to know a criterion needs its
+  test written again even though the criterion itself has not moved; `version` is the version the
+  criterion carried when the ruling was made. An id already on the list is left as it is, so the
+  first reason recorded is the one somebody wrote about. Entries are removed by `derive-tests`, which
+  takes off the ids it has just derived — a request that has been answered must not send the same id
+  back through `--stale` forever (`docs/stages/derive-tests.md`).
 
 - **`spec/criteria-index.json`** and **`spec/spec.md`**, regenerated whenever a ruling changed a
   domain file. This happens *before* the suite runs, not after: staleness is the comparison between a
