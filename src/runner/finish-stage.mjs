@@ -197,6 +197,8 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
 
   let proposal = null;
   if (stage.gate) {
+    // No `stageSite` ran on this path, so `changed` is exactly the stage's own output
+    // plus the journal and run record, and every path in it belongs in the proposal.
     // `agentText` is added alongside whatever `postChecks` already stashed on `ctx`
     // (the same object, so a stage's own `ctx.intentFile`-style side effect above still
     // reaches `proposal` through the spread) rather than passed as a separate argument,

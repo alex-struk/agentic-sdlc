@@ -29,8 +29,10 @@ run from inside the project's working tree.
 From a stage: `propose(projectDir, name, { gate, question, recommendation, page, tier, paths })`.
 `paths` is the one argument with no CLI flag — a list of project-relative paths the caller has
 already changed and wants in this proposal's commit. `finishStage` passes everything the stage's
-agent turn touched (from `changedPaths()`, so deletions and renames are named too, plus the
-journal entry, the run record and the regenerated site).
+agent turn touched (from `changedPaths()`, so deletions and renames are named too), plus the
+journal entry and the run record. The generated state site is not among them: a gated stage does
+not build one, because every page is regenerated whole and two proposals open at once would
+conflict on all of them (`docs/stages/run.md`).
 
 ## Outputs
 
