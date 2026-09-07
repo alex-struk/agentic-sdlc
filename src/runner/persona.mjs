@@ -84,7 +84,15 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
   const stat = git(["diff", `main...${branch}`, "--stat"], projectDir);
   const outside = orderedDiff(projectDir, branch, gate);
 
-  const results = await runChecks(projectDir);
+  // `criteria-index` is skipped here: it compares the live domain files on this
+  // proposal's own branch against `spec/criteria-index.json`, which only `ratify`
+  // regenerates. An archaeology proposal legitimately adds fresh `D-` criteria no
+  // `ratify` run has seen yet, so once any domain in the project has been ratified once
+  // — the point at which the index file starts existing at all — every later
+  // archaeology proposal would show it as stale for criteria that were never meant to
+  // be in it, a false failure that has nothing to do with whether this proposal is
+  // sound (see `runChecks`'s own comment on `opts.skip`).
+  const results = await runChecks(projectDir, { skip: ["criteria-index"] });
   const checksText = formatChecks(results);
 
   return [

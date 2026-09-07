@@ -93,17 +93,19 @@ before handing it to the same `finishStage` every agent-run stage finishes throu
   - That approval must actually be on `main`: either `proposal/archaeology-<d>` shows up in `git
     branch --merged main`, or the gate file itself is reachable from `HEAD` (the ordinary case,
     since `sdlc rule` checks `main` out immediately after merging an approval).
+  - `gate-conditions-parse` — no ruling this run reads carries `unparsed_conditions`. Those are
+    condition lines the ratification grammar could not read even after the persona was asked to
+    restate them (`docs/stages/rule.md`), so acting on that gate file would mean executing a ruling
+    only partly read. Both this and the ruling's approval are already on disk in the gate files
+    before `execute` ever runs, so this is checked here rather than after — the run fails naming
+    each line and the gate file it is on, for a person to rewrite in place, before `execute` mints
+    or regenerates anything.
   - `spec/domains/<d>.md` must exist, parse with no errors, and hold at least one criterion —
     the same check `archaeology` runs on its own output, run here *before* `execute`. `execute`
     rewrites the file from what the parser understood, so a block the parser could not read would
     be dropped on the way back out; failing first, naming the file and line of every parse error,
     is what keeps a malformed block from being deleted instead of reported.
 - **Post-checks**, run against the working tree after `execute` returns:
-  - `gate-conditions-parse` — no ruling this run reads carries `unparsed_conditions`. Those are
-    condition lines the ratification grammar could not read even after the persona was asked to
-    restate them (`docs/stages/rule.md`), so acting on that gate file would mean executing a ruling
-    only partly read. The run fails naming each line and the gate file it is on, for a person to
-    rewrite in place.
   - `checkCriteria` — the same structural check every stage that touches `spec/domains` runs:
     every domain file parses, IDs are unique across domains, and no criterion is `accepted` while
     its confidence is still `inferred` or `open`. This is `ratify`'s own promise that it never
@@ -159,16 +161,30 @@ So once the ratify commit has landed on `main`, `ratify` opens a G1 proposal nam
 still holds a criterion that is `inferred` or `open` and not `obsolete`. Its page lists exactly
 those criteria — id, version, confidence, origin, statement, reconciliation, given/when/then,
 citations and notes — restates the ratification grammar the answer has to be written in, and marks
-every criterion an earlier ruling already spiked, since spiking one of those again would leave it
-exactly where it is. The persona rules it like any other G1 proposal, and the next `sdlc run ratify
---domain <d>` reads its conditions alongside the archaeology ruling's. Each pass therefore either
-resolves criteria or asks about fewer of them.
+every criterion an earlier ruling already answered with `contract` or `spike`, since neither verb
+ever raises a criterion's confidence and answering the same way again would leave it exactly where
+it is. The persona rules it like any other G1 proposal, and the next `sdlc run ratify --domain <d>`
+reads its conditions alongside the archaeology ruling's. Each pass therefore either resolves
+criteria or asks about fewer of them.
 
 At most one follow-up is open at a time: while `ratify-<d>-<n>` is unruled it is the thing the loop
 is waiting on, and a second would ask the same question twice. A criterion marked `obsolete` is a
 decision, not an open question, so it is not asked about again even though it keeps whatever
 confidence it was recovered with. When nothing is left, no proposal is opened and the loop is
 closed.
+
+**The loop bound.** `contract` and `spike` both answer a follow-up without ever resolving it —
+`contract` changes nothing at all, and `spike` only records a question — so a persona that keeps
+choosing one of them (or a follow-up nobody rules on the way the grammar means it to be ruled)
+would otherwise never close the loop. `execute` counts how many of a domain's approved follow-up
+rulings (`ratify-<d>-<n>`, not the archaeology ruling itself) have been read so far; once a
+criterion still `inferred` or `open` has been through two of them with nothing resolving it,
+`execute` marks it `state: obsolete` itself, with the note `unresolved after two rulings`, before
+minting anything else in that pass. The journal lists it under "Obsolete" the same way any other
+obsoleted criterion is listed. Once it is `obsolete` it is no longer an open question, so the next
+`followUp` call does not list it and, once every criterion in the domain has resolved this way or
+another, opens no further proposal — the loop always terminates, whether or not the persona ever
+rules a criterion out of `inferred`/`open` directly.
 
 ## Failure modes
 
@@ -182,9 +198,10 @@ closed.
 - A condition names an ID this domain's criteria do not actually have: `applyConditions` reports it
   in `unknown` rather than throwing, and `execute`'s journal text lists it — the run still succeeds,
   since one bad condition line should not block every other one that parsed fine.
-- A ruling carries `unparsed_conditions`: the `gate-conditions-parse` post-check fails, naming each
-  line and its gate file. Unlike an unknown ID, this is a ruling that was never fully read, so the
-  run does not proceed on the rest of it.
+- A ruling carries `unparsed_conditions`: the `gate-conditions-parse` pre-check fails, naming each
+  line and its gate file, before anything is read from the domain file or written back to it.
+  Unlike an unknown ID, this is a ruling that was never fully read, so the run does not proceed at
+  all — the domain file, the index and the spec page are all left exactly as they were.
 - The rewritten domain file, or the regenerated index or spec page, fails `checkCriteria` or the
   artifacts check: `finishStage` commits `stage(ratify): post-checks failed` with only the journal
   and run record staged, and the domain file `execute` actually wrote is left in the working tree,

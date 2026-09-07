@@ -339,7 +339,8 @@ function collapseWhitespace(s) {
 export const CONDITION_GRAMMAR = [
   "One condition per line, and exactly one of these forms:",
   "",
-  "- `contract <ID>` — correct as recovered; becomes the contract unchanged. No text after the ID.",
+  "- `contract <ID>` — leave as recovered. It does not promote the criterion — only `confirm` does — so",
+  "  this is a no-op on anything still `inferred` or `open`. No text after the ID.",
   "- `confirm <ID>` — the evidence now supports raising its confidence to `confirmed`. No text after the ID.",
   "- `edit <ID>: <new statement>` — the behaviour is right, the wording is not.",
   "- `defect <ID>: <replacement statement>` — the old system does this and the new one should not; the row is kept as the record and the replacement is filed against it.",

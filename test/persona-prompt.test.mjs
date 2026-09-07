@@ -86,6 +86,43 @@ test("a G1 prompt shows the domain file even when the site diff is enormous and 
     "the domain file comes before the incidental files");
 });
 
+test("a G1 archaeology prompt after one domain is already ratified shows no false criteria-index failure", async () => {
+  const dir = microProject();
+
+  // `applications` is already ratified: its domain file mints an `R-` id and
+  // `spec/criteria-index.json` reflects exactly that one criterion, on `main`.
+  write(dir, "spec/domains/applications.md",
+    "# applications\n\n### R-1.1 · v1 · confirmed · recovered\nAn already-ratified criterion.\n- cites: src/a.js\n- state: accepted\n");
+  write(dir, "spec/criteria-index.json", JSON.stringify({
+    generated_from: "",
+    criteria: [{
+      id: "R-1.1", version: 1, confidence: "confirmed", origin: "recovered",
+      statement: "An already-ratified criterion.", cites: [{ path: "src/a.js" }],
+      reconciliation: undefined, given: undefined, when: undefined, then: undefined, notes: [],
+      state: "accepted", tier: undefined, replaces: undefined, supersededBy: undefined,
+      domain: "applications", file: "spec/domains/applications.md",
+    }],
+  }, null, 2) + "\n");
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "ratify applications"], dir);
+
+  // An archaeology proposal for `billing`, the second domain, adds fresh provisional
+  // criteria that `ratify` has never seen — exactly the state that used to make
+  // `checkCriteriaIndex` report the index as stale for reasons that have nothing to do
+  // with whether this proposal is sound.
+  const name = "archaeology-billing";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "spec/domains/billing.md",
+    "# billing\n\n### D-billing-1 · v1 · inferred · recovered\nA freshly recovered criterion.\n- cites: src/b.js\n- state: proposed\n");
+  write(dir, ".sdlc/proposals/" + name + ".md", `---\ngate: G1\nquestion: "Is this what billing does?"\nrecommendation: "yes"\nopened: 2026-09-06T00:00:00.000Z\n---\n\n# Is this what billing does?\n`);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "archaeology billing"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G1" });
+  assert.ok(!prompt.includes("FAIL criteria-index"), "criteria-index must not appear as a failure in the ruling prompt");
+  assert.ok(!prompt.includes("criteria-index"), "criteria-index is left out of the prompt's checks entirely, not merely marked ok");
+});
+
 test("a G0 prompt orders intent/ first", async () => {
   const dir = microProject();
   const name = "intent-permit-intake";

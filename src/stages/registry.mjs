@@ -347,10 +347,13 @@ function followUpName(domain, n) {
 // nothing — and the conditions are concatenated in that order, so a later ruling's
 // verdict on a criterion is applied after (and therefore over) an earlier one's.
 //
-// `spiked` is every id an earlier ruling asked a question about rather than deciding.
-// A criterion may be spiked once; the follow-up page says which ones already were, so
-// the persona knows it is being asked to close one out rather than to reconsider it
-// fresh.
+// `answered` is every id an earlier ruling gave `contract` or `spike` to — the two
+// verbs that record a decision without ever raising a criterion's confidence, so
+// neither one moves it toward the contract. A criterion answered that way once; the
+// follow-up page says which ones already were, so the persona knows it is being asked
+// to close one out with `confirm`, `edit`, `obsolete` or `defect` rather than to repeat
+// the same non-answer. `followUpRulingsRead`, right below, is what actually stops the
+// loop if a persona repeats it anyway.
 function readRulings(projectDir, domain) {
   const dir = join(projectDir, ".sdlc", "gates");
   const names = [ratifyGateName(domain)];
@@ -365,7 +368,7 @@ function readRulings(projectDir, domain) {
   }
   const conditions = [];
   const unparsed = [];
-  const spiked = new Set();
+  const answered = new Set();
   const read = [];
   for (const name of names) {
     const p = join(dir, `${name}.yaml`);
@@ -375,12 +378,28 @@ function readRulings(projectDir, domain) {
     read.push(name);
     for (const c of gate.conditions ?? []) {
       conditions.push(c);
-      const m = /^\s*spike\s+(\S+):/.exec(c);
-      if (m) spiked.add(m[1]);
+      // `contract` takes a bare ID; `spike` requires a trailing colon and text. Matched
+      // separately so neither pattern accidentally swallows the colon into the ID.
+      const m = /^\s*contract\s+(\S+)\s*$/.exec(c) ?? /^\s*spike\s+(\S+):/.exec(c);
+      if (m) answered.add(m[1]);
     }
     for (const u of gate.unparsed_conditions ?? []) unparsed.push(`.sdlc/gates/${name}.yaml: ${u}`);
   }
-  return { read, conditions, unparsed, spiked };
+  return { read, conditions, unparsed, answered };
+}
+
+// How many of `read`'s approved gate files are follow-ups (`ratify-<domain>-<n>`) rather
+// than the archaeology ruling itself. A criterion still short of the contract at this
+// point has been asked about on every follow-up opened so far — `unresolved` in
+// `followUp` below only ever grows the set of ids a fresh follow-up lists, so an id that
+// is still in it now was in it the last time a follow-up was opened too — which is what
+// lets a single domain-wide count stand in for a per-criterion one and still be exact,
+// as long as archaeology has not been re-run for this domain since (a rerun can add
+// fresh `D-` ids partway through the loop that have not actually been asked about yet;
+// closing that gap is not part of what this count is for).
+function followUpRulingsRead(read, domain) {
+  const re = new RegExp(`^ratify-${escapeRe(domain)}-\\d+$`);
+  return read.filter((n) => re.test(n)).length;
 }
 
 // A follow-up proposal already open — its branch exists with no gate file on it yet — is
@@ -417,11 +436,14 @@ function followUpState(projectDir, domain) {
 // The page of the follow-up proposal: every criterion still short of the contract, with
 // everything the persona needs to rule on it without opening the domain file, and the
 // grammar its answer has to be written in.
-function followUpPage(domain, unresolved, spiked, unparsed) {
+function followUpPage(domain, unresolved, answered, unparsed) {
   const lines = [
     `${unresolved.length} criterion(s) in the **${domain}** domain are still \`inferred\` or \`open\`, so`,
     "`ratify` has not minted a permanent id for them and no later stage can build against them.",
-    "Rule on each one below.",
+    "Rule on each one below. `contract` and `spike` record a decision without ever raising a",
+    "criterion's confidence, so neither one closes it out — a criterion left short of the contract",
+    "through two follow-ups this way is marked `obsolete` by `ratify` itself, noted",
+    "\"unresolved after two rulings\", rather than being asked about forever.",
     "",
   ];
   if (unparsed.length) {
@@ -440,9 +462,10 @@ function followUpPage(domain, unresolved, spiked, unparsed) {
     if (c.then) lines.push(`- then: ${c.then}`);
     for (const cite of c.cites ?? []) lines.push(`- cites: ${cite.line !== undefined ? `${cite.path}:${cite.line}` : cite.path}`);
     for (const note of c.notes ?? []) lines.push(`- note: ${note}`);
-    if (spiked.has(c.id)) {
-      lines.push("", "**This criterion has already been spiked once.** Spiking it again would leave it exactly",
-        "where it is; decide it now — `confirm`, `edit`, `obsolete` or `defect`.");
+    if (answered.has(c.id)) {
+      lines.push("", "**This criterion has already been answered once, with `contract` or `spike`.** Neither one",
+        "moves it toward the contract, so answering the same way again would leave it exactly where it",
+        "is: already answered once: confirm, edit, obsolete or defect it.");
     }
     lines.push("");
   }
@@ -558,7 +581,7 @@ const ratify = {
     // follow-up the closing loop opened and the persona ruled. A later ruling's condition
     // on the same criterion is applied after an earlier one's, so closing a criterion out
     // is exactly a matter of ruling on it again.
-    const { conditions } = readRulings(projectDir, domain);
+    const { conditions, read } = readRulings(projectDir, domain);
 
     const domainFile = join(projectDir, "spec", "domains", `${domain}.md`);
     const originalText = readText(domainFile);
@@ -573,6 +596,24 @@ const ratify = {
 
     const { criteria: before, preamble } = parseDomainFile(originalText, domain, domainOrdinal);
     const { criteria: withConditions, applied, unknown } = applyConditions(before, conditions);
+
+    // The closing loop's bound: `contract` and `spike` are the two verbs that answer a
+    // follow-up without ever raising a criterion's confidence (see `readRulings`'s own
+    // comment on `answered`), so a persona that keeps choosing one of them — or simply
+    // says nothing, which the grammar treats the same as `contract` — would otherwise
+    // never close the loop out. Once a still-unresolved criterion has been through two
+    // follow-up rulings with nothing resolving it, `ratify` decides for it: `obsolete`,
+    // with the reason on the row itself, so the next `followUp` call finds nothing left
+    // to ask about and the loop actually terminates.
+    if (followUpRulingsRead(read, domain) >= 2) {
+      for (const c of withConditions) {
+        if ((c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete") {
+          c.state = "obsolete";
+          if (!c.notes.includes("unresolved after two rulings")) c.notes.push("unresolved after two rulings");
+        }
+      }
+    }
+
     const minted = mintIds(withConditions, domainOrdinal, existingMax);
     // The preamble the file arrived with is written straight back: everything above the
     // first criterion block is a person's or an agent's own text, and nothing in this
@@ -613,6 +654,10 @@ const ratify = {
       lines.push("Still open:");
       for (const c of stillOpen) lines.push(`- ${c.id} (${c.confidence})${c.notes?.length ? ` — ${c.notes[0]}` : ""}`);
     }
+    if (obsolete.length) {
+      lines.push("Obsolete:");
+      for (const c of obsolete) lines.push(`- ${c.id}${c.notes?.length ? ` — ${c.notes[c.notes.length - 1]}` : ""}`);
+    }
     if (unknown.length) {
       lines.push("Unknown conditions (reported, not applied):");
       for (const u of unknown) lines.push(`- ${u}`);
@@ -624,10 +669,15 @@ const ratify = {
     return null;
   },
   preChecks(projectDir, ctx) {
-    return [checkDomainOption(ctx, "ratify"), checkArchaeologyApproved(projectDir, ctx.domain), checkDomainFileParses(projectDir, ctx.domain, "ratify-domain-file")];
+    return [
+      checkDomainOption(ctx, "ratify"),
+      checkArchaeologyApproved(projectDir, ctx.domain),
+      checkNoUnparsedConditions(projectDir, ctx.domain),
+      checkDomainFileParses(projectDir, ctx.domain, "ratify-domain-file"),
+    ];
   },
   postChecks(projectDir, ctx) {
-    return [checkNoUnparsedConditions(projectDir, ctx.domain), checkCriteria(projectDir, ctx), checkCriteriaIndex(projectDir), checkSpecArtifacts(projectDir)];
+    return [checkCriteria(projectDir, ctx), checkCriteriaIndex(projectDir), checkSpecArtifacts(projectDir)];
   },
   // The closing loop. `ratify` mints only what the ruling actually confirmed, so a
   // domain routinely comes out of it with criteria still `inferred` or `open` — and
@@ -656,7 +706,7 @@ const ratify = {
     // not carry forward keeps whatever confidence it was recovered with, and asking about
     // it again every pass would make the loop never close.
     const unresolved = criteria.filter((c) => (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete");
-    const { spiked, unparsed } = readRulings(projectDir, domain);
+    const { answered, unparsed } = readRulings(projectDir, domain);
     if (unresolved.length === 0 && unparsed.length === 0) return null;
 
     const { open, highest } = followUpState(projectDir, domain);
@@ -667,7 +717,7 @@ const ratify = {
       gate: "G1",
       question: `Which of the ${domain} criteria that are still inferred or open become the contract?`,
       recommendation: `${unresolved.length} criterion(s) in ${domain} are still short of the contract; rule on each with a ratification condition so the next ratify pass can mint them.`,
-      page: followUpPage(domain, unresolved, spiked, unparsed),
+      page: followUpPage(domain, unresolved, answered, unparsed),
     });
     return { name, gate: "G1", branch, unresolved: unresolved.length };
   },
