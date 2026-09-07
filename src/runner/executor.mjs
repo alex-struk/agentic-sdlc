@@ -4,6 +4,21 @@ import { join } from "node:path";
 import { ensureConfigHome } from "./config-home.mjs";
 import { writeText } from "../lib/fsx.mjs";
 
+// The MCP servers a stage names (`stage.mcp?.(ctx, config)`) live in their own scratch
+// file rather than a project path, since the set is run-specific and never any stage's
+// own output — written into a scratch directory the caller already owns and cleans up
+// (the skill-file directory both a first turn and a fix turn create), so this adds no
+// cleanup of its own. Shared by `run`'s first turn and `finish-stage`'s fix turn, which
+// otherwise duplicated the same three lines. Returns `undefined` when the stage
+// declares no `mcp` — the common case — so `buildArgs` passes no `--mcp-config` at all
+// and the session reaches no servers under `--strict-mcp-config`.
+export function writeMcpConfig(dir, mcpServers) {
+  if (!mcpServers) return undefined;
+  const path = join(dir, "mcp.json");
+  writeText(path, JSON.stringify({ mcpServers }, null, 2) + "\n");
+  return path;
+}
+
 // The turn ceiling a session runs with when nothing else sets one.
 export const DEFAULT_MAX_TURNS = 40;
 

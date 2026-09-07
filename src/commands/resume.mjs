@@ -3,11 +3,8 @@ import { loadConfig } from "../config/load.mjs";
 import { readRunState } from "../runner/run-state.mjs";
 import { stageFor } from "../stages/registry.mjs";
 import { finishStage, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
+import { IN_PLACE_MODES } from "../runner/workspace.mjs";
 import { COMMANDS } from "../cli.mjs";
-
-// Workspace modes whose agent worked in the project directory, so its output survived
-// the interruption and can be judged where it lies.
-const RESUMABLE_WORKSPACES = new Set(["project", "with-sources"]);
 
 export async function resume(projectDir, { again = false } = {}) {
   projectDir = resolve(projectDir);
@@ -35,7 +32,7 @@ export async function resume(projectDir, { again = false } = {}) {
   // wrote is still on disk and is exactly what post-checks should judge. The only thing
   // `with-sources` adds is the read-only checkout at `sources/old`, which `ensureSources`
   // materialises and nothing here removes.
-  if (!RESUMABLE_WORKSPACES.has(wsMode)) {
+  if (!IN_PLACE_MODES.has(wsMode)) {
     console.log(`resume cannot continue a ${wsMode} stage; run it again`);
     return 1;
   }

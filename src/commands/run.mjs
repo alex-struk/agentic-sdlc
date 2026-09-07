@@ -7,7 +7,7 @@ import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
 import { materialise, collect } from "../runner/workspace.mjs";
-import { runAgent, endedBecause, turnsFor } from "../runner/executor.mjs";
+import { runAgent, endedBecause, turnsFor, writeMcpConfig } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
@@ -176,17 +176,13 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
         }
       }
 
-      // `stage.mcp` names MCP servers the agent turn is allowed to reach — written to its
-      // own scratch file (removed with the rest of `skillDir`, in the `finally` below)
-      // rather than to a project path, since it is run-specific and never anything a
-      // stage's own output. `--strict-mcp-config` (always passed) means this file is the
-      // *only* source of servers for the session; a stage that declares none passes no
-      // `mcpConfig` at all, and the session reaches none.
-      let mcpConfig;
-      if (mcpServers) {
-        mcpConfig = join(skillDir, "mcp.json");
-        writeText(mcpConfig, JSON.stringify({ mcpServers }, null, 2) + "\n");
-      }
+      // `stage.mcp` names MCP servers the agent turn is allowed to reach — written
+      // (`writeMcpConfig`) to its own scratch file, removed with the rest of `skillDir`
+      // in the `finally` below, rather than to a project path, since it is run-specific
+      // and never any stage's own output. `--strict-mcp-config` (always passed) means
+      // this file is the *only* source of servers for the session; a stage that
+      // declares none passes no `mcpConfig` at all, and the session reaches none.
+      const mcpConfig = writeMcpConfig(skillDir, mcpServers);
 
       // Written only once the dry-run return above is behind us: a dry run makes no
       // change of any kind, so nothing should exist for `sdlc resume` to find.

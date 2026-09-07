@@ -300,21 +300,29 @@ the second, post-run check exists to catch.
   account of how the session ended instead — "hit the turn cap", read from the result's `subtype`
   rather than inferred by comparing the turn count against the ceiling, which is wrong in both
   directions.
-- **A post-check fails, and the stage is `spec-only` or `blind-adapter`**: nothing survives the
-  temporary workspace `run`'s own `finally` already removed, so there is nothing left to hand a
-  second turn. `finishStage` writes a journal entry recording the agent's own text, how the session
-  ended if the CLI said anything about it, and the check messages; commits `stage(<stage>):
-  post-checks failed` with only the journal and run record staged (everything the agent produced is
-  left untracked in the working tree for a person to inspect); and returns `{ ok: false, journal,
-  messages }`. The entry carries the same cost, turn count and session id a successful run's does —
-  a failed run costs what a successful one costs.
-- **A post-check fails, and the stage is `project` or `with-sources`**: its agent worked directly
-  in the project directory, so whatever it wrote is still there and nothing about a second turn is
-  blind. `finishStage` runs the agent once more, in the same directory, with the same skill file and
-  a prompt naming exactly what failed ("Your previous turn's output failed these checks: … Fix
-  exactly what they name — change nothing else, and do not start the task over."), capped at 40
-  turns or the stage's own ceiling, whichever is lower. `.sdlc/run-state.json` records
-  `fixTurnUsed: true` before the turn runs, so a run only ever gets one, however it is resumed.
+- **A post-check fails, and the stage is `spec-only` or `blind-adapter`, or the stage is
+  `agent: false`**: `finishStage`'s post-checks always read `projectDir`, whatever the workspace
+  mode — but for `spec-only`/`blind-adapter` only the paths named in `stage.collect` were copied
+  back from the temporary workspace (still on disk at this point; `run`'s own `finally` removes it
+  only after `finishStage` returns), so there is nothing full enough there to hand a second turn.
+  An `agent: false` stage (`ratify`, `calibrate`) never ran an agent turn in the first place, so
+  there is no session for a second turn to repeat: `ratify` declares no `skill` at all, and
+  `calibrate` drives a deterministic test suite rather than free-form work. `finishStage` writes a
+  journal entry recording the agent's own text, how the session ended if the CLI said anything
+  about it, and the check messages; commits `stage(<stage>): post-checks failed` with only the
+  journal and run record staged (everything the agent produced is left untracked in the working
+  tree for a person to inspect); and returns `{ ok: false, journal, messages }`. The entry carries
+  the same cost, turn count and session id a successful run's does — a failed run costs what a
+  successful one costs.
+- **A post-check fails, and the stage is `project` or `with-sources` and spawns an agent
+  (`agent` is not `false`)**: its agent worked directly in the project directory, so whatever it
+  wrote is still there and nothing about a second turn is blind. `finishStage` runs the agent once
+  more, in the same directory, with the same skill file and MCP servers as the first turn, and a
+  prompt carrying the stage's own task prompt above exactly what failed ("The task you were given:
+  … Your output failed these checks: … Fix exactly what they name — change nothing else, and do not
+  start the task over."), capped at 40 turns or the stage's own ceiling, whichever is lower.
+  `.sdlc/run-state.json` records `fixTurnUsed: true` before the turn runs, so a run only ever gets
+  one, however it is resumed.
   - **The fix turn's own post-checks pass**: the run finishes exactly as a first-try pass does —
     the same proposal or commit — except the journal entry's body is the original turn's text plus
     a `## Fix turn` section holding the second turn's, cost and turn count are the sum of both

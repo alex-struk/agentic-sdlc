@@ -8,8 +8,9 @@ import { writeJournal } from "./journal.mjs";
 import { propose } from "../commands/propose.mjs";
 import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
-import { endedBecause, runAgent, turnsFor } from "./executor.mjs";
+import { endedBecause, runAgent, turnsFor, writeMcpConfig } from "./executor.mjs";
 import { skillText } from "../stages/registry.mjs";
+import { IN_PLACE_MODES } from "./workspace.mjs";
 
 // A stage's own commit-and-journal subject: a plain string for most stages, or (`ratify`,
 // `archaeology`) a function of `ctx` for one whose subject folds in something only known
@@ -97,40 +98,49 @@ function commitPostCheckFailure(projectDir, stage, agentResult, messages) {
   return { ok: false, journal, messages };
 }
 
-// Workspace modes whose agent works directly in the project directory — the same set
-// `sdlc resume` uses (`RESUMABLE_WORKSPACES` in `src/commands/resume.mjs`) to decide
+// `IN_PLACE_MODES` (`src/runner/workspace.mjs`) names the workspace modes whose agent
+// works directly in the project directory — the same set `sdlc resume` uses to decide
 // whether an interrupted run's output survived. A stage resolved to one of these is
 // exactly the case where a post-check failure still has something worth asking the
-// agent to repair: its files are sitting right there in `projectDir`, nothing was
-// blind, and there is no ephemeral workspace already torn down by the time post-checks
-// run. `spec-only` and `blind-adapter` build a temporary directory that no longer
-// exists once `runStage`'s `finally` cleans it up, so there is nothing left to hand a
-// second turn — those stages are simply re-run.
-const FIX_TURN_WORKSPACES = new Set(["project", "with-sources"]);
+// agent to repair: its files are sitting right there in `projectDir`, and postChecks
+// always read `projectDir` regardless of workspace mode. `spec-only` and
+// `blind-adapter` build a temporary workspace that is still on disk at this point —
+// `runStage`'s `finally` only removes it once `finishStage` returns — but postChecks
+// never look inside it, and only the paths named in `stage.collect` were copied back
+// into `projectDir`, so there is nothing full enough there to hand a second turn.
+// Those stages are simply re-run.
 
-// The one-shot repair prompt: exactly what failed, and an explicit instruction to fix
-// only that rather than start over — a second turn that quietly redoes the whole task
-// could just as easily introduce a new failure as clear the old one.
-function fixTurnPrompt(messages) {
-  return `Your previous turn's output failed these checks:\n${messages.join("\n")}\n\nFix exactly what they name — change nothing else, and do not start the task over. Finish with a one-paragraph journal addition saying what you changed.`;
+// The one-shot repair prompt: the original task, exactly what failed, and an explicit
+// instruction to fix only that rather than start over — a second turn that quietly
+// redoes the whole task could just as easily introduce a new failure as clear the old
+// one. Carrying the task alongside the failures gives the repair the same context the
+// first turn had, rather than leaving it to guess.
+function fixTurnPrompt(taskPrompt, messages) {
+  return `The task you were given:\n${taskPrompt}\n\nYour output failed these checks:\n${messages.join("\n")}\n\nFix exactly what they name — change nothing else, and do not start the task over. Finish with a one-paragraph journal addition saying what you changed.`;
 }
 
 // Runs the stage's agent once more, in the project directory, with the same skill file
-// as the first turn and a prompt naming exactly what failed. Capped at 40 turns (a
-// repair is smaller than the original task) and at the stage's own ceiling, whichever
-// is lower — a stage configured with a tighter budget than 40 keeps that budget for its
-// fix turn too.
+// and MCP servers as the first turn and a prompt naming exactly what failed. Capped at
+// 40 turns (a repair is smaller than the original task) and at the stage's own ceiling,
+// whichever is lower — a stage configured with a tighter budget than 40 keeps that
+// budget for its fix turn too.
 async function runFixTurn(projectDir, stage, ctx, messages) {
   const skillDir = mkdtempSync(join(tmpdir(), `sdlc-fix-${stage.name}-`));
   try {
     const skillPath = join(skillDir, "SKILL.md");
     writeText(skillPath, skillText(stage.name));
+    // Mirrors `run`'s own mcp-file handling (`writeMcpConfig`, shared from
+    // `./executor.mjs`): a stage whose first turn reached MCP servers should not lose
+    // them on its fix turn. The scratch file lives in this same `skillDir`, cleaned up
+    // alongside the skill file below.
+    const mcpConfig = writeMcpConfig(skillDir, stage.mcp?.(ctx, ctx.config));
     return await runAgent({
       cwd: projectDir,
-      prompt: fixTurnPrompt(messages),
+      prompt: fixTurnPrompt(stage.prompt(ctx), messages),
       systemPromptFile: skillPath,
       stage: stage.name,
       maxTurns: Math.min(40, turnsFor(ctx.config, stage.name)),
+      mcpConfig,
       allowedTools: stage.allowedTools,
       env: stage.env?.(ctx, ctx.config),
     });
@@ -203,12 +213,17 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
 
   if (postFail.length) {
     const wsMode = typeof stage.workspace === "function" ? stage.workspace(ctx.config) : stage.workspace;
-    // One fix turn per run: a stage in a resumable workspace, on a run that has not
+    // One fix turn per run: a stage in an in-place workspace, on a run that has not
     // already spent its fix turn (`state.fixTurnUsed`, which survives a post-checks
-    // failure on disk so a later `sdlc resume --again` sees it and does not loop), and
-    // never on a dry run — a dry run reports what it would do and changes nothing, so
-    // there is no failure here for it to repair in the first place.
-    const eligible = FIX_TURN_WORKSPACES.has(wsMode) && !ctx.dryRun && !state.fixTurnUsed;
+    // failure on disk so a later `sdlc resume --again` sees it and does not loop), never
+    // on a dry run (which reports what it would do and changes nothing, so there is no
+    // failure here for it to repair), and only when the stage actually spawns an agent.
+    // `ratify` and `calibrate` (`agent: false`) resolve to workspace `"project"` too, but
+    // there is no session here to run a repair with: `ratify` declares no `skill` at all
+    // (`skillText` would throw trying to read one), and `calibrate` drives a deterministic
+    // test suite rather than free-form work, so handing either one an unrestricted agent
+    // turn is never right, whatever the workspace mode says.
+    const eligible = IN_PLACE_MODES.has(wsMode) && stage.agent !== false && !ctx.dryRun && !state.fixTurnUsed;
     if (!eligible) {
       // Only the journal and the run record are staged: the agent's other files stay in
       // the working tree, untracked, so a person can see exactly what it produced.

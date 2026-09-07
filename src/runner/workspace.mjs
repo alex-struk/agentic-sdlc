@@ -19,6 +19,15 @@ export const HARNESS = [
   "tests/generated",
 ];
 
+// Workspace modes whose agent works directly in the project directory rather than an
+// ephemeral temporary one that `materialise` tears down. Shared by `resume` (deciding
+// whether an interrupted run's output survived) and `finish-stage`'s fix-turn
+// eligibility (deciding whether a post-check failure has something in `projectDir`
+// worth asking the agent to repair) — both are the same question, "is `projectDir`
+// itself where this stage's agent left its work?", asked at two different points in
+// the run.
+export const IN_PLACE_MODES = new Set(["project", "with-sources"]);
+
 const MODES = {
   "project": null,
   // `.sdlc/config.yaml` is deliberately absent: it names the old application's repository

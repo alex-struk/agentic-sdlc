@@ -276,6 +276,49 @@ test("resume --again on a failed run takes the fix turn once and not twice", asy
   }
 });
 
+test("an agent: false stage with a failing post-check gets no fix turn: eligibility keys off stage.agent, not only workspace mode", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-agentfalse-fixturn-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "agentless-fixable",
+    title: "agentless fixable",
+    workspace: "project",
+    gate: null,
+    agent: false,
+    collect: [],
+    implemented: true,
+    // Regenerates a marker file on every run, so `changed` is non-empty and this run
+    // reaches `finishStage` (not the no-op path) even though its own post-check always
+    // fails — the same deterministic, non-agent shape `ratify` and `calibrate` use.
+    execute(projectDir) {
+      mkdirSync(join(projectDir, "app"), { recursive: true });
+      writeFileSync(join(projectDir, "app/AGENTLESS.md"), `run ${Date.now()}\n`);
+      return { text: "regenerated AGENTLESS.md", changed: ["app/AGENTLESS.md"] };
+    },
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [{ id: "always-fail", ok: false, messages: ["never satisfied"] }],
+  });
+  process.env.SDLC_EXECUTOR = "mock";
+  // No canned response registered for "agentless-fixable": if the eligibility guard
+  // ever let an `agent: false` stage reach `runFixTurn`, the mock executor would throw
+  // `mock executor: no canned response at .../agentless-fixable.json` instead of the run
+  // failing cleanly through `commitPostCheckFailure` below.
+  process.env.SDLC_MOCK_DIR = mkdtempSync(join(tmpdir(), "sdlc-agentfalse-fixturn-mock-"));
+  try {
+    const r = await runStage(dir, "agentless-fixable");
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, ["never satisfied"]);
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(agentless-fixable\): post-checks failed/);
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-agentless-fixable.md"), "utf8");
+    assert.ok(!/## Fix turn/.test(journal), journal);
+    assert.match(journal, /^turns: 0$/m);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("sdlc resume with no run-state prints nothing to resume", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-"));
   const { dir, prevEgress } = await makeProject(tmp);
@@ -1143,6 +1186,61 @@ test("runStage writes the MCP servers a stage declares to mcp.json in the skill 
     assert.deepEqual(JSON.parse(captured.mcpConfig), { mcpServers: { browser: { command: "browser-mcp", args: [] } } });
     assert.deepEqual(captured.allowedTools, ["Read", "Grep"]);
     assert.equal(captured.extraEnv, "carried-through");
+  } finally {
+    for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "CAPTURE_FILE"]) delete process.env[k];
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a fix turn carries the same MCP servers as the first turn", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-mcp-fixturn-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const root = mkdtempSync(join(tmpdir(), "sdlc-mcp-fixturn-fake-claude-"));
+  const captureFile = join(root, "capture.json");
+  const outFile = join(root, "out.json");
+  writeFileSync(outFile, JSON.stringify({ is_error: false, result: "used the browser mcp", num_turns: 1, session_id: "s1" }));
+  const bin = join(root, "fake-claude");
+  writeFileSync(bin, [
+    "#!/usr/bin/env node",
+    'import { readFileSync, writeFileSync } from "node:fs";',
+    "const args = process.argv.slice(2);",
+    'const mi = args.indexOf("--mcp-config");',
+    'const mcpConfig = mi === -1 ? null : readFileSync(args[mi + 1], "utf8");',
+    // Overwritten on every invocation, so once the run finishes this holds whichever
+    // turn ran last: the fix turn, since a failing post-check runs it after the first.
+    "writeFileSync(process.env.CAPTURE_FILE, JSON.stringify({ mcpConfig }));",
+    'process.stdout.write(readFileSync(process.env.FAKE_OUT, "utf8"));',
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  registerStage({
+    name: "mcp-fixturn-stage",
+    title: "mcp fixturn stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    mcp: () => ({ browser: { command: "browser-mcp", args: [] } }),
+    prompt: () => "use the browser",
+    proposal: () => null,
+    preChecks: () => [],
+    // Always fails, so the run spends its one fix turn — the fake `claude` above never
+    // writes any file, so there is nothing for a real post-check to ever find passing;
+    // the point of this test is only what args the fix turn ran with.
+    postChecks: () => [{ id: "always-fail", ok: false, messages: ["never satisfied"] }],
+  });
+  process.env.SDLC_CLAUDE_BIN = bin;
+  process.env.SDLC_CLAUDE_HOME = join(root, "claude-home");
+  process.env.SDLC_CREDENTIALS = join(root, "no-such-credentials.json");
+  process.env.FAKE_OUT = outFile;
+  process.env.CAPTURE_FILE = captureFile;
+  try {
+    const r = await runStage(dir, "mcp-fixturn-stage");
+    assert.equal(r.ok, false);
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-mcp-fixturn-stage.md"), "utf8");
+    assert.match(journal, /## Fix turn/);
+    const captured = JSON.parse(readFileSync(captureFile, "utf8"));
+    assert.deepEqual(JSON.parse(captured.mcpConfig), { mcpServers: { browser: { command: "browser-mcp", args: [] } } });
   } finally {
     for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "CAPTURE_FILE"]) delete process.env[k];
     restoreEgress(prevEgress);
