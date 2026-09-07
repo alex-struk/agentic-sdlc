@@ -38,11 +38,25 @@ function safeHref(url) {
 // that was in the prose all along.
 const CODE_OPEN = "\u0000c";
 const CODE_CLOSE = "\u0000";
+const ESC_OPEN = "\u0000e";
+const ESC_CLOSE = "\u0000";
 
-// Inline formatting, applied to already-escaped text.
+// The punctuation a backslash may escape. Deliberately excludes the four characters
+// `escapeHtml` rewrites, since by the time this runs an escaped `>` is already `&gt;` and
+// no longer looks like the thing the backslash was attached to.
+const ESCAPABLE = "\\\\`*_{}\\[\\]()#+\\-.!|~";
+
+// Inline formatting, applied to already-escaped text. Backslash escapes are lifted out
+// first: an author who wrote `R-8.\*` means a literal asterisk, and leaving it in place
+// would both print the backslash and break the emphasis rule that runs later.
 export function inline(text) {
+  const escapes = [];
   const codes = [];
-  let out = escapeHtml(text).replace(/`([^`]+)`/g, (_, code) => {
+  let out = escapeHtml(text).replace(new RegExp(`\\\\([${ESCAPABLE}])`, "g"), (_, ch) => {
+    escapes.push(ch);
+    return `${ESC_OPEN}${escapes.length - 1}${ESC_CLOSE}`;
+  });
+  out = out.replace(/`([^`]+)`/g, (_, code) => {
     codes.push(code);
     return `${CODE_OPEN}${codes.length - 1}${CODE_CLOSE}`;
   });
@@ -51,10 +65,13 @@ export function inline(text) {
     return href === null ? whole : `<a href="${escapeHtml(href)}">${label}</a>`;
   });
   out = out.replace(/(^|[\s(])(https?:\/\/[^\s<>()]+)/g, (_, pre, url) => `${pre}<a href="${url}">${url}</a>`);
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  // Non-greedy and permitting a lone asterisk inside, so a bold run that contains an
+  // escaped or stray `*` still closes at its own delimiter rather than not matching at all.
+  out = out.replace(/\*\*([\s\S]+?)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>");
   out = out.replace(/(^|[^_\w])_([^_\n]+)_(?![_\w])/g, "$1<em>$2</em>");
-  return out.replace(new RegExp(`${CODE_OPEN}(\\d+)${CODE_CLOSE}`, "g"), (_, i) => `<code>${codes[Number(i)]}</code>`);
+  out = out.replace(new RegExp(`${CODE_OPEN}(\\d+)${CODE_CLOSE}`, "g"), (_, i) => `<code>${codes[Number(i)]}</code>`);
+  return out.replace(new RegExp(`${ESC_OPEN}(\\d+)${ESC_CLOSE}`, "g"), (_, i) => escapes[Number(i)]);
 }
 
 const isTableSeparator = (line) => /^\|?[\s:|-]+\|[\s:|-]*$/.test(line) && line.includes("-");

@@ -26,6 +26,15 @@ function dollars(n) {
   return `$${Number(n ?? 0).toFixed(2)}`;
 }
 
+// Timestamps are recorded to the millisecond because a run record needs to order events
+// that happen seconds apart. A page a person reads needs the day and the time and nothing
+// after that. Anything the pipeline did not write as an ISO instant is shown unchanged.
+function when(at) {
+  const text = String(at ?? "");
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(text);
+  return m ? `${m[1]} ${m[2]}` : text;
+}
+
 function chip(text, kind) {
   return `<span class="chip ${e(kind ?? "muted")}">${e(text)}</span>`;
 }
@@ -106,15 +115,15 @@ function barKey(model) {
     `<li><span class="swatch seg-${e(s)}"></span>${e(s)} (${e(String(model.totals.stateCounts[STATES.indexOf(s)]))})</li>`).join("")}</ul>`;
 }
 
-// `<covered> of <accepted>` plus the not-testable count, or a plain statement that no
-// tests have been derived — never a bare `0/0`, which reads as failure rather than as
-// work not yet started.
-function testsCell(domain) {
+// Two cells rather than one. A count and a label sharing a column will not line up down
+// the table, and a coverage board is read by running an eye down a column.
+function testsCells(domain) {
   const { covered, missing, notTestable } = domain.coverage;
-  if (!domain.hasSpecFile && notTestable.length === 0) return `<span class="chip muted">not derived</span>`;
+  if (!domain.hasSpecFile && notTestable.length === 0) {
+    return `<td colspan="2">not derived yet</td>`;
+  }
   const accepted = covered.length + missing.length + notTestable.length;
-  const nt = notTestable.length ? ` <span class="chip muted">${e(String(notTestable.length))} not testable</span>` : "";
-  return `${e(String(covered.length))} of ${e(String(accepted))}${nt}`;
+  return `<td class="num">${e(String(covered.length))} of ${e(String(accepted))}</td><td class="num">${notTestable.length || ""}</td>`;
 }
 
 function targetCell(latest, domainName) {
@@ -150,14 +159,14 @@ function overview(model) {
     <td>${lifecycleBar(d)}</td>
     <td class="num">${e(String(d.total))}</td>
     <td class="num">${e(String(d.openQuestions))}</td>
-    <td>${testsCell(d)}</td>
+    ${testsCells(d)}
     ${model.targets.map((t) => `<td>${targetCell(model.latest.get(t), d.name)}</td>`).join("")}
   </tr>`).join("");
 
   const board = `<section>
   <h2>Coverage</h2>
   <div class="scroll"><table class="board">
-    <thead><tr><th scope="col">Domain</th><th scope="col">Lifecycle</th><th scope="col" class="num">Criteria</th><th scope="col" class="num">Open questions</th><th scope="col">Tests</th>${targetHeads}</tr></thead>
+    <thead><tr><th scope="col">Domain</th><th scope="col">Lifecycle</th><th scope="col" class="num">Criteria</th><th scope="col" class="num">Open questions</th><th scope="col" class="num">Tests written</th><th scope="col" class="num">Not testable</th>${targetHeads}</tr></thead>
     <tbody>${boardRows}</tbody>
   </table></div>
   ${barKey(model)}
@@ -214,7 +223,7 @@ function overview(model) {
       <td>${e(j.stage)}</td>
       <td>${e(String(j.at ?? "").slice(0, 10))}</td>
       <td class="num">${e(String(j.turns))}</td>
-      <td class="num">$${e(String(j.cost))}</td>
+      <td class="num">${e(dollars(j.cost))}</td>
     </tr>`).join("")}</tbody></table></div>`}
   <p><a href="journal.html">The whole journal</a></p>
 </section>`;
@@ -311,22 +320,42 @@ function domainPage(domain, model) {
   ].join("\n");
 }
 
+// A legend, not a lecture, and only for the terms this project's own log actually uses.
+// A project whose gates are all held by people should not have persona agents explained
+// to it, and one whose policy sets no re-read quota should not be told what sampling is.
+function gateLegend(model) {
+  const items = [];
+  if (model.gates.some((g) => g.held_by === "agent")) {
+    items.push(["Made by", "A persona agent is an agent that read the gate holder's written brief and ruled in that role. A person is someone who ran the command themselves."]);
+  }
+  if (model.sampled.size > 0) {
+    items.push(["Human re-read", "Policy sets a number of agent-held rulings per gate per week for a person to read back. Those are marked here. It is a spot check on the agents, not a second approval."]);
+  }
+  if (model.gates.some((g) => g.verdict === "escalated")) {
+    items.push(["Escalated", "The holder declined to rule and passed the decision up, which the policy requires for high-risk changes."]);
+  }
+  if (items.length === 0) return "";
+  return `<section><h2>What the columns mean</h2><dl class="legend">${items.map(([k, v]) =>
+    `<dt>${e(k)}</dt><dd>${e(v)}</dd>`).join("")}</dl></section>`;
+}
+
 function gatesPage(model) {
   const rows = model.gates.map((g) => `<tr>
-    <td>${e(String(g.at ?? ""))}</td>
+    <td>${e(when(g.at))}</td>
     <td><a href="proposals/${e(g.name)}.html">${e(g.name)}</a></td>
     <td>${e(g.gate ?? "")}</td>
     <td>${verdictChip(g.verdict)}</td>
     <td>${e(g.by ?? "")}</td>
-    <td>${g.held_by === "agent" ? chip("agent-held", "escalated") : chip("human", "approve")}</td>
-    <td class="num">${g.cost === undefined ? "" : `$${e(String(g.cost))}`}</td>
-    <td>${model.sampled.has(g) ? chip("sampled", "open") : ""}</td>
+    <td>${g.held_by === "agent" ? chip("persona agent", "escalated") : chip("a person", "approve")}</td>
+    <td class="num">${g.cost === undefined ? "" : e(dollars(g.cost))}</td>
+    <td>${model.sampled.has(g) ? chip("yes", "open") : ""}</td>
   </tr>`).join("");
   return [
     `<div class="page-head"><h1>Gate log</h1>`,
-    `<p class="lede">Every ruling made on this project, newest first. A ruling held by an agent is marked as such: it was made by a persona agent reading the gate holder's brief, not by the person whose role it names. Cost is what the ruling turn itself cost, and a human ruling has no turn to measure.</p></div>`,
+    `<p class="lede">Every ruling made on this project, newest first.</p></div>`,
+    gateLegend(model),
     model.gates.length === 0 ? `<p>No gate has been ruled yet.</p>` : `<div class="scroll"><table>
-      <thead><tr><th scope="col">When</th><th scope="col">Proposal</th><th scope="col">Gate</th><th scope="col">Verdict</th><th scope="col">By</th><th scope="col">Held</th><th scope="col" class="num">Cost</th><th scope="col">Sample</th></tr></thead>
+      <thead><tr><th scope="col">When</th><th scope="col">Proposal</th><th scope="col">Gate</th><th scope="col">Verdict</th><th scope="col">Role</th><th scope="col">Made by</th><th scope="col" class="num">Cost</th><th scope="col">Human re-read</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`,
   ].join("\n");
 }
@@ -350,22 +379,37 @@ function proposalsIndex(model) {
   ].join("\n");
 }
 
+// The ruling as the gate file records it: a verdict, who made it, the reasoning, and the
+// conditions as a list. The ruling agent also appends a `## Ruling` section to the
+// proposal page itself, which is the same content flattened into prose — so the body is
+// cut at that heading and the structured version shown instead, rather than printing both.
+function rulingBlock(p) {
+  const r = p.ruling;
+  if (!r) return `<p class="note">Open, waiting for ${e(p.holder)}.</p>`;
+  const parts = [`<section class="ruling"><h2>Ruling</h2>`,
+    `<p>${verdictChip(r.verdict)} by ${e(r.by ?? "")}${r.held_by === "agent" ? " (persona agent)" : ""}${r.at ? ` on ${e(when(r.at))}` : ""}.</p>`];
+  if (r.verdict === "escalated" && r.escalate_to) parts.push(`<p>Escalated to ${e(r.escalate_to)}.</p>`);
+  if (r.rationale) parts.push(`<div class="body">${markdownToHtml(String(r.rationale).trim())}</div>`);
+  const conditions = Array.isArray(r.conditions) ? r.conditions : [];
+  if (conditions.length) {
+    parts.push(`<h3>Conditions</h3><ol class="conditions">${conditions.map((c) => `<li>${inline(String(c))}</li>`).join("")}</ol>`);
+  }
+  parts.push(`</section>`);
+  return parts.join("\n");
+}
+
 function proposalPage(p) {
-  const rows = [["gate", p.front.gate ?? ""], ["opened", String(p.front.opened ?? "")]];
+  const rows = [["gate", p.front.gate ?? ""], ["opened", when(p.front.opened)]];
   if (p.front.tier) rows.push(["tier", String(p.front.tier)]);
   rows.push(["holder", p.holder]);
-  let outcome;
-  if (p.hasRulingSection) outcome = "";
-  else if (!p.ruling) outcome = `<p class="note">Open, waiting for ${e(p.holder)}.</p>`;
-  else if (p.ruling.verdict === "escalated") outcome = `<p class="note">Escalated to ${e(p.ruling.escalate_to ?? "")}: ${e(p.ruling.rationale ?? "")}</p>`;
-  else outcome = `<p class="note">Ruled ${e(p.ruling.verdict)} by ${e(p.ruling.by ?? "")}.</p>`;
+  const proposalBody = p.body.split(/^## Ruling\s*$/m)[0].trim();
 
   return [
     `<div class="page-head"><h1>${e(p.name)}</h1>`,
     `<p class="lede">${p.ruling ? `${e(p.ruling.gate ?? p.front.gate ?? "")} · ${verdictChip(p.ruling.verdict)}` : `${e(String(p.front.gate ?? ""))} · ${chip("open", "open")}`}</p></div>`,
     `<div class="scroll"><table><tbody>${rows.map(([k, v]) => `<tr><th scope="row">${e(k)}</th><td>${e(v)}</td></tr>`).join("")}</tbody></table></div>`,
-    outcome,
-    `<div class="body">${markdownToHtml(p.body.trim())}</div>`,
+    `<div class="body">${markdownToHtml(proposalBody)}</div>`,
+    rulingBlock(p),
   ].join("\n");
 }
 
@@ -375,7 +419,7 @@ function journalPage(model) {
     return `<article class="entry">
       <header>
         <h2>${e(num)} · ${e(j.stage)}</h2>
-        <p class="meta">${e(String(j.at ?? "").slice(0, 10))} · ${e(String(j.turns))} turns · $${e(String(j.cost))}</p>
+        <p class="meta">${e(String(j.at ?? "").slice(0, 10))} · ${e(String(j.turns))} turns · ${e(dollars(j.cost))}</p>
       </header>
       <div class="body">${markdownToHtml(j.body.trim())}</div>
     </article>`;
