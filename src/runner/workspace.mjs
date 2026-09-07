@@ -39,7 +39,16 @@ const MODES = {
   "with-sources": null,
 };
 
-export function materialise(projectDir, mode) {
+// `ref` lets a stage archive a commit other than `HEAD` — `derive-tests --revise` needs
+// its `spec-only` workspace built from the returned branch's own tip, not from `main`, so
+// the agent sees exactly what was proposed and returned rather than whatever else has
+// landed on `main` since. Every other caller leaves it at the default and sees the same
+// behaviour as before. `paths` is still checked for existence against the project's own
+// working tree rather than against `ref` itself: every workspace path this function ever
+// archives (`spec/`, `tests/seed/`, `constitution.md`, the harness, `tests/acceptance/`)
+// is created at project init, long before any commit `ref` could name exists, so the two
+// trees agree on which of them are present.
+export function materialise(projectDir, mode, { ref = "HEAD" } = {}) {
   if (!(mode in MODES)) throw new Error(`unknown workspace mode: ${mode}`);
   if (mode === "project") return { dir: projectDir, mode, cleanup() {} };
   if (mode === "with-sources") {
@@ -56,7 +65,7 @@ export function materialise(projectDir, mode) {
   // so when none of a mode's paths exist, skip the archive/extract step
   // entirely and leave the workspace empty (plus tests/acceptance/ below).
   if (paths.length > 0) {
-    const tar = execFileSync("git", ["archive", "HEAD", "--", ...paths], { cwd: projectDir, maxBuffer: 256 * 1024 * 1024 });
+    const tar = execFileSync("git", ["archive", ref, "--", ...paths], { cwd: projectDir, maxBuffer: 256 * 1024 * 1024 });
     execFileSync("tar", ["-x", "-C", dir], { input: tar });
   }
   // Only spec-only gets an (empty, if nothing is committed there yet) tests/acceptance:

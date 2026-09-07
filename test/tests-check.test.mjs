@@ -136,6 +136,24 @@ test("checkTests: a blind claim backed by a derive-tests commit passes", () => {
   assert.equal(r.ok, true, r.messages.join("\n"));
 });
 
+test("checkTests: a blind claim backed by a --revise re-run's propose(G3) commit passes", () => {
+  const d = project();
+  writeIndex(d, [R11]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1, "blind"));
+  commit(d, "propose(G3): derive-tests-opportunities-1");
+  const r = checkTests(d, { config: CONFIG_STANDARD });
+  assert.equal(r.ok, true, r.messages.join("\n"));
+});
+
+test("checkTests: a blind claim backed by a --revise re-run's merge commit passes", () => {
+  const d = project();
+  writeIndex(d, [R11]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1, "blind"));
+  commit(d, "merge: derive-tests-opportunities-1");
+  const r = checkTests(d, { config: CONFIG_STANDARD });
+  assert.equal(r.ok, true, r.messages.join("\n"));
+});
+
 test("checkTests: a blind claim on a file whose last commit is unrelated is unverified, and fails at STANDARD with no attestation", () => {
   const d = project();
   writeIndex(d, [R11]);
@@ -309,6 +327,18 @@ test("checkTests: a project with no spec/criteria-index.json yet passes with not
   assert.deepEqual(r.messages, []);
 });
 
+// ---- superseded criteria ----
+
+test("checkTests: a spec file for a criterion carrying superseded-by warns, naming the replacement, rather than failing", () => {
+  const d = project();
+  writeIndex(d, [{ ...R11, supersededBy: "R-1.2" }]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1, "blind"));
+  commit(d, "propose(G3): derive-tests-opportunities");
+  const r = checkTests(d, { config: CONFIG_STANDARD });
+  assert.equal(r.ok, true, r.messages.join("\n"));
+  assert.ok(r.warnings.some((w) => w.includes("R-1.1") && w.includes("superseded by R-1.2")), r.warnings.join(" | "));
+});
+
 // ---- coverage ----
 
 test("coverage: a two-criterion domain with one covered and one not-testable", () => {
@@ -318,14 +348,24 @@ test("coverage: a two-criterion domain with one covered and one not-testable", (
   write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1, "blind"));
   write(d, "tests/acceptance/not-testable.yaml", "criteria:\n  - { id: R-1.2, version: 1, reason: \"no path through the surface\" }\n");
   const c = coverage(d, "opportunities");
-  assert.deepEqual(c, { covered: ["R-1.1"], missing: [], notTestable: ["R-1.2"] });
+  assert.deepEqual(c, { covered: ["R-1.1"], missing: [], notTestable: ["R-1.2"], superseded: [] });
 });
 
 test("coverage: an accepted criterion with neither a test nor a not-testable entry is missing", () => {
   const d = project();
   writeIndex(d, [R11]);
   const c = coverage(d, "opportunities");
-  assert.deepEqual(c, { covered: [], missing: ["R-1.1"], notTestable: [] });
+  assert.deepEqual(c, { covered: [], missing: ["R-1.1"], notTestable: [], superseded: [] });
+});
+
+test("coverage: a criterion carrying superseded-by is neither covered nor missing, and is counted on its own", () => {
+  const d = project();
+  const superseded = { ...R11, supersededBy: "R-1.2" };
+  const R12 = { ...R11, id: "R-1.2" };
+  writeIndex(d, [superseded, R12]);
+  write(d, "tests/acceptance/opportunities/R-1.2.spec.ts", specHeader("R-1.2", 1, "blind"));
+  const c = coverage(d, "opportunities");
+  assert.deepEqual(c, { covered: ["R-1.2"], missing: [], notTestable: [], superseded: ["R-1.1"] });
 });
 
 // ---- checkGenerated ----

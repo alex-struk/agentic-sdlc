@@ -16,7 +16,10 @@ const PROVENANCE_LINE_RE = /^\/\/ provenance: (blind|unverified), spec@([0-9a-fA
 
 // Subjects `derive-tests` itself writes, on the proposal, the direct-commit and the
 // merge path respectively (see propose.mjs, finish-stage.mjs, rule.mjs) — the only three
-// that let a `blind` claim stand once the file has real git history.
+// that let a `blind` claim stand once the file has real git history. Prefix matches
+// rather than exact ones, so a `--revise` re-run's own proposal name
+// (`derive-tests-<d>-<n>`) and a `--stale` re-run's (`derive-tests-<d>-stale-<n>`) both
+// still qualify — every one of them still starts with `derive-tests-`.
 const DERIVE_TESTS_SUBJECT_RE = /^(propose\(G3\): derive-tests-|stage\(derive-tests\)|merge: derive-tests-)/;
 
 // The files that legitimately sit directly under `tests/acceptance/` rather than inside a
@@ -166,6 +169,13 @@ export function checkTests(projectDir, ctx = {}) {
     }
     testedIds.push(headerId);
 
+    // A criterion carrying `superseded-by` has been replaced by another; a test written
+    // against it can only ever contradict the replacement, never confirm it. Not a
+    // failure — the file may simply not have been cleaned up yet — but worth a reviewer's
+    // attention, so it is named here rather than left to be noticed by accident.
+    if (entry.supersededBy)
+      warnings.push(`${f.relPath}: @${headerId} is superseded by ${entry.supersededBy}; a test for it can only contradict the replacement`);
+
     if (version < entry.version) {
       stale.push(headerId);
       warnings.push(`${f.relPath}: stale — header is v${version}, the index has v${entry.version}`);
@@ -206,7 +216,13 @@ export function coverage(projectDir, domain) {
   const index = loadIndex(projectDir);
   const criteria = index && Array.isArray(index.criteria) ? index.criteria : [];
   const byId = new Map(criteria.map((c) => [c.id, c]));
-  const accepted = criteria.filter((c) => c.domain === domain && c.state === "accepted").map((c) => c.id);
+  const inDomain = criteria.filter((c) => c.domain === domain && c.state === "accepted");
+  // A criterion carrying `superseded-by` is replaced by another and a test for it could
+  // only ever contradict the replacement — it is neither something to write a test for
+  // nor something missing one, so it is counted on its own rather than folded into
+  // `accepted` below.
+  const accepted = inDomain.filter((c) => !c.supersededBy).map((c) => c.id);
+  const superseded = inDomain.filter((c) => c.supersededBy).map((c) => c.id);
 
   const domainDir = join(projectDir, "tests", "acceptance", domain);
   const testedIds = new Set();
@@ -225,5 +241,6 @@ export function coverage(projectDir, domain) {
     covered: accepted.filter((id) => testedIds.has(id)),
     missing: accepted.filter((id) => !testedIds.has(id) && !notTestableIds.has(id)),
     notTestable: accepted.filter((id) => notTestableIds.has(id)),
+    superseded,
   };
 }

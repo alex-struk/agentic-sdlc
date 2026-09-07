@@ -448,6 +448,47 @@ test("sdlc run derive-tests --domain applications --stale: after bumping one cri
   }
 });
 
+test("sdlc run derive-tests --domain applications: a criterion carrying superseded-by is excluded from derivation, so coverage needs no test or not-testable entry for it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-superseded-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    // Stands in for what a `defect` ratification condition would have produced: R-1.2 is
+    // replaced by R-1.1, the same shape `applyConditions`/`mintIds` (src/spec/criteria.mjs)
+    // leave on a domain file, written directly into the index here since these tests care
+    // only about the ratified result.
+    const idxPath = join(dir, "spec/criteria-index.json");
+    const index = JSON.parse(readFileSync(idxPath, "utf8"));
+    index.criteria.find((c) => c.id === "R-1.2").supersededBy = "R-1.1";
+    writeFileSync(idxPath, JSON.stringify(index, null, 2) + "\n");
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "mark R-1.2 superseded (test)"], dir);
+
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-superseded-mock-"));
+    writeFileSync(join(mockDir, "derive-tests.json"), JSON.stringify({
+      text: "Wrote a test for R-1.1 only. R-1.2 is superseded and gets no test of its own; R-1.3 has no observable amount.",
+      files: {
+        "tests/acceptance/applications/R-1.1.spec.ts":
+          "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+          + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+          + "test(\"age check\", async ({ surface }) => {\n  await surface.signIn(persona.applicant);\n"
+          + "  await surface.applicationsNew.submit({ age: 17 });\n  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
+        "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\" }\n",
+      },
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const r = await runStage(dir, "derive-tests", { domain: "applications" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    // No spec file and no not-testable entry exists for R-1.2 anywhere, yet coverage
+    // still passed — the only way that happens is that R-1.2 was never on the "needs a
+    // test" list to begin with.
+    assert.ok(!existsSync(join(dir, "tests/acceptance/applications/R-1.2.spec.ts")));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 // --- bind-adapter ---
 //
 // `fixture.config.yaml` itself configures no oracle at all, only a `new` target, so

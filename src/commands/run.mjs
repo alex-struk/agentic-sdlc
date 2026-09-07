@@ -132,7 +132,13 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
     return finished.ok ? followUp(projectDir, stage, ctx, finished) : finished;
   }
 
-  const ws = materialise(projectDir, wsMode);
+  // A revise run's own pre-check (`checkRevisionSource`/`checkDeriveTestsRevisionSource`
+  // in `registry.mjs`) stashes the returned branch's own commit on `ctx.revision` before
+  // this runs, so a `spec-only` workspace archives what was actually proposed and
+  // returned rather than whatever `HEAD` happens to be by the time this run starts. A
+  // stage that never sets `ctx.revision` (every stage but `derive-tests --revise` today)
+  // sees no change: `materialise` defaults to `HEAD` on its own.
+  const ws = materialise(projectDir, wsMode, ctx.revision?.branchCommit ? { ref: ctx.revision.branchCommit } : {});
   try {
     const skillDir = mkdtempSync(join(tmpdir(), `sdlc-skill-${name}-`));
     try {

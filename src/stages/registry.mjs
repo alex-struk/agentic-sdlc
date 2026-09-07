@@ -691,12 +691,17 @@ const contract = {
 // checks hold it to. A missing or unparseable index is not this function's business to
 // fail on — it returns an empty list, and the domain-ratified pre-check below is what
 // turns that into a real failure with a real message.
+//
+// A criterion carrying `superseded-by` is excluded: it has been replaced by another, and
+// a test for it could only ever contradict the replacement, never confirm it. `coverage`
+// (`src/checks/tests.mjs`) applies the same exclusion, so a superseded criterion is never
+// "missing" either — nothing asks for a test that would only ever be wrong.
 function acceptedCriteria(projectDir, domain) {
   const idxPath = join(projectDir, "spec", "criteria-index.json");
   if (!existsSync(idxPath)) return { criteria: [], generatedFrom: "" };
   let index;
   try { index = JSON.parse(readText(idxPath)); } catch { return { criteria: [], generatedFrom: "" }; }
-  const criteria = (index.criteria ?? []).filter((c) => c.domain === domain && c.state === "accepted");
+  const criteria = (index.criteria ?? []).filter((c) => c.domain === domain && c.state === "accepted" && !c.supersededBy);
   return { criteria, generatedFrom: index.generated_from ?? "" };
 }
 
@@ -758,6 +763,128 @@ function nextDeriveTestsStaleVersion(projectDir, domain) {
   if (!existsSync(dir)) return 1;
   const re = new RegExp(`^derive-tests-${escapeRe(domain)}-stale-(\\d+)\\.yaml$`);
   return readdirSync(dir).filter((f) => re.test(f)).length + 1;
+}
+
+// The proposal name a `--revise` re-run opens: `n` is how many rulings this domain's test
+// proposal has already been through, including the one that sent this run back — the same
+// "count rulings, not attempts" rule `contract` and `--stale` follow. Read literally, that
+// makes the very first `--revise` after a single return `derive-tests-<d>-2`, never `-1`:
+// the un-numbered `derive-tests-<d>` was already the family's first attempt, so a
+// numbered name only ever starts counting from its second. `n` is computed here, in a
+// post-check, which runs after `checkDeriveTestsRevisionSource` has already recorded this
+// run's own return onto `main` — so that return's gate file is on disk and counted, same
+// as every earlier one. The regex requires a bare number after the domain, so it never
+// matches a `-stale-<n>` gate file, which counts toward `nextDeriveTestsStaleVersion`
+// instead — the two sequences are independent.
+function nextDeriveTestsRevisionVersion(projectDir, domain) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return 1;
+  const full = new RegExp(`^derive-tests-${escapeRe(domain)}\\.yaml$`);
+  const revised = new RegExp(`^derive-tests-${escapeRe(domain)}-(\\d+)\\.yaml$`);
+  return readdirSync(dir).filter((f) => full.test(f) || revised.test(f)).length + 1;
+}
+
+// The proposal names a returned derive-tests ruling for one domain can be found under:
+// the full run's own fixed name, any earlier `--revise` re-run of it, and any `--stale`
+// re-run — a reviewer can return any one of them. Checked in that order (most general
+// first, most recent `--stale` numbering last) and, within the numbered forms, highest
+// number first, on the same reasoning `archaeology --revise`'s own follow-up search uses:
+// a later re-run's return is the more recent word on the domain, and once a return is
+// recorded (`recordReturnOnMain`, below) it no longer has a gate file missing from `main`
+// and drops out of `returnedRulingOn`'s own candidacy on its own — so in the ordinary case
+// at most one of these names ever qualifies at all.
+function deriveTestsRevisionCandidates(projectDir, domain) {
+  const names = [`derive-tests-${domain}`];
+  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/derive-tests-${domain}-*`], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/derive-tests-${domain}-*`], projectDir).split("\n").filter(Boolean)
+    : [];
+  const revisedRe = new RegExp(`^proposal/derive-tests-${escapeRe(domain)}-(\\d+)$`);
+  const staleRe = new RegExp(`^proposal/derive-tests-${escapeRe(domain)}-stale-(\\d+)$`);
+  const revisedNums = refs.map((b) => revisedRe.exec(b)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
+  const staleNums = refs.map((b) => staleRe.exec(b)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
+  for (const n of revisedNums) names.push(`derive-tests-${domain}-${n}`);
+  for (const n of staleNums) names.push(`derive-tests-${domain}-stale-${n}`);
+  return names;
+}
+
+function findReturnedDeriveTestsRuling(projectDir, domain) {
+  for (const name of deriveTestsRevisionCandidates(projectDir, domain)) {
+    const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
+    if (found) return { name, branch: `proposal/${name}`, ...found };
+  }
+  return null;
+}
+
+// `derive-tests --revise`'s own pre-check, mirroring `checkRevisionSource` above: is there
+// a returned test proposal to revise from at all? Finding it and stashing its rationale,
+// conditions and the returned branch's own commit on `ctx.revision` happens in every mode
+// (a dry run's printed prompt and the workspace both need them); recording the return onto
+// `main` (`recordReturnOnMain`, which for G3 renames the branch to `returned/<name>`
+// rather than deleting it — the tests it carries live only there) happens only on a real
+// run. `branchCommit` is read before that rename, from the still-live `proposal/<name>`
+// ref, so it names the commit regardless of what the branch is called by the time
+// `materialise` reads it.
+function checkDeriveTestsRevisionSource(projectDir, ctx) {
+  const id = "derive-tests-revise-source";
+  if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
+  const found = findReturnedDeriveTestsRuling(projectDir, ctx.domain);
+  if (!found) return { id, ok: false, messages: [`derive-tests --revise: no returned ruling for ${ctx.domain} to revise from`] };
+  const branchCommit = git(["rev-parse", found.branch], projectDir);
+  ctx.revision = { ...found, branchCommit };
+  if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
+  return { id, ok: true, messages: [] };
+}
+
+// A criterion id mentioned anywhere in a condition's own text — the closest thing G3's
+// free-text conditions have to a target, since (unlike G1's ratification grammar) there is
+// no formal `<verb> <id>: <text>` shape to parse one out of reliably. Matches both a
+// permanent id (`R-1.1`) and a provisional one (`D-applications-2`), since a returned test
+// proposal can equally have been derived against either.
+const CONDITION_CRITERION_ID_RE = /\b(?:R-\d+\.\d+|D-[a-z0-9-]+-\d+)\b/g;
+
+// The spec files a revision's own conditions name, by the criterion id(s) each condition
+// mentions — the set `checkDeriveTestsRevisionDrift` (below) exempts from having to come
+// out of a revision byte-for-byte unchanged.
+function conditionNamedFiles(domain, conditions) {
+  const named = new Set();
+  for (const line of conditions ?? []) {
+    for (const id of String(line).match(CONDITION_CRITERION_ID_RE) ?? []) named.add(`tests/acceptance/${domain}/${id}.spec.ts`);
+  }
+  return named;
+}
+
+// `derive-tests --revise`'s own promise, the same one `archaeology --revise` keeps for a
+// domain file's already-minted criteria: a return names specific tests as wrong, never a
+// reason to quietly rewrite ones nobody asked about. Every spec file the returned branch
+// already carried, whose criterion no condition names, has to come out of a revision
+// exactly as that branch had it — compared against the returned branch's own commit
+// (`ctx.revision.branchCommit`), which is a revision's real baseline, not against `HEAD`
+// (main may have moved on for reasons unrelated to this domain since the branch was
+// opened) and not against the workspace's own starting point (the same commit, but naming
+// it this way keeps the check readable on its own). Not run outside `--revise`.
+function checkDeriveTestsRevisionDrift(projectDir, ctx) {
+  const id = "derive-tests-revise-drift";
+  if (!ctx.revise || !ctx.domain || !ctx.revision?.branchCommit) return { id, ok: true, messages: [] };
+  const domain = ctx.domain;
+  const dirRel = `tests/acceptance/${domain}`;
+  const commit = ctx.revision.branchCommit;
+  const before = gitOk(["ls-tree", "-r", "--name-only", commit, "--", dirRel], projectDir)
+    ? git(["ls-tree", "-r", "--name-only", commit, "--", dirRel], projectDir).split("\n").filter(Boolean)
+    : [];
+  const named = conditionNamedFiles(domain, ctx.revision.conditions);
+  const messages = [];
+  for (const rel of before) {
+    if (!rel.endsWith(".spec.ts") || named.has(rel)) continue;
+    const full = join(projectDir, rel);
+    if (!existsSync(full)) { messages.push(`${rel}: removed, but no condition named it`); continue; }
+    // `git()` trims its output, so the blob's own trailing newline (present in the
+    // working tree's file, which `readText` returns unmodified) has to be added back
+    // before the two are compared — the same reconstruction `recordReturnOnMain` above
+    // uses for the same reason.
+    if (readText(full) !== `${git(["show", `${commit}:${rel}`], projectDir)}\n`)
+      messages.push(`${rel}: changed, but no condition named it`);
+  }
+  return { id, ok: messages.length === 0, messages };
 }
 
 // `checkTests` resolves a spec file's `blind` claim against git history — a file this
@@ -892,13 +1019,27 @@ const deriveTests = {
   },
   prompt(ctx) {
     const d = ctx.domain;
+    if (ctx.revise) {
+      const rationale = ctx.revision?.rationale ?? "";
+      const conditions = ctx.revision?.conditions ?? [];
+      const condLines = conditions.length
+        ? conditions.map((c, i) => `${i + 1}. ${c}`).join("\n")
+        : "(the ruling recorded no separate conditions; act on the rationale alone.)";
+      return [
+        `These tests for the "${d}" domain were proposed and returned, not approved. Here is the reviewer's rationale, verbatim:\n\n\`\`\`\n${rationale}\n\`\`\``,
+        `And each condition it attached, verbatim:\n\n${condLines}`,
+        `Change only what these conditions name — a spec file, a not-testable entry, or one assertion inside a file. Every other file already in tests/acceptance/${d}/ and every other entry in tests/acceptance/not-testable.yaml stays byte-for-byte as you found it: re-derive nothing, and never rewrite a header's "derived" date on a file whose content you did not actually change.`,
+        `A criterion nothing in surface reaches — no page, action or observation gets you there — still gets an entry in tests/acceptance/not-testable.yaml instead of a file, exactly as a first derivation would.`,
+        `Finish with your journal entry: say what you changed for each condition, in order, and name any condition you could not act on and why.`,
+      ].join("\n\n");
+    }
     const criteria = ctx.deriveTestsCriteria ?? [];
     const specSha = ctx.deriveTestsGeneratedFrom || "0000000000000000000000000000000000000000";
     const today = new Date().toISOString().slice(0, 10);
     const list = criteria.map((c) => `- ${c.id} (v${c.version}): ${c.statement}`).join("\n");
     return [
       `Write one Playwright acceptance test per criterion below, for the "${d}" domain, and nothing else. You see only the contract (tests/generated/*, generated from spec/contract) and the seed; there is no app/ in this workspace and nothing here lets you read one.`,
-      `The criteria to derive tests for:\n\n${list}`,
+      `The criteria to derive tests for:\n\n${list}\n\nThis list already excludes any criterion carrying superseded-by: it has been replaced by another, and a test for it could only ever contradict the replacement, so it gets none of its own.`,
       `For each one, write tests/acceptance/${d}/<ID>.spec.ts, starting with exactly these two header lines:\n\n// criterion: @<ID> v<version>\n// provenance: blind, spec@${specSha}, derived ${today}\n\nImport only from "../../fixtures" and "../../generated/*". Sign in through persona.<id> when the criterion needs a signed-in actor, act through surface.<page>.<action>(), read through surface.<page>.<observation>(), refer to a record through seed.<group>.<handle> rather than an id or a value you invented, and observe email through mail rather than a database row or a log line. Write one test() per given/when/then the criterion states, titled with the criterion's own statement. Never read or guess at how the system is built, and never write a selector, a test id, a locator call, or a hardcoded route — the surface is the whole world.`,
       `A criterion nothing in surface reaches — no page, action or observation gets you there — gets an entry in tests/acceptance/not-testable.yaml instead of a file: { id: <ID>, version: <version>, reason: "<why>" }. A reason has to name what is actually missing, not that the criterion is hard.`,
       `Finish with your journal entry: how many criteria got a test, which were not testable and why, and which surface actions or observations you needed but did not find — name them, so the contract can be extended to reach them.`,
@@ -906,6 +1047,13 @@ const deriveTests = {
   },
   proposal(ctx) {
     const d = ctx.domain;
+    if (ctx.revise) {
+      return {
+        name: `derive-tests-${d}-${ctx.deriveTestsRevisionN ?? nextDeriveTestsRevisionVersion(ctx.projectDir, d)}`,
+        question: `Do the revised ${d} tests now follow from their criteria and from nothing else?`,
+        recommendation: recommendationFrom(ctx.agentText),
+      };
+    }
     const name = ctx.stale
       ? `derive-tests-${d}-stale-${ctx.deriveTestsStaleN ?? nextDeriveTestsStaleVersion(ctx.projectDir, d)}`
       : `derive-tests-${d}`;
@@ -916,15 +1064,29 @@ const deriveTests = {
     };
   },
   preChecks(projectDir, ctx) {
+    const domainCheck = checkDomainOption(ctx, "derive-tests");
+    // `checkDeriveTestsRevisionSource` has a side effect on a real `--revise` run
+    // (recording the return onto `main`, renaming the spent branch — see its own
+    // comment), so on a revise run it only runs once the domain check ahead of it has
+    // passed: a run with a bad `--domain` fails on that alone, and the returned ruling —
+    // if this domain even has one — is left exactly where it was for a corrected re-run
+    // to find. Mirrors `archaeology`'s own `preChecks` above. An ordinary run has no such
+    // side effect to protect and keeps evaluating every check below regardless of
+    // `domainCheck`, as it always has.
+    if (ctx.revise && !domainCheck.ok) return [domainCheck];
+    const revisionCheck = checkDeriveTestsRevisionSource(projectDir, ctx);
     // Resolved once here — the real project directory, before a workspace exists — and
-    // stashed on `ctx` for `prompt(ctx)` to read back later with nothing else to go on.
-    if (ctx.domain) {
+    // stashed on `ctx` for `prompt(ctx)` to read back later with nothing else to go on. A
+    // revise run's prompt is built from the returned branch's own content and the
+    // ruling's conditions instead, so there is no "criteria to derive" list to resolve.
+    if (ctx.domain && !ctx.revise) {
       const resolved = resolveCriteriaToDerive(projectDir, ctx);
       ctx.deriveTestsCriteria = resolved.criteria;
       ctx.deriveTestsGeneratedFrom = resolved.generatedFrom;
     }
     return [
-      checkDomainOption(ctx, "derive-tests"),
+      domainCheck,
+      revisionCheck,
       checkDeriveTestsDomainRatified(projectDir, ctx),
       checkDeriveTestsStaleHasWork(ctx),
       checkDeriveTestsBudget(ctx),
@@ -932,15 +1094,18 @@ const deriveTests = {
   },
   postChecks(projectDir, ctx) {
     // Stashed the same way `contract` stashes its own version: the real `proposal(ctx)`
-    // call in `finishStage` does not carry `projectDir`, so a `--stale` run's number has
-    // to be resolved here, while it is available, for `proposal` to read back.
+    // call in `finishStage` does not carry `projectDir`, so a `--stale` or `--revise`
+    // run's number has to be resolved here, while it is available, for `proposal` to read
+    // back.
     if (ctx.stale) ctx.deriveTestsStaleN = nextDeriveTestsStaleVersion(projectDir, ctx.domain);
+    if (ctx.revise) ctx.deriveTestsRevisionN = nextDeriveTestsRevisionVersion(projectDir, ctx.domain);
     const checks = [
       checkTestsBlind(projectDir, ctx),
       checkSeparation(projectDir),
       checkDeriveTestsCoverage(projectDir, ctx.domain),
       checkDeriveTestsScope(projectDir, ctx.domain),
       checkDeriveTestsBlindHeader(projectDir, ctx.domain),
+      checkDeriveTestsRevisionDrift(projectDir, ctx),
     ];
     if (checks.every((c) => c.ok)) clearDeriveTestsRedo(projectDir, ctx);
     return checks;
@@ -1295,13 +1460,15 @@ function followUpRulingsRead(read, domain) {
   return read.filter((n) => re.test(n)).length;
 }
 
-// The one ruling `archaeology --revise` reads and acts on: a `return` verdict on either
-// the archaeology proposal itself or one of its follow-ups, whose gate file has not
-// (yet) landed on `main` — once it has, the return has already been recorded and dealt
-// with, and there is nothing left to revise from under that name. A branch that never
-// existed, or whose gate file `git show` cannot read, is not a candidate rather than an
-// error: most domains have no returned ruling at all, and that is the ordinary case
-// `checkRevisionSource` reports below, not this function's problem to raise.
+// The one ruling a `--revise` run reads and acts on: a `return` verdict on the named
+// proposal, whose gate file has not (yet) landed on `main` — once it has, the return has
+// already been recorded and dealt with, and there is nothing left to revise from under
+// that name. A branch that never existed, or whose gate file `git show` cannot read, is
+// not a candidate rather than an error: most domains have no returned ruling at all, and
+// that is the ordinary case each stage's own revision-source pre-check reports, not this
+// function's problem to raise. Shared by `archaeology --revise` (G1) and `derive-tests
+// --revise` (G3) — neither cares which gate it is being asked about, only whether the
+// named proposal's own gate file, on its own branch, says `return`.
 function returnedRulingOn(projectDir, name, branch) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   if (existsSync(join(projectDir, gatePath))) return null;
@@ -1311,8 +1478,11 @@ function returnedRulingOn(projectDir, name, branch) {
   if (gate.verdict !== "return") return null;
   // A human ruling's free-text explanation is `note`; an agent's is `rationale`. Either
   // one is what a revise prompt needs to quote — the field name is an implementation
-  // detail of who ruled, not something the prompt should have to know about.
-  return { rationale: gate.rationale ?? gate.note ?? "" };
+  // detail of who ruled, not something the prompt should have to know about. `conditions`
+  // is only ever an agent ruling's own list of free-text lines (a human `rule --return`
+  // records no such field at all) — `[]` for a human return, so a revise prompt can
+  // always iterate it without checking who ruled first.
+  return { rationale: gate.rationale ?? gate.note ?? "", conditions: gate.conditions ?? [] };
 }
 
 // Which returned ruling `--revise` acts on when a domain has more than one candidate:
@@ -1336,23 +1506,31 @@ function findReturnedRuling(projectDir, domain) {
   return found ? { name: archName, branch: `proposal/${archName}`, ...found } : null;
 }
 
-// The side effect `archaeology --revise` performs, on a real run only, once it has found
-// the returned ruling to work from: the gate file and the proposal page that recorded the
-// return are copied from the spent branch onto `main` and committed there, and the branch
-// — never merged, since a return merges nothing — is deleted. This is what makes the
-// return visible to `readRulings`/`followUpState` (a `return` gate file on `main` counts
-// as "ruled" for follow-up numbering, so the next follow-up continues past it rather than
-// reusing its number) and to the state site, and it is what frees the name for the fresh
-// `archaeology-<d>` proposal this run is about to open. Run from `checkRevisionSource`,
-// guarded there to a real run — a dry run only needs the rationale to print, never this
-// commit.
+// The side effect every `--revise` pre-check performs, on a real run only, once it has
+// found the returned ruling to work from: the gate file and the proposal page that
+// recorded the return are copied from the spent branch onto `main` and committed there.
+// This is what makes the return visible to `readRulings`/`followUpState` (a `return` gate
+// file on `main` counts as "ruled" for follow-up numbering, so the next follow-up
+// continues past it rather than reusing its number) and to the state site, and it is what
+// frees the name for the fresh proposal this run is about to open. Run from each stage's
+// own revision-source pre-check, guarded there to a real run — a dry run only needs the
+// rationale to print, never this commit.
 //
-// The gate file always exists on the branch (`findReturnedRuling` would not have named it
-// otherwise), but the proposal page can be missing — a human ruling made straight from the
-// CLI, with no page ever opened for it. `git show` on that path is guarded rather than
-// left to throw, so a branch in that shape still records the gate file that matters and
-// says, in the commit message, that there was no page to carry over.
-function recordReturnOnMain(projectDir, { name, branch }) {
+// The gate file always exists on the branch (`findReturnedRuling`/
+// `findReturnedDeriveTestsRuling` would not have named it otherwise), but the proposal
+// page can be missing — a human ruling made straight from the CLI, with no page ever
+// opened for it. `git show` on that path is guarded rather than left to throw, so a
+// branch in that shape still records the gate file that matters and says, in the commit
+// message, that there was no page to carry over.
+//
+// What happens to the spent branch differs by gate: archaeology's `--revise` (G1) has
+// nowhere left to read the old evidence from once it is recorded, so the branch is
+// deleted; `derive-tests --revise` (G3) rewrites a returned test suite from the tests the
+// branch already carries, and that content exists nowhere else, so its branch is renamed
+// to `returned/<name>` instead — every commit kept, just out of the `proposal/*` namespace
+// a fresh run needs clear. `keepBranch` picks between the two; `gate` only shapes the
+// commit subject (`record(G1): …` vs `record(G3): …`).
+function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", keepBranch = false } = {}) {
   const gateRel = join(".sdlc", "gates", `${name}.yaml`);
   const proposalRel = join(".sdlc", "proposals", `${name}.md`);
   writeText(join(projectDir, gateRel), `${git(["show", `${branch}:${gateRel}`], projectDir)}\n`);
@@ -1365,9 +1543,10 @@ function recordReturnOnMain(projectDir, { name, branch }) {
     proposalFound = false;
   }
   stagePaths(projectDir, staged);
-  const subject = proposalFound ? `record(G1): ${name} returned` : `record(G1): ${name} returned (no proposal page found on ${branch})`;
+  const subject = proposalFound ? `record(${gate}): ${name} returned` : `record(${gate}): ${name} returned (no proposal page found on ${branch})`;
   git([...SDLC_AUTHOR, "commit", "-q", "-m", subject], projectDir);
-  git(["branch", "-D", branch], projectDir);
+  if (keepBranch) git(["branch", "-m", branch, `returned/${name}`], projectDir);
+  else git(["branch", "-D", branch], projectDir);
 }
 
 // `archaeology --revise`'s own pre-check: is there a returned ruling to revise from at
@@ -1383,7 +1562,7 @@ function checkRevisionSource(projectDir, ctx) {
   const found = findReturnedRuling(projectDir, ctx.domain);
   if (!found) return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
   ctx.revision = found;
-  if (!ctx.dryRun) recordReturnOnMain(projectDir, found);
+  if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G1" });
   return { id, ok: true, messages: [] };
 }
 
