@@ -134,11 +134,16 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
   // A revise run's own pre-check (`checkRevisionSource`/`checkDeriveTestsRevisionSource`
   // in `registry.mjs`) stashes the returned branch's own commit on `ctx.revision` before
-  // this runs, so a `spec-only` workspace archives what was actually proposed and
-  // returned rather than whatever `HEAD` happens to be by the time this run starts. A
-  // stage that never sets `ctx.revision` (every stage but `derive-tests --revise` today)
-  // sees no change: `materialise` defaults to `HEAD` on its own.
-  const ws = materialise(projectDir, wsMode, ctx.revision?.branchCommit ? { ref: ctx.revision.branchCommit } : {});
+  // this runs. A stage that also declares `revisionOverlayPaths` (only `derive-tests`
+  // today) gets those paths overlaid into its workspace from that commit, on top of the
+  // ordinary `HEAD` archive every run builds — the returned branch's own version of just
+  // the domain under revision, not a whole workspace built from a commit that may be well
+  // behind `main` by now. A stage with no `ctx.revision` or no `revisionOverlayPaths` sees
+  // no change: `materialise` archives from `HEAD` alone, as it always has.
+  const overlay = ctx.revision?.branchCommit && stage.revisionOverlayPaths
+    ? { ref: ctx.revision.branchCommit, paths: stage.revisionOverlayPaths(ctx.domain) }
+    : undefined;
+  const ws = materialise(projectDir, wsMode, overlay ? { overlay } : {});
   try {
     const skillDir = mkdtempSync(join(tmpdir(), `sdlc-skill-${name}-`));
     try {
@@ -201,7 +206,14 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       });
       if (!r.ok) return agentTurnFailed(projectDir, stage, r);
 
-      if (ws.mode !== "project") collect(projectDir, ws.dir, stage.collect);
+      // `stage.collect` may be a plain array or, like `stage.workspace` above, a function
+      // — `derive-tests` narrows it on a revise run to the same paths its workspace
+      // overlaid (plus `tests/generated`, always regenerated from `HEAD`'s own contract by
+      // `prepare`), so a revise run's writeback can never carry another domain's tests or
+      // the shared bookkeeping files back out of the workspace, even before
+      // `derive-tests-scope` gets a chance to judge the tree.
+      const collectPaths = typeof stage.collect === "function" ? stage.collect(ctx) : stage.collect;
+      if (ws.mode !== "project") collect(projectDir, ws.dir, collectPaths);
 
       return await finishStage(projectDir, stage, ctx, r);
     } finally {

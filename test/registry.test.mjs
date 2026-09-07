@@ -78,7 +78,12 @@ test("derive-tests holds gate G3, is implemented, workspace spec-only, and its p
   assert.equal(stage.implemented, true);
   assert.equal(stage.gate, "G3");
   assert.equal(stage.workspace, "spec-only");
-  assert.deepEqual(stage.collect, ["tests/acceptance", "tests/generated"]);
+  assert.deepEqual(stage.collect({}), ["tests/acceptance", "tests/generated"]);
+  assert.deepEqual(
+    stage.collect({ revise: true, domain: "applications" }),
+    ["tests/acceptance/applications", "tests/acceptance/not-testable.yaml", "tests/generated"],
+  );
+  assert.deepEqual(stage.revisionOverlayPaths("applications"), ["tests/acceptance/applications", "tests/acceptance/not-testable.yaml"]);
   assert.equal(typeof stage.prepare, "function");
   const missing = stage.preChecks(".", { domain: undefined, config: { project: { domains: ["applications"] } } });
   assert.ok(missing.some((r) => !r.ok && /--domain/.test(r.messages.join(" "))));

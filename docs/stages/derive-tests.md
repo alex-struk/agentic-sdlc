@@ -97,9 +97,11 @@ in the project rather than in the workspace. Before the agent turn starts, `stag
 `surface`/`persona`/`seed` is the same TypeScript a real test file imports.
 
 Once the session ends, `tests/acceptance` and `tests/generated` are copied back into the project
-(`stage.collect`). The guard row for `derive-tests` allows only `tests/acceptance/` — every other
-path, including `app/`, `tests/adapters/`, `tests/seed/` and `spec/`, is out of its territory, and
-most of them are not even present in this workspace to write to.
+(`stage.collect`) — on a `--revise` run, narrowed to just the revised domain's own two paths plus
+`tests/generated`; see "Revising after a return" below. The guard row for `derive-tests` allows only
+`tests/acceptance/` — every other path, including `app/`, `tests/adapters/`, `tests/seed/` and
+`spec/`, is out of its territory, and most of them are not even present in this workspace to write
+to.
 
 `stage.allowedTools` is `["Read", "Write", "Edit", "Glob", "Grep"]`: reading the contract and
 writing spec files is the whole of the work, and a shell is the one tool that could reach past the
@@ -156,10 +158,13 @@ with that: the ruling's rationale and conditions say what has to change, and `--
 acts on them. The model is `archaeology --revise` (`docs/stages/archaeology.md`), applied to G3
 instead of G1.
 
-`derive-tests.preChecks` runs the `--domain` check first; only once it passes does it look for a
-returned ruling — its own side effect (below) never fires as a side channel of a batch that failed
-for some unrelated reason, and a misconfigured run leaves any real returned ruling exactly where it
-was for a corrected re-run to find.
+`derive-tests.preChecks` settles every check that could fail a `--revise` run before it looks for a
+returned ruling: the `--domain` check first, then whether the domain still has any accepted
+criteria left at all (`derive-tests-domain-ratified` — every one superseded since the return was
+opened counts as none). Only once both pass does it record anything. Its own side effect (below)
+never fires as a side channel of a batch that failed for some unrelated reason, and a misconfigured
+or now-pointless run leaves any real returned ruling exactly where it was for a corrected re-run, or
+a human decision about the domain, to find.
 
 `sdlc run derive-tests --domain <d> --revise` then looks for a returned ruling to revise from:
 among `proposal/derive-tests-<d>` (a full run), every `proposal/derive-tests-<d>-<n>` (an earlier
@@ -176,18 +181,35 @@ recorded: the rationale and conditions are found and quoted in the printed promp
 its gate file and `main` are all left exactly as found — a dry run writes nothing at all, the same
 promise `docs/stages/run.md` makes for every stage.
 
-The workspace this run's agent sees is still `spec-only`, but archived from the returned branch's
-own commit rather than from `HEAD` (`materialise(projectDir, mode, { ref })`, `workspace.mjs`) — the
-agent starts from exactly what was proposed and returned, not from whatever else has landed on
-`main` since. The prompt quotes the ruling's rationale and every condition verbatim, and asks for a
-revision, not a fresh derivation: change only what the conditions name — a spec file, a
-`not-testable` entry, or one assertion inside a file — leave every other spec file byte-for-byte as
-found, re-derive nothing, and never rewrite a header's `derived` date on a file whose content did
-not actually change. `derive-tests-revise-drift` is what enforces the "leave everything else alone"
-half of that: it reads the returned branch's own `tests/acceptance/<d>/` tree, and for every spec
-file there whose criterion id appears in none of the ruling's conditions, requires the working
-tree's version to match byte-for-byte — naming whichever file drifted (changed, or removed) when it
-does not.
+The workspace this run's agent sees is still `spec-only`, built the same way an ordinary run's is —
+archived from `HEAD` — except that `tests/acceptance/<d>/` and `tests/acceptance/not-testable.yaml`
+are then overlaid from the returned branch's own commit on top of it
+(`materialise(projectDir, mode, { overlay: { ref, paths } })`, `workspace.mjs`; the two paths come
+from `stage.revisionOverlayPaths`, `registry.mjs`; a path the returned commit never wrote is simply
+skipped). The domain under revision starts from exactly what was proposed and returned; everything
+else the workspace carries — every sibling domain's own tests, the shared `redo.yaml` and
+`attestations.yaml`, `spec/contract` itself — reflects `main` as it stands right now, not whatever it
+looked like when the returned proposal was opened. `prepare`'s `writeGenerated(wsDir)` (still run
+against the workspace's own `spec/contract`, which is the `HEAD` copy) regenerates `tests/generated/*`
+from that current contract, so a contract that has moved on since the return is what this run's own
+`tests/generated/*` is built from, never a stale snapshot the returned branch happened to carry.
+
+The prompt quotes the ruling's rationale and every condition verbatim, and asks for a revision, not
+a fresh derivation: change only what the conditions name — a spec file, a `not-testable` entry, or
+one assertion inside a file — leave every other spec file byte-for-byte as found, re-derive nothing,
+and never rewrite a header's `derived` date on a file whose content did not actually change.
+`derive-tests-revise-drift` is what enforces the "leave everything else alone" half of that: it reads
+the returned branch's own `tests/acceptance/<d>/` tree, and for every spec file there whose criterion
+id appears in none of the ruling's conditions, requires the working tree's version to match
+byte-for-byte — naming whichever file drifted (changed, or removed) when it does not.
+
+Once the session ends, `stage.collect` (`registry.mjs`) narrows what is copied back out of the
+workspace to the same two overlaid paths plus `tests/generated` — never the whole `tests/acceptance`
+tree a full run collects. A sibling domain's tests, and the shared bookkeeping files, are present in
+the workspace only because the base archive always includes them; they are never written back over
+the project's own copy, even if an agent turn strayed and touched one (`derive-tests-scope`, below,
+would fail that run anyway, but the write never reaches the project tree to be judged in the first
+place).
 
 The proposal it opens is `derive-tests-<d>-<n>`, `n` being how many rulings this domain's test
 proposal has already been through, the one that returned it included — so the first `--revise`

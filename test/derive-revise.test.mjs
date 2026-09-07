@@ -12,6 +12,7 @@ import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule, ruleByAgent } from "../src/commands/rule.mjs";
+import { loadContract, generateTypes } from "../src/spec/surface.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -136,6 +137,28 @@ async function buildReturnedDeriveTests(dir, { rationale = RETURN_RATIONALE, con
   git(["checkout", "-q", "main"], dir);
 }
 
+// The agent turn every "real run" test below drives: drops R-1.1's error-message
+// assertion per the first condition, rewords R-1.3's not-testable reason per the second,
+// and leaves R-1.2 — named by neither condition — out of `files` entirely, so whatever
+// the workspace already carries for it is what comes back untouched.
+function standardReviseMockDir() {
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-mock-"));
+  writeFileSync(join(mockDir, "derive-tests.json"), JSON.stringify({
+    text: "Dropped the error-message assertion from R-1.1 per the first condition, and reworded R-1.3's not-testable reason per the second. R-1.2 was not named by either condition and is untouched.",
+    files: {
+      "tests/acceptance/applications/R-1.1.spec.ts":
+        "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+        + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+        + "test(\"When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.\", async ({ surface }) => {\n"
+        + "  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: 17 });\n"
+        + "  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
+      "tests/acceptance/not-testable.yaml":
+        "criteria:\n  - { id: R-1.3, version: 1, reason: \"no page on the surface observes the recalculated fee amount\" }\n",
+    },
+  }));
+  return mockDir;
+}
+
 test("derive-tests --revise: with no returned ruling, fails the pre-check up front", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-none-"));
   const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
@@ -192,27 +215,15 @@ test("derive-tests --revise: a real run records the return on main, renames the 
   try {
     await buildReturnedDeriveTests(dir);
 
-    // The workspace this run builds is archived from the returned branch's own commit,
-    // so the agent starts from exactly what was proposed — R-1.1 and R-1.2 tested, R-1.3
-    // not-testable — and this mock changes only what the two conditions name: R-1.1's
-    // assertion, and R-1.3's reason. R-1.2 is left out of `files` entirely, so whatever
-    // the workspace already carries for it (the untouched original) is what comes back.
-    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-real-mock-"));
-    writeFileSync(join(mockDir, "derive-tests.json"), JSON.stringify({
-      text: "Dropped the error-message assertion from R-1.1 per the first condition, and reworded R-1.3's not-testable reason per the second. R-1.2 was not named by either condition and is untouched.",
-      files: {
-        "tests/acceptance/applications/R-1.1.spec.ts":
-          "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
-          + "import { test, expect, persona } from \"../../fixtures\";\n\n"
-          + "test(\"When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.\", async ({ surface }) => {\n"
-          + "  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: 17 });\n"
-          + "  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
-        "tests/acceptance/not-testable.yaml":
-          "criteria:\n  - { id: R-1.3, version: 1, reason: \"no page on the surface observes the recalculated fee amount\" }\n",
-      },
-    }));
+    // The workspace this run builds overlays `tests/acceptance/applications/` and
+    // `tests/acceptance/not-testable.yaml` from the returned branch's own commit onto an
+    // otherwise ordinary `HEAD` archive, so the agent starts from exactly what was
+    // proposed for this domain — R-1.1 and R-1.2 tested, R-1.3 not-testable — and this
+    // mock changes only what the two conditions name: R-1.1's assertion, and R-1.3's
+    // reason. R-1.2 is left out of `files` entirely, so whatever the workspace already
+    // carries for it (the untouched original) is what comes back.
     process.env.SDLC_EXECUTOR = "mock";
-    process.env.SDLC_MOCK_DIR = mockDir;
+    process.env.SDLC_MOCK_DIR = standardReviseMockDir();
     const r = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
     assert.equal(r.ok, true, JSON.stringify(r.messages));
 
@@ -289,6 +300,113 @@ test("derive-tests --revise: a mock that also changes the unnamed R-1.2 file fai
     assert.equal(gitOk(["rev-parse", "--verify", "proposal/derive-tests-applications-2"], dir), false);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("derive-tests --revise: the shared attestations.yaml, changed on main after the return, is left untouched", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-scope-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    // Present on `main` — and so on the returned branch's own snapshot too — before the
+    // applications proposal is even opened. `attestations.yaml` sits directly under
+    // `tests/acceptance/`, next to every domain's own folder, exactly like `redo.yaml` —
+    // shared bookkeeping no domain's own revision has any business touching.
+    writeFileSync(join(dir, "tests/acceptance/attestations.yaml"), "attestations: []\n");
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "attestations: none yet"], dir);
+
+    await buildReturnedDeriveTests(dir);
+
+    // `main` moves the file on after the return — the case the returned branch's snapshot
+    // never saw and must never overwrite.
+    writeFileSync(
+      join(dir, "tests/acceptance/attestations.yaml"),
+      "attestations:\n  - { file: \"tests/acceptance/applications/R-1.2.spec.ts\", by: \"tech-lead\" }\n",
+    );
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "attestations: add one"], dir);
+
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = standardReviseMockDir();
+    const r = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    assert.equal(
+      readFileSync(join(dir, "tests/acceptance/attestations.yaml"), "utf8"),
+      "attestations:\n  - { file: \"tests/acceptance/applications/R-1.2.spec.ts\", by: \"tech-lead\" }\n",
+    );
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("derive-tests --revise: tests/generated reflects HEAD's own contract, not the returned branch's stale one", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-generated-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    await buildReturnedDeriveTests(dir);
+
+    // The contract moves on after the branch was cut — a persona no returned proposal
+    // ever saw, added straight to `main`.
+    const personasPath = join(dir, "spec/contract/personas.yaml");
+    writeFileSync(
+      personasPath,
+      `${readFileSync(personasPath, "utf8")}  - id: fee-clerk\n    can: [review a fee quote]\n    sign_in: { sandbox-idp: { username: fee-clerk-1 } }\n`,
+    );
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "contract: add fee-clerk persona"], dir);
+
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = standardReviseMockDir();
+    const r = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    // `prepare` regenerates `tests/generated/*` inside the workspace from `spec/contract`
+    // — always archived from `HEAD`, never from the returned branch's own commit — so
+    // what lands back in the project matches a fresh `generateTypes(loadContract(...))`
+    // read off the commit this run just made, fee-clerk included.
+    const expected = generateTypes(loadContract(dir));
+    for (const [relPath, text] of Object.entries(expected)) {
+      assert.equal(readFileSync(join(dir, relPath), "utf8"), text, relPath);
+    }
+    assert.match(readFileSync(join(dir, "tests/generated/personas.ts"), "utf8"), /fee-clerk/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("derive-tests --revise: a domain whose criteria are all superseded fails before the return is recorded", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-superseded-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    await buildReturnedDeriveTests(dir);
+
+    // Every criterion the applications domain has is superseded after the return —
+    // `ratify`'s own defect handling would normally do this by rewriting the domain file
+    // and re-running `ratify`; written straight to the index here since only its effect
+    // on `derive-tests`'s own pre-check ordering is under test.
+    const idxPath = join(dir, "spec/criteria-index.json");
+    const index = JSON.parse(readFileSync(idxPath, "utf8"));
+    for (const c of index.criteria) if (c.domain === "applications") c.supersededBy = `${c.id}-replacement`;
+    writeFileSync(idxPath, `${JSON.stringify(index, null, 2)}\n`);
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "supersede every applications criterion"], dir);
+
+    const r = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m.includes("has no accepted criteria")), r.messages.join(" | "));
+
+    // Nothing about the return was recorded: the branch is still open under its original
+    // name, and no `record(G3)` commit landed on `main`.
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/derive-tests-applications"], dir), true);
+    assert.equal(gitOk(["rev-parse", "--verify", "returned/derive-tests-applications"], dir), false);
+    const log = git(["log", "--pretty=%s", "main"], dir).split("\n");
+    assert.ok(!log.some((l) => l.startsWith("record(G3):")), log.join(" | "));
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(derive-tests\): pre-checks failed/);
+  } finally {
     restoreEgress(prevEgress);
   }
 });

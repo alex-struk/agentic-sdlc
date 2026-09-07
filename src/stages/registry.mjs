@@ -987,6 +987,19 @@ function clearDeriveTestsRedo(projectDir, ctx) {
   dropTestWrongRulings(projectDir, derived);
 }
 
+// The only two paths a `--revise` run's revised domain ever gets to speak for: its own
+// acceptance tests, and the shared `not-testable.yaml` entries it may hold among them.
+// Read from two places — `runStage` (`src/commands/run.mjs`) builds `materialise`'s
+// `overlay.paths` from it, so the workspace's own copy of exactly these paths comes from
+// the returned branch's commit rather than `HEAD`; `collect` below scopes a revise run's
+// writeback to the same two (plus `tests/generated`, which is never overlaid — it is
+// regenerated from `HEAD`'s own contract by `prepare`) so a stray write anywhere else
+// under `tests/acceptance/` never leaves the workspace at all, before
+// `derive-tests-scope` even gets a chance to judge the tree.
+function deriveTestsRevisionScope(domain) {
+  return [`tests/acceptance/${domain}`, "tests/acceptance/not-testable.yaml"];
+}
+
 // `derive-tests` is the blind stage: an agent that sees only the contract (generated
 // into `tests/generated/*` by its own `prepare` step) and the seed writes one Playwright
 // spec per accepted criterion, calling the abstract surface and never a locator. It holds
@@ -998,13 +1011,25 @@ const deriveTests = {
   skill: skillPath("derive-tests"),
   // A fresh temporary directory built from committed content only (`git archive HEAD`),
   // so the agent writing tests never sees an uncommitted edit to the contract or to
-  // another domain's own criteria.
+  // another domain's own criteria. On a `--revise` run, `runStage` also overlays
+  // `revisionOverlayPaths` below from the returned branch's own commit, so the revised
+  // domain starts from exactly what was proposed and returned.
   workspace: "spec-only",
   gate: "G3",
-  // Copied back into the project once the session ends: the acceptance suite the agent
-  // wrote, and the generated types `prepare` (below) regenerated in the workspace before
-  // the agent ever saw it.
-  collect: ["tests/acceptance", "tests/generated"],
+  // The paths a `--revise` run's own workspace was overlaid with — see
+  // `deriveTestsRevisionScope` above.
+  revisionOverlayPaths: deriveTestsRevisionScope,
+  // Copied back into the project once the session ends. A full or `--stale` run copies
+  // the whole acceptance suite (nothing else could have changed it) and the generated
+  // types `prepare` regenerated in the workspace before the agent ever saw it; a
+  // `--revise` run narrows this to the revised domain's own two paths plus
+  // `tests/generated`, so another domain's tests and the shared bookkeeping files
+  // (`redo.yaml`, `attestations.yaml`) — present in the workspace only because the base
+  // archive always includes them, never because this run touched them — are never
+  // written back over the project's own copy.
+  collect(ctx) {
+    return ctx.revise ? [...deriveTestsRevisionScope(ctx.domain), "tests/generated"] : ["tests/acceptance", "tests/generated"];
+  },
   implemented: true,
   // No Bash and no MCP server: a blind test-writing session reads the generated contract
   // and writes spec files, and a shell is the one tool that could reach past the
@@ -1067,13 +1092,22 @@ const deriveTests = {
     const domainCheck = checkDomainOption(ctx, "derive-tests");
     // `checkDeriveTestsRevisionSource` has a side effect on a real `--revise` run
     // (recording the return onto `main`, renaming the spent branch — see its own
-    // comment), so on a revise run it only runs once the domain check ahead of it has
-    // passed: a run with a bad `--domain` fails on that alone, and the returned ruling —
-    // if this domain even has one — is left exactly where it was for a corrected re-run
-    // to find. Mirrors `archaeology`'s own `preChecks` above. An ordinary run has no such
-    // side effect to protect and keeps evaluating every check below regardless of
-    // `domainCheck`, as it always has.
+    // comment), so on a revise run every check that could fail it off is settled first,
+    // and the side-effecting check only runs once all of them have passed: a run with a
+    // bad `--domain`, or one against a domain with nothing left to derive tests for at
+    // all, fails on that alone, and the returned ruling — if this domain even has one —
+    // is left exactly where it was for a corrected re-run to find. Mirrors
+    // `archaeology`'s own `preChecks` above. An ordinary run has no such side effect to
+    // protect and keeps evaluating every check below regardless of `domainCheck` or
+    // `domainRatifiedCheck`, as it always has.
     if (ctx.revise && !domainCheck.ok) return [domainCheck];
+    // Cheap and free of any side effect of its own, so it is settled before
+    // `checkDeriveTestsRevisionSource` gets a chance to record anything: a domain whose
+    // criteria have all been superseded since the returned proposal was opened has
+    // nothing left to revise, and that has to fail before the return is recorded, not
+    // after.
+    const domainRatifiedCheck = checkDeriveTestsDomainRatified(projectDir, ctx);
+    if (ctx.revise && !domainRatifiedCheck.ok) return [domainCheck, domainRatifiedCheck];
     const revisionCheck = checkDeriveTestsRevisionSource(projectDir, ctx);
     // Resolved once here — the real project directory, before a workspace exists — and
     // stashed on `ctx` for `prompt(ctx)` to read back later with nothing else to go on. A
@@ -1087,7 +1121,7 @@ const deriveTests = {
     return [
       domainCheck,
       revisionCheck,
-      checkDeriveTestsDomainRatified(projectDir, ctx),
+      domainRatifiedCheck,
       checkDeriveTestsStaleHasWork(ctx),
       checkDeriveTestsBudget(ctx),
     ];

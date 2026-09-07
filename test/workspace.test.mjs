@@ -45,6 +45,61 @@ test("materialise spec-only creates an empty tests/acceptance dir", () => {
   ws.cleanup();
 });
 
+test("materialise overlay: an overlaid path comes from the given ref, everything else still comes from HEAD", () => {
+  const d = makeProject();
+  mkdirSync(join(d, "tests/acceptance/applications"), { recursive: true });
+  writeFileSync(join(d, "tests/acceptance/applications/a.spec.ts"), "test('proposed version');\n");
+  mkdirSync(join(d, "tests/acceptance/billing"), { recursive: true });
+  writeFileSync(join(d, "tests/acceptance/billing/b.spec.ts"), "test('billing, untouched by overlay');\n");
+  git(["add", "-A"], d);
+  git(["commit", "-q", "-m", "acceptance suite"], d);
+  const proposedSha = git(["rev-parse", "HEAD"], d);
+
+  // `main` moves on after that commit — a later commit changes the applications domain's
+  // own file again, the same way `main` can move between a proposal being opened and it
+  // being revised.
+  writeFileSync(join(d, "tests/acceptance/applications/a.spec.ts"), "test('head moved on');\n");
+  git(["add", "-A"], d);
+  git(["commit", "-q", "-m", "head moves on"], d);
+
+  const ws = materialise(d, "spec-only", { overlay: { ref: proposedSha, paths: ["tests/acceptance/applications"] } });
+  // The overlaid domain comes from the given ref, not from HEAD.
+  assert.equal(readFileSync(join(ws.dir, "tests/acceptance/applications/a.spec.ts"), "utf8"), "test('proposed version');\n");
+  // A sibling domain, never named in `paths`, still comes from HEAD, exactly as an
+  // ordinary run's own workspace would show it.
+  assert.equal(readFileSync(join(ws.dir, "tests/acceptance/billing/b.spec.ts"), "utf8"), "test('billing, untouched by overlay');\n");
+  ws.cleanup();
+});
+
+test("materialise overlay reaches a path the given ref carries even when HEAD never did", () => {
+  const d = makeProject();
+  git(["checkout", "-q", "-b", "proposal/x"], d);
+  mkdirSync(join(d, "tests/acceptance"), { recursive: true });
+  writeFileSync(join(d, "tests/acceptance/not-testable.yaml"), "criteria:\n  - { id: R-1.3, reason: x }\n");
+  git(["add", "-A"], d);
+  git(["commit", "-q", "-m", "not-testable"], d);
+  const branchSha = git(["rev-parse", "HEAD"], d);
+  git(["checkout", "-q", "main"], d);
+
+  const ws = materialise(d, "spec-only", { overlay: { ref: branchSha, paths: ["tests/acceptance/not-testable.yaml"] } });
+  assert.equal(
+    readFileSync(join(ws.dir, "tests/acceptance/not-testable.yaml"), "utf8"),
+    "criteria:\n  - { id: R-1.3, reason: x }\n",
+  );
+  ws.cleanup();
+});
+
+test("materialise overlay skips a path absent from the given ref rather than failing the whole archive", () => {
+  const d = makeProject();
+  assert.doesNotThrow(() => {
+    const ws = materialise(d, "spec-only", { overlay: { ref: "HEAD", paths: ["tests/acceptance/does-not-exist"] } });
+    // The rest of the workspace still comes together normally — an absent overlay path
+    // is skipped, not fatal.
+    assert.ok(existsSync(join(ws.dir, "spec/spec.md")));
+    ws.cleanup();
+  });
+});
+
 test("collect copies tests/acceptance back into the project", () => {
   const d = makeProject();
   const ws = materialise(d, "spec-only");
