@@ -70,9 +70,16 @@ When `--by agent:<persona>` names the gate's own `holder`, `sdlc rule` builds a 
 - the tier — the proposal's own `tier:` front matter if it set one, else
   `policy.default_tier`;
 - `git diff main...proposal/<name> --stat`;
-- the diff of everything outside `app/` (`git diff main...proposal/<name> -- . ':!app'`), capped
-  at 20,000 characters with a `[truncated]` marker so a large or generated diff cannot blow the
-  prompt budget;
+- the diff of the proposal's own output, capped at 60,000 characters with a `[truncated]`
+  marker so a large or generated diff cannot blow the prompt budget. Four path groups are left
+  out of it entirely: `app/` (the spec-side personas rule on the spec, not an implementation),
+  and `site/`, `.sdlc/runs/` and `.sdlc/journal/`, which are derived from the very work being
+  ruled on, change on every run, and between them can be larger than everything the persona
+  actually needs to read. What remains is ordered so the stage's own output comes first — for
+  G1, `spec/domains/` then the rest of `spec/`; for G0, `intent/` — and the cap is applied to
+  that order, so what falls off the end is the least important file rather than whichever one
+  sorts last. When the cap does cut, the diff ends with `[<n> further changed file(s) not
+  shown]`;
 - the four structural checks, run on the proposal branch's current checkout.
 
 The agent turn runs with `maxTurns: 12` and a tool list of `Read`, `Grep`, `Glob`, `Bash(git

@@ -179,7 +179,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     return { verdict: "escalate", rationale, escalated: true };
   }
 
-  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier });
+  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate });
   // A ruling reads and answers; it never writes. The tool list says so up front rather
   // than relying on the clean-tree check below to catch a turn that wrote anyway: the
   // read-only git commands are there because a persona legitimately wants to look
