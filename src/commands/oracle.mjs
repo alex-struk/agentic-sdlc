@@ -92,6 +92,17 @@ function upServices(config, base, opts) {
 }
 
 async function startOracle(projectDir, config, target) {
+  // Checked before anything that touches the network or the filesystem for real:
+  // cloning the old application's sources is wasted work if Docker Compose is not even
+  // on this machine, so the probe for it runs first and every later check builds on a
+  // Docker that is actually there.
+  if (process.env.SDLC_ORACLE !== "mock") {
+    const dc = composeVersion();
+    if (!dc.found) {
+      console.error("oracle up: docker compose is not available (docker compose version failed); install Docker Compose, or run sdlc doctor to check tools");
+      return 1;
+    }
+  }
   // A compose file under `sources/` belongs to the old application's clone, which the
   // pipeline materialises rather than the project committing — so it may simply not be
   // on disk yet on a fresh checkout, and checking out the configured commit is what puts
@@ -114,13 +125,6 @@ async function startOracle(projectDir, config, target) {
   if (!existsSync(join(projectDir, overrideRel))) {
     console.error(`oracle up: run sdlc run contract first: ${overrideRel} is missing`);
     return 1;
-  }
-  if (process.env.SDLC_ORACLE !== "mock") {
-    const dc = composeVersion();
-    if (!dc.found) {
-      console.error("oracle up: docker compose is not available (docker compose version failed); install Docker Compose, or run sdlc doctor to check tools");
-      return 1;
-    }
   }
 
   const composeProject = `sdlc-${config.project.name}-${target}`;

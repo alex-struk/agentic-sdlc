@@ -549,6 +549,73 @@ The system shall waive the intake fee for a renewal.
   }
 });
 
+test("calibrate stays runnable when every ruling is held — a domain that never parses does not wedge the stage", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-all-held-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  // Corrupts the *only* domain the ruling below can name, after the fixture that needs
+  // it parseable (ratify, contract, derive-tests, bind-adapter) has already run. Every
+  // condition this ruling carries is therefore held on every later run, forever — the
+  // shape that used to leave the stage dead once `applied.yaml` had already recorded a
+  // first attempt with nothing new to say.
+  const applicationsBroken = `${DOMAIN_TEXT}
+### D-applications-4 v1 confirmed recovered
+The system shall notify the applicant when a permit is issued.
+- cites: src/routes.js:20
+`;
+  writeFileSync(join(dir, "spec", "domains", "applications.md"), applicationsBroken);
+  git(["add", "-A"], dir);
+  git([...COMMIT, "break the applications domain (test)"], dir);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    // One condition per gate, and each names a different criterion, so the two gates
+    // never share a condition line verbatim — `applyCalibrateGates` credits a held
+    // condition's *first* owner when two gates carry the identical text, which a test
+    // naming the same criterion twice the same way would trip over for a reason that has
+    // nothing to do with the bug this reproduces.
+    await ruleCalibration(dir, "calibrate-old-1", {
+      rationale: "the old system leaves the status alone",
+      conditions: ["defect-in-old R-1.2"],
+    });
+
+    // First processing of the held gate: `applied.yaml` does not exist yet, so writing
+    // it — even recording nothing applied — is a real change and this run commits fine.
+    // Since nothing was actually resolved, the same failures are still unruled once the
+    // suite finishes, so this run also opens a fresh question over them.
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+    assert.match(lastCalibrateText(dir), /spec\/domains\/applications\.md does not parse; 1 condition\(s\) not applied/);
+    assert.equal(second.proposal?.name, "calibrate-old-2");
+
+    // Approved the same way, and held the same way: the domain still does not parse.
+    await ruleCalibration(dir, "calibrate-old-2", {
+      rationale: "the age check criterion is worded wrong",
+      conditions: ["spec-wrong R-1.1: The system shall reject an applicant under 19."],
+    });
+
+    // Second processing of a held gate (now two of them, calibrate-old-1 and -2, both
+    // still entirely held): neither has ever recorded anything real, so `applied.yaml`
+    // re-serialises to the exact text already on disk. This is the run that used to
+    // throw "nothing to commit" — the domain file was never touched, so the only path
+    // calibrate had staged for its own commit was `applied.yaml`, byte-for-byte identical
+    // to what `git` already has.
+    const third = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(third.ok, true, JSON.stringify(third.messages));
+    assert.match(lastCalibrateText(dir), /spec\/domains\/applications\.md does not parse; 2 condition\(s\) not applied/);
+
+    // Nothing was ever actually applied, so nothing on `main` claims it was.
+    assert.equal(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), applicationsBroken, "the malformed file was never rewritten");
+    const applied = parseYaml(readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8"));
+    assert.deepEqual(applied.applied, []);
+    assert.deepEqual(applied.rulings, []);
+    const subjects = git(["log", "--pretty=%s"], dir).split("\n");
+    assert.ok(subjects.every((s) => !/apply rulings calibrate-old-[12]\b/.test(s)), `a commit claimed rulings were applied: ${JSON.stringify(subjects)}`);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
 test("a second calibrate run on the same day writes a second dated result set rather than overwriting the first", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-dated-"));
   const { dir, prevEgress } = await makeReadyForCalibrate(tmp);

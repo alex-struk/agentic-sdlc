@@ -8,7 +8,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
-import { git, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
 import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR } from "../spec/criteria.mjs";
 import { addRedo } from "../spec/redo.mjs";
@@ -203,8 +203,18 @@ function applyCalibrateGates(projectDir, target, today) {
   const rulings = [...state.rulings, ...result.applied.map((a) => ({ id: a.id, version: a.version, verb: a.verb, gate: a.gate }))]
     .filter((r) => { const k = JSON.stringify(r); if (seen.has(k)) return false; seen.add(k); return true; });
   const rel = `tests/results/${target}/applied.yaml`;
-  writeText(join(projectDir, rel), stringifyYaml({ applied: [...state.applied, ...result.gateNames], rulings }));
-  result.changed.push(rel);
+  const abs = join(projectDir, rel);
+  const text = stringifyYaml({ applied: [...state.applied, ...result.gateNames], rulings });
+  // Written, and counted as changed, only when the record actually differs — the same
+  // guard `writeGenerated` applies to its own output. Every ruling this run saw held
+  // (the domain file it named does not parse) leaves `state` untouched, so the record
+  // re-serialises to the text already on disk; committing that would claim a ruling was
+  // applied when nothing was.
+  const existing = existsSync(abs) ? readText(abs) : undefined;
+  if (existing !== text) {
+    writeText(abs, text);
+    result.changed.push(rel);
+  }
   return result;
 }
 
@@ -218,6 +228,14 @@ function applyCalibrateGates(projectDir, target, today) {
 function commitAppliedRulings(projectDir, rulings, paths) {
   if (paths.length === 0) return false;
   stagePaths(projectDir, paths);
+  // Staging by name is not proof anything landed in the index: every ruling this run
+  // saw could have been held (the domain file it named does not parse), in which case
+  // `applyCalibrateGates` re-serialises `applied.yaml` to the text already on disk and
+  // nothing here is actually different from HEAD. `git diff --cached --quiet` is the
+  // ground truth for that — exit 0 means the index matches HEAD — so a run with nothing
+  // real to record makes no commit and leaves these paths for `finishStage`'s ordinary
+  // commit, which will find the same empty diff and also do nothing.
+  if (gitOk(["diff", "--cached", "--quiet"], projectDir)) return false;
   const names = rulings.gateNames.join(", ");
   const subject = names ? `stage(calibrate): apply rulings ${names}` : "stage(calibrate): apply rulings";
   git([...SDLC_AUTHOR, "commit", "-q", "-m", subject], projectDir);
