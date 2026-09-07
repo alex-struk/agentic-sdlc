@@ -305,6 +305,11 @@ egress: { rules: [E-2] }
     const day = new Date().toISOString().slice(0, 10);
     const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
     assert.match(runs, /bad-one: failed/);
+    // The failure's run-record line is on the site's runs page in the same commit, so
+    // a rebuild afterwards changes nothing and the tree stays clean for the next ruling.
+    buildSite(dir);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.match(readFileSync(join(dir, "site/runs.md"), "utf8"), /bad-one: failed/);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

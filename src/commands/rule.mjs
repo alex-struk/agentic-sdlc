@@ -362,6 +362,12 @@ export async function rulePending(projectDir) {
       try {
         const runPath = appendRun(projectDir, `rule --pending ${name}: failed — ${e.message}`);
         stagePaths(projectDir, [relative(projectDir, runPath)]);
+        // The run record just gained a line, and the site's runs page is built from it,
+        // so the site goes into the same commit — otherwise the next `status` or ruling
+        // rebuilds it, finds the page changed, and fails its clean-tree check on a diff
+        // this failure left behind.
+        buildSite(projectDir);
+        stageSite(projectDir);
         if (git(["diff", "--cached", "--name-only"], projectDir)) {
           git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(--pending): ${name} failed`], projectDir);
         }
