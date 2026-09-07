@@ -73,3 +73,7 @@ SDLC_LIVE=1 npm test
 - [`docs/specs/`](docs/specs) — the full design specification (the single document in that
   directory).
 - [`docs/poster/`](docs/poster) — a visual walkthrough of the pipeline.
+
+## Roadmap
+
+The phases, their stages and their status: [docs/roadmap.md](docs/roadmap.md).
