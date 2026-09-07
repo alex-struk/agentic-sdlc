@@ -60,8 +60,9 @@ case "$stage" in
     # writes the oracle's compose override under .sdlc/oracle/ — nothing else, including
     # sources/old, which stays read-only the same way it does for archaeology.
     allowed='^(spec/contract/|tests/seed/|\.sdlc/oracle/)' ;;
-  ratify)
-    # A deterministic gate with no agent: nothing is written here at all.
+  ratify|calibrate)
+    # Deterministic stages with no agent: nothing is written by a session at all. What
+    # they do write, they write from the runner's own process, never through a tool call.
     blocked='^' ;;
   design|plan)
     blocked='^(app/|tests/acceptance/|tests/adapters/|\.github/workflows/|\.sdlc/config\.yaml$|sources/)' ;;

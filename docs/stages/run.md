@@ -12,19 +12,20 @@ proposal, depending on whether the stage holds a gate.
 `sdlc run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--dry-run] [--again]`, run
 from inside the project's working tree, on `main`.
 
-`<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Four are implemented:
+`<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Implemented today:
 `probe` (which proves the runner itself and is not one of the pipeline's own stages), `intent`,
-`archaeology` and `ratify`. Every other pipeline stage (`design`, `build`, …) is a named stub that
-throws `stage <name> is not implemented yet` before touching the working tree.
+`archaeology`, `ratify`, `contract`, `derive-tests`, `bind-adapter` and `calibrate`. Every other
+pipeline stage (`design`, `build`, …) is a named stub that throws `stage <name> is not implemented
+yet` before touching the working tree.
 
 `--slice`, `--domain`, `--target` and `--stale` are threaded into the stage's context as
-`ctx.slice`, `ctx.domain`, `ctx.target` and `ctx.stale`. `archaeology` and `ratify` both require
-`--domain <d>`, and `<d>` must be one of `config.project.domains`; `probe` and `intent` ignore all
-four. `--target` takes `old` or `new` and reaches `ctx.target` as that string, or `undefined` when
-omitted; `--stale` is a boolean flag and reaches `ctx.stale` as `true`, defaulting to `false`. No
-implemented stage reads either yet — both exist for stages this runner will host next, which
-compare the old and new applications and decide whether existing output is stale rather than
-current.
+`ctx.slice`, `ctx.domain`, `ctx.target` and `ctx.stale`. `archaeology`, `ratify` and `derive-tests`
+all require `--domain <d>`, and `<d>` must be one of `config.project.domains`; `probe` and `intent`
+ignore all four. `--target` names the running application a stage acts against and reaches
+`ctx.target` as that string, or `undefined` when omitted: `bind-adapter` requires it, and
+`calibrate` defaults it to `config.oracle.target` when it is left out. `--stale` is a boolean flag
+and reaches `ctx.stale` as `true`, defaulting to `false`; `derive-tests` reads it as "write only the
+tests whose criteria have moved on since".
 
 `--dry-run` writes nothing at all. For an agent stage it prints the prompt the stage would send,
 the path of the scratch file holding its skill text, the resolved workspace mode, `prepare:
@@ -45,8 +46,8 @@ is the only place a re-run decision is made.
   turn's cost, turn count and session id.
 - An appended `.sdlc/runs/<date>.md` line: `run <stage>: ok, cost <usd>, turns <n>` on success, or
   one of the failure lines under "Failure modes".
-- **If the stage has no gate** (`probe`, `ratify`): everything the agent (or, for `ratify`,
-  `execute`) changed, plus the journal, the run record and the regenerated state site
+- **If the stage has no gate** (`probe`, `ratify`, `calibrate`): everything the agent (or, for a
+  stage with no agent turn, `execute`) changed, plus the journal, the run record and the regenerated state site
   (`docs/stages/status.md`), staged by name and committed on `main` as `stage(<stage>): <title>`.
 - **If the stage holds a gate** (`intent` at G0, `archaeology` at G1): the same files minus the
   site, handed to `sdlc propose` as the paths a proposal is allowed to find already dirty, so they
@@ -71,8 +72,8 @@ loads itself, so a resumed run and a fresh one always agree on which mode a stag
 `src/runner/workspace.mjs` materialises one of four modes, named by the stage:
 
 - **`project`** — the agent runs directly in the project's own working tree (`ws.dir ===
-  projectDir`); nothing is copied and nothing is collected back. `probe`, `intent` and `ratify`
-  use this.
+  projectDir`); nothing is copied and nothing is collected back. `probe`, `intent`, `contract`,
+  `ratify` and `calibrate` use this.
 - **`with-sources`** — the project's own working tree again, with one addition made before the
   session starts: the old application is checked out read-only at `sources/old` (`ensureSources`,
   `src/runner/sources.mjs`) from the `sources.old` repo and commit in `.sdlc/config.yaml`. This is
@@ -137,11 +138,12 @@ run except by name — `env`'s keys, via the `env: <names>` line described above
 
 ## Stages with no agent turn
 
-A stage may declare `agent: false`, which today only `ratify` does. There is no workspace and no
+A stage may declare `agent: false`, which `ratify` and `calibrate` do. There is no workspace and no
 session: `stage.execute(projectDir, ctx)` runs in process, in the project's own working tree, and
 its return (`{ text, changed }`) stands in for an agent result, with `cost: 0`, `turns: 0` and
 `sessionId: "deterministic"` synthesised around it. Nothing is spawned, so `.sdlc/run-state.json`
-is never written on this path.
+is never written on this path. The call is awaited, so `execute` may be asynchronous — `calibrate`'s
+is, since it has to start the oracle and run a suite before it has anything to report.
 
 `execute` reporting `changed: []` means it found its own work already done. That is not an error
 and not a journal entry — a journal entry is the account of a turn, and no turn happened — so the
@@ -151,8 +153,10 @@ and no journal entry. When regenerating changed nothing either, nothing is commi
 
 A stage may also declare a `followUp`, run after its commit has landed on `main` and only on
 success. `ratify`'s opens the G1 proposal that closes out criteria it could not mint
-(`docs/stages/ratify.md`, "The closing loop"); a run that opens one returns it as `proposal` and
-leaves the checkout on that branch, exactly as a gated stage does.
+(`docs/stages/ratify.md`, "The closing loop"); `calibrate`'s opens the G1 proposal that asks what
+each failing criterion's failure means (`docs/stages/calibrate.md`, "The ruling loop"). A run that
+opens one returns it as `proposal` and leaves the checkout on that branch, exactly as a gated stage
+does.
 
 ## Checks that block
 
@@ -172,7 +176,10 @@ In the order they are reached:
 5. **The stage's own `preChecks(projectDir, ctx)` must all pass**, before a workspace is
    materialised or a session started. `probe` declares none; `intent` requires `intent/brief.md`;
    `archaeology` requires `--domain` and `sources.old`; `ratify` requires `--domain`, an approved
-   and merged `archaeology-<d>` ruling, and a `spec/domains/<d>.md` that exists and parses.
+   and merged `archaeology-<d>` ruling, and a `spec/domains/<d>.md` that exists and parses;
+   `derive-tests` requires a domain with accepted criteria; `bind-adapter` requires a target that is
+   configured and answering; `calibrate` requires a target that is either the configured oracle or a
+   `config.targets` entry with a `base_url`.
 6. **For a gated stage, the proposal this run would open must not already be open.**
    `checkProposalNotOpen` (`src/runner/finish-stage.mjs`) calls `stage.proposal({ ...ctx,
    projectDir, agentText: "" })` to learn the name a real run would use. If a `proposal/<name>`
@@ -211,7 +218,10 @@ out byte-identical to what is already on `main`, only the new journal entry, run
 regeneration end up dirty and committed.
 
 **`ratify`** is the exception, because it has a cheap and exact way to tell whether anything
-changed — see "Stages with no agent turn" above and `docs/stages/ratify.md`.
+changed — see "Stages with no agent turn" above and `docs/stages/ratify.md`. **`calibrate`** is
+deterministic too but never a no-op: every run writes a fresh result set, because that file is
+evidence of what the target did on the day it ran rather than a derived artifact that should be
+stable (`docs/stages/calibrate.md`).
 
 **A failing pre-check** is safe to hit repeatedly: its own failure is committed to the run record
 before `run` returns, so the working tree is clean again for the next attempt.

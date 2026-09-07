@@ -93,8 +93,8 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
   if (openProposal) return commitProposalStillOpen(projectDir, name, openProposal);
 
-  // `agent: false` (only `ratify` today) means there is no agent turn at all: the stage's
-  // work is mechanical and deterministic, so `stage.execute(projectDir, ctx)` runs in
+  // `agent: false` (`ratify` and `calibrate`) means there is no agent turn at all: the
+  // stage's work is mechanical and deterministic, so `stage.execute(projectDir, ctx)` runs in
   // process, in the project's own working tree, in place of materialising a workspace and
   // spawning `runAgent`. Nothing is spawned, so there is no crash mid-turn for `sdlc
   // resume` to pick up and `.sdlc/run-state.json` is never written for this path.
@@ -111,7 +111,10 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       console.log(`stage ${name}: agent: false — runs stage.execute(projectDir, ctx) directly, no agent session`);
       return { ok: true, dryRun: true };
     }
-    const { text, changed } = stage.execute(projectDir, ctx);
+    // Awaited: `execute` is synchronous for `ratify` and returns a promise for
+    // `calibrate`, which has to start the oracle and run a suite before it has anything
+    // to report. Awaiting a plain object is the same object back.
+    const { text, changed } = await stage.execute(projectDir, ctx);
     // `text` is carried on the no-op return too — there is no journal entry for this
     // path, so this is the only place `execute`'s account of "already ratified" reaches
     // anyone; `COMMANDS.run` prints it below.

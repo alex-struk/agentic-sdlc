@@ -70,9 +70,11 @@ test("contract may write spec/contract/, tests/seed/ and .sdlc/oracle/, reading 
     assert.equal(run(p, "contract").status, 2, p);
 });
 
-test("ratify is deterministic and writes nothing at all", () => {
-  for (const p of ["app/x.ts", "spec/spec.md", "intent/x.md", "sources/old/README.md", "README.md"])
-    assert.equal(run(p, "ratify").status, 2, p);
+test("ratify and calibrate are deterministic and write nothing at all", () => {
+  for (const stage of ["ratify", "calibrate"])
+    for (const p of ["app/x.ts", "spec/spec.md", "intent/x.md", "sources/old/README.md", "README.md",
+      "tests/acceptance/redo.yaml", "tests/results/old/latest.json"])
+      assert.equal(run(p, stage).status, 2, `${stage} ${p}`);
 });
 
 test("every stage blocks sources/, the read-only checkout of the old application", () => {

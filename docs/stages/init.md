@@ -150,11 +150,11 @@ files elsewhere.
 | `bind-adapter` | `app/`, `tests/acceptance/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
 | `intent` | everything except `intent/` and `constitution.md` — the brief is turned into one intent document and a glossary row, and nothing else in the tree is its business |
 | `archaeology` | everything except `spec/` — reads the old application under `sources/old/` read-only and writes only `spec/` |
-| `ratify` | everything: a deterministic gate with no agent behind it, so nothing is ever written |
+| `ratify`, `calibrate` | everything: deterministic stages with no agent behind them, so a session writes nothing at all — what they write, they write from the runner's own process |
 | `design`, `plan` | `app/`, `tests/acceptance/`, `tests/adapters/`, `.github/workflows/`, `.sdlc/config.yaml`, `sources/` |
 | `probe` | everything except `app/` — the probe stage writes one file there to prove the runner and has no other territory |
 | `rule` | everything: a persona ruling on a proposal reads and answers, and `sdlc rule` rejects a ruling turn that wrote anything at all |
-| any other stage name (`calibrate`, `deploy`, `operate`, …) | everything |
+| any other stage name (`deploy`, `operate`, …) | everything |
 
 Every row now also blocks `sources/`: the checkout of the old application under
 `sources/old/` (see `ensureSources` in `src/runner/sources.mjs`) is read-only material for
