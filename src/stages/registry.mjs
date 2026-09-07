@@ -111,19 +111,48 @@ function briefSlug(projectDir) {
   return slugify(heading[1]) || null;
 }
 
-// The recommendation on an intent proposal is the first sentence of the agent's own
-// journal text, not a re-derivation of it: whatever the agent decided to say first is
-// what a reader sees first. Falls back to the whole (trimmed) text when it holds no
-// sentence-ending punctuation, and to a fixed line when there is no text at all.
-export function firstSentence(text) {
+// One sentence off the front of `text`, plus whatever is left after it. The terminator
+// has to be followed by whitespace or the end of the string, so a dot inside a filename
+// (`intent/brief.md`) or a version number does not end a sentence. Text with no
+// terminator at all is one sentence.
+function nextSentence(text) {
+  const t = (text ?? "").trim();
+  if (!t) return null;
+  const m = t.match(/^[\s\S]*?[.!?](?=\s|$)/);
+  if (!m) return { sentence: t, rest: "" };
+  return { sentence: m[0].trim(), rest: t.slice(m[0].length) };
+}
+
+function capSentence(sentence) {
+  return sentence.length > 200 ? `${sentence.slice(0, 200)}…` : sentence;
+}
+
+// The recommendation a proposal leads with, taken from the agent's own journal text
+// rather than re-derived: whatever the agent decided to say first about its work is what
+// the reader — and the ruling persona — sees first.
+//
+// Three rules decide which sentence that is. A stage skill asks the agent to finish with
+// a journal entry, so when the text carries a `## Journal` heading the entry starts
+// there and anything above it is a preamble, not the finding. The opening sentence is
+// often bookkeeping rather than a claim — "Done." or "I've written the domain file." — so
+// a sentence too short to carry one (under 15 characters), or one that opens by
+// announcing that the work happened, is skipped for the sentence after it. What comes
+// back is capped at 200 characters, since a recommendation is a line on a proposal page,
+// not a paragraph.
+//
+// Text with no sentence terminator at all is one sentence; no text at all is reported as
+// exactly that, rather than as an empty recommendation.
+export function recommendationFrom(text) {
   const trimmed = (text ?? "").trim();
   if (!trimmed) return "no journal text was recorded";
-  const match = trimmed.match(/^[\s\S]*?[.!?](?=\s|$)/);
-  let sentence = match ? match[0] : trimmed;
-  if (sentence.length > 200) {
-    sentence = sentence.slice(0, 200) + "…";
-  }
-  return sentence.trim();
+  const heading = /^#{1,6}[ \t]+Journal\b.*$/mi.exec(trimmed);
+  const body = heading ? trimmed.slice(heading.index + heading[0].length) : trimmed;
+  const first = nextSentence(body);
+  if (!first) return "no journal text was recorded";
+  if (first.sentence.length >= 15 && !/^(i'?ve|i have|done|finished)\b/i.test(first.sentence))
+    return capSentence(first.sentence);
+  const second = nextSentence(first.rest);
+  return capSentence(second ? second.sentence : first.sentence);
 }
 
 // `intent` interviews `intent/brief.md` — the written stakeholder brief a tech lead
@@ -162,7 +191,7 @@ const intent = {
     return {
       name: `intent-${slug}`,
       question: "Is this the right problem and outcome?",
-      recommendation: firstSentence(ctx.agentText),
+      recommendation: recommendationFrom(ctx.agentText),
     };
   },
   preChecks(projectDir) {
@@ -277,7 +306,7 @@ const archaeology = {
     return {
       name: `archaeology-${d}`,
       question: `Is this what the ${d} domain does, and which of it is the contract?`,
-      recommendation: firstSentence(ctx.agentText),
+      recommendation: recommendationFrom(ctx.agentText),
     };
   },
   preChecks(projectDir, ctx) {

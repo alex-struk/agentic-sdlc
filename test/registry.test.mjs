@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STAGES } from "../src/profiles.mjs";
-import { stageFor, skillText, firstSentence } from "../src/stages/registry.mjs";
+import { stageFor, skillText, recommendationFrom } from "../src/stages/registry.mjs";
 
 test("probe has no gate and is implemented", () => {
   const probe = stageFor("probe");
@@ -95,19 +95,56 @@ test("skillText concatenates the preamble and the stage skill", () => {
   assert.match(text, /app\/PROBE\.md/);
 });
 
-test("firstSentence extracts the first sentence, handling dots in filenames", () => {
-  const result = firstSentence("Read intent/brief.md and wrote intent/x.md. Then more.");
+test("recommendationFrom extracts the first sentence, handling dots in filenames", () => {
+  const result = recommendationFrom("Read intent/brief.md and wrote intent/x.md. Then more.");
   assert.equal(result, "Read intent/brief.md and wrote intent/x.md.");
 });
 
-test("firstSentence returns whole trimmed text when no terminator is present", () => {
-  const result = firstSentence("This text has no sentence terminator");
+test("recommendationFrom returns whole trimmed text when no terminator is present", () => {
+  const result = recommendationFrom("This text has no sentence terminator");
   assert.equal(result, "This text has no sentence terminator");
 });
 
-test("firstSentence caps sentences longer than 200 characters with ellipsis", () => {
+test("recommendationFrom caps sentences longer than 200 characters with ellipsis", () => {
   const longText = "x".repeat(250) + ". More text.";
-  const result = firstSentence(longText);
+  const result = recommendationFrom(longText);
   assert.equal(result.length, 201);
   assert.ok(result.endsWith("…"));
+});
+
+test("recommendationFrom starts at a ## Journal heading when the text has one", () => {
+  const text = [
+    "Here is a long preamble about the files I opened along the way.",
+    "",
+    "## Journal",
+    "",
+    "The applications domain rejects any applicant under 19 and recalculates the fee on edit.",
+    "Two sources disagreed about the fee basis.",
+  ].join("\n");
+  assert.equal(recommendationFrom(text),
+    "The applications domain rejects any applicant under 19 and recalculates the fee on edit.");
+});
+
+test("recommendationFrom skips an opening sentence that only announces the work happened", () => {
+  assert.equal(recommendationFrom("I've written the domain file. Applications are rejected under 19."),
+    "Applications are rejected under 19.");
+  assert.equal(recommendationFrom("Done. Applications are rejected under 19."),
+    "Applications are rejected under 19.");
+  assert.equal(recommendationFrom("I have finished. Applications are rejected under 19."),
+    "Applications are rejected under 19.");
+});
+
+test("recommendationFrom skips an opening sentence too short to carry a claim", () => {
+  assert.equal(recommendationFrom("All set. The billing domain prorates a mid-cycle change."),
+    "The billing domain prorates a mid-cycle change.");
+});
+
+test("recommendationFrom keeps the only sentence there is, however unhelpful", () => {
+  assert.equal(recommendationFrom("Done."), "Done.");
+  assert.equal(recommendationFrom("   "), "no journal text was recorded");
+});
+
+test("recommendationFrom does not mistake a word starting with 'ive' for the bookkeeping opener", () => {
+  assert.equal(recommendationFrom("Ivermectin dosing is recorded per patient. And more."),
+    "Ivermectin dosing is recorded per patient.");
 });

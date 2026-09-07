@@ -31,7 +31,12 @@ agent session starts — plus `constitution.md`, `spec/`, and `intent/` for cont
   determined.
 - A proposal at gate G1: `.sdlc/proposals/archaeology-<d>.md` on a new `proposal/archaeology-<d>`
   branch, holding the question "Is this what the `<d>` domain does, and which of it is the
-  contract?" and a recommendation that is the first sentence of the agent's own journal text.
+  contract?" and a recommendation that is one sentence taken from the agent's own journal text — not a
+  re-derivation of it. When the text carries a `## Journal` heading the sentence is taken from
+  after it, since anything above the heading is preamble rather than the entry; an opening
+  sentence that only announces the work happened ("Done.", "I've written the domain file.") or
+  is too short to carry a claim is skipped for the next one; and the result is capped at 200
+  characters.
 
 ## Workspace the agent sees
 
