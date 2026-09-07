@@ -198,11 +198,12 @@ when either is true:
 
 - the proposal's tier is `HIGH` or `CRITICAL`;
 - the persona's brief contains the phrase "always escalate", in any capitalisation (a persona can
-  hold a gate and still always defer on it — see `templates/project/.sdlc/personas/tech-lead.md`,
-  which always escalates a platform-article change). The match is against the whole brief, so the
-  phrase appearing anywhere in it escalates **every** proposal at that gate, not only the ones the
+  hold a gate and still always defer on it). The match is against the whole brief, so the phrase
+  appearing anywhere in it escalates **every** proposal at that gate, not only the ones the
   sentence it appears in describes: a brief that should defer on one kind of change and rule on
-  the rest must say so in some other wording.
+  the rest must say so in some other wording — the installed tech-lead brief, for example, says a
+  platform-article change "is escalated, never ruled here" so that the persona still rules on
+  every other policy change.
 
 The gate file records `verdict: escalated`, `escalate_to: <the gate's escalate_to>`, and a
 rationale beginning `mandatory escalation: <reason>`. The proposal branch is left open — nothing
