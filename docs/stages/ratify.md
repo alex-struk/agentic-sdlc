@@ -25,6 +25,15 @@ loop opened and the persona approved — `ratify-<d>-1.yaml`, `ratify-<d>-2.yaml
 that order, so a later ruling's condition on a criterion is applied after (and therefore over) an
 earlier one's. A follow-up that was returned or escalated decided nothing and is skipped.
 
+It also reads every approved `.sdlc/gates/contract-v<n>.yaml`, oldest first, after the domain's own
+rulings — so a contract ruling's condition on a criterion applies over an earlier follow-up's, the
+same way a later follow-up already applies over an earlier one. A `contract-v<n>` ruling is one G1
+proposal covering every domain at once (`docs/stages/contract.md`), so its conditions are folded in
+here only when the id they name belongs to `<d>`: a `D-<d>-<n>` id, or an `R-<k>.<n>` id whose `k`
+is `<d>`'s own position in `project.domains`. A condition naming some other domain's id is left for
+that domain's own `ratify --domain <other>` to pick up instead. The journal names which
+`contract-v<n>` gate(s), if any, contributed a condition to the run.
+
 ## Outputs
 
 - `spec/domains/<d>.md`, rewritten in place from its parsed criteria, with everything above the
@@ -167,6 +176,14 @@ ever raises a criterion's confidence and answering the same way again would leav
 it is. The persona rules it like any other G1 proposal, and the next `sdlc run ratify --domain <d>`
 reads its conditions alongside the archaeology ruling's. Each pass therefore either resolves
 criteria or asks about fewer of them.
+
+A criterion can also be closed out from outside the loop entirely: the product-owner persona rules
+`contract` (`docs/stages/contract.md`) with the same ratification grammar, and a `confirm`, `edit`
+or `defect` in that ruling on one of this domain's still-`inferred`/`open` ids resolves it the next
+time `sdlc run ratify --domain <d>` runs, exactly as a follow-up ruling would — see "Inputs" above.
+A domain whose criteria the contract ruling already closed out this way opens no follow-up for
+them, since `followUp` (below) only ever asks about what is still `inferred` or `open` once the
+ratify pass that read the contract ruling has run.
 
 A returned follow-up decides nothing — its conditions, if any, are never read — but it does not
 hold the loop open: `followUpState` (`src/stages/shared.mjs`) only treats an *unruled* branch as

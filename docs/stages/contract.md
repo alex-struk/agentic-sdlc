@@ -52,6 +52,15 @@ from the ratified criteria.
   not per attempt), holding the question "Is this the contract the tests will act through?" and a
   recommendation taken from the agent's own journal text, the same way archaeology's is.
 
+The product-owner persona rules this proposal in the same ratification grammar archaeology's is
+ruled in (`docs/stages/rule.md`, "Ratification conditions": `edit <ID>: …`, `confirm <ID>`,
+`defect <ID>: …`, `spike <ID>: …`, `obsolete <ID>: …`, `contract <ID>`) rather than a plain
+approve/return — a contract review routinely surfaces a criterion that needs tightening or is
+already well-evidenced by reading the contract, and this is where that gets said. Each condition
+names a criterion id from whichever domain it belongs to; `ratify --domain <d>` (`docs/stages/
+ratify.md`, "Inputs") applies every condition whose id belongs to `<d>`, on the next run for that
+domain, the same way it applies its own archaeology and follow-up rulings.
+
 ## Workspace the agent sees
 
 `stage.workspace` is a function of `config`: `with-sources` when `config.sources.old` is set,

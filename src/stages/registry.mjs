@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
-import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId } from "../spec/criteria.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
@@ -430,6 +430,21 @@ function nextContractVersion(projectDir) {
   if (!existsSync(dir)) return 1;
   const re = /^contract-v(\d+)\.yaml$/;
   return readdirSync(dir).filter((f) => re.test(f)).length + 1;
+}
+
+// Every `contract-v<n>` gate file present, oldest first — `nextContractVersion` above
+// only needs the count; `readRulings` (below) needs the names themselves, in the same
+// oldest-first order a domain's own follow-ups are read in, so a later contract ruling's
+// condition on a criterion is applied after (and therefore over) an earlier follow-up's.
+function contractGateNames(projectDir) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return [];
+  const re = /^contract-v(\d+)\.yaml$/;
+  return readdirSync(dir)
+    .map((f) => [f, re.exec(f)])
+    .filter(([, m]) => m)
+    .sort((a, b) => Number(a[1][1]) - Number(b[1][1]))
+    .map(([f]) => f.replace(/\.yaml$/, ""));
 }
 
 // Every identity a session might need to sign in through: the oracle's own, plus every
@@ -1184,10 +1199,24 @@ function followUpName(domain, n) {
 }
 
 // Every ruling this domain's ratification is built from, in the order it was made: the
-// archaeology proposal first, then each follow-up (`ratify-<d>-1`, `-2`, …) by number.
-// Only approved rulings contribute — a returned or escalated follow-up has decided
+// archaeology proposal first, then each follow-up (`ratify-<d>-1`, `-2`, …) by number,
+// then every approved `contract-v<n>` gate, oldest first. Only approved rulings
+// contribute — a returned or escalated follow-up (or contract re-run) has decided
 // nothing — and the conditions are concatenated in that order, so a later ruling's
-// verdict on a criterion is applied after (and therefore over) an earlier one's.
+// verdict on a criterion is applied after (and therefore over) an earlier one's —
+// including a contract ruling landing after a follow-up already touched the same id.
+//
+// A `contract-v<n>` gate is ruled once for every domain at once — the product-owner
+// persona names whatever criteria it means, from whichever domain, on the one G1
+// proposal the `contract` stage opens — so its conditions are kept here only when the
+// id they name belongs to *this* domain: a `D-<domain>-<n>` id, or an `R-<k>.<n>` id
+// whose `k` is this domain's own ordinal in `config.project.domains` (`domainOrdinal`,
+// `src/spec/criteria.mjs`). A condition naming another domain's id is left for that
+// domain's own `ratify` run to pick up — without this filter, every domain's `ratify`
+// would report every other domain's conditions as `unknown`. A line the grammar could
+// not parse at all carries no id to judge ownership by, so it is never filtered out this
+// way; it is always folded in as `unparsed`, for whichever domain runs `ratify` first to
+// report and block on.
 //
 // `answered` is every id an earlier ruling gave `contract` or `spike` to — the two
 // verbs that record a decision without ever raising a criterion's confidence, so
@@ -1208,26 +1237,48 @@ function readRulings(projectDir, domain) {
       .map(([f]) => f.replace(/\.yaml$/, ""));
     names.push(...follow);
   }
+
   const conditions = [];
   const unparsed = [];
   const answered = new Set();
   const read = [];
-  for (const name of names) {
+  // Every `contract-v<n>` that actually contributed a condition to this domain —
+  // reported separately from `read` (which stays the domain's own rulings, the count
+  // `followUpRulingsRead` relies on) so `ratify`'s journal text can say by name which
+  // contract gate(s), if any, a run's changes came from.
+  const contractRead = [];
+
+  const dOwnId = new RegExp(`^D-${escapeRe(domain)}-\\d+$`);
+  const ordinal = domainOrdinal(projectDir, domain);
+  const rOwnId = ordinal !== undefined ? new RegExp(`^R-${ordinal}\\.\\d+$`) : null;
+  const ownsId = (id) => dOwnId.test(id) || (rOwnId !== null && rOwnId.test(id));
+
+  const readGate = (name, { filterToOwnIds = false, into = read } = {}) => {
     const p = join(dir, `${name}.yaml`);
-    if (!existsSync(p)) continue;
+    if (!existsSync(p)) return;
     const gate = parseYaml(readText(p)) ?? {};
-    if (gate.verdict !== "approve") continue;
-    read.push(name);
+    if (gate.verdict !== "approve") return;
+    let contributed = !filterToOwnIds;
     for (const c of gate.conditions ?? []) {
+      if (filterToOwnIds) {
+        const id = conditionTargetId(c);
+        if (id !== null && !ownsId(id)) continue;
+      }
+      contributed = true;
       conditions.push(c);
       // `contract` takes a bare ID; `spike` requires a trailing colon and text. Matched
       // separately so neither pattern accidentally swallows the colon into the ID.
       const m = /^\s*contract\s+(\S+)\s*$/.exec(c) ?? /^\s*spike\s+(\S+):/.exec(c);
       if (m) answered.add(m[1]);
     }
-    for (const u of gate.unparsed_conditions ?? []) unparsed.push(`.sdlc/gates/${name}.yaml: ${u}`);
-  }
-  return { read, conditions, unparsed, answered };
+    for (const u of gate.unparsed_conditions ?? []) { contributed = true; unparsed.push(`.sdlc/gates/${name}.yaml: ${u}`); }
+    if (contributed) into.push(name);
+  };
+
+  for (const name of names) readGate(name);
+  for (const name of contractGateNames(projectDir)) readGate(name, { filterToOwnIds: true, into: contractRead });
+
+  return { read, contractRead, conditions, unparsed, answered };
 }
 
 // How many of `read`'s approved gate files are follow-ups (`ratify-<domain>-<n>`) rather
@@ -1481,10 +1532,11 @@ const ratify = {
     const domain = ctx.domain;
 
     // Every approved ruling on this domain, in order: the archaeology proposal, then each
-    // follow-up the closing loop opened and the persona ruled. A later ruling's condition
-    // on the same criterion is applied after an earlier one's, so closing a criterion out
-    // is exactly a matter of ruling on it again.
-    const { conditions, read } = readRulings(projectDir, domain);
+    // follow-up the closing loop opened and the persona ruled, then whichever
+    // `contract-v<n>` gate(s) carried a condition naming one of this domain's own ids. A
+    // later ruling's condition on the same criterion is applied after an earlier one's,
+    // so closing a criterion out is exactly a matter of ruling on it again.
+    const { conditions, read, contractRead } = readRulings(projectDir, domain);
 
     const domainFile = join(projectDir, "spec", "domains", `${domain}.md`);
     const originalText = readText(domainFile);
@@ -1560,6 +1612,7 @@ const ratify = {
     const replacementsAdded = applied.filter((a) => a.verb === "defect").length;
 
     const lines = [`ratify ${domain}: ${accepted.length} accepted, ${stillOpen.length} still open, ${obsolete.length} obsolete, ${replacementsAdded} replacement(s) added.`];
+    if (contractRead.length) lines.push(`Conditions from: ${contractRead.join(", ")}.`);
     if (stillOpen.length) {
       lines.push("Still open:");
       for (const c of stillOpen) lines.push(`- ${c.id} (${c.confidence})${c.notes?.length ? ` — ${c.notes[0]}` : ""}`);

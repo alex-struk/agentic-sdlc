@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
-import { parseDomainFile, parseAll, writeIndex, renderSpecIndex, applyConditions, mintIds, serialiseDomainFile } from "../src/spec/criteria.mjs";
+import { parseDomainFile, parseAll, writeIndex, renderSpecIndex, applyConditions, mintIds, serialiseDomainFile, domainOrdinal, conditionTargetId } from "../src/spec/criteria.mjs";
 import { checkCriteria } from "../src/checks/criteria.mjs";
 
 function repo() {
@@ -254,6 +254,25 @@ test("parseAll: a domain not listed in project.domains gets no ordinal check at 
   assert.deepEqual(errors, []);
 });
 
+test("domainOrdinal: a domain's 1-based position in project.domains, or undefined when there is no config or the domain is not listed", () => {
+  const d = repo();
+  assert.equal(domainOrdinal(d, "fees"), undefined, "no .sdlc/config.yaml at all yet");
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "config.yaml"), "profile: rebuild\nproject: { name: p, domains: [applications, fees] }\n");
+  assert.equal(domainOrdinal(d, "applications"), 1);
+  assert.equal(domainOrdinal(d, "fees"), 2);
+  assert.equal(domainOrdinal(d, "renewals"), undefined, "not in project.domains");
+});
+
+test("conditionTargetId: the id every ratification verb names, and null for a line the grammar cannot read at all", () => {
+  assert.equal(conditionTargetId("confirm D-fees-2"), "D-fees-2");
+  assert.equal(conditionTargetId("edit R-1.1: a corrected statement"), "R-1.1");
+  assert.equal(conditionTargetId("defect D-permits-1: the old system does this"), "D-permits-1");
+  assert.equal(conditionTargetId("obsolete D-permits-2: no longer needed"), "D-permits-2");
+  assert.equal(conditionTargetId("spike D-permits-3: does this hold on renewal?"), "D-permits-3");
+  assert.equal(conditionTargetId("please just drop the second one"), null);
+});
+
 test("writeIndex: deterministic ordering (domain, then id numeric) and no timestamps", () => {
   const d = repo();
   writeDomain(d, "b-domain", "### D-b-domain-10 · v1 · confirmed · authored\nTen.\n\n### D-b-domain-2 · v1 · confirmed · authored\nTwo.\n");
@@ -469,6 +488,21 @@ test("applyConditions: edit raises confidence to confirmed, the same as confirm 
   const { criteria: openCriteria } = parseDomainFile("### D-permits-1 · v1 · open · authored\nOld statement.\n", "permits");
   const { criteria: openOut } = applyConditions(openCriteria, ["edit D-permits-1: A corrected statement."]);
   assert.equal(openOut[0].confidence, "confirmed");
+});
+
+test("applyConditions: edit works on a permanent R- id, not just a provisional D- one, and is idempotent against a row it already edited", () => {
+  const { criteria } = parseDomainFile("### R-1.1 · v1 · confirmed · recovered\nOld statement.\n- state: accepted\n", "applications", 1);
+  const { criteria: out } = applyConditions(criteria, ["edit R-1.1: A corrected statement."]);
+  assert.equal(out[0].statement, "A corrected statement.");
+  assert.equal(out[0].version, 2);
+  assert.equal(out[0].confidence, "confirmed");
+
+  // Replaying the same condition against the row it already edited must not bump the
+  // version a second time — the same content comparison that keeps a D- id's edit
+  // idempotent (see the test above) applies here too, since `applyConditions` never
+  // branches on which id prefix it is looking at.
+  const { criteria: replayed } = applyConditions(out, ["edit R-1.1: A corrected statement."]);
+  assert.equal(replayed[0].version, 2, "no second bump — the statement already matches");
 });
 
 test("applyConditions: obsolete and drop both set state obsolete with a note recording why", () => {

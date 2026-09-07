@@ -195,6 +195,27 @@ export function parseDomainFile(text, domain, expectedOrdinal) {
   return { criteria, errors, preamble };
 }
 
+// A domain's 1-based position in an already-loaded `project.domains` list, or
+// `undefined` when the list does not name it (including when there is no list at all).
+// Pure, so `parseAll` below can call it once per file from a `configuredDomains` array
+// it has already loaded, and `domainOrdinal` (also below) can call it after loading the
+// config itself, without either one repeating the other's lookup.
+function ordinalOf(configuredDomains, domain) {
+  return configuredDomains && configuredDomains.includes(domain) ? configuredDomains.indexOf(domain) + 1 : undefined;
+}
+
+// `ordinalOf`, reading `config.project.domains` from disk itself — for a caller that
+// has a project directory and a domain name and nothing already loaded, such as
+// `readRulings` (`registry.mjs`) deciding which domain an `R-<k>.<n>` condition on a
+// shared `contract-v<n>` ruling belongs to. `undefined` the same way `ordinalOf` is,
+// including when `.sdlc/config.yaml` does not exist yet.
+export function domainOrdinal(projectDir, domain) {
+  const cfgPath = join(projectDir, ".sdlc", "config.yaml");
+  if (!existsSync(cfgPath)) return undefined;
+  const { config } = loadConfig(cfgPath);
+  return ordinalOf(config?.project?.domains, domain);
+}
+
 // Every domain file under `spec/domains/*.md`, domain = file basename. A project with
 // no `spec/domains` directory yet (nothing to parse) returns an empty result rather
 // than throwing, so a caller (like `checkLayout`, which is what requires the directory
@@ -218,7 +239,7 @@ export function parseAll(projectDir) {
 
   for (const f of files) {
     const domain = f.replace(/\.md$/, "");
-    const ordinal = configuredDomains && configuredDomains.includes(domain) ? configuredDomains.indexOf(domain) + 1 : undefined;
+    const ordinal = ordinalOf(configuredDomains, domain);
     const { criteria, errors: fileErrors } = parseDomainFile(readText(join(dir, f)), domain, ordinal);
     domains[domain] = criteria;
     for (const e of fileErrors) errors.push({ file: `spec/domains/${f}`, ...e });
@@ -367,6 +388,16 @@ export function conditionParses(line) {
 
 export function unparsedConditions(lines) {
   return (lines ?? []).filter((l) => !conditionParses(l));
+}
+
+// The id a ratification condition line names, without applying anything — `readRulings`
+// (`registry.mjs`) uses this to decide which domain a `contract-v<n>` gate's condition
+// belongs to before any of that gate's lines are folded into a domain's own ratify pass,
+// the same way `calibrateConditionIds` (below) serves `calibrate`. `null` for a line the
+// grammar cannot parse at all, which carries no id to judge ownership by and is
+// reported instead as `unparsed_conditions`.
+export function conditionTargetId(line) {
+  return parseCondition(line)?.id ?? null;
 }
 
 function parseCondition(line) {
