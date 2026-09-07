@@ -1,12 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { writeText } from "../lib/fsx.mjs";
 import { git, gitOk, changedPaths, stageAll, stageSite, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { writeJournal } from "./journal.mjs";
 import { propose } from "../commands/propose.mjs";
 import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
-import { endedBecause } from "./executor.mjs";
+import { endedBecause, runAgent, turnsFor } from "./executor.mjs";
+import { skillText } from "../stages/registry.mjs";
 
 // A stage's own commit-and-journal subject: a plain string for most stages, or (`ratify`,
 // `archaeology`) a function of `ctx` for one whose subject folds in something only known
@@ -94,6 +97,48 @@ function commitPostCheckFailure(projectDir, stage, agentResult, messages) {
   return { ok: false, journal, messages };
 }
 
+// Workspace modes whose agent works directly in the project directory — the same set
+// `sdlc resume` uses (`RESUMABLE_WORKSPACES` in `src/commands/resume.mjs`) to decide
+// whether an interrupted run's output survived. A stage resolved to one of these is
+// exactly the case where a post-check failure still has something worth asking the
+// agent to repair: its files are sitting right there in `projectDir`, nothing was
+// blind, and there is no ephemeral workspace already torn down by the time post-checks
+// run. `spec-only` and `blind-adapter` build a temporary directory that no longer
+// exists once `runStage`'s `finally` cleans it up, so there is nothing left to hand a
+// second turn — those stages are simply re-run.
+const FIX_TURN_WORKSPACES = new Set(["project", "with-sources"]);
+
+// The one-shot repair prompt: exactly what failed, and an explicit instruction to fix
+// only that rather than start over — a second turn that quietly redoes the whole task
+// could just as easily introduce a new failure as clear the old one.
+function fixTurnPrompt(messages) {
+  return `Your previous turn's output failed these checks:\n${messages.join("\n")}\n\nFix exactly what they name — change nothing else, and do not start the task over. Finish with a one-paragraph journal addition saying what you changed.`;
+}
+
+// Runs the stage's agent once more, in the project directory, with the same skill file
+// as the first turn and a prompt naming exactly what failed. Capped at 40 turns (a
+// repair is smaller than the original task) and at the stage's own ceiling, whichever
+// is lower — a stage configured with a tighter budget than 40 keeps that budget for its
+// fix turn too.
+async function runFixTurn(projectDir, stage, ctx, messages) {
+  const skillDir = mkdtempSync(join(tmpdir(), `sdlc-fix-${stage.name}-`));
+  try {
+    const skillPath = join(skillDir, "SKILL.md");
+    writeText(skillPath, skillText(stage.name));
+    return await runAgent({
+      cwd: projectDir,
+      prompt: fixTurnPrompt(messages),
+      systemPromptFile: skillPath,
+      stage: stage.name,
+      maxTurns: Math.min(40, turnsFor(ctx.config, stage.name)),
+      allowedTools: stage.allowedTools,
+      env: stage.env?.(ctx, ctx.config),
+    });
+  } finally {
+    rmSync(skillDir, { recursive: true, force: true });
+  }
+}
+
 // The finish path for a deterministic stage (`agent: false`) that found its own work
 // already done. Post-checks still run — they judge the working tree, and this stage
 // regenerated derived artifacts before returning even though it wrote no work of its own
@@ -146,12 +191,56 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
   state.phase = "post-checks";
   writeRunState(projectDir, state);
 
-  const post = stage.postChecks(projectDir, ctx);
-  const postFail = post.filter((r) => !r.ok);
+  let post = stage.postChecks(projectDir, ctx);
+  let postFail = post.filter((r) => !r.ok);
+
+  // `result` is what actually gets journalled and committed: `agentResult` unchanged
+  // when post-checks passed first try, or `agentResult` folded together with a second
+  // turn's once a fix turn ran. `usedFixTurn` only records which happened, for the
+  // run-record line below.
+  let result = agentResult;
+  let usedFixTurn = false;
+
   if (postFail.length) {
-    // Only the journal and the run record are staged: the agent's other files stay in
-    // the working tree, untracked, so a person can see exactly what it produced.
-    return commitPostCheckFailure(projectDir, stage, agentResult, postFail.flatMap((r) => r.messages));
+    const wsMode = typeof stage.workspace === "function" ? stage.workspace(ctx.config) : stage.workspace;
+    // One fix turn per run: a stage in a resumable workspace, on a run that has not
+    // already spent its fix turn (`state.fixTurnUsed`, which survives a post-checks
+    // failure on disk so a later `sdlc resume --again` sees it and does not loop), and
+    // never on a dry run — a dry run reports what it would do and changes nothing, so
+    // there is no failure here for it to repair in the first place.
+    const eligible = FIX_TURN_WORKSPACES.has(wsMode) && !ctx.dryRun && !state.fixTurnUsed;
+    if (!eligible) {
+      // Only the journal and the run record are staged: the agent's other files stay in
+      // the working tree, untracked, so a person can see exactly what it produced.
+      return commitPostCheckFailure(projectDir, stage, agentResult, postFail.flatMap((r) => r.messages));
+    }
+
+    const firstMessages = postFail.flatMap((r) => r.messages);
+    // Marked used, and persisted, before the turn runs: a fix turn that itself crashes
+    // mid-session still leaves `fixTurnUsed: true` on disk, so a resume of that crash
+    // does not spend a second one.
+    state.fixTurnUsed = true;
+    writeRunState(projectDir, state);
+
+    const fix = await runFixTurn(projectDir, stage, ctx, firstMessages);
+    result = {
+      text: `${agentResult.text}\n\n## Fix turn\n\n${fix.text}`,
+      cost: (agentResult.cost ?? 0) + (fix.cost ?? 0),
+      turns: (agentResult.turns ?? 0) + (fix.turns ?? 0),
+      sessionId: agentResult.sessionId,
+      raw: agentResult.raw,
+    };
+    usedFixTurn = true;
+
+    post = stage.postChecks(projectDir, ctx);
+    postFail = post.filter((r) => !r.ok);
+    if (postFail.length) {
+      const secondMessages = postFail.flatMap((r) => r.messages);
+      return commitPostCheckFailure(projectDir, stage, result, [...firstMessages, ...secondMessages]);
+    }
+    // Post-checks pass now: fall through into the same success path a first-try pass
+    // takes, using `result` (the folded-together text and metrics) in place of the
+    // original `agentResult` from here on.
   }
 
   // A safety net for a stage whose proposal name is only knowable after the run
@@ -166,16 +255,18 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
   const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
   if (openProposal) {
     const message = `proposal ${openProposal} is still open; rule it (or delete the branch) before running ${stage.name} again`;
-    return commitPostCheckFailure(projectDir, stage, agentResult, [message]);
+    return commitPostCheckFailure(projectDir, stage, result, [message]);
   }
 
   const journal = writeJournal(projectDir, {
     stage: stage.name,
     title: resolveTitle(stage, ctx),
-    body: agentResult.text,
-    metrics: { cost: agentResult.cost, turns: agentResult.turns, session: agentResult.sessionId },
+    body: result.text,
+    metrics: { cost: result.cost, turns: result.turns, session: result.sessionId },
   });
-  appendRun(projectDir, `run ${stage.name}: ok, cost ${agentResult.cost}, turns ${agentResult.turns}`);
+  appendRun(projectDir, usedFixTurn
+    ? `run ${stage.name}: ok after a fix turn, cost ${result.cost}, turns ${result.turns}`
+    : `run ${stage.name}: ok, cost ${result.cost}, turns ${result.turns}`);
 
   // The state site is a tracked artifact of `main` and of nothing else. A gated stage's
   // work lands on a `proposal/<name>` branch, and every page of the site is regenerated
@@ -211,9 +302,9 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     // (the same object, so a stage's own `ctx.intentFile`-style side effect above still
     // reaches `proposal` through the spread) rather than passed as a separate argument,
     // so a `proposal(ctx)` written before this existed keeps working unchanged.
-    const p = stage.proposal({ ...ctx, agentText: agentResult.text });
+    const p = stage.proposal({ ...ctx, agentText: result.text });
     const { branch } = propose(projectDir, p.name, {
-      gate: stage.gate, question: p.question, recommendation: p.recommendation, page: agentResult.text, paths: changed,
+      gate: stage.gate, question: p.question, recommendation: p.recommendation, page: result.text, paths: changed,
     });
     proposal = { name: p.name, gate: stage.gate, branch };
   } else {
@@ -228,5 +319,5 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
   }
 
   clearRunState(projectDir);
-  return { ok: true, proposal, journal, cost: agentResult.cost, turns: agentResult.turns };
+  return { ok: true, proposal, journal, cost: result.cost, turns: result.turns };
 }

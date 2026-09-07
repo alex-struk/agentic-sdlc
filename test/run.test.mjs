@@ -80,10 +80,13 @@ test("sdlc run probe: commits the probe file and journal, leaves the tree clean"
   }
 });
 
-test("sdlc run probe: a mock with no files fails post-checks but still commits the journal", async () => {
+test("sdlc run probe: a mock with no files fails post-checks, takes its one fix turn, and still fails", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-fail-"));
   const { dir, prevEgress } = await makeProject(tmp);
   const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-fail-"));
+  // No `sequence`: `probe` is a `project`-workspace stage, so a post-check failure here
+  // earns one fix turn — the mock replays the same unhelpful reply for it, and the check
+  // fails again the same way.
   writeFileSync(join(mockDir, "probe.json"), JSON.stringify({ text: "did nothing useful" }));
   process.env.SDLC_EXECUTOR = "mock";
   process.env.SDLC_MOCK_DIR = mockDir;
@@ -94,12 +97,179 @@ test("sdlc run probe: a mock with no files fails post-checks but still commits t
     assert.ok(!existsSync(join(dir, "app/PROBE.md")));
     assert.equal(git(["status", "--porcelain"], dir), "");
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /post-checks failed/);
-    // A failed run costs what a successful one costs, so its journal entry carries the
-    // same three metrics — otherwise the site's totals undercount every failure.
+    // A failed run costs what it actually cost — one turn plus its fix turn — so its
+    // journal entry carries both, and both attempts' text and messages.
     const journal = readFileSync(join(dir, ".sdlc/journal/001-probe.md"), "utf8");
-    assert.match(journal, /^turns: 1$/m);
+    assert.match(journal, /^turns: 2$/m);
     assert.match(journal, /^session: "mock"$/m);
     assert.match(journal, /^cost: 0$/m);
+    assert.match(journal, /## Fix turn/);
+    const messageCount = journal.match(/app\/PROBE\.md is missing/g) ?? [];
+    assert.equal(messageCount.length, 2);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// ---- the fix turn (`finishStage`'s repair pass for a project/with-sources stage) ----
+
+function registerFixableStage(name) {
+  registerStage({
+    name,
+    title: `${name} title`,
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "write app/FIXABLE.md containing the word fixed",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks(projectDir) {
+      const p = join(projectDir, "app/FIXABLE.md");
+      if (!existsSync(p)) return [{ id: "fixable-file", ok: false, messages: ["app/FIXABLE.md is missing"] }];
+      const text = readFileSync(p, "utf8");
+      if (!text.includes("fixed")) return [{ id: "fixable-file", ok: false, messages: ["app/FIXABLE.md must contain the word \"fixed\""] }];
+      return [{ id: "fixable-file", ok: true, messages: [] }];
+    },
+  });
+}
+
+test("a project-mode stage whose first turn fails a post-check and whose fix turn passes commits stage(<name>) with the combined journal and the fix-turn run-record line", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-fixturn-ok-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerFixableStage("fixable-ok");
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-fixturn-ok-mock-"));
+  writeFileSync(join(mockDir, "fixable-ok.json"), JSON.stringify({
+    sequence: [
+      { text: "wrote app/FIXABLE.md, but forgot the word the check wants", files: { "app/FIXABLE.md": "nope\n" } },
+      { text: "fixed the missing word", files: { "app/FIXABLE.md": "fixed\n" } },
+    ],
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "fixable-ok");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(fixable-ok\): fixable-ok title/);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-fixable-ok.md"), "utf8");
+    assert.match(journal, /wrote app\/FIXABLE\.md, but forgot the word the check wants/);
+    assert.match(journal, /## Fix turn/);
+    assert.match(journal, /fixed the missing word/);
+    assert.match(journal, /^turns: 2$/m);
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
+    assert.match(runs, /run fixable-ok: ok after a fix turn, cost/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a project-mode stage whose first turn and fix turn both fail a post-check records the failure with both attempts' messages", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-fixturn-twice-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerFixableStage("fixable-twice");
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-fixturn-twice-mock-"));
+  // No `sequence`: the same unhelpful reply stands in for both the first turn and the
+  // fix turn, so the check fails identically both times.
+  writeFileSync(join(mockDir, "fixable-twice.json"), JSON.stringify({
+    text: "wrote app/FIXABLE.md without the word",
+    files: { "app/FIXABLE.md": "nope\n" },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "fixable-twice");
+    assert.equal(r.ok, false);
+    const withWord = r.messages.filter((m) => m.includes("must contain the word"));
+    assert.equal(withWord.length, 2, r.messages.join(" | "));
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(fixable-twice\): post-checks failed/);
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-fixable-twice.md"), "utf8");
+    assert.match(journal, /## Fix turn/);
+    assert.match(journal, /^turns: 2$/m);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a spec-only stage never gets a fix turn: one turn, no ## Fix turn section, on a failing post-check", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-fixturn-speconly-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "spec-only-fixable",
+    title: "spec only fixable",
+    skill: PROBE_SKILL,
+    workspace: "spec-only",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [{ id: "always-fail", ok: false, messages: ["always fails"] }],
+  });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-fixturn-speconly-mock-"));
+  writeFileSync(join(mockDir, "spec-only-fixable.json"), JSON.stringify({ text: "did nothing" }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "spec-only-fixable");
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, ["always fails"]);
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-spec-only-fixable.md"), "utf8");
+    assert.ok(!/## Fix turn/.test(journal), journal);
+    assert.match(journal, /^turns: 1$/m);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("resume --again on a failed run takes the fix turn once and not twice", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-fixturn-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "resume-fixturn-stage",
+    title: "resume fixturn stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [{ id: "always-fail", ok: false, messages: ["never satisfied"] }],
+  });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-resume-fixturn-mock-"));
+  writeFileSync(join(mockDir, "resume-fixturn-stage.json"), JSON.stringify({ text: "attempted a fix" }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  // Stands in for a run whose agent step was interrupted: `run-state.json` on disk at
+  // `phase: "post-checks"`, the same shape `resume`'s own tests write.
+  writeFileSync(join(dir, ".sdlc", "run-state.json"),
+    JSON.stringify({ stage: "resume-fixturn-stage", ctx: {}, phase: "post-checks" }) + "\n");
+  try {
+    const first = await resume(dir, { again: true });
+    assert.equal(first, 1);
+    const journal1 = readFileSync(join(dir, ".sdlc/journal/001-resume-fixturn-stage.md"), "utf8");
+    assert.match(journal1, /## Fix turn/);
+    assert.match(journal1, /attempted a fix/);
+    assert.match(journal1, /^turns: 1$/m);
+    const state = JSON.parse(readFileSync(join(dir, ".sdlc/run-state.json"), "utf8"));
+    assert.equal(state.fixTurnUsed, true);
+
+    // A second resume of the same still-failing run finds `fixTurnUsed` already set and
+    // takes no further fix turn: one turn's worth of cost, and no "## Fix turn" section.
+    const second = await resume(dir, { again: true });
+    assert.equal(second, 1);
+    const journal2 = readFileSync(join(dir, ".sdlc/journal/002-resume-fixturn-stage.md"), "utf8");
+    assert.ok(!/## Fix turn/.test(journal2), journal2);
+    assert.match(journal2, /^turns: 0$/m);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

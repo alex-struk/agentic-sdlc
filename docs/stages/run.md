@@ -300,11 +300,31 @@ the second, post-run check exists to catch.
   account of how the session ended instead — "hit the turn cap", read from the result's `subtype`
   rather than inferred by comparing the turn count against the ceiling, which is wrong in both
   directions.
-- **A post-check fails**: `finishStage` writes a journal entry recording the agent's own text, how
-  the session ended if the CLI said anything about it, and the check messages; commits
-  `stage(<stage>): post-checks failed` with only the journal and run record staged (everything the
-  agent produced is left untracked in the working tree for a person to inspect); and returns `{ ok:
-  false, journal, messages }`. The entry carries the same cost, turn count and session id a
-  successful run's does — a failed run costs what a successful one costs.
+- **A post-check fails, and the stage is `spec-only` or `blind-adapter`**: nothing survives the
+  temporary workspace `run`'s own `finally` already removed, so there is nothing left to hand a
+  second turn. `finishStage` writes a journal entry recording the agent's own text, how the session
+  ended if the CLI said anything about it, and the check messages; commits `stage(<stage>):
+  post-checks failed` with only the journal and run record staged (everything the agent produced is
+  left untracked in the working tree for a person to inspect); and returns `{ ok: false, journal,
+  messages }`. The entry carries the same cost, turn count and session id a successful run's does —
+  a failed run costs what a successful one costs.
+- **A post-check fails, and the stage is `project` or `with-sources`**: its agent worked directly
+  in the project directory, so whatever it wrote is still there and nothing about a second turn is
+  blind. `finishStage` runs the agent once more, in the same directory, with the same skill file and
+  a prompt naming exactly what failed ("Your previous turn's output failed these checks: … Fix
+  exactly what they name — change nothing else, and do not start the task over."), capped at 40
+  turns or the stage's own ceiling, whichever is lower. `.sdlc/run-state.json` records
+  `fixTurnUsed: true` before the turn runs, so a run only ever gets one, however it is resumed.
+  - **The fix turn's own post-checks pass**: the run finishes exactly as a first-try pass does —
+    the same proposal or commit — except the journal entry's body is the original turn's text plus
+    a `## Fix turn` section holding the second turn's, cost and turn count are the sum of both
+    turns, and the run-record line reads `run <stage>: ok after a fix turn, cost …` rather than the
+    plain `run <stage>: ok, cost …` a first-try pass writes.
+  - **The fix turn's own post-checks fail too**: recorded the same way a single failed turn is —
+    `stage(<stage>): post-checks failed`, only the journal and run record staged — except the
+    journal's body and the returned `messages` carry both attempts', not just the second's, so
+    nothing about the first failure is lost.
+  - **A dry run** never reaches this at all: it prints what it would do and changes nothing, so
+    there is no post-check failure for a fix turn to repair.
 - **A temporary workspace ends up containing `app/`**: throws `blindness violated: app/ present in
   <mode> workspace` before any session starts.
