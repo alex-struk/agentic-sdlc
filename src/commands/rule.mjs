@@ -5,7 +5,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief } from "../runner/persona.mjs";
-import { runAgent } from "../runner/executor.mjs";
+import { runAgent, endedBecause } from "../runner/executor.mjs";
 import { buildSite } from "./status.mjs";
 import { COMMANDS } from "../cli.mjs";
 
@@ -167,6 +167,16 @@ export function rule(projectDir, name, verdict, { by, note = "" }) {
   return { gate, verdict, heldBy };
 }
 
+// What to say a ruling turn failed for. The turn's own text when it has any; otherwise
+// the CLI's account of how the session ended (`endedBecause` — "hit the turn cap", say),
+// and only then a fixed line, so a failure is never reported as an empty string.
+function rulingFailure(result) {
+  if (result.text?.trim()) return result.text.trim();
+  const ended = endedBecause(result.raw);
+  return ended ? `the ruling turn reported failure with no output; the session ${ended}`
+    : "the ruling turn reported failure with no output";
+}
+
 // The agent path: no human types --by approve|return. A persona brief is handed to a
 // short-lived agent turn along with the proposal, the diff and the checks, and the
 // verdict it comes back with is trusted the same way a human's --by is trusted — phase 0
@@ -209,14 +219,26 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // than relying on the clean-tree check below to catch a turn that wrote anyway: the
   // read-only git commands are there because a persona legitimately wants to look
   // further into the branch than the diff the prompt already carries.
-  const result = await runAgent({ cwd: projectDir, prompt, stage: "rule", maxTurns: 12,
+  // A ruling turn is read-only and cheap, and a failed one is often transient — a
+  // dropped connection, a rate limit — so one automatic retry is attempted before the
+  // whole ruling is abandoned. Only one: a turn that fails twice is failing for a reason
+  // retrying will not fix, and `rule --pending` running a batch must not turn one broken
+  // proposal into an unbounded loop.
+  const runRuling = () => runAgent({ cwd: projectDir, prompt, stage: "rule", maxTurns: 12,
     allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
+  let result = await runRuling();
+  if (!result.ok) {
+    console.warn(`warning: the ruling turn for ${name} failed (${rulingFailure(result)}); retrying once`);
+    result = await runRuling();
+  }
   // A turn that reports failure has no verdict to read, and its own text is the only
-  // account of why. Checked before the tree and before `parseVerdict`, whose "no verdict
-  // block in persona reply" would otherwise be the error a person sees for what is
-  // actually a failed session. Nothing has been written at this point, so the tree and
-  // the proposal branch are exactly as they were.
-  if (!result.ok) throw new Error(`ruling agent turn failed: ${result.text}`);
+  // account of why — except when it has no text at all, which is exactly when a person
+  // most needs one, so the CLI's own account of how the session ended stands in. Checked
+  // before the tree and before `parseVerdict`, whose "no verdict block in persona reply"
+  // would otherwise be the error a person sees for what is actually a failed session.
+  // Nothing has been written at this point, so the tree and the proposal branch are
+  // exactly as they were.
+  if (!result.ok) throw new Error(`ruling agent turn failed after one retry: ${rulingFailure(result)}`);
   // A ruling is a read-only turn: the agent is asked for a verdict, not permitted to
   // change the project. Checked before the verdict is even parsed, so a verdict text
   // that looks fine cannot mask files the turn left behind — and left in place (not

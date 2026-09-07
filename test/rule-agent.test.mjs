@@ -424,15 +424,21 @@ test("ruleByAgent: an agent turn that reports failure throws with the turn's own
   }));
   process.env.SDLC_EXECUTOR = "mock";
   process.env.SDLC_MOCK_DIR = mockDir;
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
   try {
     await assert.rejects(() => ruleByAgent(dir, "p12", { persona: "product-owner" }),
-      /ruling agent turn failed: the session ended before a verdict/);
+      /ruling agent turn failed after one retry: the session ended before a verdict/);
+    // One retry was attempted, and said so.
+    assert.equal(warnings.filter((w) => /retrying once/.test(w)).length, 1, warnings.join(" | "));
     // Nothing was ruled and nothing was written: no gate file, tree clean, still on the
     // proposal branch.
     assert.ok(!existsSync(join(dir, ".sdlc/gates/p12.yaml")));
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/p12");
     assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
+    console.warn = origWarn;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }
@@ -457,6 +463,40 @@ test("ruleByAgent: 'Always escalate' in a brief is matched however it is capital
     assert.equal(r.escalated, true);
     assert.match(r.rationale, /says always escalate/);
   } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ruleByAgent: the retry succeeds when the second turn comes back with a verdict", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-retry-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p13", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-rule-retry-"));
+  const rulePath = join(mockDir, "rule.json");
+  // The mock reads its canned response off disk on every call, so rewriting the file
+  // between the two calls is how a first failing turn and a second successful one are
+  // expressed. `subtype` stands in for the CLI's own account of a session cut short.
+  writeFileSync(rulePath, JSON.stringify({ ok: false, text: "", subtype: "error_max_turns" }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => {
+    warnings.push(a.join(" "));
+    writeFileSync(rulePath, JSON.stringify({
+      text: 'Fine.\n\n```json\n{"verdict":"approve","rationale":"the brief answers the question","conditions":[]}\n```',
+    }));
+  };
+  try {
+    const r = await ruleByAgent(dir, "p13", { persona: "product-owner" });
+    assert.equal(r.verdict, "approve");
+    // The warning named the turn cap, read off the CLI's subtype rather than a turn count.
+    assert.match(warnings[0], /hit the turn cap \(error_max_turns\)/);
+    assert.match(warnings[0], /retrying once/);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+  } finally {
+    console.warn = origWarn;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }

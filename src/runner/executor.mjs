@@ -4,7 +4,27 @@ import { join } from "node:path";
 import { ensureConfigHome } from "./config-home.mjs";
 import { writeText } from "../lib/fsx.mjs";
 
-export function buildArgs({ prompt, stage, maxTurns = 40, systemPromptFile, addDirs = [], allowedTools = [], env = {} }, configHome) {
+// The turn ceiling a session runs with when nothing else sets one. Exported so the one
+// place that falls back to it (`turnsFor`, in `src/commands/run.mjs`) names the same
+// number in its warning that the executor actually applies.
+export const DEFAULT_MAX_TURNS = 40;
+
+// How the session ended, in words, when the CLI said something worth repeating. The
+// `subtype` on a result is the CLI's own account — `error_max_turns` when the turn
+// ceiling was reached, `error_during_execution` when the session broke — and it is the
+// only reliable way to tell those apart: comparing `num_turns` against the cap gets it
+// wrong in both directions, since a session can report the cap's worth of turns having
+// finished normally, or fewer having been cut short.
+//
+// Returns null when there is nothing to say: no result, or a plain success.
+export function endedBecause(raw) {
+  const reason = raw?.subtype ?? raw?.terminal_reason ?? "";
+  if (!reason || reason === "success") return null;
+  if (/max_turns|turn_limit/.test(reason)) return `hit the turn cap (${reason})`;
+  return `ended with ${reason}`;
+}
+
+export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {} }, configHome) {
   const args = ["-p", prompt, "--output-format", "json", "--permission-mode", "acceptEdits",
     "--strict-mcp-config", "--no-session-persistence", "--max-turns", String(maxTurns)];
   // `--allowedTools` takes a space-separated list, so each entry is its own argument.

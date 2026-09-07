@@ -93,6 +93,12 @@ test("sdlc run probe: a mock with no files fails post-checks but still commits t
     assert.ok(!existsSync(join(dir, "app/PROBE.md")));
     assert.equal(git(["status", "--porcelain"], dir), "");
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /post-checks failed/);
+    // A failed run costs what a successful one costs, so its journal entry carries the
+    // same three metrics — otherwise the site's totals undercount every failure.
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-probe.md"), "utf8");
+    assert.match(journal, /^turns: 1$/m);
+    assert.match(journal, /^session: "mock"$/m);
+    assert.match(journal, /^cost: 0$/m);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -331,6 +337,54 @@ test("runStage never stages run-state, even in a project that does not ignore it
     assert.ok(!committed.includes(".sdlc/run-state.json"), committed.join(", "));
     assert.equal(git(["ls-files", "--", ".sdlc/run-state.json"], dir), "");
     assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a post-check failure on a session that hit the turn cap says so, from the CLI's own subtype", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-postfail-cap-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-postfail-cap-"));
+  // The turn did not report failure — it came back fine, having run out of turns before
+  // writing the file the post-check wants. `num_turns` says nothing useful about that;
+  // the CLI's `subtype` does.
+  writeFileSync(join(mockDir, "probe.json"), JSON.stringify({
+    text: "I was still working on it.",
+    subtype: "error_max_turns",
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "probe");
+    assert.equal(r.ok, false);
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-probe.md"), "utf8");
+    assert.match(journal, /title: "probe: post-checks failed"/);
+    assert.match(journal, /The session hit the turn cap \(error_max_turns\)\./);
+    assert.match(journal, /app\/PROBE\.md is missing/);
+    assert.match(journal, /^session: "mock"$/m);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("an agent turn that fails with no output at all is journalled with how the session ended", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-agentfail-silent-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-agentfail-silent-"));
+  writeFileSync(join(mockDir, "probe.json"), JSON.stringify({ ok: false, text: "", subtype: "error_max_turns" }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "probe");
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, ["the agent turn reported failure with no output; the session hit the turn cap (error_max_turns)"]);
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-probe.md"), "utf8");
+    assert.match(journal, /hit the turn cap \(error_max_turns\)/);
+    assert.match(journal, /^turns: 1$/m);
+    assert.match(journal, /^session: "mock"$/m);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -581,7 +635,9 @@ test("turnsFor warns once, by name, when a token-sized budget is ignored", () =>
   }
   assert.equal(warnings.length, 1, warnings.join(" | "));
   assert.match(warnings[0], /policy\.budgets\.budget-warn is 250000/);
-  assert.match(warnings[0], /default of 40 turns/);
+  assert.match(warnings[0], /this budget is ignored/);
+  assert.match(warnings[0], /default ceiling of 40 turns/);
+  assert.match(warnings[0], /set policy\.budgets\.budget-warn to a number below 1000/);
 });
 
 test("finishStage fails and names the path when a tracked file has since been excluded, and commits nothing", async () => {

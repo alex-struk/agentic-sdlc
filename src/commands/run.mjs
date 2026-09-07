@@ -7,7 +7,7 @@ import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
 import { materialise, collect } from "../runner/workspace.mjs";
-import { runAgent } from "../runner/executor.mjs";
+import { runAgent, endedBecause, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
@@ -32,9 +32,9 @@ export function turnsFor(config, name) {
   // which is that it is capped at the default.
   if (budget && !warnedBudgets.has(name)) {
     warnedBudgets.add(name);
-    console.warn(`warning: policy.budgets.${name} is ${budget}, which reads as a token budget; there is no token-to-turn conversion yet, so ${name} runs with the default of 40 turns`);
+    console.warn(`warning: policy.budgets.${name} is ${budget}, which reads as a token budget, not a turn count. There is no token-to-turn conversion yet, so this budget is ignored and ${name} runs with the default ceiling of ${DEFAULT_MAX_TURNS} turns. To cap turns, set policy.budgets.${name} to a number below 1000.`);
   }
-  return 40;
+  return DEFAULT_MAX_TURNS;
 }
 
 // An agent turn can come back having failed — an error result from the CLI, the turn
@@ -45,11 +45,19 @@ export function turnsFor(config, name) {
 // recorded: a journal entry and a run-record line, committed on their own, with
 // whatever the session left in the working tree untouched for a person to look at.
 function agentTurnFailed(projectDir, stage, r) {
-  const reason = r.text?.trim() ? r.text : "the agent turn reported failure with no output";
+  // `endedBecause` reads the CLI's own `subtype` rather than comparing `num_turns`
+  // against the cap: a session that reports the cap's worth of turns may have finished
+  // normally, and one cut short may report fewer, so the count is not evidence either
+  // way. The subtype is.
+  const ended = endedBecause(r.raw);
+  const reason = r.text?.trim() ? r.text
+    : ended ? `the agent turn reported failure with no output; the session ${ended}`
+      : "the agent turn reported failure with no output";
+  const body = ended && r.text?.trim() ? `${reason}\n\nThe session ${ended}.` : reason;
   const journal = writeJournal(projectDir, {
     stage: stage.name,
     title: `${stage.name}: agent turn failed`,
-    body: reason,
+    body,
     metrics: { cost: r.cost, turns: r.turns, session: r.sessionId },
   });
   const runPath = appendRun(projectDir, `run ${stage.name}: agent turn failed`);

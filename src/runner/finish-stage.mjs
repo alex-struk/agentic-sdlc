@@ -6,6 +6,7 @@ import { writeJournal } from "./journal.mjs";
 import { propose } from "../commands/propose.mjs";
 import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
+import { endedBecause } from "./executor.mjs";
 
 // A stage that opened a proposal on a previous run and has not been ruled yet is not
 // safe to run again under the same name: `propose`'s own `git checkout -q -b` refuses
@@ -62,10 +63,19 @@ export function commitProposalStillOpen(projectDir, stageName, openProposal) {
 // actual post-check failure and `finishStage`'s own late open-proposal check below,
 // since the second is reported the same way the ruling calls for.
 function commitPostCheckFailure(projectDir, stage, agentResult, messages) {
+  // A failed run costs exactly what a successful one does, and its metrics are the only
+  // record of that: without them the state site's totals undercount every run that did
+  // not pass, which is the population most worth knowing the cost of. `endedBecause`
+  // adds the CLI's own account of how the session ended, so a post-check failure caused
+  // by an agent that never got to finish reads as that rather than as bad work.
+  const ended = endedBecause(agentResult.raw);
+  const body = [agentResult.text, ended && `The session ${ended}.`, messages.join("\n")]
+    .filter(Boolean).join("\n\n");
   const journal = writeJournal(projectDir, {
     stage: stage.name,
     title: `${stage.name}: post-checks failed`,
-    body: `${agentResult.text}\n\n${messages.join("\n")}`,
+    body,
+    metrics: { cost: agentResult.cost, turns: agentResult.turns, session: agentResult.sessionId },
   });
   const runPath = appendRun(projectDir, `run ${stage.name}: post-checks failed`);
   stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
