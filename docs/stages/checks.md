@@ -18,8 +18,9 @@ instead of the formatted text.
 ## Outputs
 
 To stdout: one line per check id (`config`, `layout`, `constitution`, `egress`, `criteria`,
-`criteria-index`, or just `egress` under `--self`) marked `ok` or `FAIL`, with any messages and warnings indented beneath —
-or the same data as a JSON array under `--json`. Nothing is written to disk.
+`criteria-index`, `separation`, `generated`, `tests`, or just `egress` under `--self`) marked `ok` or
+`FAIL`, with any messages and warnings indented beneath — or the same data as a JSON array under
+`--json`. Nothing is written to disk.
 
 ## Workspace the agent sees
 
@@ -55,6 +56,47 @@ No agent.
   not part of `criteria` itself: `archaeology` legitimately leaves the index behind, since
   recovering a domain is exactly the act of adding criteria the index does not have yet, and
   ratify is the stage that catches it up.
+- **separation** — runs whenever `tests/` exists. Keeps the acceptance suite blind to the
+  implementation. Over `tests/adapters/**/*.ts`: fails on `expect(` (an adapter drives the page, it
+  never asserts), on an import whose path contains `../acceptance` or `app/`, and on a `test(` call
+  (an adapter must not define its own copy of the suite). Over `tests/acceptance/**/*.ts`: fails on
+  an import whose path contains `/adapters/`, `app/` or `../../app`; on `page.` (a test never holds
+  the page object); on `locator(`, `getBy`, `data-testid` or `querySelector` (a test never reaches
+  for a locator); on a string literal that starts with `http://`, `https://` or a route-shaped `/`
+  (a lone `"/"` is allowed); and on `goto(`. Comment lines are exempt from the locator and route
+  rules only, so the provenance header every spec file carries, and prose explaining these rules,
+  never trip them. `not-testable.yaml` and `attestations.yaml` are not TypeScript and are skipped.
+  Messages name the file and line.
+- **generated** — runs whenever `tests/` exists. Passes with nothing to check when `tests/generated`
+  does not exist yet (a project before `derive-tests`). Otherwise recomputes `generateTypes` from
+  the live contract (`spec/contract/*.yaml`, `tests/seed/manifest.yaml`) and compares every file it
+  produces against `tests/generated/*` byte for byte — a mismatch or a missing file fails. A
+  contract that fails to load is reported as a failure with its load errors, the same errors
+  `loadContract` itself would raise.
+- **tests** — runs whenever `tests/` and `spec/criteria-index.json` both exist; a project that has
+  not ratified anything yet has no accepted criteria for a spec file's header to be checked against.
+  For every `tests/acceptance/<domain>/<file>.spec.ts`: the first two lines must be exactly
+  `// criterion: @<ID> v<n>` and `// provenance: <blind|unverified>, spec@<sha>, derived
+  <YYYY-MM-DD>`; the ID must name an `accepted` criterion in the index; the filename must be
+  `<ID>.spec.ts` for the ID in its own header; a header version lower than the index's is a warning
+  (`stale`, listed in `result.stale`), not a failure, and a version higher than the index's fails. A
+  file sitting directly under `tests/acceptance/`, with no domain folder above it, fails (except the
+  two exemption yaml files). `not-testable.yaml` entries must name an accepted criterion with a
+  non-empty reason, and an entry for a criterion that also has a test file fails.
+
+  Provenance is verified, not trusted: a header claiming `unverified` is unverified regardless of
+  git. A header claiming `blind` is checked against `git log -1 --format=%s -- <file>` — a subject
+  starting with `propose(G3): derive-tests-`, `stage(derive-tests)` or `merge: derive-tests-` is
+  genuinely blind; anything else, or a file with no clean committed history at all (untracked or
+  with uncommitted changes), is unverified — except when `SDLC_STAGE=derive-tests`, which is the
+  stage's own post-check reading its output before it has committed. At LOW/STANDARD tier (the
+  criterion's own `tier`, else `policy.default_tier`) an unverified file still passes with a
+  matching entry in `attestations.yaml` naming the file and a `by`; at HIGH/CRITICAL it fails
+  outright, attestation or not.
+
+  `coverage(projectDir, domain)` (exported, not a check of its own) reports a domain's accepted
+  criteria split into `covered`, `missing` and `notTestable` — `derive-tests`' post-check calls it
+  for the domain it just worked, and `status` renders it as the coverage board.
 - **egress** — every tracked, text-typed file (skipping `.sdlc/packs/`, and any path git still
   tracks but that is gone from disk) is scanned line by line for ticket-number patterns,
   private-notes-folder paths, references to a private notes location or a meeting or transcript,

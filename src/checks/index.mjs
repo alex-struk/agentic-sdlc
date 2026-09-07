@@ -5,6 +5,9 @@ import { checkLayout } from "./layout.mjs";
 import { checkConstitution } from "./constitution.mjs";
 import { checkEgress } from "./egress.mjs";
 import { checkCriteria, checkCriteriaIndex } from "./criteria.mjs";
+import { checkSeparation } from "./separation.mjs";
+import { checkGenerated } from "./generated.mjs";
+import { checkTests } from "./tests.mjs";
 
 // `opts.skip` names check ids to leave out of the result entirely — not run and not
 // reported, as distinct from a check that ran and passed. `buildPersonaPrompt` is the
@@ -30,6 +33,16 @@ export async function runChecks(projectDir, opts = {}) {
   if (existsSync(join(projectDir, "spec", "domains"))) {
     checks.push(checkCriteria(projectDir, ctx));
     checks.push(checkCriteriaIndex(projectDir));
+  }
+  // The acceptance harness (fixtures, adapters, the two exemption yaml files) is laid
+  // down before any test is written, so `tests/` existing is what separation and
+  // generated-drift are meaningful against. `checkTests` needs the ratified index too —
+  // a project with `tests/` but no `spec/criteria-index.json` yet has no accepted
+  // criteria for a spec file's header to be checked against.
+  if (existsSync(join(projectDir, "tests"))) {
+    checks.push(checkSeparation(projectDir));
+    checks.push(checkGenerated(projectDir));
+    if (existsSync(join(projectDir, "spec", "criteria-index.json"))) checks.push(checkTests(projectDir, ctx));
   }
   return checks.filter((c) => !skip.has(c.id));
 }
