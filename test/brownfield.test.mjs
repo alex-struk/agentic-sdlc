@@ -92,3 +92,43 @@ test("init on a project from an earlier pipeline version reconciles the ignore f
     restoreEgress(prevEgress);
   }
 });
+
+// `reconcileGitignore` only ever removes a line that is exactly `site/` (see
+// src/lib/git.mjs), so a project that ignores the site with a different pattern —
+// `/site/`, here — keeps ignoring it even after reconciling. `stageSite` has to notice
+// that and force the site in anyway rather than silently committing nothing for it.
+test("stageSite force-adds the site when the project's own .gitignore still ignores it after reconciling", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-siteignore-"));
+  const prevEgress = process.env.SDLC_EGRESS_NAMES;
+  const emptyList = join(tmp, "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
+  const dir = join(tmp, "permit-intake");
+  await newProject({ dir, from: FROM });
+  // `git check-ignore` cannot tell a directory-only pattern like `/site/` applies to a
+  // path that does not exist on disk yet (see src/lib/git.mjs), so the site is
+  // untracked and removed here rather than just having the pattern appended around an
+  // already-tracked directory — the run below regenerates it fresh, at which point the
+  // pattern is exactly the case `stageSite`'s fallback exists for.
+  git(["rm", "-r", "-q", "--", "site"], dir);
+  writeFileSync(join(dir, ".gitignore"),
+    "node_modules/\n.sdlc/packs/\n.sdlc/*.local.yaml\n.sdlc/*.local.txt\n.sdlc/run-state.json\n/site/\n");
+  commit(dir, "ignore the site with a pattern reconcile does not recognize");
+
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-siteignore-mock-"));
+  writeFileSync(join(mockDir, "probe.json"), JSON.stringify({
+    text: "wrote the probe file",
+    files: { "app/PROBE.md": "2026-09-06 the runner works\n" },
+  }));
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const probe = await runStage(dir, "probe");
+    assert.equal(probe.ok, true);
+    assert.notEqual(git(["ls-files", "--", "site/index.md"], dir), "", "the site is tracked despite the /site/ pattern");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});

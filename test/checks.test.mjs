@@ -8,6 +8,8 @@ import { checkConstitution } from "../src/checks/constitution.mjs";
 import { checkEgress, defaultNamesPath } from "../src/checks/egress.mjs";
 import { checkLayout } from "../src/checks/layout.mjs";
 import { checkConfig } from "../src/checks/config.mjs";
+import { checkCriteriaIndex } from "../src/checks/criteria.mjs";
+import { parseAll, writeIndex } from "../src/spec/criteria.mjs";
 
 function repo() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-chk-"));
@@ -158,7 +160,88 @@ test("layout: required paths for a rebuild project", () => {
     mkdirSync(join(d, p.includes(".") ? p.split("/").slice(0, -1).join("/") || "." : p), { recursive: true });
     if (p.includes(".")) writeFileSync(join(d, p), "");
   }
-  for (const p of ["intent", "design", "plan", "app", "tests/adapters", "tests/seed", "spec/features", "spec/contract"]) mkdirSync(join(d, p), { recursive: true });
+  for (const p of ["intent", "design", "plan", "app", "tests/adapters", "tests/seed", "spec/features", "spec/domains", "spec/contract"]) mkdirSync(join(d, p), { recursive: true });
   writeFileSync(join(d, ".sdlc/lock.json"), "{}");
   assert.equal(checkLayout(d, { config: { profile: "rebuild" } }).ok, true);
+});
+
+test("layout: spec/domains is required", () => {
+  const d = repo();
+  for (const p of ["constitution.md", ".sdlc/config.yaml", ".sdlc/lock.json", "evidence/pr-evidence.md"]) {
+    mkdirSync(join(d, p.split("/").slice(0, -1).join("/") || "."), { recursive: true });
+    writeFileSync(join(d, p), "");
+  }
+  for (const p of ["intent", "design", "plan", "app", "tests/acceptance", "tests/adapters", "tests/seed", "spec", "spec/features", "spec/contract"]) mkdirSync(join(d, p), { recursive: true });
+  const r = checkLayout(d, { config: { profile: "rebuild" } });
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.includes("missing: spec/domains"));
+  mkdirSync(join(d, "spec/domains"), { recursive: true });
+  assert.equal(checkLayout(d, { config: { profile: "rebuild" } }).ok, true);
+});
+
+test("criteria-index check: a stale index fails, naming ratify as the fix", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-idx-"));
+  git(["init", "-q", "-b", "main"], d);
+  git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  mkdirSync(join(d, "spec", "domains"), { recursive: true });
+  writeFileSync(join(d, "spec/domains/permits.md"),
+    "# permits\n\n### D-permits-1 · v1 · confirmed · authored\nA statement.\n- state: proposed\n");
+
+  // No index at all: nothing to be stale.
+  assert.equal(checkCriteriaIndex(d).ok, true);
+
+  const parsed = parseAll(d);
+  writeIndex(d, parsed);
+  assert.equal(checkCriteriaIndex(d).ok, true, "a freshly written index matches");
+
+  // The domain file moves on without the index being regenerated.
+  writeFileSync(join(d, "spec/domains/permits.md"),
+    "# permits\n\n### D-permits-1 · v2 · confirmed · authored\nA restated statement.\n- state: proposed\n");
+  const stale = checkCriteriaIndex(d);
+  assert.equal(stale.ok, false);
+  assert.match(stale.messages[0], /stale/);
+  assert.match(stale.messages[0], /sdlc run ratify/);
+});
+
+test("criteria-index check: an index that does not parse fails", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-idx-bad-"));
+  mkdirSync(join(d, "spec", "domains"), { recursive: true });
+  writeFileSync(join(d, "spec/criteria-index.json"), "{not json");
+  const r = checkCriteriaIndex(d);
+  assert.equal(r.ok, false);
+  assert.match(r.messages[0], /does not parse/);
+});
+
+test("egress --self flags the application name this pipeline must not carry, except in the two places it belongs", () => {
+  const d = repo();
+  const emptyNames = join(d, "names.txt");
+  writeFileSync(emptyNames, "");
+  const prev = process.env.SDLC_EGRESS_NAMES;
+  process.env.SDLC_EGRESS_NAMES = emptyNames;
+  // Assembled rather than written out, for the same reason the check's own pattern is:
+  // this test file is scanned by `npm run check` too.
+  const word = "market" + "place";
+  try {
+    mkdirSync(join(d, "docs", "specs"), { recursive: true });
+    mkdirSync(join(d, "docs", "poster"), { recursive: true });
+    writeFileSync(join(d, "docs/specs/design.md"), `the ${word} rebuild\n`);
+    writeFileSync(join(d, "docs/poster/walkthrough.md"), `the ${word} rebuild\n`);
+    writeFileSync(join(d, "docs/other.md"), `the ${word} rebuild\n`);
+    writeFileSync(join(d, "src.mjs"), `// A ${word.toUpperCase()} reference in code\n`);
+    git(["add", "-A"], d);
+
+    const self = checkEgress(d, { self: true });
+    assert.equal(self.ok, false);
+    assert.ok(self.messages.some((m) => m.startsWith("docs/other.md:1:")), self.messages.join("\n"));
+    // Case-insensitive.
+    assert.ok(self.messages.some((m) => m.startsWith("src.mjs:1:")), self.messages.join("\n"));
+    // The design spec and the poster legitimately name it.
+    assert.ok(!self.messages.some((m) => m.startsWith("docs/specs/")), self.messages.join("\n"));
+    assert.ok(!self.messages.some((m) => m.startsWith("docs/poster/")), self.messages.join("\n"));
+
+    // A project being checked is not this repository: the pattern is self-mode only.
+    assert.equal(checkEgress(d, {}).ok, true);
+  } finally {
+    if (prev === undefined) delete process.env.SDLC_EGRESS_NAMES; else process.env.SDLC_EGRESS_NAMES = prev;
+  }
 });

@@ -19,6 +19,20 @@ export function gitRaw(args, cwd) {
   }
 }
 
+// The identity every commit this pipeline makes on the caller's behalf is authored with.
+// Passed as `-c` overrides rather than written into the repository's own config, so a
+// person's `user.name`/`user.email` is left alone and a pipeline commit is still
+// distinguishable from theirs in `git log`.
+//
+// `commit.gpgsign=false` and `tag.gpgsign=false` are part of the identity, not an extra:
+// a machine identity has no key, so on a machine (or a repository) where signing is
+// turned on globally every commit here would fail with `gpg failed to sign the data` —
+// a pipeline that cannot record a ruling on a developer's own laptop because of a
+// setting that has nothing to do with the pipeline. The overrides are scoped to these
+// commands alone and change nothing a person's own `git commit` does.
+export const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost",
+  "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"];
+
 export function git(args, cwd) {
   return gitRaw(args, cwd).trim();
 }
@@ -35,6 +49,24 @@ export function assertCleanTree(projectDir, command) {
   if (!dirty) return;
   const paths = dirty.split("\n").map((l) => `  ${l.trim()}`).join("\n");
   throw new Error(`${command}: the working tree has uncommitted changes. Commit or stash them first:\n${paths}`);
+}
+
+// The branch the working tree is on, or "HEAD" when it is detached.
+export function currentBranch(projectDir) {
+  return git(["rev-parse", "--abbrev-ref", "HEAD"], projectDir);
+}
+
+// A run has to start from `main` for the same reason it has to start from a clean tree:
+// everything downstream assumes it. `propose` opens a proposal branch off `main`, the
+// persona's diff is `main...proposal/<name>`, and `checkProposalNotOpen` reads
+// `git branch --merged main` — so a run started on a leftover proposal branch (the state
+// `sdlc run` itself leaves the tree in after opening one) would branch off that branch,
+// diff against the wrong base, and produce a proposal carrying the previous proposal's
+// changes as if they were its own. Checked before any agent turn, so nothing has been
+// spent by the time it fails.
+export function assertOnMain(projectDir, command) {
+  const branch = currentBranch(projectDir);
+  if (branch !== "main") throw new Error(`${command} must start on main; you are on ${branch}`);
 }
 
 // Stages exactly the given project-relative paths, skipping any that do not exist on
@@ -55,9 +87,30 @@ export function stagePaths(projectDir, paths) {
 // caller gets for free by building the list from `changedPaths()` below rather than
 // naming files itself. Skips the call entirely when the list is empty, since
 // `git add -A --` with no further pathspec means "the whole tree" rather than "nothing".
+//
+// This never retries with `-f`, and must not: git refusing a named path here because it
+// is ignored is a safety property, not friction to route around. The one path this
+// pipeline itself deliberately force-adds is `site`, handled by `stageSite` below
+// *before* a caller builds its own batch — a caller that excludes what `stageSite`
+// returned never names an ignored path here at all. Every other refusal means the named
+// path was tracked and has since been added to `.gitignore` (the "committed by
+// accident, now excluded" pattern, or an equivalent `git rm --cached` a person or an
+// agent ran without committing it): silently forcing it back into the index is exactly
+// the failure this function exists to not have. The error is re-thrown naming the
+// offending path(s), parsed out of git's own message where its shape matches, falling
+// back to git's raw message otherwise.
 export function stageAll(projectDir, paths) {
   if (paths.length === 0) return;
-  git(["add", "-A", "--", ...paths], projectDir);
+  try {
+    git(["add", "-A", "--", ...paths], projectDir);
+  } catch (e) {
+    if (!/ignored by one of your \.gitignore files/.test(e.message)) throw e;
+    const match = e.message.match(/ignored by one of your \.gitignore files:\n([\s\S]*?)\n(?:hint:)/);
+    const named = match ? match[1].split("\n").filter(Boolean).join(", ") : null;
+    throw new Error(named
+      ? `stageAll: refusing to add ${named} — tracked before and now matched by .gitignore. If it was committed by accident and is meant to stay excluded, run 'git rm --cached' on it and commit that first; if it belongs in the repo, remove the rule from .gitignore instead. Nothing was staged for it.`
+      : `stageAll: git refused a path in this batch as ignored by .gitignore, but its message did not parse:\n${e.message}`);
+  }
 }
 
 // The porcelain status as bare project-relative paths — one per changed file, two for a
@@ -95,6 +148,7 @@ const REQUIRED_IGNORES = [
   ".sdlc/run-state.json",
   ".sdlc/*.local.yaml",
   ".sdlc/*.local.txt",
+  "sources/",
 ];
 const UNIGNORE = "site/";
 
@@ -116,16 +170,40 @@ export function reconcileGitignore(projectDir) {
   return true;
 }
 
-// Stages the generated state site for whatever commit the caller is about to make.
+// Stages the generated state site for whatever commit the caller is about to make, and
+// returns the project-relative paths it staged (a subset of ["site", ".gitignore"]) so
+// a caller that goes on to stage a wider batch of its own through `stageAll` can leave
+// these back out of it — naming an already-staged, still-ignored path there would make
+// `stageAll` refuse the whole batch (see its own comment), even though nothing further
+// needs recording for it here.
+//
 // A project whose `.gitignore` still ignores `site/` would otherwise commit nothing at
-// all here and silently keep an untracked site, so the ignore is reconciled away first
-// and the reconciled `.gitignore` staged alongside. Staging goes through `stageAll`, so
-// a page the site no longer generates is recorded as removed rather than left behind.
+// all here and silently keep an untracked site, so the ignore is reconciled away first.
+// `.gitignore` itself is only staged when `reconcileGitignore` actually rewrote it — a
+// project's own uncommitted edit to that file is none of this command's business and
+// must not be swept in just because the site happened to be staged in the same run.
+//
+// Reconciling only removes an exact `site/` line (see `UNIGNORE` above), so a pattern
+// that also matches the directory — `/site/`, a broader glob, a rule in a parent
+// `.gitignore` — survives untouched. Rather than leave the site silently untracked in
+// that case, `check-ignore` is asked again after reconciling and, if it still says the
+// path is ignored, the site is force-added and the rule responsible is named on stderr
+// so a person can go fix their own ignore file instead of it happening invisibly. This
+// is the one place in the whole pipeline allowed to force an add: `stageAll` itself
+// never does.
 export function stageSite(projectDir) {
-  if (gitOk(["check-ignore", "-q", "--", "site"], projectDir)) reconcileGitignore(projectDir);
+  const gitignoreChanged = reconcileGitignore(projectDir);
   const paths = [];
   if (existsSync(join(projectDir, "site"))) paths.push("site");
   else if (git(["ls-files", "--", "site"], projectDir)) paths.push("site");
-  if (existsSync(join(projectDir, ".gitignore"))) paths.push(".gitignore");
-  stageAll(projectDir, paths);
+  if (gitignoreChanged) paths.push(".gitignore");
+
+  const stillIgnored = paths.includes("site") && gitOk(["check-ignore", "-q", "--", "site"], projectDir);
+  if (stillIgnored) {
+    const rule = git(["check-ignore", "-v", "--", "site"], projectDir);
+    console.warn(`warning: site/ is still ignored after reconciling .gitignore (${rule}); staging it anyway`);
+  }
+  stageAll(projectDir, stillIgnored ? paths.filter((p) => p !== "site") : paths);
+  if (stillIgnored) git(["add", "-Af", "--", "site"], projectDir);
+  return paths;
 }

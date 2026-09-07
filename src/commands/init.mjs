@@ -1,6 +1,6 @@
 import { existsSync, chmodSync, rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { git, gitOk, stagePaths, stageSite, reconcileGitignore } from "../lib/git.mjs";
+import { git, gitOk, stagePaths, stageSite, reconcileGitignore, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
@@ -70,7 +70,14 @@ export async function init(projectDir = process.cwd()) {
   // Both of these repair a project built by an earlier version of the pipeline, and
   // both are no-ops on one that was not: the ignore file is reconciled line by line
   // (see docs/stages/init.md) and the run-state file is dropped from the index.
-  if (reconcileGitignore(projectDir)) changed = true;
+  //
+  // The boolean is kept, not just folded into `changed`: `stageSite` below calls
+  // `reconcileGitignore` again on its own account (for the callers that never call it
+  // themselves), and by then the file is already canonical, so its second call always
+  // reports no change. Only this first call actually saw whatever this run rewrote, so
+  // it alone decides whether `.gitignore` belongs in the commit.
+  const gitignoreChanged = reconcileGitignore(projectDir);
+  if (gitignoreChanged) changed = true;
   if (untrackRunState(projectDir)) changed = true;
 
   const pipelineCommit = gitOk(["rev-parse", "HEAD"], PIPELINE_ROOT) ? git(["rev-parse", "HEAD"], PIPELINE_ROOT) : config.pipeline.ref;
@@ -130,9 +137,10 @@ export async function init(projectDir = process.cwd()) {
       join(".sdlc", "personas"),
       ".gitattributes",
       relative(projectDir, runPath),
+      ...(gitignoreChanged ? [".gitignore"] : []),
     ]);
     if (git(["diff", "--cached", "--name-only"], projectDir)) {
-      git(["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost", "commit", "-q", "-m", "chore(sdlc): init"], projectDir);
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", "chore(sdlc): init"], projectDir);
     }
   }
   return { lock, ...r, changed };

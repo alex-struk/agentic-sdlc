@@ -6,6 +6,15 @@ import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { materialise, collect } from "../src/runner/workspace.mjs";
 
+function makeOldRepo() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-old-repo-"));
+  git(["init", "-q", "-b", "main"], d);
+  git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  writeFileSync(join(d, "README.md"), "# old app\n");
+  git(["add", "."], d); git(["commit", "-q", "-m", "first"], d);
+  return { d, sha: git(["rev-parse", "HEAD"], d) };
+}
+
 function makeProject() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-proj-"));
   git(["init", "-q", "-b", "main"], d);
@@ -111,4 +120,41 @@ test("materialise blind-adapter yields spec/contract and tests/adapters, not spe
   assert.ok(!existsSync(join(ws.dir, "spec/spec.md")));
   assert.ok(!existsSync(join(ws.dir, "app")));
   ws.cleanup();
+});
+
+test("materialise with-sources loads the config, ensures the old app is checked out, and returns the project dir", () => {
+  const d = makeProject();
+  const { d: oldRepo, sha } = makeOldRepo();
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "config.yaml"), `
+pipeline: { repo: agentic-sdlc, ref: v0.1.0 }
+profile: rebuild
+stack: openshift-ts
+project:
+  name: example-service
+  domains: [accounts]
+sources:
+  old: { repo: ${oldRepo}, commit: ${sha} }
+policy:
+  gates:
+    G0: { holder: "agent:product-owner" }
+    G1: { holder: tech-lead }
+    G-DESIGN: { holder: ux-reviewer }
+    G2: { holder: "agent:architect" }
+    G3: { holder: "agent:reviewer" }
+    G-POL: { holder: tech-lead }
+  default_tier: STANDARD
+skills:
+  packs: []
+egress:
+  rules: [E-1, E-2, E-3, E-4]
+`);
+
+  const ws = materialise(d, "with-sources");
+  assert.equal(ws.dir, d);
+  assert.equal(ws.mode, "with-sources");
+  assert.ok(existsSync(join(d, "sources", "old", "README.md")));
+  assert.equal(git(["rev-parse", "HEAD"], join(d, "sources", "old")), sha);
+  assert.doesNotThrow(() => ws.cleanup());
+  assert.ok(existsSync(d), "cleanup did not remove the project dir");
 });

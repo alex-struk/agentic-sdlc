@@ -4,7 +4,27 @@ import { join } from "node:path";
 import { ensureConfigHome } from "./config-home.mjs";
 import { writeText } from "../lib/fsx.mjs";
 
-export function buildArgs({ prompt, stage, maxTurns = 40, systemPromptFile, addDirs = [], allowedTools = [], env = {} }, configHome) {
+// The turn ceiling a session runs with when nothing else sets one. Exported so the one
+// place that falls back to it (`turnsFor`, in `src/commands/run.mjs`) names the same
+// number in its warning that the executor actually applies.
+export const DEFAULT_MAX_TURNS = 40;
+
+// How the session ended, in words, when the CLI said something worth repeating. The
+// `subtype` on a result is the CLI's own account — `error_max_turns` when the turn
+// ceiling was reached, `error_during_execution` when the session broke — and it is the
+// only reliable way to tell those apart: comparing `num_turns` against the cap gets it
+// wrong in both directions, since a session can report the cap's worth of turns having
+// finished normally, or fewer having been cut short.
+//
+// Returns null when there is nothing to say: no result, or a plain success.
+export function endedBecause(raw) {
+  const reason = raw?.subtype ?? raw?.terminal_reason ?? "";
+  if (!reason || reason === "success") return null;
+  if (/max_turns|turn_limit/.test(reason)) return `hit the turn cap (${reason})`;
+  return `ended with ${reason}`;
+}
+
+export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {} }, configHome) {
   const args = ["-p", prompt, "--output-format", "json", "--permission-mode", "acceptEdits",
     "--strict-mcp-config", "--no-session-persistence", "--max-turns", String(maxTurns)];
   // `--allowedTools` takes a space-separated list, so each entry is its own argument.
@@ -16,10 +36,23 @@ export function buildArgs({ prompt, stage, maxTurns = 40, systemPromptFile, addD
   return { args, env: { ...process.env, ...env, CLAUDE_CONFIG_DIR: configHome, SDLC_STAGE: stage } };
 }
 
+// How many times each canned file has been consumed in this process, so a `sequence`
+// below can hand back a different reply per call. Keyed by path, since two stages (or two
+// tests) have their own files and their own counts.
+const mockCalls = new Map();
+
 function runMock({ cwd, stage }) {
   const p = join(process.env.SDLC_MOCK_DIR ?? "", `${stage}.json`);
   if (!existsSync(p)) throw new Error(`mock executor: no canned response at ${p}`);
-  const m = JSON.parse(readFileSync(p, "utf8"));
+  const file = JSON.parse(readFileSync(p, "utf8"));
+  // A canned response may be a `sequence` of replies rather than one, consumed a step per
+  // call, so a test can stand in for a turn that is legitimately asked more than once
+  // inside a single command — the ratification-grammar re-prompt, or the automatic retry
+  // of a failed ruling. The last entry is reused once the list runs out, so a sequence
+  // never becomes the reason a test fails.
+  const n = mockCalls.get(p) ?? 0;
+  mockCalls.set(p, n + 1);
+  const m = Array.isArray(file.sequence) ? file.sequence[Math.min(n, file.sequence.length - 1)] : file;
   for (const [rel, content] of Object.entries(m.files ?? {})) writeText(join(cwd, rel), content);
   // A canned response can also delete a tracked file, so tests can exercise how a stage
   // stages and commits a deletion without a real agent turn actually removing anything.
@@ -30,11 +63,19 @@ function runMock({ cwd, stage }) {
   return { ok: m.ok !== false, text: m.text ?? "", cost: 0, turns: 1, sessionId: "mock", raw: m };
 }
 
+// The binary a real agent turn spawns. Overridable so the executor's own behaviour —
+// how it reads the CLI's JSON, what it does with output that is not JSON at all, which
+// flags it actually passed — can be exercised against a real subprocess, rather than only
+// through the in-process mock that never goes near `execFile`.
+export function claudeBin() {
+  return process.env.SDLC_CLAUDE_BIN || "claude";
+}
+
 export async function runAgent(opts) {
   if (process.env.SDLC_EXECUTOR === "mock") return runMock(opts);
   const { args, env } = buildArgs(opts, ensureConfigHome());
   const raw = await new Promise((resolve, reject) => {
-    execFile("claude", args, { cwd: opts.cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(claudeBin(), args, { cwd: opts.cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err && !stdout) return reject(new Error(`claude failed: ${stderr || err.message}`));
       resolve(stdout);
     });

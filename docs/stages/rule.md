@@ -45,8 +45,8 @@ conflicted files — `main` is never left mid-merge.
 On `return`, the proposal branch is left exactly as it is — not merged — so it stays open for
 another round.
 
-`sdlc status` (`buildSite`) runs after every ruling, human or agent, so the state site's gate log
-and coverage numbers are never more than one ruling stale. The site is a tracked artifact: every
+`buildSite` runs after every ruling, human or agent, so the state site's gate log and coverage
+numbers are never more than one ruling stale. The site is a tracked artifact: every
 page it generates —
 
 - `site/index.md` (coverage, the page list, and the cost, ruling, escalation and open-proposal
@@ -56,10 +56,23 @@ page it generates —
 - `site/journal.md` (the stage journal), and
 - `site/proposals/<name>.md`, one page per proposal, ruled or open, including this one
 
-— is folded into the same commit the ruling made: the merge commit on `main` for an approval, the
-plain ruling commit otherwise, rather than left as an uncommitted diff. A project whose
-`.gitignore` still hides `site/` has that line reconciled away first (`docs/stages/init.md`), so
-the pages are committed rather than silently regenerated and dropped.
+— lives on `main` and nowhere else. Every page is regenerated whole from the whole project, so a
+copy carried on a proposal branch would differ from every other open proposal's on every page, and
+the second merge would conflict on all of them for content neither proposal is about. A stage that
+holds a gate therefore builds no site at all (`docs/stages/run.md`), and regenerating it is this
+command's job:
+
+- **Approve** — the branch is merged into `main` first, then the site is rebuilt there and folded
+  into that merge commit with `--amend`, rather than trailing behind it as a second commit or an
+  uncommitted diff. What it reflects is `main`'s complete gate history, this ruling included.
+- **Return or escalate** — the ruling commit stays on the proposal branch, where it belongs, since
+  nothing about it has been accepted. The site is still regenerated on `main` — checked out for
+  that and checked back out afterwards, so a returned proposal is still the working tree a person
+  lands in — and committed as `chore(site): regenerate after <name> <verdict>` only if `main`
+  actually changed. Usually it has not, and nothing is committed.
+
+A project whose `.gitignore` still hides `site/` has that line reconciled away first
+(`docs/stages/init.md`), so the pages are committed rather than silently regenerated and dropped.
 
 ## The agent path
 
@@ -70,10 +83,17 @@ When `--by agent:<persona>` names the gate's own `holder`, `sdlc rule` builds a 
 - the tier — the proposal's own `tier:` front matter if it set one, else
   `policy.default_tier`;
 - `git diff main...proposal/<name> --stat`;
-- the diff of everything outside `app/` (`git diff main...proposal/<name> -- . ':!app'`), capped
-  at 20,000 characters with a `[truncated]` marker so a large or generated diff cannot blow the
-  prompt budget;
-- the four structural checks, run on the proposal branch's current checkout.
+- the diff of the proposal's own output, capped at 60,000 characters with a `[truncated]`
+  marker so a large or generated diff cannot blow the prompt budget. Four path groups are left
+  out of it entirely: `app/` (the spec-side personas rule on the spec, not an implementation),
+  and `site/`, `.sdlc/runs/` and `.sdlc/journal/`, which are derived from the very work being
+  ruled on, change on every run, and between them can be larger than everything the persona
+  actually needs to read. What remains is ordered so the stage's own output comes first — for
+  G1, `spec/domains/` then the rest of `spec/`; for G0, `intent/` — and the cap is applied to
+  that order, so what falls off the end is the least important file rather than whichever one
+  sorts last. When the cap does cut, the diff ends with `[<n> further changed file(s) not
+  shown]`;
+- the structural checks, run on the proposal branch's current checkout.
 
 The agent turn runs with `maxTurns: 12` and a tool list of `Read`, `Grep`, `Glob`, `Bash(git
 diff*)`, `Bash(git log*)` and `Bash(git status*)` — enough to look further into the branch than
@@ -109,6 +129,45 @@ with `by: agent:<persona>` (so `held_by: agent`) and the persona's `rationale` a
 written into the gate file in place of a human's free-text `note`. The rationale and verdict are
 also appended to the proposal page itself, under a `## Ruling` heading, *before* that page is
 committed — so the ruling is part of the same commit the gate file is, not a follow-up.
+
+### Ratification conditions
+
+`conditions` is free-form for most personas, but `product-owner`'s own brief
+(`.sdlc/personas/product-owner.md`) gives it a closed vocabulary at G1 — one line per criterion ID,
+using `contract`, `confirm`, `edit`, `defect`, `spike`, `obsolete` or `drop` — that `sdlc run
+ratify` (`docs/stages/ratify.md`) reads back out of this same gate file and applies mechanically.
+
+Two of those are easy to read as each other's synonym and are not. `contract <ID>` changes nothing:
+the row's confidence, state and wording are untouched, and it is recorded only so the journal can
+say the ID was looked at. It does not promote anything — a criterion still `inferred` or `open`
+stays that way and is not minted a permanent id. `confirm`, `edit` and `defect` all resolve a
+criterion; `contract` and `spike` do not. `confirm <ID>` raises confidence on the strength of the
+evidence alone, and the persona is required to say in its rationale what tipped it; `edit <ID>:
+<text>` and `defect <ID>: <text>` raise it too, each for its own reason — an edited statement is
+itself a second witness, and a defect row is a confirmed record of what the old system does, merely
+marked as a defect rather than carried forward as-is. A criterion nobody mentions at
+all is treated exactly as `contract`, so approving a proposal without a line per ID is normal.
+
+An archaeology proposal legitimately carries criteria marked `inferred` or `open` — that is
+archaeology reporting what the evidence supports, and approving such a proposal is the ordinary
+outcome. Those criteria are not the contract yet, and `ratify`'s closing loop
+(`docs/stages/ratify.md`) is what asks about them again.
+
+Because a condition is an instruction `ratify` will execute rather than commentary, a line the
+grammar cannot read is a silently dropped ruling on a criterion. At G1, on an `approve` or a
+`return`, every condition is parsed with that grammar before the ruling is written. If any line
+fails, the persona is asked once more — the same prompt with its own unreadable lines quoted back
+and the grammar restated — which is the whole fix in the ordinary case, since these are formatting
+slips (`confirm <ID>: <text>`, where `confirm` takes no text) rather than disagreements. Whatever is
+still unreadable after that is written to the gate file under `unparsed_conditions` and the ruling
+proceeds: the verdict was reached and the reasoning is worth keeping. `ratify` then refuses to act
+on that gate file at all until a person rewrites the lines in place.
+
+What is still *not* checked here is whether a condition's ID exists in the domain: this command has
+no domain file in hand. `ratify` reports an unknown ID later, against the file it actually has.
+
+At G1 a `return` also carries no conditions in practice: its rationale paragraph says what
+archaeology has to go back and change instead.
 
 ## Mandatory escalation
 

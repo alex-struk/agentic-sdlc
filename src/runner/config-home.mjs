@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 export function configHomePath() {
@@ -14,6 +14,12 @@ export function ensureConfigHome() {
   mkdirSync(home, { recursive: true });
   const link = join(home, ".credentials.json");
   const src = credentialsSource();
+  // An operator who points SDLC_CREDENTIALS at the link path itself (or otherwise
+  // arranges for the two to resolve the same) must not have that file touched: the
+  // rm/symlink dance below is written for the case where they differ, and run against
+  // one path it deletes the operator's own credentials and then symlinks the now-empty
+  // path to itself.
+  if (resolve(link) === resolve(src)) return home;
   if (existsSync(src)) {
     // Whatever is at that path goes, symlink or not. Only a stale *symlink* used to be
     // replaced, so a real credentials file left there by anything else — a copy someone

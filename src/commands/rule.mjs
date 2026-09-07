@@ -1,15 +1,14 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitOk, assertCleanTree, stagePaths, stageSite } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, stagePaths, stageSite, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief } from "../runner/persona.mjs";
-import { runAgent } from "../runner/executor.mjs";
+import { runAgent, endedBecause } from "../runner/executor.mjs";
 import { buildSite } from "./status.mjs";
+import { CONDITION_GRAMMAR, unparsedConditions } from "../spec/criteria.mjs";
 import { COMMANDS } from "../cli.mjs";
-
-const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
 
 function mergeApproved(projectDir, branch, message) {
   git(["checkout", "-q", "main"], projectDir);
@@ -52,7 +51,7 @@ function blockScalar(text) {
 // what it spent on stages. Every agent path passes it, including a mandatory escalation
 // that never asked the persona anything (cost 0, no session); a human ruling has no
 // turn to measure and the keys are left out of its file entirely.
-function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, escalateTo, metrics }) {
+function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, escalateTo, metrics }) {
   let text = `gate: ${gate}\nverdict: ${verdict}\nby: ${by}\nheld_by: ${heldBy}\n`;
   if (escalateTo !== undefined) text += `escalate_to: ${escalateTo ?? ""}\n`;
   if (rationale !== undefined) {
@@ -60,6 +59,11 @@ function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, 
     if (conditions !== undefined) {
       const list = conditions ?? [];
       text += list.length ? `conditions:\n${list.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n` : `conditions: []\n`;
+      // Written only when there are some. A gate file carrying this key is a ruling whose
+      // conditions the ratification grammar could not read even after the persona was
+      // asked again, and `ratify` refuses to act on it — the lines are kept verbatim so a
+      // person can see exactly what was meant and correct it in place.
+      if (unparsed?.length) text += `unparsed_conditions:\n${unparsed.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n`;
     }
   } else {
     text += `note: ${JSON.stringify(note ?? "")}\n`;
@@ -72,33 +76,58 @@ function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, 
   return text;
 }
 
-// The state site is rebuilt and folded into the commit a ruling just made — the merge
-// commit on `main` for an approval, the plain ruling commit otherwise — via `--amend`
-// rather than a trailing uncommitted diff or a second commit. Doing it here, after any
-// merge, also means an approval's site reflects `main`'s complete gate history: a
-// proposal branch built and carried its own site through the merge, cross-branch
-// regeneration (each side producing fresh, always-different content) would conflict
-// on every concurrent approval.
-function commitSite(projectDir) {
+// The state site is a tracked artifact of `main` and of nothing else: every page is
+// regenerated whole from the whole project, so a site carried on a proposal branch
+// conflicts with every other open proposal's on the way in. Stages that hold a gate
+// therefore build no site (`src/runner/finish-stage.mjs`), and rulings own it.
+//
+// An approval has already merged onto `main` by the time this runs, so the rebuilt site
+// is folded into that merge commit with `--amend` rather than trailing behind it as a
+// second commit or an uncommitted diff. The site it produces reflects `main`'s complete
+// gate history, this ruling included.
+function amendSiteOntoMergeCommit(projectDir) {
   buildSite(projectDir);
   stageSite(projectDir);
   git([...SDLC_AUTHOR, "commit", "-q", "--amend", "--no-edit"], projectDir);
+}
+
+// A return or an escalation leaves its ruling commit on the proposal branch, where it
+// belongs — nothing about it has been accepted. The site still gets regenerated, on
+// `main`, so the pages stay current with whatever `main` actually holds; when that turns
+// out to be unchanged, nothing is committed. The caller is put back on the branch it was
+// on, so a returned proposal is still checked out for whoever has to act on it.
+function regenerateSiteOnMain(projectDir, reason) {
+  const branch = currentBranch(projectDir);
+  if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
+  try {
+    buildSite(projectDir);
+    stageSite(projectDir);
+    if (git(["diff", "--cached", "--name-only"], projectDir)) {
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", `chore(site): regenerate after ${reason}`], projectDir);
+    }
+  } finally {
+    if (branch !== "main") git(["checkout", "-q", branch], projectDir);
+  }
 }
 
 // Shared by the human path and the agent-approve/return path: write the gate file,
 // append the run record, stage exactly those paths (plus the proposal page when the
 // caller already appended a `## Ruling` section to it), commit, merge on approve, and
 // fold the rebuilt site into that same commit.
-function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, metrics, proposalPath, proposalAppended }) {
+function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics, proposalPath, proposalAppended }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
-  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, metrics }));
+  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics }));
   const runPath = appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
   const paths = [gatePath, relative(projectDir, runPath)];
   if (proposalAppended) paths.push(relative(projectDir, proposalPath));
   stagePaths(projectDir, paths);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${verdict} by ${by}`], projectDir);
-  if (verdict === "approve") mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
-  commitSite(projectDir);
+  if (verdict === "approve") {
+    mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
+    amendSiteOntoMergeCommit(projectDir);
+  } else {
+    regenerateSiteOnMain(projectDir, `${name} ${verdict}`);
+  }
 }
 
 function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics }) {
@@ -107,7 +136,7 @@ function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, me
   const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`);
   stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} escalated to ${escalateTo ?? "?"}`], projectDir);
-  commitSite(projectDir);
+  regenerateSiteOnMain(projectDir, `${name} escalated`);
 }
 
 function appendRulingSection(text, { verdict, by, rationale, conditions = [] }) {
@@ -142,6 +171,16 @@ export function rule(projectDir, name, verdict, { by, note = "" }) {
   const heldBy = by.startsWith("agent:") ? "agent" : "human";
   commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note });
   return { gate, verdict, heldBy };
+}
+
+// What to say a ruling turn failed for. The turn's own text when it has any; otherwise
+// the CLI's account of how the session ended (`endedBecause` — "hit the turn cap", say),
+// and only then a fixed line, so a failure is never reported as an empty string.
+function rulingFailure(result) {
+  if (result.text?.trim()) return result.text.trim();
+  const ended = endedBecause(result.raw);
+  return ended ? `the ruling turn reported failure with no output; the session ${ended}`
+    : "the ruling turn reported failure with no output";
 }
 
 // The agent path: no human types --by approve|return. A persona brief is handed to a
@@ -181,26 +220,71 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     return { verdict: "escalate", rationale, escalated: true };
   }
 
-  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier });
+  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate });
   // A ruling reads and answers; it never writes. The tool list says so up front rather
   // than relying on the clean-tree check below to catch a turn that wrote anyway: the
   // read-only git commands are there because a persona legitimately wants to look
   // further into the branch than the diff the prompt already carries.
-  const result = await runAgent({ cwd: projectDir, prompt, stage: "rule", maxTurns: 12,
+  //
+  // A ruling turn is read-only and cheap, and a failed one is often transient — a
+  // dropped connection, a rate limit — so one automatic retry is attempted before the
+  // whole ruling is abandoned. Only one: a turn that fails twice is failing for a reason
+  // retrying will not fix, and `rule --pending` running a batch must not turn one broken
+  // proposal into an unbounded loop.
+  const runRuling = (text) => runAgent({ cwd: projectDir, prompt: text, stage: "rule", maxTurns: 12,
     allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
-  // A turn that reports failure has no verdict to read, and its own text is the only
-  // account of why. Checked before the tree and before `parseVerdict`, whose "no verdict
-  // block in persona reply" would otherwise be the error a person sees for what is
-  // actually a failed session. Nothing has been written at this point, so the tree and
-  // the proposal branch are exactly as they were.
-  if (!result.ok) throw new Error(`ruling agent turn failed: ${result.text}`);
-  // A ruling is a read-only turn: the agent is asked for a verdict, not permitted to
-  // change the project. Checked before the verdict is even parsed, so a verdict text
-  // that looks fine cannot mask files the turn left behind — and left in place (not
-  // reset) so the tampering is still there for a person to see.
-  assertCleanTree(projectDir, "rule: the ruling agent modified the working tree");
-  const { verdict, rationale, conditions } = parseVerdict(result.text);
-  const metrics = { cost: result.cost, turns: result.turns, session: result.sessionId };
+
+  // One turn, its failure retried once, and the verdict read out of whatever came back.
+  // The clean-tree check sits inside this rather than after it: a ruling is a read-only
+  // turn, and a verdict text that looks fine must not be allowed to mask files the turn
+  // left behind. The edit is left in place (not reset) so the tampering stays visible.
+  const askOnce = async (text) => {
+    let result = await runRuling(text);
+    if (!result.ok) {
+      console.warn(`warning: the ruling turn for ${name} failed (${rulingFailure(result)}); retrying once`);
+      result = await runRuling(text);
+    }
+    // A turn that reports failure has no verdict to read, and its own text is the only
+    // account of why — except when it has no text at all, which is exactly when a person
+    // most needs one, so the CLI's own account of how the session ended stands in.
+    // Checked before `parseVerdict`, whose "no verdict block in persona reply" would
+    // otherwise be the error a person sees for what is actually a failed session.
+    if (!result.ok) throw new Error(`ruling agent turn failed after one retry: ${rulingFailure(result)}`);
+    assertCleanTree(projectDir, "rule: the ruling agent modified the working tree");
+    return { ...parseVerdict(result.text), metrics: { cost: result.cost, turns: result.turns, session: result.sessionId } };
+  };
+
+  let { verdict, rationale, conditions, metrics } = await askOnce(prompt);
+
+  // At G1 a condition is not commentary, it is an instruction `ratify` will execute
+  // against the domain file, so a line the ratification grammar cannot read is a silently
+  // dropped ruling on a criterion. The persona is asked again, once, with its own
+  // unreadable lines quoted back and the grammar restated — which is the whole fix in the
+  // ordinary case, since these are formatting slips rather than disagreements. Anything
+  // still unreadable after that is written to the gate file under `unparsed_conditions`
+  // and the ruling proceeds: the verdict was reached and the reasoning is worth keeping,
+  // and `ratify` refuses to act on that gate file until a person fixes the lines.
+  let unparsed = gate === "G1" && verdict !== "escalate" ? unparsedConditions(conditions) : [];
+  if (unparsed.length) {
+    const again = [
+      prompt,
+      "",
+      "## Your previous reply had conditions I could not read",
+      "",
+      `You ruled ${verdict}. These condition lines do not match the ratification grammar, so nothing`,
+      "would be applied for them:",
+      "",
+      ...unparsed.map((c) => `- ${JSON.stringify(c)}`),
+      "",
+      CONDITION_GRAMMAR,
+      "",
+      "Rule again. Keep the conditions that were fine exactly as they were, rewrite these in the",
+      "grammar above, and finish with the JSON block as before.",
+    ].join("\n");
+    ({ verdict, rationale, conditions, metrics } = await askOnce(again));
+    unparsed = verdict === "escalate" ? [] : unparsedConditions(conditions);
+    if (unparsed.length) console.warn(`warning: ${name}: ${unparsed.length} condition line(s) still unreadable after one re-prompt; recorded as unparsed_conditions`);
+  }
 
   if (verdict === "escalate") {
     writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics });
@@ -210,8 +294,8 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // The ruling has to land in the proposal page's own commit, not a follow-up one, so
   // it is appended and written before `commitRuling` stages and commits.
   writeText(proposalPath, appendRulingSection(proposalText, { verdict, by, rationale, conditions }));
-  commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, metrics, proposalPath, proposalAppended: true });
-  return { verdict, rationale, escalated: false, ...metrics };
+  commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true });
+  return { verdict, rationale, unparsed, escalated: false, ...metrics };
 }
 
 // `sdlc rule --pending`: every open proposal branch whose gate is agent-held, ruled in

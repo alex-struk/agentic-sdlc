@@ -5,8 +5,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { readJournal } from "../runner/journal.mjs";
 import { COMMANDS } from "../cli.mjs";
-
-const STATES = ["proposed", "accepted", "implemented", "verified", "monitored"];
+import { STATES, orderDomains } from "../spec/criteria.mjs";
 
 // ISO 8601 week: Thursday of the same week decides the week-numbering year, which is
 // what makes the last days of December (or first days of January) land in the correct
@@ -64,7 +63,58 @@ export function buildSite(projectDir) {
   if (!cfg) throw new Error(`cannot build the site: .sdlc/config.yaml did not parse`);
   const idxPath = join(projectDir, "spec", "criteria-index.json");
   const criteria = (existsSync(idxPath) ? JSON.parse(readText(idxPath)).criteria : []) ?? [];
-  const counts = Object.fromEntries(STATES.map((s) => [s, criteria.filter((c) => c.state === s).length]));
+
+  // The coverage board is one row per domain. `config.project.domains` always
+  // contributes a row — so a project with no criteria yet still shows its configured
+  // domains at zero rather than an empty table — plus any domain a criterion names that
+  // the config does not (the index can be ahead of a config edit). `criteria/<domain>.md`
+  // is narrower: written only for a domain that actually has criteria in the index,
+  // since a page listing nothing would be pure noise.
+  const configuredDomains = Array.isArray(cfg?.project?.domains) ? cfg.project.domains : null;
+  const criteriaDomains = [...new Set(criteria.map((c) => c.domain).filter((d) => d !== undefined))];
+  const boardDomains = orderDomains(configuredDomains, [...new Set([...(configuredDomains ?? []), ...criteriaDomains])]);
+  const pageDomains = orderDomains(configuredDomains, criteriaDomains);
+
+  const rows = boardDomains.map((domain) => {
+    const inDomain = criteria.filter((c) => c.domain === domain);
+    const stateCounts = STATES.map((s) => inDomain.filter((c) => c.state === s).length);
+    const openQuestions = inDomain.filter((c) => c.confidence === "open").length;
+    return { domain, stateCounts, openQuestions, total: inDomain.length };
+  });
+  const totals = {
+    stateCounts: STATES.map((_, i) => rows.reduce((sum, r) => sum + r.stateCounts[i], 0)),
+    openQuestions: rows.reduce((sum, r) => sum + r.openQuestions, 0),
+    total: rows.reduce((sum, r) => sum + r.total, 0),
+  };
+  const coverageLines = ["## Coverage", "",
+    `| Domain | ${STATES.join(" | ")} | open questions | total |`,
+    `| --- | ${STATES.map(() => "---").join(" | ")} | --- | --- |`,
+    ...rows.map((r) => `| ${r.domain} | ${r.stateCounts.join(" | ")} | ${r.openQuestions} | ${r.total} |`),
+    `| **Totals** | ${totals.stateCounts.join(" | ")} | ${totals.openQuestions} | ${totals.total} |`, ""];
+
+  // One page per domain that appears in the index, one section per criterion: the
+  // heading names id/version/confidence/state, then the statement and whichever of
+  // given/when/then, cites (recovered criteria only — an authored criterion carries no
+  // citations), reconciliation, replaces/superseded-by and notes are actually set. The
+  // bullet order matches `serialiseDomainFile`'s domain-file format, minus `tier` (a
+  // reviewer field the coverage board has no use for) and `state` (already in the
+  // heading, not repeated as a bullet here).
+  const criteriaPages = pageDomains.map((domain) => {
+    const inDomain = criteria.filter((c) => c.domain === domain);
+    const blocks = inDomain.map((c) => {
+      const lines = [`### ${c.id} · v${c.version} · ${c.confidence} · ${c.state}`, "", c.statement];
+      for (const cite of c.cites ?? []) lines.push(`- cites: ${cite.line !== undefined ? `${cite.path}:${cite.line}` : cite.path}`);
+      if (c.reconciliation) lines.push(`- reconciliation: ${c.reconciliation}`);
+      if (c.given) lines.push(`- given: ${c.given}`);
+      if (c.when) lines.push(`- when: ${c.when}`);
+      if (c.then) lines.push(`- then: ${c.then}`);
+      if (c.replaces) lines.push(`- replaces: ${c.replaces}`);
+      if (c.supersededBy) lines.push(`- superseded-by: ${c.supersededBy}`);
+      for (const note of c.notes ?? []) lines.push(`- note: ${note}`);
+      return lines.join("\n");
+    });
+    return [`site/criteria/${domain}.md`, [`# ${domain}`, "", ...blocks].join("\n\n") + "\n"];
+  });
 
   const gatesDir = join(projectDir, ".sdlc", "gates");
   const gates = existsSync(gatesDir) ? readdirSync(gatesDir).filter((f) => f.endsWith(".yaml")).map((f) => ({ name: f.replace(/\.yaml$/, ""), ...parse(readText(join(gatesDir, f))) })) : [];
@@ -124,11 +174,12 @@ export function buildSite(projectDir) {
   // it, so git already dates it, and a timestamp would make every rebuild a diff — which
   // is what turns `sdlc status` on an unchanged project into a dirty tree.
   const index = [`# ${cfg.project.name} — state`, "", `Profile: ${cfg.profile}`, "",
-    "## Coverage", "", "| State | Criteria |", "| --- | --- |", ...STATES.map((s) => `| ${s} | ${counts[s]} |`), "",
-    `Total criteria: ${criteria.length}`, "",
+    ...coverageLines,
     "## Pages", "",
     "- [Journal](journal.md)", "- [Gates](gates.md)", "- [Runs](runs.md)",
     ...proposalPages.map(([, , name]) => `- [${name}](proposals/${name}.md)`), "",
+    "## Criteria", "",
+    ...pageDomains.map((domain) => `- [${domain}](criteria/${domain}.md)`), "",
     "## Totals", "",
     `- Journal cost: $${journalCost}`,
     `- Rulings cost: $${rulingsCost}`,
@@ -138,7 +189,7 @@ export function buildSite(projectDir) {
     `- Open proposals: ${openProposals}`, ""].join("\n");
 
   const pages = [["site/index.md", index], ["site/gates.md", gatesMd], ["site/runs.md", runsMd], ["site/journal.md", journalMd],
-    ...proposalPages.map(([p, t]) => [p, t])];
+    ...proposalPages.map(([p, t]) => [p, t]), ...criteriaPages];
   for (const [p, t] of pages) writeText(join(projectDir, p), t);
   return { pages: pages.map(([p]) => p) };
 }

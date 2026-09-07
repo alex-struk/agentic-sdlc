@@ -13,9 +13,17 @@ every `.sdlc/proposals/*.md`, and every `.sdlc/runs/*.md`.
 
 ## Outputs
 
-- `site/index.md`: project name, profile, a coverage table counting criteria by state
-  (`proposed`, `accepted`, `implemented`, `verified`, `monitored`), the total criteria count,
-  links to the journal, gates and runs pages and to every proposal page, and a totals list:
+- `site/index.md`: project name, profile, a coverage board, links to the journal, gates and
+  runs pages, to every proposal page and to every criteria page, and a totals list:
+
+  The coverage board is one row per domain — columns `proposed`, `accepted`, `implemented`,
+  `verified`, `monitored`, `obsolete` (counts by `state`), `open questions` (count of criteria
+  with `confidence: open`) and `total` — plus a `Totals` row summing every column. A domain gets
+  a row when either `config.project.domains` names it or a criterion in the index does; rows are
+  ordered by `config.project.domains` when that list is available, alphabetically otherwise, with
+  a domain the config doesn't name sorted after every configured one. A project with no criteria
+  at all still renders one zero row per configured domain — the board never collapses to an empty
+  table just because nothing has been recovered or authored yet.
 
   | Total | What it sums |
   | --- | --- |
@@ -44,12 +52,25 @@ every `.sdlc/proposals/*.md`, and every `.sdlc/runs/*.md`.
   (the agent ruling path appends one) needs nothing added; an unruled proposal with no gate file
   yet gets `_Open, waiting for <holder>_`; a gate file with `verdict: escalated` gets
   `_Escalated to <escalate_to>: <rationale>_`.
+- `site/criteria/<domain>.md`: one page per domain that actually has a criterion in
+  `spec/criteria-index.json` — a domain the config names but the index doesn't gets a zero row
+  on the coverage board but no page here, since there would be nothing to list. Each criterion
+  gets its own section, headed `### <id> · v<version> · <confidence> · <state>`, followed by the
+  statement and then whichever of these the criterion actually carries: a `given`/`when`/`then`
+  line each, `cites:` entries (`path:line`, or bare `path` when the recovery had no line) —
+  present on recovered criteria, empty for authored ones — `reconciliation:`, `replaces:` /
+  `superseded-by:`, and one `note:` line per note. `site/index.md` links every one of these pages
+  under its own "Criteria" heading, in the same domain order as the coverage board.
 - `site/runs.md`: the concatenation of every run-record file, in reverse filename order (most recent day first).
 
 `loadConfig` supplies the policy used for gate holders and sampling rates; a config with schema
 errors still produces a site, with missing policy treated as empty (no holder, no sampling).
 
-Files are written directly; nothing is committed by this command.
+Files are written directly; nothing is committed by this command. The site is a tracked artifact
+of `main` and of nothing else: a gate-less stage run commits it alongside its own work
+(`docs/stages/run.md`), and a ruling regenerates and commits it after a merge
+(`docs/stages/rule.md`). A stage that holds a gate deliberately builds no site, because every page
+is regenerated whole and two proposals open at once would conflict on all of them.
 
 ## Workspace the agent sees
 
@@ -63,7 +84,8 @@ rows, rather than as an error.
 
 ## Exit criterion
 
-Exits 0 and prints every generated file path (the fixed pages plus one per proposal).
+Exits 0 and prints every generated file path (the fixed pages, one per proposal, and one per
+domain with a criterion in the index).
 
 ## Re-run behaviour
 
@@ -76,4 +98,5 @@ and expected — to call after every checkpoint.
 
 - `.sdlc/config.yaml` missing or invalid: throws. Unlike the criteria index, gates and runs,
   `status` has no fallback for this file.
-- A `spec/criteria-index.json` present but without a top-level `criteria` array: throws when counting criteria.
+- A `spec/criteria-index.json` present but without a top-level `criteria` array is treated as zero
+  criteria, the same as a missing file. A file that is not valid JSON at all throws.

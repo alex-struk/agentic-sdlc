@@ -2,8 +2,12 @@ import { join, resolve } from "node:path";
 import { loadConfig } from "../config/load.mjs";
 import { readRunState } from "../runner/run-state.mjs";
 import { stageFor } from "../stages/registry.mjs";
-import { finishStage } from "../runner/finish-stage.mjs";
+import { finishStage, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { COMMANDS } from "../cli.mjs";
+
+// Workspace modes whose agent worked in the project directory, so its output survived
+// the interruption and can be judged where it lies.
+const RESUMABLE_WORKSPACES = new Set(["project", "with-sources"]);
 
 export async function resume(projectDir, { again = false } = {}) {
   projectDir = resolve(projectDir);
@@ -11,13 +15,19 @@ export async function resume(projectDir, { again = false } = {}) {
   if (!state) { console.log("nothing to resume"); return 0; }
 
   const stage = stageFor(state.stage);
-  // Only a `project`-mode stage works in the project directory itself. Every other mode
-  // works in a temporary workspace that the interrupted run's own `finally` already
-  // removed, so there is nothing left of what its agent produced: judging the project
-  // directory instead would run the stage's post-checks against files that stage never
-  // touched, and either pass or fail for reasons that have nothing to do with the
-  // interrupted run. Re-running the stage is the only honest way to continue.
-  if (stage.workspace !== "project") {
+  // `spec-only` and `blind-adapter` build a temporary workspace that the interrupted
+  // run's own `finally` already removed, so there is nothing left of what their agent
+  // produced: judging the project directory instead would run the stage's post-checks
+  // against files that stage never touched, and either pass or fail for reasons that
+  // have nothing to do with the interrupted run. Re-running the stage is the only honest
+  // way to continue those.
+  //
+  // `project` and `with-sources` both work in the project directory itself
+  // (`materialise` returns `projectDir` for each), so whatever the interrupted agent
+  // wrote is still on disk and is exactly what post-checks should judge. The only thing
+  // `with-sources` adds is the read-only checkout at `sources/old`, which `ensureSources`
+  // materialises and nothing here removes.
+  if (!RESUMABLE_WORKSPACES.has(stage.workspace)) {
     console.log(`resume cannot continue a ${stage.workspace} stage; run it again`);
     return 1;
   }
@@ -30,6 +40,18 @@ export async function resume(projectDir, { again = false } = {}) {
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
   const ctx = { ...state.ctx, config };
+
+  // `resume` has no agent turn of its own to run, but it still lands on `finishStage`,
+  // which can open a proposal — so the same pre-flight `sdlc run` performs before its
+  // own agent turn belongs here too, before spending a post-checks judgment on files
+  // that would only get thrown away by a blocked proposal a moment later.
+  const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
+  if (openProposal) {
+    const r = commitProposalStillOpen(projectDir, state.stage, openProposal);
+    console.log(`run ${state.stage}: failed\n  ${r.messages.join("\n  ")}`);
+    return 1;
+  }
+
   // The agent step is not re-run here even with --again: there is no session to
   // resume it from, only the files (if any) it left behind before the process died.
   // Post-checks judge those files exactly as they would judge a fresh agent turn.

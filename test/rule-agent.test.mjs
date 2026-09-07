@@ -424,15 +424,21 @@ test("ruleByAgent: an agent turn that reports failure throws with the turn's own
   }));
   process.env.SDLC_EXECUTOR = "mock";
   process.env.SDLC_MOCK_DIR = mockDir;
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
   try {
     await assert.rejects(() => ruleByAgent(dir, "p12", { persona: "product-owner" }),
-      /ruling agent turn failed: the session ended before a verdict/);
+      /ruling agent turn failed after one retry: the session ended before a verdict/);
+    // One retry was attempted, and said so.
+    assert.equal(warnings.filter((w) => /retrying once/.test(w)).length, 1, warnings.join(" | "));
     // Nothing was ruled and nothing was written: no gate file, tree clean, still on the
     // proposal branch.
     assert.ok(!existsSync(join(dir, ".sdlc/gates/p12.yaml")));
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/p12");
     assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
+    console.warn = origWarn;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }
@@ -457,6 +463,115 @@ test("ruleByAgent: 'Always escalate' in a brief is matched however it is capital
     assert.equal(r.escalated, true);
     assert.match(r.rationale, /says always escalate/);
   } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ruleByAgent: the retry succeeds when the second turn comes back with a verdict", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-retry-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p13", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-rule-retry-"));
+  const rulePath = join(mockDir, "rule.json");
+  // The mock reads its canned response off disk on every call, so rewriting the file
+  // between the two calls is how a first failing turn and a second successful one are
+  // expressed. `subtype` stands in for the CLI's own account of a session cut short.
+  writeFileSync(rulePath, JSON.stringify({ ok: false, text: "", subtype: "error_max_turns" }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => {
+    warnings.push(a.join(" "));
+    writeFileSync(rulePath, JSON.stringify({
+      text: 'Fine.\n\n```json\n{"verdict":"approve","rationale":"the brief answers the question","conditions":[]}\n```',
+    }));
+  };
+  try {
+    const r = await ruleByAgent(dir, "p13", { persona: "product-owner" });
+    assert.equal(r.verdict, "approve");
+    // The warning named the turn cap, read off the CLI's subtype rather than a turn count.
+    assert.match(warnings[0], /hit the turn cap \(error_max_turns\)/);
+    assert.match(warnings[0], /retrying once/);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+  } finally {
+    console.warn = origWarn;
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a G1 ruling whose conditions do not parse is re-prompted once, and the corrected reply is what lands", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-grammar-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  // G1 in the fixture is held by a human; rebound here so a persona rules it.
+  const cfgPath = join(dir, ".sdlc/config.yaml");
+  writeFileSync(cfgPath, readFileSync(cfgPath, "utf8").replace("G1: { holder: tech-lead }", 'G1: { holder: "agent:product-owner", escalate_to: tech-lead }'));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "agent holds G1"], dir);
+  propose(dir, "archaeology-applications", { gate: "G1", question: "Is this what applications does?", recommendation: "Mostly." });
+
+  const reply = (conditions) => ({
+    text: '```json\n' + JSON.stringify({ verdict: "approve", rationale: "the recovery holds up", conditions }) + '\n```',
+  });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-grammar-"));
+  // Two turns: the first reply carries a formatting slip rather than a disagreement —
+  // `confirm` takes no text, and the second line has no colon at all — and the re-prompt
+  // gets it right.
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    sequence: [
+      reply(["confirm D-applications-1 because the README agrees", "please drop D-applications-2"]),
+      reply(["confirm D-applications-1", "obsolete D-applications-2: the fee table is gone"]),
+    ],
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" });
+    assert.equal(r.verdict, "approve");
+    assert.deepEqual(r.unparsed, []);
+    const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/archaeology-applications.yaml"), "utf8"));
+    assert.deepEqual(gate.conditions, ["confirm D-applications-1", "obsolete D-applications-2: the fee table is gone"]);
+    assert.equal(gate.unparsed_conditions, undefined);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("conditions still unreadable after the re-prompt are recorded, and the ruling proceeds", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-grammar-stuck-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const cfgPath = join(dir, ".sdlc/config.yaml");
+  writeFileSync(cfgPath, readFileSync(cfgPath, "utf8").replace("G1: { holder: tech-lead }", 'G1: { holder: "agent:product-owner", escalate_to: tech-lead }'));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "agent holds G1"], dir);
+  propose(dir, "archaeology-applications", { gate: "G1", question: "Is this what applications does?", recommendation: "Mostly." });
+
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-grammar-stuck-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    text: '```json\n' + JSON.stringify({
+      verdict: "approve",
+      rationale: "the recovery holds up",
+      conditions: ["confirm D-applications-1", "please just drop the second one"],
+    }) + '\n```',
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
+  try {
+    const r = await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" });
+    assert.equal(r.verdict, "approve", "the verdict was still reached");
+    assert.deepEqual(r.unparsed, ["please just drop the second one"]);
+    assert.ok(warnings.some((w) => /still unreadable after one re-prompt/.test(w)), warnings.join(" | "));
+    const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/archaeology-applications.yaml"), "utf8"));
+    assert.deepEqual(gate.conditions, ["confirm D-applications-1", "please just drop the second one"]);
+    assert.deepEqual(gate.unparsed_conditions, ["please just drop the second one"]);
+  } finally {
+    console.warn = origWarn;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }

@@ -9,15 +9,17 @@ test("site pages summarise criteria, gates and runs", () => {
   const d = mkdtempSync(join(tmpdir(), "sdlc-site-"));
   mkdirSync(join(d, ".sdlc/gates"), { recursive: true }); mkdirSync(join(d, ".sdlc/runs"), { recursive: true }); mkdirSync(join(d, "spec"), { recursive: true });
   writeFileSync(join(d, ".sdlc/config.yaml"), "profile: rebuild\nproject: { name: p, domains: [a] }\n");
-  writeFileSync(join(d, "spec/criteria-index.json"), JSON.stringify({ criteria: [{ id: "R-1.1", state: "accepted" }, { id: "R-1.2", state: "proposed" }] }));
+  writeFileSync(join(d, "spec/criteria-index.json"), JSON.stringify({ criteria: [{ id: "R-1.1", domain: "a", state: "accepted" }, { id: "R-1.2", domain: "a", state: "proposed" }] }));
   writeFileSync(join(d, ".sdlc/gates/x.yaml"), "gate: G1\nverdict: approve\nby: agent:product-owner\nheld_by: agent\nnote: \"\"\nat: 2026-01-01T00:00:00Z\n");
   writeFileSync(join(d, ".sdlc/runs/2026-01-01.md"), "# Run record 2026-01-01\n\n- 10:00:00 init\n");
   const { pages } = buildSite(d);
-  // index, gates, runs, journal — no .sdlc/journal or .sdlc/proposals directory here,
-  // so the journal page is still written (empty) and there are no proposal pages.
-  assert.equal(pages.length, 4);
+  // index, gates, runs, journal, and one criteria page (domain "a", the only domain
+  // present in the index) — no .sdlc/journal or .sdlc/proposals directory here, so the
+  // journal page is still written (empty) and there are no proposal pages.
+  assert.equal(pages.length, 5);
   const index = readFileSync(join(d, "site/index.md"), "utf8");
-  assert.match(index, /accepted\s*\|\s*1/); assert.match(index, /proposed\s*\|\s*1/);
+  assert.match(index, /\| a \| 1 \| 1 \| 0 \| 0 \| 0 \| 0 \| 0 \| 2 \|/);
+  assert.match(index, /\[a\]\(criteria\/a\.md\)/);
   assert.match(readFileSync(join(d, "site/gates.md"), "utf8"), /agent-held/);
   assert.match(readFileSync(join(d, "site/runs.md"), "utf8"), /10:00:00 init/);
 });
@@ -165,4 +167,83 @@ test("two consecutive builds produce identical pages, so status on an unchanged 
   const second = pages.map((p) => readFileSync(join(d, p), "utf8"));
   assert.deepEqual(second, first);
   assert.ok(!first.join("").includes("generated 20"), "no generation timestamp: git dates the commit");
+});
+
+// Config lists domains in the order `billing`, `auth` — the reverse of alphabetical —
+// so a coverage table that fell back to alphabetical order would put `auth` first and
+// this test would catch it.
+function twoDomainFixture() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-site-domains-"));
+  mkdirSync(join(d, "spec"), { recursive: true });
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), "profile: rebuild\nproject: { name: p, domains: [billing, auth] }\n");
+  writeFileSync(join(d, "spec/criteria-index.json"), JSON.stringify({
+    criteria: [
+      { id: "D-billing-1", domain: "billing", version: 1, confidence: "inferred", origin: "recovered", statement: "s1", state: "proposed", cites: [] },
+      { id: "R-1.1", domain: "billing", version: 1, confidence: "confirmed", origin: "authored", statement: "s2", state: "accepted", cites: [] },
+      {
+        id: "R-1.2", domain: "billing", version: 2, confidence: "open", origin: "recovered", statement: "Tax is applied at checkout.",
+        state: "verified", cites: [{ path: "src/billing.ts", line: 42 }, { path: "README.md" }],
+        given: "a cart exists", when: "checkout runs", then: "tax is applied",
+        reconciliation: "aligned", notes: ["migrated from spreadsheet"],
+      },
+      { id: "R-2.1", domain: "auth", version: 1, confidence: "confirmed", origin: "authored", statement: "s4", state: "implemented", cites: [] },
+      { id: "R-2.2", domain: "auth", version: 1, confidence: "confirmed", origin: "authored", statement: "s5", state: "monitored", cites: [] },
+      { id: "D-auth-1", domain: "auth", version: 1, confidence: "confirmed", origin: "authored", statement: "s6", state: "obsolete", cites: [] },
+    ],
+  }));
+  return d;
+}
+
+test("index renders per-domain coverage rows and a totals row", () => {
+  const d = twoDomainFixture();
+  buildSite(d);
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  assert.match(index, /\| Domain \| proposed \| accepted \| implemented \| verified \| monitored \| obsolete \| open questions \| total \|/);
+  assert.match(index, /\| billing \| 1 \| 1 \| 0 \| 1 \| 0 \| 0 \| 1 \| 3 \|/);
+  assert.match(index, /\| auth \| 0 \| 0 \| 1 \| 0 \| 1 \| 1 \| 0 \| 3 \|/);
+  assert.match(index, /\*\*Totals\*\* \| 1 \| 1 \| 1 \| 1 \| 1 \| 1 \| 1 \| 6 \|/);
+});
+
+test("coverage rows follow config.project.domains order, not alphabetical", () => {
+  const d = twoDomainFixture();
+  buildSite(d);
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  const billingAt = index.indexOf("| billing |");
+  const authAt = index.indexOf("| auth |");
+  assert.ok(billingAt >= 0 && authAt >= 0);
+  assert.ok(billingAt < authAt, "billing is listed first in config.project.domains and must sort first");
+});
+
+test("criteria pages carry citations, given/when/then, reconciliation and notes", () => {
+  const d = twoDomainFixture();
+  buildSite(d);
+  const billing = readFileSync(join(d, "site/criteria/billing.md"), "utf8");
+  assert.match(billing, /### R-1\.2 · v2 · open · verified/);
+  assert.match(billing, /Tax is applied at checkout\./);
+  assert.match(billing, /- cites: src\/billing\.ts:42/);
+  assert.match(billing, /- cites: README\.md/);
+  assert.match(billing, /- reconciliation: aligned/);
+  assert.match(billing, /- given: a cart exists/);
+  assert.match(billing, /- when: checkout runs/);
+  assert.match(billing, /- then: tax is applied/);
+  assert.match(billing, /- note: migrated from spreadsheet/);
+  // Every criterion in the domain gets a section, not only the one with citations.
+  assert.match(billing, /### D-billing-1 · v1 · inferred · proposed/);
+  assert.match(billing, /### R-1\.1 · v1 · confirmed · accepted/);
+});
+
+test("a zero-criteria project still renders the configured domains at zero", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-site-empty-"));
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  mkdirSync(join(d, "spec"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), "profile: rebuild\nproject: { name: p, domains: [a, b] }\n");
+  // No spec/criteria-index.json at all: buildSite treats a missing index as zero criteria.
+  const { pages } = buildSite(d);
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  assert.match(index, /\| a \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \|/);
+  assert.match(index, /\| b \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \|/);
+  assert.match(index, /\*\*Totals\*\* \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \|/);
+  // No criterion in the index names either domain, so no criteria page is written.
+  assert.ok(!pages.some((p) => p.startsWith("site/criteria/")));
 });

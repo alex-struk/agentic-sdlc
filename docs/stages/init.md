@@ -93,6 +93,7 @@ business and are left exactly where they are. Only two edits are ever made.
 | `.sdlc/run-state.json` | A run's own scratch — which stage it is on and how far it got. Never a project artifact. |
 | `.sdlc/*.local.yaml` | Machine-local configuration overrides. |
 | `.sdlc/*.local.txt` | Machine-local lists, including the per-project egress name list. |
+| `sources/` | The read-only checkout of the old application (see `ensureSources` in `src/runner/sources.mjs`), materialised on demand and never a project artifact. |
 
 **The one line that must not exist**: a line that is exactly `site/`. The generated state site is
 a tracked artifact — a run or a ruling folds the freshly regenerated `site/*.md` into the same
@@ -121,13 +122,20 @@ files elsewhere.
 
 | Stage | Blocked paths |
 | --- | --- |
-| `build`, `verify`, `review-and-ship` (and unset, which defaults to `build`) | `spec/`, `tests/acceptance/`, `constitution.md`, `.sdlc/config.yaml`, `.github/workflows/` |
-| `derive-tests` | `app/`, `tests/adapters/`, `tests/seed/`, `spec/`, `constitution.md`, all of `.sdlc/` |
-| `bind-adapter` | `app/`, `tests/acceptance/`, `spec/`, `constitution.md`, all of `.sdlc/` |
-| `intent`, `archaeology`, `ratify`, `design`, `plan` | `app/`, `tests/acceptance/`, `tests/adapters/`, `.github/workflows/`, `.sdlc/config.yaml` |
+| `build`, `verify`, `review-and-ship` (and unset, which defaults to `build`) | `spec/`, `tests/acceptance/`, `constitution.md`, `.sdlc/config.yaml`, `.github/workflows/`, `sources/` |
+| `derive-tests` | `app/`, `tests/adapters/`, `tests/seed/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
+| `bind-adapter` | `app/`, `tests/acceptance/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
+| `intent` | everything except `intent/` and `constitution.md` — the brief is turned into one intent document and a glossary row, and nothing else in the tree is its business |
+| `archaeology` | everything except `spec/` — reads the old application under `sources/old/` read-only and writes only `spec/` |
+| `ratify` | everything: a deterministic gate with no agent behind it, so nothing is ever written |
+| `design`, `plan` | `app/`, `tests/acceptance/`, `tests/adapters/`, `.github/workflows/`, `.sdlc/config.yaml`, `sources/` |
 | `probe` | everything except `app/` — the probe stage writes one file there to prove the runner and has no other territory |
 | `rule` | everything: a persona ruling on a proposal reads and answers, and `sdlc rule` rejects a ruling turn that wrote anything at all |
 | any other stage name (`calibrate`, `deploy`, `operate`, …) | everything |
+
+Every row now also blocks `sources/`: the checkout of the old application under
+`sources/old/` (see `ensureSources` in `src/runner/sources.mjs`) is read-only material for
+the `archaeology` stage to read, never a place any stage writes.
 
 A blocked edit exits the hook with status 2 and a message naming the stage and the path; anything
 else exits 0 and the edit proceeds.

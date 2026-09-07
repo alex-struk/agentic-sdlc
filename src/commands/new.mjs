@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { git } from "../lib/git.mjs";
+import { git, SDLC_AUTHOR } from "../lib/git.mjs";
 import { copyTree, ensureDir, readText, writeText } from "../lib/fsx.mjs";
 import { parseConfig } from "../config/load.mjs";
 import { init } from "./init.mjs";
@@ -26,13 +26,11 @@ export async function newProject({ dir, from, interactive = false, answers = nul
   const fill = (p, map) => writeText(p, Object.entries(map).reduce((t, [k, v]) => t.replaceAll(`{{${k}}}`, v), readText(p)));
   const date = new Date().toISOString().slice(0, 10);
   fill(join(dir, "constitution.md"), { PROJECT_NAME: config.project.name, DATE: date });
-  fill(join(dir, "spec", "spec.md"), { PROJECT_NAME: config.project.name,
-    DOMAIN_SECTIONS: config.project.domains.map((d) => `## ${d}\n\n_No criteria yet._\n`).join("\n") });
   fill(join(dir, "spec", "contract", "openapi.yaml"), { PROJECT_NAME: config.project.name });
   fill(join(dir, "plan", "tasks.md"), { PROJECT_NAME: config.project.name });
 
   git(["add", "-A"], dir);
-  git(["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost", "commit", "-q", "-m", `chore: create ${config.project.name} from agentic-sdlc templates`], dir);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `chore: create ${config.project.name} from agentic-sdlc templates`], dir);
   await init(dir);
   return { dir };
 }

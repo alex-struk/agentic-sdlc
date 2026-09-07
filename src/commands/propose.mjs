@@ -1,11 +1,9 @@
 import { join, relative, resolve } from "node:path";
-import { git, assertCleanTree, stageAll, changedPaths } from "../lib/git.mjs";
+import { git, assertCleanTree, stageAll, changedPaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { COMMANDS } from "../cli.mjs";
-
-const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
 
 export function propose(projectDir, name, { gate, question, recommendation, page = "", paths = null, tier = null }) {
   projectDir = resolve(projectDir);
@@ -41,6 +39,10 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   writeText(join(projectDir, proposalPath),
     `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n${tierLine}---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`);
   const runPath = appendRun(projectDir, `propose ${name} at ${gate}`);
+  // Everything the caller named, plus this command's own two files. Nothing is filtered
+  // out: a stage that holds a gate builds no state site (`src/runner/finish-stage.mjs`),
+  // so `paths` never carries a `site/` entry that something else already staged, and
+  // dropping a path here would silently leave a change out of the proposal it belongs to.
   stageAll(projectDir, [proposalPath, relative(projectDir, runPath), ...(paths ?? [])]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `propose(${gate}): ${name}`], projectDir);
   return { branch };

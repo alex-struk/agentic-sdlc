@@ -17,8 +17,9 @@ repository are the primitives that shape composes into:
   the configured skill packs, and generates the CI caller workflow. Together they produce the
   directory an agent will work in and the record of exactly what version of the pipeline and which
   skill pack commits it was built with.
-- **Pre-checks and post-checks** — `sdlc checks` runs the same four structural checks (config,
-  layout, constitution, egress) before and after a stage does its work, locally and in CI, because
+- **Pre-checks and post-checks** — `sdlc checks` runs the same structural checks (config, layout,
+  constitution and egress always; criteria and criteria-index once `spec/domains` exists) before
+  and after a stage does its work, locally and in CI, because
   `runChecks(projectDir, opts) -> results[]` is a pure function of the directory: it takes no
   action, so calling it twice around a stage's work is exactly as sound as calling it once.
 - **Agent** — `sdlc run <stage>` (`docs/stages/run.md`) is the dispatcher: it materialises the

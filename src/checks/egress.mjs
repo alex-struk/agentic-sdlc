@@ -18,6 +18,17 @@ const PATTERNS = [
 ];
 const TEXT_EXT = /\.(md|mjs|js|ts|tsx|json|ya?ml|txt|sh|feature|svg|py|html|css)$/i;
 
+// Patterns that apply only when this repository checks itself, each with the paths it
+// does not apply to. The pipeline is generic and its documentation, code, tests and
+// fixtures must not name the one application it was first built against; the two places
+// that legitimately do are the design spec that records that engagement and the poster
+// drawn from it. Assembled from pieces for the same reason as the patterns above: this
+// file is scanned too.
+const SELF_PATTERNS = [
+  [new RegExp("market" + "place", "i"), "names the application this pipeline was first built against (rule E-2)",
+    ["docs/specs/", "docs/poster/"]],
+];
+
 // In self mode every tracked text file is scanned. An allow list of directories is the
 // wrong shape for a leak check: a file added to a directory nobody remembered to list
 // is silently unscanned. These are the only exclusions, and each is either not ours
@@ -50,9 +61,11 @@ export function checkEgress(projectDir, ctx = {}) {
     // A path git still tracks but that is gone from disk (deleted, not yet committed)
     // has no content to scan.
     if (!existsSync(join(projectDir, f))) continue;
+    const extra = ctx.self ? SELF_PATTERNS.filter(([, , exempt]) => !exempt.some((x) => f.startsWith(x))) : [];
     const lines = readText(join(projectDir, f)).split("\n");
     lines.forEach((line, i) => {
       for (const [re, why] of PATTERNS) if (re.test(line)) messages.push(`${f}:${i + 1}: ${why}`);
+      for (const [re, why] of extra) if (re.test(line)) messages.push(`${f}:${i + 1}: ${why}`);
       for (const n of names) if (line.includes(n)) messages.push(`${f}:${i + 1}: listed name (rule E-2)`);
     });
   }

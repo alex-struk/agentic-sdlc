@@ -3,16 +3,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { copyTree, ensureDir } from "../lib/fsx.mjs";
+import { loadConfig } from "../config/load.mjs";
+import { ensureSources } from "./sources.mjs";
 
 const MODES = {
   "project": null,
   "spec-only": ["spec", "tests/seed", "constitution.md", ".sdlc/config.yaml"],
   "blind-adapter": ["spec/contract", "tests/adapters", "tests/seed", "constitution.md"],
+  "with-sources": null,
 };
 
 export function materialise(projectDir, mode) {
   if (!(mode in MODES)) throw new Error(`unknown workspace mode: ${mode}`);
   if (mode === "project") return { dir: projectDir, mode, cleanup() {} };
+  if (mode === "with-sources") {
+    const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+    if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
+    ensureSources(projectDir, config);
+    return { dir: projectDir, mode, cleanup() {} };
+  }
   const dir = mkdtempSync(join(tmpdir(), `sdlc-ws-${mode}-`));
   const paths = MODES[mode].filter((p) => existsSync(join(projectDir, p)));
   // git archive only pulls committed content, so an uncommitted edit in the project
