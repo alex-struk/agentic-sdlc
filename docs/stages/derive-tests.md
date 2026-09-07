@@ -132,7 +132,8 @@ workspace to the application the stage is meant to be blind to.
     can never leave its own header claiming `unverified`.
   - In `--revise` mode only (`derive-tests-revise-drift`): every spec file the returned branch
     already carried, whose criterion no condition names, is unchanged from that branch's own
-    version — see "Revising after a return" below.
+    version, and every entry in `not-testable.yaml` belonging to another domain is unchanged from
+    `HEAD`'s own copy — see "Revising after a return" below.
 
 ## Exit criterion
 
@@ -184,24 +185,32 @@ promise `docs/stages/run.md` makes for every stage.
 The workspace this run's agent sees is still `spec-only`, built the same way an ordinary run's is —
 archived from `HEAD` — except that `tests/acceptance/<d>/` and `tests/acceptance/not-testable.yaml`
 are then overlaid from the returned branch's own commit on top of it
-(`materialise(projectDir, mode, { overlay: { ref, paths } })`, `workspace.mjs`; the two paths come
+(`materialise(projectDir, mode, { overlay: { ref, paths, merge } })`, `workspace.mjs`; the paths come
 from `stage.revisionOverlayPaths`, `registry.mjs`; a path the returned commit never wrote is simply
-skipped). The domain under revision starts from exactly what was proposed and returned; everything
-else the workspace carries — every sibling domain's own tests, the shared `redo.yaml` and
-`attestations.yaml`, `spec/contract` itself — reflects `main` as it stands right now, not whatever it
-looked like when the returned proposal was opened. `prepare`'s `writeGenerated(wsDir)` (still run
-against the workspace's own `spec/contract`, which is the `HEAD` copy) regenerates `tests/generated/*`
-from that current contract, so a contract that has moved on since the return is what this run's own
-`tests/generated/*` is built from, never a stale snapshot the returned branch happened to carry.
+skipped). The domain's own test directory is overlaid the plain way, the returned branch's content
+replacing whatever `HEAD` had. `not-testable.yaml` is not: it is the one file every domain shares, so
+`stage.revisionOverlayMerge` names it as a path to merge rather than replace — `materialise` keeps
+`HEAD`'s entry for every domain but the one under revision, and takes only this domain's own entries
+from the returned branch, so whatever another domain has added to the shared file since the branch was
+cut is never discarded. The domain under revision starts from exactly what was proposed and returned;
+everything else the workspace carries — every sibling domain's own tests and `not-testable.yaml`
+entries, the shared `redo.yaml` and `attestations.yaml`, `spec/contract` itself — reflects `main` as it
+stands right now, not whatever it looked like when the returned proposal was opened. `prepare`'s
+`writeGenerated(wsDir)` (still run against the workspace's own `spec/contract`, which is the `HEAD`
+copy) regenerates `tests/generated/*` from that current contract, so a contract that has moved on
+since the return is what this run's own `tests/generated/*` is built from, never a stale snapshot the
+returned branch happened to carry.
 
 The prompt quotes the ruling's rationale and every condition verbatim, and asks for a revision, not
 a fresh derivation: change only what the conditions name — a spec file, a `not-testable` entry, or
-one assertion inside a file — leave every other spec file byte-for-byte as found, re-derive nothing,
-and never rewrite a header's `derived` date on a file whose content did not actually change.
-`derive-tests-revise-drift` is what enforces the "leave everything else alone" half of that: it reads
-the returned branch's own `tests/acceptance/<d>/` tree, and for every spec file there whose criterion
-id appears in none of the ruling's conditions, requires the working tree's version to match
-byte-for-byte — naming whichever file drifted (changed, or removed) when it does not.
+one assertion inside a file — leave every other spec file byte-for-byte as found, every other domain's
+own entries in `not-testable.yaml` untouched, re-derive nothing, and never rewrite a header's `derived`
+date on a file whose content did not actually change. `derive-tests-revise-drift` is what enforces the
+"leave everything else alone" half of that: it reads the returned branch's own `tests/acceptance/<d>/`
+tree, and for every spec file there whose criterion id appears in none of the ruling's conditions,
+requires the working tree's version to match byte-for-byte — naming whichever file drifted (changed, or
+removed) when it does not — and it reads `HEAD`'s own `not-testable.yaml`, requiring every entry
+belonging to another domain to still match it exactly, naming whichever id changed when one does not.
 
 Once the session ends, `stage.collect` (`registry.mjs`) narrows what is copied back out of the
 workspace to the same two overlaid paths plus `tests/generated` — never the whole `tests/acceptance`

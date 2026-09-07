@@ -140,8 +140,17 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // the domain under revision, not a whole workspace built from a commit that may be well
   // behind `main` by now. A stage with no `ctx.revision` or no `revisionOverlayPaths` sees
   // no change: `materialise` archives from `HEAD` alone, as it always has.
+  //
+  // A stage that also declares `revisionOverlayMerge` names, among those same paths, which
+  // ones are shared by every domain rather than owned by the one under revision —
+  // `derive-tests`'s own `tests/acceptance/not-testable.yaml` — so `materialise` merges
+  // them instead of letting the returned branch's content replace `HEAD`'s wholesale.
   const overlay = ctx.revision?.branchCommit && stage.revisionOverlayPaths
-    ? { ref: ctx.revision.branchCommit, paths: stage.revisionOverlayPaths(ctx.domain) }
+    ? {
+      ref: ctx.revision.branchCommit,
+      paths: stage.revisionOverlayPaths(ctx.domain),
+      merge: stage.revisionOverlayMerge?.(projectDir, ctx.domain),
+    }
     : undefined;
   const ws = materialise(projectDir, wsMode, overlay ? { overlay } : {});
   try {

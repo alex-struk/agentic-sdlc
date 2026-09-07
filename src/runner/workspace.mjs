@@ -2,10 +2,11 @@ import { mkdtempSync, rmSync, mkdirSync, existsSync, statSync, copyFileSync } fr
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
-import { copyTreeOverwrite, ensureDir } from "../lib/fsx.mjs";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { copyTreeOverwrite, ensureDir, readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { ensureSources } from "./sources.mjs";
-import { gitOk } from "../lib/git.mjs";
+import { git, gitOk } from "../lib/git.mjs";
 
 // The pipeline-owned acceptance harness (its config, the `surface`/`mail` fixtures, and
 // the generated types they re-export) — every blind workspace that runs the suite or
@@ -40,6 +41,34 @@ const MODES = {
   "with-sources": null,
 };
 
+// The list under `key` in a YAML document's text — `[]` for a document that does not
+// parse or does not carry that key, the same forgiving read `checkTests`'s own
+// `readYamlList` (`src/checks/tests.mjs`) gives a malformed `tests/acceptance/*.yaml`:
+// this runs while a workspace is only being built, with nowhere to report a parse error
+// to, so a malformed file reads as empty rather than failing the whole run.
+function yamlList(text, key) {
+  try {
+    const parsed = parseYaml(text);
+    return Array.isArray(parsed?.[key]) ? parsed[key] : [];
+  } catch {
+    return [];
+  }
+}
+
+// The merged content for one shared, overlaid YAML file (see `overlay.merge`, below):
+// `HEAD`'s own list (read from `headPath`, the workspace's copy already extracted from
+// `HEAD` by the base archive) with every entry `ownsId` claims for the domain under
+// revision dropped, plus the returned branch's own entries for that domain (parsed from
+// `branchText`, `git show <ref>:<path>`) — every entry belonging to another domain
+// survives exactly as `HEAD` had it, and the domain under revision ends up with exactly
+// what the returned branch proposed for it, the same promise a full overlay keeps for a
+// path only one domain owns.
+function mergeYamlList(headPath, branchText, key, ownsId) {
+  const head = existsSync(headPath) ? yamlList(readText(headPath), key) : [];
+  const theirs = yamlList(branchText, key).filter((e) => ownsId(e?.id));
+  return [...head.filter((e) => !ownsId(e?.id)), ...theirs];
+}
+
 // `overlay` re-archives a second, smaller set of paths from a commit other than `HEAD`,
 // on top of the ordinary archive every workspace starts from — `derive-tests --revise`
 // uses it to hand its agent a workspace built exactly like any other run (this domain's
@@ -53,6 +82,15 @@ const MODES = {
 // any commit could name it) an overlay path is expected to sometimes be genuinely absent
 // from the ref it names (a returned branch that never wrote a `not-testable.yaml`, say),
 // and is skipped rather than failing the whole overlay.
+//
+// `overlay.merge` (`[{ path, key, ownsId }]`) names the overlay paths that are shared by
+// more than one domain rather than owned by the one under revision —
+// `tests/acceptance/not-testable.yaml` is the only one today. Overlaying a shared file the
+// ordinary way (the returned branch's content replacing whatever the base archive put
+// there) would discard every entry another domain added to `HEAD`'s copy after the branch
+// was cut, which is exactly the defect this exists to avoid: those entries are merged in
+// instead, by `mergeYamlList` above. Every overlay path `overlay.merge` does not name is
+// still overlaid the ordinary way.
 export function materialise(projectDir, mode, { overlay } = {}) {
   if (!(mode in MODES)) throw new Error(`unknown workspace mode: ${mode}`);
   if (mode === "project") return { dir: projectDir, mode, cleanup() {} };
@@ -84,10 +122,21 @@ export function materialise(projectDir, mode, { overlay } = {}) {
   // extraction overwrites an existing file by default, the same way `collect` below always
   // overwrites the project on its way back out.
   if (overlay) {
+    const mergeByPath = new Map((overlay.merge ?? []).map((m) => [m.path, m]));
     const overlayPaths = overlay.paths.filter((p) => gitOk(["cat-file", "-e", `${overlay.ref}:${p}`], projectDir));
-    if (overlayPaths.length > 0) {
-      const tar = execFileSync("git", ["archive", overlay.ref, "--", ...overlayPaths], { cwd: projectDir, maxBuffer: 256 * 1024 * 1024 });
+    const archivePaths = overlayPaths.filter((p) => !mergeByPath.has(p));
+    if (archivePaths.length > 0) {
+      const tar = execFileSync("git", ["archive", overlay.ref, "--", ...archivePaths], { cwd: projectDir, maxBuffer: 256 * 1024 * 1024 });
       execFileSync("tar", ["-x", "-C", dir], { input: tar });
+    }
+    // A merged path is never handed to `tar`: its workspace copy is whatever the base
+    // archive already put there (HEAD's own version, extracted above), rewritten in place
+    // rather than replaced.
+    for (const p of overlayPaths.filter((path) => mergeByPath.has(path))) {
+      const { key, ownsId } = mergeByPath.get(p);
+      const dst = join(dir, p);
+      const merged = mergeYamlList(dst, git(["show", `${overlay.ref}:${p}`], projectDir), key, ownsId);
+      writeText(dst, stringifyYaml({ [key]: merged }));
     }
   }
   if (existsSync(join(dir, "app"))) {

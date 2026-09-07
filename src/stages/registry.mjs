@@ -9,7 +9,7 @@ import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFil
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
-import { checkTests, coverage } from "../checks/tests.mjs";
+import { checkTests, coverage, readNotTestable } from "../checks/tests.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { loadContract, writeGenerated } from "../spec/surface.mjs";
 import { turnsFor } from "../runner/executor.mjs";
@@ -862,6 +862,25 @@ function conditionNamedFiles(domain, conditions) {
 // (main may have moved on for reasons unrelated to this domain since the branch was
 // opened) and not against the workspace's own starting point (the same commit, but naming
 // it this way keeps the check readable on its own). Not run outside `--revise`.
+//
+// It also enforces the same promise for the shared `tests/acceptance/not-testable.yaml`:
+// every entry belonging to another domain has to come out of this run exactly as `HEAD`
+// had it — compared against `HEAD` itself (still the commit this run started from; nothing
+// is committed until every post-check passes), not the returned branch, since another
+// domain's entries are never that branch's to have an opinion on. `materialise`'s own
+// overlay merge (`workspace.mjs`) is what keeps this true in the ordinary case; this is
+// what catches a regression in that merge, or a hand-edit that touched it anyway, before a
+// persona ever sees it.
+function criteriaAt(projectDir, ref, relPath) {
+  if (!gitOk(["cat-file", "-e", `${ref}:${relPath}`], projectDir)) return [];
+  try {
+    const parsed = parseYaml(git(["show", `${ref}:${relPath}`], projectDir));
+    return Array.isArray(parsed?.criteria) ? parsed.criteria : [];
+  } catch {
+    return [];
+  }
+}
+
 function checkDeriveTestsRevisionDrift(projectDir, ctx) {
   const id = "derive-tests-revise-drift";
   if (!ctx.revise || !ctx.domain || !ctx.revision?.branchCommit) return { id, ok: true, messages: [] };
@@ -884,6 +903,16 @@ function checkDeriveTestsRevisionDrift(projectDir, ctx) {
     if (readText(full) !== `${git(["show", `${commit}:${rel}`], projectDir)}\n`)
       messages.push(`${rel}: changed, but no condition named it`);
   }
+
+  const notTestablePath = "tests/acceptance/not-testable.yaml";
+  const ownsId = domainOwnsId(projectDir, domain);
+  const headOthers = new Map(criteriaAt(projectDir, "HEAD", notTestablePath).filter((e) => !ownsId(e?.id)).map((e) => [e.id, e]));
+  const nowOthers = new Map(readNotTestable(projectDir).filter((e) => !ownsId(e?.id)).map((e) => [e?.id, e]));
+  for (const otherId of new Set([...headOthers.keys(), ...nowOthers.keys()])) {
+    if (JSON.stringify(headOthers.get(otherId)) !== JSON.stringify(nowOthers.get(otherId)))
+      messages.push(`${notTestablePath}: ${otherId} changed, but belongs to another domain`);
+  }
+
   return { id, ok: messages.length === 0, messages };
 }
 
@@ -1019,6 +1048,16 @@ const deriveTests = {
   // The paths a `--revise` run's own workspace was overlaid with — see
   // `deriveTestsRevisionScope` above.
   revisionOverlayPaths: deriveTestsRevisionScope,
+  // Of those paths, `not-testable.yaml` is the one every domain shares, so it cannot be
+  // overlaid the way `tests/acceptance/<domain>/` is (the returned branch's content simply
+  // replacing whatever `HEAD` has) without discarding whatever entries another domain has
+  // added since the branch was cut — the defect this run-record's own `not-testable.yaml`
+  // handling exists to fix. `materialise`'s `overlay.merge` (`workspace.mjs`) is what acts
+  // on this: it keeps `HEAD`'s entries for every domain but the one under revision, and
+  // takes this domain's own entries from the returned branch instead.
+  revisionOverlayMerge(projectDir, domain) {
+    return [{ path: "tests/acceptance/not-testable.yaml", key: "criteria", ownsId: domainOwnsId(projectDir, domain) }];
+  },
   // Copied back into the project once the session ends. A full or `--stale` run copies
   // the whole acceptance suite (nothing else could have changed it) and the generated
   // types `prepare` regenerated in the workspace before the agent ever saw it; a
@@ -1397,6 +1436,19 @@ function followUpName(domain, n) {
   return `ratify-${domain}-${n}`;
 }
 
+// Whether a criterion id belongs to `domain`: its own provisional `D-<domain>-<n>` form,
+// or a permanent `R-<k>.<n>` form whose `k` is the domain's own ordinal in
+// `config.project.domains` (`domainOrdinal`, `src/spec/criteria.mjs`). Shared by
+// `readRulings` below, scoping a shared `contract-v<n>` ruling's conditions to the domain
+// that owns each id, and by `derive-tests`'s own `--revise` overlay merge (below), scoping
+// the shared `tests/acceptance/not-testable.yaml`'s entries to the domain under revision.
+function domainOwnsId(projectDir, domain) {
+  const dOwnId = new RegExp(`^D-${escapeRe(domain)}-\\d+$`);
+  const ordinal = domainOrdinal(projectDir, domain);
+  const rOwnId = ordinal !== undefined ? new RegExp(`^R-${ordinal}\\.\\d+$`) : null;
+  return (id) => typeof id === "string" && (dOwnId.test(id) || (rOwnId !== null && rOwnId.test(id)));
+}
+
 // Every ruling this domain's ratification is built from, in the order it was made: the
 // archaeology proposal first, then each follow-up (`ratify-<d>-1`, `-2`, …) by number,
 // then every approved `contract-v<n>` gate, oldest first. Only approved rulings
@@ -1447,10 +1499,7 @@ function readRulings(projectDir, domain) {
   // contract gate(s), if any, a run's changes came from.
   const contractRead = [];
 
-  const dOwnId = new RegExp(`^D-${escapeRe(domain)}-\\d+$`);
-  const ordinal = domainOrdinal(projectDir, domain);
-  const rOwnId = ordinal !== undefined ? new RegExp(`^R-${ordinal}\\.\\d+$`) : null;
-  const ownsId = (id) => dOwnId.test(id) || (rOwnId !== null && rOwnId.test(id));
+  const ownsId = domainOwnsId(projectDir, domain);
 
   const readGate = (name, { filterToOwnIds = false, into = read } = {}) => {
     const p = join(dir, `${name}.yaml`);

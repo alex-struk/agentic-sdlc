@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
@@ -78,6 +79,36 @@ async function ratifyApplicationsDirectly(dir) {
   rule(dir, "archaeology-applications", "approve", { by: "tech-lead" });
   const r = await runStage(dir, "ratify", { domain: "applications" });
   if (!r.ok) throw new Error(`ratify failed: ${JSON.stringify(r.messages)}`);
+}
+
+// A second domain (`fees`, already named in the fixture's own `project.domains: [applications,
+// fees]`, ordinal 2) — the not-testable.yaml tests below need a domain other than the one
+// under revision, with an accepted criterion of its own (`R-2.1`) for its own not-testable
+// entry to name, since `checkTests` fails the whole run on an entry naming an id that is not
+// an accepted criterion.
+const FEES_DOMAIN_TEXT = `# fees
+
+### D-fees-1 · v1 · confirmed · recovered
+The system shall calculate the intake fee from the current fee schedule when a fee quote is requested.
+- cites: src/routes.js:20
+- reconciliation: implemented-only
+- given: a fee quote request
+- when: the quote is calculated
+- then: the fee reflects the current fee schedule
+`;
+
+async function ratifyFeesDirectly(dir) {
+  const { propose } = await import("../src/commands/propose.mjs");
+  writeFileSync(join(dir, "spec", "domains", "fees.md"), FEES_DOMAIN_TEXT);
+  propose(dir, "archaeology-fees", {
+    gate: "G1",
+    question: "Is this what the fees domain does, and which of it is the contract?",
+    recommendation: "recovered one criterion from the fixture's old application",
+    paths: ["spec/domains/fees.md"],
+  });
+  rule(dir, "archaeology-fees", "approve", { by: "tech-lead" });
+  const r = await runStage(dir, "ratify", { domain: "fees" });
+  if (!r.ok) throw new Error(`ratify fees failed: ${JSON.stringify(r.messages)}`);
 }
 
 // A project with the applications domain ratified (R-1.1, R-1.2, R-1.3, all accepted)
@@ -407,6 +438,116 @@ test("derive-tests --revise: a domain whose criteria are all superseded fails be
     assert.ok(!log.some((l) => l.startsWith("record(G3):")), log.join(" | "));
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(derive-tests\): pre-checks failed/);
   } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+// The one shared not-testable.yaml, seen with a second domain in play — the real defect
+// this pair of tests guards: `derive-tests-applications`'s own returned branch carries only
+// its own not-testable reason (R-1.3), but by the time `--revise` runs, `fees` (domain B)
+// has added its own entry (R-2.1) straight to `main`. A wholesale overlay of the returned
+// branch's `not-testable.yaml` onto the workspace would silently drop R-2.1; the fix merges
+// instead.
+async function addFeesNotTestableEntry(dir) {
+  writeFileSync(
+    join(dir, "tests/acceptance/not-testable.yaml"),
+    'criteria:\n  - { id: R-2.1, version: 1, reason: "no page observes the calculated fee amount yet" }\n',
+  );
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "not-testable: fees adds R-2.1"], dir);
+}
+
+test("derive-tests --revise: the workspace's not-testable.yaml merges HEAD's other-domain entries with the returned branch's own, and the finished proposal keeps both", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-nottestable-merge-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    await ratifyFeesDirectly(dir);
+    await buildReturnedDeriveTests(dir);
+
+    // fees' own not-testable entry (R-2.1) lands on `main` after applications' proposal was
+    // already returned — `main`'s own not-testable.yaml never carried R-1.3 at all (that
+    // lives only on the returned branch, which never merged), so this is the whole of what
+    // `HEAD` has for this run to start from.
+    await addFeesNotTestableEntry(dir);
+
+    // The revise mock changes only R-1.1's spec file — nothing here names
+    // not-testable.yaml, so whatever the workspace's own copy already is (built by
+    // materialise's merge, before the agent ever runs) is what survives back into the
+    // project.
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-nottestable-merge-mock-"));
+    writeFileSync(join(mockDir, "derive-tests.json"), JSON.stringify({
+      text: "Dropped the error-message assertion from R-1.1 per the condition.",
+      files: {
+        "tests/acceptance/applications/R-1.1.spec.ts":
+          "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+          + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+          + "test(\"When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.\", async ({ surface }) => {\n"
+          + "  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: 17 });\n"
+          + "  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
+      },
+    }));
+
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const r = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    const criteria = parseYaml(readFileSync(join(dir, "tests/acceptance/not-testable.yaml"), "utf8")).criteria;
+    const byId = new Map(criteria.map((c) => [c.id, c]));
+    assert.deepEqual([...byId.keys()].sort(), ["R-1.3", "R-2.1"]);
+    // R-2.1 (fees, domain B) is untouched — the entry HEAD carried, byte for byte.
+    assert.equal(byId.get("R-2.1").reason, "no page observes the calculated fee amount yet");
+    // R-1.3 (applications, the domain under revision) is the returned branch's own entry —
+    // the one the first derive-tests run actually wrote, not something the mock invented.
+    assert.match(byId.get("R-1.3").reason, /no observation exposes the recalculated fee amount/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("derive-tests --revise: a mock that drops another domain's not-testable entry fails the post-check, naming it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-nottestable-drift-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    await ratifyFeesDirectly(dir);
+    await buildReturnedDeriveTests(dir);
+    await addFeesNotTestableEntry(dir);
+
+    // Simulates the regression itself: the agent (or a bug in the workspace it was handed)
+    // wholesale-replaces not-testable.yaml with only this domain's own entries, quietly
+    // dropping fees' R-2.1.
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-nottestable-drift-mock-"));
+    writeFileSync(join(mockDir, "derive-tests.json"), JSON.stringify({
+      text: "Dropped the error-message assertion from R-1.1 per the condition, and rewrote not-testable.yaml.",
+      files: {
+        "tests/acceptance/applications/R-1.1.spec.ts":
+          "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+          + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+          + "test(\"When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.\", async ({ surface }) => {\n"
+          + "  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: 17 });\n"
+          + "  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
+        "tests/acceptance/not-testable.yaml":
+          'criteria:\n  - { id: R-1.3, version: 1, reason: "no observation exposes the recalculated fee amount; applications-new only observes status" }\n',
+      },
+    }));
+
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const r = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+    assert.equal(r.ok, false);
+    assert.ok(
+      r.messages.some((m) => m.includes("R-2.1") && m.includes("belongs to another domain")),
+      r.messages.join(" | "),
+    );
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(derive-tests\): post-checks failed/);
+
+    // The return was still recorded (it is a pre-check, run before the agent turn); only
+    // the fresh proposal failed to open.
+    assert.equal(gitOk(["rev-parse", "--verify", "returned/derive-tests-applications"], dir), true);
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/derive-tests-applications-2"], dir), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }
 });
