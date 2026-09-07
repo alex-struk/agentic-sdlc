@@ -119,8 +119,12 @@ function barKey(model) {
 // the table, and a coverage board is read by running an eye down a column.
 function testsCells(domain) {
   const { covered, missing, notTestable } = domain.coverage;
+  // Never merged across the two columns: a spanning cell starts at the left edge of the
+  // first one and so sits under neither heading, which is exactly where the eye is not
+  // looking. "Not derived yet" belongs in the tests column, ranged right like the counts
+  // it stands in place of.
   if (!domain.hasSpecFile && notTestable.length === 0) {
-    return `<td colspan="2">not derived yet</td>`;
+    return `<td class="num">not derived yet</td><td class="num"></td>`;
   }
   const accepted = covered.length + missing.length + notTestable.length;
   return `<td class="num">${e(String(covered.length))} of ${e(String(accepted))}</td><td class="num">${notTestable.length || ""}</td>`;
