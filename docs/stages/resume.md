@@ -42,24 +42,27 @@ A `spec-only` or `blind-adapter` stage is different: it does its work in a tempo
 that the interrupted run's own `finally` (`ws.cleanup()`) has already removed, and whatever its
 agent produced went with it. There is nothing left on disk for post-checks to judge, and judging
 the project directory instead would pass or fail on files that stage never touched. So `resume`
-looks the recorded stage up in the registry and, for those two modes only, refuses with `resume
-cannot continue a <mode> stage; run it again` and exits 1 without reading the config, running a
-check, or touching the working tree. `.sdlc/run-state.json` is left where it is; running the stage
-again overwrites it.
+looks the recorded stage up in the registry, loads and validates `.sdlc/config.yaml` — needed
+before the mode is even known, since `stage.workspace` may be a function of `config` rather than a
+plain string — and resolves `stage.workspace` against it the same way `runStage` does. Only once
+that resolves to `spec-only` or `blind-adapter` does `resume` refuse, with `resume cannot continue
+a <mode> stage; run it again`, exiting 1 without running a post-check or touching the working
+tree. `.sdlc/run-state.json` is left where it is; running the stage again overwrites it.
 
 ## Checks that block
 
-- The stage named in `.sdlc/run-state.json` must have `workspace: "project"` or
-  `workspace: "with-sources"` (see above). Checked first, before the interrupted-phase check
-  below, so a temporary-workspace stage is never told to pass `--again` for something `--again`
-  cannot fix.
 - `.sdlc/run-state.json` must exist. If it does not, `resume` prints `nothing to resume` and exits
   0 — there is nothing to continue, and that is a normal outcome, not a failure.
+- The project's `.sdlc/config.yaml` must load and validate — needed immediately after, to resolve
+  `stage.workspace`.
+- The stage named in `.sdlc/run-state.json` must have `workspace: "project"` or
+  `workspace: "with-sources"` (see above), resolving a function against the config just loaded.
+  Checked before the interrupted-phase check below, so a temporary-workspace stage is never told
+  to pass `--again` for something `--again` cannot fix.
 - If the recorded `phase` is `"agent"` (the agent session itself was still running, or had not yet
   produced anything to judge, when the process died) and `--again` was not passed, `resume` refuses
   to guess: it prints `run <stage>: the agent step was interrupted before finishing; pass --again to
   continue with post-checks anyway` and exits 1 without touching the working tree.
-- The project's `.sdlc/config.yaml` must load and validate.
 - For a gated stage, the proposal it would open must not already be open and unruled — the same
   `checkProposalNotOpen` pre-flight `sdlc run` performs before its own agent turn
   (`docs/stages/run.md`), run here before `finishStage` is called at all. `resume` has no agent turn

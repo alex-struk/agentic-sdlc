@@ -59,10 +59,11 @@ is the only place a re-run decision is made.
 - **If the stage has no gate** (`probe`, `ratify`, `calibrate`): everything the agent (or, for a
   stage with no agent turn, `execute`) changed, plus the journal, the run record and the regenerated state site
   (`docs/stages/status.md`), staged by name and committed on `main` as `stage(<stage>): <title>`.
-- **If the stage holds a gate** (`intent` at G0, `archaeology` at G1): the same files minus the
-  site, handed to `sdlc propose` as the paths a proposal is allowed to find already dirty, so they
-  land in the proposal's own commit on a new `proposal/<name>` branch instead of on `main`
-  (`docs/stages/propose.md`). The run leaves the working tree checked out on that branch.
+- **If the stage holds a gate** (`intent` at G0, `archaeology` and `contract` at G1, `derive-tests`
+  and `bind-adapter` at G3): the same files minus the site, handed to `sdlc propose` as the paths a
+  proposal is allowed to find already dirty, so they land in the proposal's own commit on a new
+  `proposal/<name>` branch instead of on `main` (`docs/stages/propose.md`). The run leaves the
+  working tree checked out on that branch.
 
   **A gated stage builds no state site.** Every page of the site is regenerated whole from the
   whole project, so a copy carried on a proposal branch would differ from every other open
@@ -82,25 +83,31 @@ loads itself, so a resumed run and a fresh one always agree on which mode a stag
 `src/runner/workspace.mjs` materialises one of four modes, named by the stage:
 
 - **`project`** — the agent runs directly in the project's own working tree (`ws.dir ===
-  projectDir`); nothing is copied and nothing is collected back. `probe`, `intent`, `contract`,
-  `ratify` and `calibrate` use this.
+  projectDir`); nothing is copied and nothing is collected back. `probe`, `intent`, `ratify` and
+  `calibrate` always use this; `contract` uses it too, when the project configures no
+  `sources.old`.
 - **`with-sources`** — the project's own working tree again, with one addition made before the
   session starts: the old application is checked out read-only at `sources/old` (`ensureSources`,
-  `src/runner/sources.mjs`) from the `sources.old` repo and commit in `.sdlc/config.yaml`. This is
-  what `archaeology` uses, and it is why `sources.old` is one of its pre-checks.
+  `src/runner/sources.mjs`) from the `sources.old` repo and commit in `.sdlc/config.yaml`.
+  `archaeology` always uses this, and it is why `sources.old` is one of its pre-checks;
+  `contract` uses it too, when the project configures `sources.old` (`registry.mjs`'s `workspace:
+  (config) => config?.sources?.old ? "with-sources" : "project"`).
 - **`spec-only`** — a fresh temporary directory populated by `git archive HEAD` over `spec/`,
-  `tests/seed/`, `constitution.md` and `.sdlc/config.yaml` (only the paths that exist), plus an
-  empty `tests/acceptance/` directory. The archive reads committed content only, so an uncommitted
-  edit in the project neither leaks into the workspace nor is visible there.
+  `tests/seed/`, `constitution.md`, `.sdlc/config.yaml`, the harness (`tests/package.json`,
+  `tests/tsconfig.json`, `tests/playwright.config.ts`, `tests/README.md`, `tests/fixtures/`,
+  `tests/generated/`) and `tests/acceptance/` (only the paths that exist), plus
+  `tests/acceptance/`, created empty when nothing is committed there. The archive reads
+  committed content only, so an uncommitted edit in the project neither leaks into the workspace
+  nor is visible there.
 - **`blind-adapter`** — the same archive mechanism over `spec/contract`, `tests/adapters`,
-  `tests/seed` and `constitution.md`.
+  `tests/seed`, `constitution.md` and the same harness.
 
 Materialising either temporary mode throws `blindness violated: app/ present in <mode> workspace`
 if `app/` somehow ended up in the workspace — the check that a blind stage never sees the
 application it is meant to be blind to. For those two modes, whatever the stage's `collect` list
 names is copied back into the project directory after the session ends, and the temporary
 directory is removed either way (`ws.cleanup()`, in a `finally`, whether the stage succeeded or
-threw). No implemented stage uses them yet.
+threw). `derive-tests` uses `spec-only`; `bind-adapter` uses `blind-adapter`.
 
 Inside the workspace, the agent session is isolated from the operator's own Claude Code
 configuration — see `docs/decisions/0004-isolated-stage-sessions.md` for what that means and why.
@@ -185,11 +192,14 @@ In the order they are reached:
 4. **`.sdlc/config.yaml` must load and validate.**
 5. **The stage's own `preChecks(projectDir, ctx)` must all pass**, before a workspace is
    materialised or a session started. `probe` declares none; `intent` requires `intent/brief.md`;
-   `archaeology` requires `--domain` and `sources.old`; `ratify` requires `--domain`, an approved
-   and merged `archaeology-<d>` ruling, and a `spec/domains/<d>.md` that exists and parses;
-   `derive-tests` requires a domain with accepted criteria; `bind-adapter` requires a target that is
-   configured and answering; `calibrate` requires a target that is either the configured oracle or a
-   `config.targets` entry with a `base_url`.
+   `archaeology` requires `--domain` and `sources.old`, and — on a `--revise` run —
+   `archaeology-revise-source` (`registry.mjs` ~407), which finds the returned ruling to revise
+   from; `ratify` requires `--domain`, an approved and merged `archaeology-<d>` ruling, a
+   `spec/domains/<d>.md` that exists and parses, and `gate-conditions-parse` (~1517), which fails
+   if any ruling it would read carries `unparsed_conditions`; `derive-tests` requires a domain with
+   accepted criteria; `bind-adapter` requires a target that is configured and answering;
+   `calibrate` requires a target that is either the configured oracle or a `config.targets` entry
+   with a `base_url`.
 6. **For a gated stage, the proposal this run would open must not already be open.**
    `checkProposalNotOpen` (`src/runner/finish-stage.mjs`) calls `stage.proposal({ ...ctx,
    projectDir, agentText: "" })` to learn the name a real run would use. If a `proposal/<name>`

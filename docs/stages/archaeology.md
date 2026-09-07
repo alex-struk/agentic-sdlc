@@ -67,10 +67,14 @@ archaeology reads stays exactly as read-only in practice as it is in name.
     write, once a human has ruled on what this run recovered, never archaeology's own to assign.
     Checked across every `spec/domains/*.md` this run touched, not only `spec/domains/<d>.md`,
     since the scope check below allows a run to change any path under `spec/`.
+  - In `--revise` mode only (`archaeology-revise-keeps-minted`): every `R-` criterion in
+    `spec/domains/<d>.md` still matches the one `HEAD` had, compared field by field with each
+    criterion's own `line` left out of the comparison. A revision may correct the criterion the
+    returning ruling named; it may never alter or remove one already minted permanent.
   - Nothing changed outside `spec/`, checked against `git status --porcelain`.
-  - In `--revise` mode only: nothing changed outside `spec/domains/<d>.md` itself — narrower than
-    the scope check above, which still allows a first recovery to touch any path under `spec/`
-    (see "Revising after a return" below).
+  - In `--revise` mode only (`archaeology-revise-scope`): nothing changed outside
+    `spec/domains/<d>.md` itself — narrower than the scope check above, which still allows a first
+    recovery to touch any path under `spec/` (see "Revising after a return" below).
 
 ## Exit criterion
 
@@ -119,12 +123,15 @@ from`.
 On a real run, once found, that branch's gate file and proposal page are copied onto `main`,
 committed as `record(G1): <name> returned`, and the branch — never merged, since a return merges
 nothing — is deleted. This is what makes the return visible everywhere a ruling normally is: the
-state site, and `readRulings`/`followUpState`'s own count of what has been ruled on, so the next
+state site, and `followUpState`'s own count of what has been ruled on, so the next
 follow-up a further ratify pass opens continues the numbering past it rather than reusing its
-number. The working tree is clean again once this commit lands, so the rest of the run — and
-`propose`, later — works exactly as an ordinary run's does. A branch whose proposal page is
-missing (a ruling made straight from the CLI, with no page ever opened) still has its gate file
-recorded; the commit says there was no page to carry over rather than failing outright.
+number. It does not make the return visible to `readRulings` (`registry.mjs` ~1131-1161), which
+only reads a gate file whose `verdict` is `approve` and skips every other gate — a return
+contributes nothing to `ratify`'s own conditions no matter where its gate file lives. The working
+tree is clean again once this commit lands, so the rest of the run — and `propose`, later — works
+exactly as an ordinary run's does. A branch whose proposal page is missing (a ruling made straight
+from the CLI, with no page ever opened) still has its gate file recorded; the commit says there
+was no page to carry over rather than failing outright.
 
 On `--dry-run`, nothing is recorded: the rationale is found and quoted in the printed prompt, the
 same way a real run's would be, but the branch, its gate file and `main` are all left exactly as

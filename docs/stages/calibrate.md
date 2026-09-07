@@ -59,6 +59,7 @@ What it reads:
   | `result` | `pass`, `fail`, `unbound`, `stale` or `not-testable` |
   | `tests` | one entry per `test()` in the file: title, status, and the failure message where there is one |
   | `ruled` | the verb an applied ruling gave this criterion, present only when one has been |
+  | `error` | why the row is `fail` when no individual test in it carries a failure message of its own — present only then. `no result recorded` (every test in the file was skipped, or it ran none); `<path>: spec file not found on disk` (the suite's own report names the file but it is missing from disk); or the provenance header's own parse error (the header could not be read at all). The last two also leave `id` and `version` null, since neither the filename nor a missing header can say which criterion the row is for. |
 
   `unbound` is a failure whose every message begins `unbound:` — the adapter says the surface member
   it needed does not exist on this target, which is a gap in the binding rather than a difference in
