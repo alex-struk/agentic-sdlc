@@ -30,6 +30,16 @@ When an applicant submits a completed permit application, its status shall chang
 - note: the old system logs this transition but has no automated test for it
 ```
 
+## Above the first criterion
+
+Everything above the first `### ` line is the file's preamble: a title, a note about which sources
+were read, a table, whatever a person or an agent found worth saying about the domain as a whole.
+It is not part of the criterion format — nothing parses it and no check reads it — and `sdlc run
+ratify`, which rewrites the file from its parsed criteria, writes the preamble back byte for byte.
+
+Once the first `### ` line has been seen, the file is inside the criterion format and a line that
+is neither a heading nor a bullet is a parse error.
+
 ## The heading
 
 ```

@@ -24,8 +24,11 @@ conditions apply to.
 
 ## Outputs
 
-- `spec/domains/<d>.md`, rewritten in place: every criterion the ruling's conditions named has been
-  changed as that condition says (`applyConditions`, `src/spec/criteria.mjs`), and every criterion
+- `spec/domains/<d>.md`, rewritten in place from its parsed criteria, with everything above the
+  first `### ` block — the file's title and whatever prose or tables were written under it —
+  carried across byte for byte (`docs/spec-format.md`, "Above the first criterion"). Every
+  criterion the ruling's conditions named has been changed as that condition says
+  (`applyConditions`, `src/spec/criteria.mjs`), and every criterion
   left `confirmed` and not `obsolete` — whether a condition named it or not — has been minted a
   permanent `R-<k>.<n>` id (`mintIds`), `k` the domain's 1-based position in `project.domains` and
   `n` continuing from the highest `n` already minted under that ordinal *anywhere in the project*,
@@ -78,7 +81,11 @@ before handing it to the same `finishStage` every agent-run stage finishes throu
   - That approval must actually be on `main`: either `proposal/archaeology-<d>` shows up in `git
     branch --merged main`, or the gate file itself is reachable from `HEAD` (the ordinary case,
     since `sdlc rule` checks `main` out immediately after merging an approval).
-  - `spec/domains/<d>.md` must exist.
+  - `spec/domains/<d>.md` must exist, parse with no errors, and hold at least one criterion —
+    the same check `archaeology` runs on its own output, run here *before* `execute`. `execute`
+    rewrites the file from what the parser understood, so a block the parser could not read would
+    be dropped on the way back out; failing first, naming the file and line of every parse error,
+    is what keeps a malformed block from being deleted instead of reported.
 - **Post-checks**, run against the working tree after `execute` returns:
   - `checkCriteria` — the same structural check every stage that touches `spec/domains` runs:
     every domain file parses, IDs are unique across domains, and no criterion is `accepted` while
@@ -122,7 +129,8 @@ it.
 - The archaeology proposal for this domain has not been ruled, was returned or escalated rather
   than approved, or is approved but not yet merged into `main`: the matching pre-check fails,
   naming which of the three is missing.
-- `spec/domains/<d>.md` does not exist: the pre-check fails.
+- `spec/domains/<d>.md` does not exist, does not parse, or holds no criteria: the pre-check
+  fails, naming each parse error by line, and nothing is written.
 - A condition names an ID this domain's criteria do not actually have, or is not one of the seven
   recognised verbs: `applyConditions` reports it in `unknown` rather than throwing, and `execute`'s
   journal text lists it — the run still succeeds, since one bad condition line should not block

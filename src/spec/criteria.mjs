@@ -75,6 +75,15 @@ export function parseDomainFile(text, domain, expectedOrdinal) {
   const errors = [];
   let i = 0;
   let sawHeadingMarker = false;
+  // Everything before the first `### ` line, captured byte for byte: a domain file's
+  // title, whatever prose a person or an agent wrote under it, a table of sources. It is
+  // not part of the criterion format and nothing here reads it, but `serialiseDomainFile`
+  // writes it back unchanged, so a ratify pass no longer silently deletes it.
+  // Sliced off the original text by offset rather than rebuilt from `lines`, so the
+  // newline that terminates the last preamble line — which `split("\n")` consumes — is
+  // still there when it is written back.
+  const firstBlock = /^### /m.exec(text);
+  const preamble = firstBlock ? text.slice(0, firstBlock.index) : text;
 
   while (i < lines.length) {
     const line = lines[i];
@@ -180,7 +189,7 @@ export function parseDomainFile(text, domain, expectedOrdinal) {
     });
   }
 
-  return { criteria, errors };
+  return { criteria, errors, preamble };
 }
 
 // Every domain file under `spec/domains/*.md`, domain = file basename. A project with
@@ -490,7 +499,13 @@ export function mintIds(criteria, domainOrdinal, existingMax) {
 // merged string, which is what makes parse → serialise → parse round-trip. `state` is
 // always written explicitly, even when it is the default `proposed`, so the file never
 // depends on a reader knowing what an absent bullet defaults to.
-export function serialiseDomainFile(criteria, domain) {
+export function serialiseDomainFile(criteria, domain, preamble) {
+  // `preamble` is `parseDomainFile`'s own capture of everything before the first
+  // criterion block, written back byte for byte. A caller that has none (a fresh file
+  // being authored from criteria alone) gets the minimal title this format has always
+  // produced; passing the empty string is a real value meaning "no preamble at all", so
+  // only `undefined` falls back.
+  const head = preamble === undefined ? `# ${domain}\n\n` : preamble;
   const sorted = [...criteria].sort((a, b) => compareIds(a.id, b.id));
   const blocks = sorted.map((c) => {
     const lines = [`### ${c.id} ${DOT} v${c.version} ${DOT} ${c.confidence} ${DOT} ${c.origin}`, c.statement];
@@ -506,5 +521,9 @@ export function serialiseDomainFile(criteria, domain) {
     for (const note of c.notes ?? []) lines.push(`- note: ${note}`);
     return lines.join("\n");
   });
-  return `# ${domain}\n\n${blocks.join("\n\n")}\n`;
+  // A file with no criteria at all is its preamble and nothing else; the trailing
+  // newline is added only when the preamble does not already end in one, so the empty
+  // result is `""` rather than a lone blank line.
+  if (blocks.length === 0) return head && !head.endsWith("\n") ? `${head}\n` : head;
+  return `${head}${blocks.join("\n\n")}\n`;
 }

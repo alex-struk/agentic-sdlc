@@ -681,3 +681,29 @@ A second criterion with a replaces reference and no cites.
   const strip = (c) => { const { raw, line, ...rest } = c; return rest; };
   assert.deepEqual(second.map(strip), first.map(strip));
 });
+
+test("parseDomainFile captures everything above the first block as the preamble", () => {
+  const text = "# billing\n\nRecovered from the ledger service.\n\n### D-billing-1 · v1 · confirmed · recovered\nA statement.\n- cites: a.js\n- state: proposed\n";
+  const { preamble, criteria } = parseDomainFile(text, "billing");
+  assert.equal(preamble, "# billing\n\nRecovered from the ledger service.\n\n");
+  assert.equal(criteria.length, 1);
+});
+
+test("parseDomainFile: a file with no blocks at all is all preamble", () => {
+  const { preamble, criteria } = parseDomainFile("# billing\n\nnothing recovered yet\n", "billing");
+  assert.equal(preamble, "# billing\n\nnothing recovered yet\n");
+  assert.equal(criteria.length, 0);
+});
+
+test("serialiseDomainFile writes the preamble back verbatim and round-trips", () => {
+  const text = "# billing\n\n> a blockquote\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n### D-billing-1 · v1 · confirmed · recovered\nA statement.\n- cites: a.js\n- state: proposed\n";
+  const { criteria, preamble } = parseDomainFile(text, "billing");
+  const out = serialiseDomainFile(criteria, "billing", preamble);
+  assert.equal(out, text);
+  assert.equal(parseDomainFile(out, "billing").preamble, preamble);
+});
+
+test("serialiseDomainFile without a preamble keeps the minimal title it always wrote", () => {
+  const { criteria } = parseDomainFile("### D-billing-1 · v1 · confirmed · recovered\nA statement.\n- state: proposed\n", "billing");
+  assert.ok(serialiseDomainFile(criteria, "billing").startsWith("# billing\n\n### D-billing-1"));
+});

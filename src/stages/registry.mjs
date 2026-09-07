@@ -200,10 +200,14 @@ function checkSourcesConfigured(ctx) {
   return { id, ok: true, messages: [] };
 }
 
-// The domain file this run is judged by: parsed fresh (not just checked for existence)
-// so the file exists, parses, and holds at least one criterion.
-function checkArchaeologyDomainFile(projectDir, domain) {
-  const id = "archaeology-domain-file";
+// The domain file a run is judged by: parsed fresh (not just checked for existence) so
+// the file exists, parses, and holds at least one criterion. Shared by `archaeology`'s
+// post-checks and `ratify`'s pre-checks under their own check ids — the question is the
+// same one either way, and `ratify` in particular must ask it *before* `execute` runs,
+// because `execute` rewrites the file from what the parser understood and a block the
+// parser could not read would be dropped on the way back out.
+function checkDomainFileParses(projectDir, domain, id) {
+  if (!domain) return { id, ok: true, messages: [] };
   const file = `spec/domains/${domain}.md`;
   const full = join(projectDir, file);
   if (!existsSync(full)) return { id, ok: false, messages: [`${file} is missing`] };
@@ -282,7 +286,7 @@ const archaeology = {
   postChecks(projectDir, ctx) {
     return [
       checkCriteria(projectDir, ctx),
-      checkArchaeologyDomainFile(projectDir, ctx.domain),
+      checkDomainFileParses(projectDir, ctx.domain, "archaeology-domain-file"),
       checkArchaeologyNoMintedIds(projectDir),
       checkArchaeologyScope(projectDir),
     ];
@@ -319,14 +323,6 @@ function checkArchaeologyApproved(projectDir, domain) {
     && git(["branch", "--merged", "main"], projectDir).split("\n").map((l) => l.replace(/^\*?\s*/, "").trim()).includes(branch);
   const reachable = gitOk(["cat-file", "-e", `HEAD:.sdlc/gates/${name}.yaml`], projectDir);
   if (!merged && !reachable) return { id, ok: false, messages: [`${branch} is approved but not merged into main yet`] };
-  return { id, ok: true, messages: [] };
-}
-
-function checkRatifyDomainFile(projectDir, domain) {
-  const id = "ratify-domain-file";
-  if (!domain) return { id, ok: true, messages: [] };
-  const file = `spec/domains/${domain}.md`;
-  if (!existsSync(join(projectDir, file))) return { id, ok: false, messages: [`${file} is missing`] };
   return { id, ok: true, messages: [] };
 }
 
@@ -403,10 +399,13 @@ const ratify = {
     const { domains: allDomains } = parseAll(projectDir);
     const existingMax = maxRNumber(allDomains, domainOrdinal);
 
-    const { criteria: before } = parseDomainFile(originalText, domain, domainOrdinal);
+    const { criteria: before, preamble } = parseDomainFile(originalText, domain, domainOrdinal);
     const { criteria: withConditions, applied, unknown } = applyConditions(before, conditions);
     const minted = mintIds(withConditions, domainOrdinal, existingMax);
-    const serialised = serialiseDomainFile(minted, domain);
+    // The preamble the file arrived with is written straight back: everything above the
+    // first criterion block is a person's or an agent's own text, and nothing in this
+    // pass has any business rewriting it.
+    const serialised = serialiseDomainFile(minted, domain, preamble);
 
     // Every verb `applyConditions` applies is idempotent against a row it already
     // changed (see that function's own comment), so replaying the same gate-file
@@ -446,7 +445,7 @@ const ratify = {
     return null;
   },
   preChecks(projectDir, ctx) {
-    return [checkDomainOption(ctx, "ratify"), checkArchaeologyApproved(projectDir, ctx.domain), checkRatifyDomainFile(projectDir, ctx.domain)];
+    return [checkDomainOption(ctx, "ratify"), checkArchaeologyApproved(projectDir, ctx.domain), checkDomainFileParses(projectDir, ctx.domain, "ratify-domain-file")];
   },
   postChecks(projectDir, ctx) {
     return [checkCriteria(projectDir, ctx), checkSpecArtifacts(projectDir)];

@@ -378,3 +378,87 @@ test("sdlc run ratify: a criterion the ruling never mentioned is left exactly as
     restoreEgress(prevEgress);
   }
 });
+
+test("sdlc run ratify: the preamble above the first criterion block survives the rewrite", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-preamble-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const archaeologyRun = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(archaeologyRun.ok, true, JSON.stringify(archaeologyRun.messages));
+
+    // Written onto the proposal branch, before the ruling, so it reaches main through
+    // the same merge the domain file itself does: prose an agent (or a person) put above
+    // the first `### ` block, which is not part of the criterion format and which
+    // nothing in ratify has any business rewriting.
+    const domainPath = join(dir, "spec/domains/applications.md");
+    const preamble = [
+      "# applications",
+      "",
+      "> Recovered from the intake service. The fee table lives in a spreadsheet nobody",
+      "> could find, so every fee criterion below is graded against the code alone.",
+      "",
+      "| source | read |",
+      "| --- | --- |",
+      "| src/routes.js | yes |",
+      "",
+    ].join("\n");
+    const body = readFileSync(domainPath, "utf8");
+    writeFileSync(domainPath, preamble + body.slice(body.indexOf("### ")));
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "add a preamble"], dir);
+
+    const ownerMockDir = mockOwnerApprove();
+    process.env.SDLC_MOCK_DIR = ownerMockDir;
+    await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" });
+
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    const r = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    const after = readFileSync(domainPath, "utf8");
+    assert.ok(after.startsWith(preamble), `preamble was dropped:\n${after.slice(0, 400)}`);
+    assert.match(after, /### R-1\.1/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run ratify: a malformed criterion block fails the pre-checks and nothing is written", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-malformed-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const archaeologyRun = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(archaeologyRun.ok, true, JSON.stringify(archaeologyRun.messages));
+    const ownerMockDir = mockOwnerApprove();
+    process.env.SDLC_MOCK_DIR = ownerMockDir;
+    await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" });
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    // A heading the grammar does not accept — the separator's spacing is wrong. The
+    // parser reports it and keeps going, so before this check existed `execute` would
+    // rewrite the file from the blocks it *did* understand and the malformed one would
+    // be gone.
+    const domainPath = join(dir, "spec/domains/applications.md");
+    const before = readFileSync(domainPath, "utf8");
+    const broken = `${before}\n### D-applications-9 · v1-confirmed · recovered\nA block whose heading does not parse.\n- cites: src/routes.js\n`;
+    writeFileSync(domainPath, broken);
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "a malformed block"], dir);
+
+    const r = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /spec\/domains\/applications\.md:\d+: malformed heading/.test(m)),
+      r.messages.join("\n"));
+    // Nothing was rewritten: the malformed block is still there, byte for byte.
+    assert.equal(readFileSync(domainPath, "utf8"), broken);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
