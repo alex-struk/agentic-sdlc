@@ -93,12 +93,13 @@ loads itself, so a resumed run and a fresh one always agree on which mode a stag
   `contract` uses it too, when the project configures `sources.old` (`registry.mjs`'s `workspace:
   (config) => config?.sources?.old ? "with-sources" : "project"`).
 - **`spec-only`** — a fresh temporary directory populated by `git archive HEAD` over `spec/`,
-  `tests/seed/`, `constitution.md`, `.sdlc/config.yaml`, the harness (`tests/package.json`,
-  `tests/tsconfig.json`, `tests/playwright.config.ts`, `tests/README.md`, `tests/fixtures/`,
-  `tests/generated/`) and `tests/acceptance/` (only the paths that exist), plus
-  `tests/acceptance/`, created empty when nothing is committed there. The archive reads
-  committed content only, so an uncommitted edit in the project neither leaks into the workspace
-  nor is visible there.
+  `tests/seed/`, `constitution.md`, the harness (`tests/package.json`, `tests/tsconfig.json`,
+  `tests/playwright.config.ts`, `tests/README.md`, `tests/fixtures/`, `tests/generated/`) and
+  `tests/acceptance/` (only the paths that exist), plus `tests/acceptance/`, created empty when
+  nothing is committed there. `.sdlc/config.yaml` is not among them: it names the old
+  application's repository and commit, and nothing on this path reads it from the workspace. The
+  archive reads committed content only, so an uncommitted edit in the project neither leaks into
+  the workspace nor is visible there.
 - **`blind-adapter`** — the same archive mechanism over `spec/contract`, `tests/adapters`,
   `tests/seed`, `constitution.md` and the same harness.
 

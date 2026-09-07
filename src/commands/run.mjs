@@ -79,6 +79,10 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   const wsMode = typeof stage.workspace === "function" ? stage.workspace(config) : stage.workspace;
 
   const pre = stage.preChecks(projectDir, ctx);
+  // A pre-check can pass and still have something to say — a turn ceiling that looks too
+  // low for the work in front of it, say. Printed before anything is spent, so the person
+  // running the stage sees it while there is still time to change the setting.
+  for (const r of pre) for (const w of r.warnings ?? []) console.warn(`warning: ${w}`);
   const preFail = pre.filter((r) => !r.ok);
   if (preFail.length) {
     // The pre-check failure itself has to land in the run record on disk, same as any

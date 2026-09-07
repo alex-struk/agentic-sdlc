@@ -124,9 +124,13 @@ export function loadContract(dir) {
 }
 
 // kebab-case or snake_case -> camelCase ("opportunity-cwu-view" -> "opportunityCwuView").
+// `applications-new` -> `applicationsNew`, `submit_proposal` -> `submitProposal`. Only the
+// very first character is lowercased: a surface name already written in camel case
+// (`viewStatus`) keeps the capitals it was given rather than being flattened to
+// `viewstatus`, which would not match the member the contract declares.
 function toCamel(id) {
   const parts = String(id).split(/[-_]/).filter(Boolean);
-  return parts.map((p, i) => (i === 0 ? p.toLowerCase() : capitalize(p))).join("");
+  return parts.map((p, i) => (i === 0 ? p.charAt(0).toLowerCase() + p.slice(1) : capitalize(p))).join("");
 }
 
 // kebab-case or snake_case -> PascalCase, for a type name ("opportunity-cwu-view" ->

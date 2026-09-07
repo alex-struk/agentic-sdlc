@@ -978,3 +978,34 @@ test("runStage writes the MCP servers a stage declares to mcp.json in the skill 
     restoreEgress(prevEgress);
   }
 });
+
+test("runStage prints a passing pre-check's warnings before anything is spent", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-prewarn-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "precheck-warn",
+    title: "precheck warn",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [{ id: "roomy", ok: true, messages: [], warnings: ["the ceiling looks low for this much work"] }],
+    postChecks: () => [],
+  });
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...a) => warnings.push(a.join(" "));
+  try {
+    // A dry run stops before any session starts, which is exactly where the warning has
+    // to have been printed for it to be worth anything.
+    const r = await runStage(dir, "precheck-warn", { dryRun: true });
+    assert.equal(r.dryRun, true);
+    assert.ok(warnings.some((w) => w === "warning: the ceiling looks low for this much work"), warnings.join(" | "));
+  } finally {
+    console.warn = origWarn;
+    restoreEgress(prevEgress);
+  }
+});

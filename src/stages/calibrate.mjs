@@ -8,7 +8,8 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
-import { checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
+import { git, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
+import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
 import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR } from "../spec/criteria.mjs";
 import { addRedo } from "../spec/redo.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
@@ -207,6 +208,22 @@ function applyCalibrateGates(projectDir, target, today) {
   return result;
 }
 
+// The rulings this run applied, committed on their own before the suite runs. Applying a
+// ruling rewrites tracked spec files and the criteria index; running a suite afterwards
+// can throw for reasons that have nothing to do with those edits (no browser, no npm
+// registry, the target gone), and a throw out of `execute` leaves whatever is in the
+// working tree behind. Committing here means a failure leaves a clean tree with the
+// rulings safe, and the next run reads `applied.yaml` and applies nothing twice.
+// A pass that wrote nothing has nothing to commit.
+function commitAppliedRulings(projectDir, rulings, paths) {
+  if (paths.length === 0) return false;
+  stagePaths(projectDir, paths);
+  const names = rulings.gateNames.join(", ");
+  const subject = names ? `stage(calibrate): apply rulings ${names}` : "stage(calibrate): apply rulings";
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", subject], projectDir);
+  return true;
+}
+
 // The verb an applied ruling gave this criterion, but only while the criterion is still
 // the one that was ruled on: a `spec-wrong` ruling records the version its own edit
 // produced, so a criterion later moved on again by archaeology or another calibration
@@ -309,7 +326,14 @@ function trimFailure(text, limit = 20) {
 // with no ruling of its own, everything the persona needs to rule on it without opening
 // the domain file or the report — the criterion as the spec states it, and the tests as
 // they actually failed — and the grammar its answer has to be written in.
+// The most failing criteria one proposal page carries. A calibration run against an
+// application nobody has rebuilt yet can fail hundreds of criteria at once, and a page
+// that long is neither readable nor rulable in one sitting; the ones past the cap come
+// back on the next run's proposal, once these have been answered.
+const CALIBRATE_PAGE_CAP = 40;
+
 function calibratePage(target, baseUrl, rows, byId) {
+  const shown = rows.slice(0, CALIBRATE_PAGE_CAP);
   const lines = [
     `${rows.length} criterion(s) failed against the **${target}** target at ${baseUrl}, with no ruling yet.`,
     "The tests are blind: they were written from the criteria alone, by an agent that never saw the",
@@ -320,7 +344,10 @@ function calibratePage(target, baseUrl, rows, byId) {
     "every calibration run.",
     "",
   ];
-  for (const row of rows) {
+  if (shown.length < rows.length) {
+    lines.push(`The ${shown.length} below are the ones to rule on now; the remaining ${rows.length - shown.length} come back on the next calibration run.`, "");
+  }
+  for (const row of shown) {
     const c = byId.get(row.id);
     lines.push(`### ${row.id} · v${c?.version ?? row.version}`, "");
     if (c?.statement) lines.push(c.statement, "");
@@ -363,7 +390,7 @@ export const calibrate = {
 
     // 2. Every ruling that came back since the last run, applied to the spec.
     const rulings = applyCalibrateGates(projectDir, target, today);
-    changed.push(...rulings.changed);
+    const rulingPaths = [...rulings.changed];
 
     // The index and the spec page are regenerated here, before the suite runs, rather
     // than after it: a `spec-wrong` ruling bumps a criterion's version, and staleness is
@@ -375,8 +402,12 @@ export const calibrate = {
       const parsed = parseAll(projectDir);
       writeIndex(projectDir, parsed);
       renderSpecIndex(projectDir, parsed);
-      changed.push("spec/criteria-index.json", "spec/spec.md");
+      rulingPaths.push("spec/criteria-index.json", "spec/spec.md");
     }
+    // Committed here, before anything that can throw. `changed` still names these paths
+    // when the commit did not happen, so the ordinary path — nothing to apply, nothing
+    // committed — is unchanged.
+    if (!commitAppliedRulings(projectDir, rulings, rulingPaths)) changed.push(...rulingPaths);
 
     // 3. The suite itself, against the target.
     const { rows } = runSuite({ projectDir, target, baseUrl, mailApi });
@@ -435,10 +466,13 @@ export const calibrate = {
     // project directory before anything else runs, so `execute`, `postChecks`, `title`
     // and `followUp` all read the same target rather than each re-deriving the default.
     ctx.target = calibrateTarget(ctx);
-    return [checkTargetOption("calibrate", ctx, {
-      requireBaseUrl: true,
-      missing: "calibrate needs --target <t>, or config.oracle.target for it to default to",
-    })];
+    return [
+      checkTargetOption("calibrate", ctx, {
+        requireBaseUrl: true,
+        missing: "calibrate needs --target <t>, or config.oracle.target for it to default to",
+      }),
+      checkSandboxPassword("calibrate", ctx, "calibrating"),
+    ];
   },
   postChecks(projectDir, ctx) {
     return [

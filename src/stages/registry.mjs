@@ -6,16 +6,17 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR } from "../spec/criteria.mjs";
-import { readRedo, removeRedo } from "../spec/redo.mjs";
+import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
 import { checkTests, coverage } from "../checks/tests.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { loadContract, writeGenerated } from "../spec/surface.mjs";
+import { turnsFor } from "../runner/executor.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
 import { propose } from "../commands/propose.mjs";
-import { SKILLS_DIR, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
+import { SKILLS_DIR, checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
 import { calibrate } from "./calibrate.mjs";
 
 function checkProbeFile(projectDir) {
@@ -727,6 +728,24 @@ function checkTestsBlind(projectDir, ctx) {
   }
 }
 
+// A derive-tests session writes one spec file per criterion, and no criterion costs less
+// than a read of the contract and a write of its file. So a run given fewer than two
+// turns per criterion is very likely to stop partway through the domain, and the way that
+// surfaces without this is a coverage failure that reads as bad work rather than as a
+// ceiling set too low. A warning and not a failure: the ceiling is the project's to set,
+// and a session that finishes early under a tight one is a perfectly good run.
+function checkDeriveTestsBudget(ctx) {
+  const id = "derive-tests-budget";
+  const n = (ctx.deriveTestsCriteria ?? []).length;
+  if (!n) return { id, ok: true, messages: [] };
+  const turns = turnsFor(ctx.config ?? {}, "derive-tests");
+  if (n <= turns / 2) return { id, ok: true, messages: [] };
+  return {
+    id, ok: true, messages: [],
+    warnings: [`derive-tests: ${n} criteria to derive with a ceiling of ${turns} turns; set policy.budgets.derive-tests`],
+  };
+}
+
 function checkDeriveTestsCoverage(projectDir, domain) {
   const id = "derive-tests-coverage";
   const { missing } = coverage(projectDir, domain);
@@ -783,7 +802,13 @@ function checkDeriveTestsBlindHeader(projectDir, domain) {
 // the requests it did not answer have to still be there for the next attempt.
 function clearDeriveTestsRedo(projectDir, ctx) {
   const derived = (ctx.deriveTestsCriteria ?? []).map((c) => c.id);
-  if (derived.length) removeRedo(projectDir, derived);
+  if (!derived.length) return;
+  removeRedo(projectDir, derived);
+  // The redo entry and the `test-wrong` ruling record that produced it are two halves of
+  // the same answer, so both are retired together: leaving the record behind would mark
+  // the freshly written test's next failure as already ruled on, and no new question
+  // would ever be asked about it.
+  dropTestWrongRulings(projectDir, derived);
 }
 
 // `derive-tests` is the blind stage: an agent that sees only the contract (generated
@@ -805,6 +830,10 @@ const deriveTests = {
   // the agent ever saw it.
   collect: ["tests/acceptance", "tests/generated"],
   implemented: true,
+  // No Bash and no MCP server: a blind test-writing session reads the generated contract
+  // and writes spec files, and a shell is the one tool that could reach past the
+  // workspace to the application it is not allowed to see.
+  allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
   // Generates `tests/generated/*` from the contract already sitting in the workspace
   // (`git archive` put it there), so the agent's very first read of `surface`/`persona`/
   // `seed` is the same TypeScript a real test file imports — never regenerated from a
@@ -849,6 +878,7 @@ const deriveTests = {
       checkDomainOption(ctx, "derive-tests"),
       checkDeriveTestsDomainRatified(projectDir, ctx),
       checkDeriveTestsStaleHasWork(ctx),
+      checkDeriveTestsBudget(ctx),
     ];
   },
   postChecks(projectDir, ctx) {
@@ -1070,7 +1100,7 @@ const bindAdapter = {
       `Write tests/adapters/${t}/index.ts, exporting default function create(page: Page, ctx: { baseURL: string; persona: typeof persona }): Surface, implementing every page tests/generated/surface.d.ts declares for this project. This target is named "${t}"; its base URL is in your SDLC_TARGET_URL environment variable and is also handed to your own adapter as "baseURL" once it runs for real. Walk the actual running application with the browser tools and bind against what you find there — never a selector copied from source, because there is no source in this workspace to copy one from.`,
       `signIn(persona) reads persona.signIn["${identity ?? "?"}"] for the persona it is given. ${bindAdapterSignInInstructions(identity)}`,
       `Bind every action and observation by driving the browser: open the page at its route, find the control by its role, its label, its visible text, or the URL it lands you on — never a CSS selector, a test id, or anything else that only makes sense with the source open next to you. An action or observation nothing on the page actually does throws new Error("unbound: <page>.<member> — <reason>") from that method, naming what is missing.`,
-      `Write tests/adapters/${t}/bindings.yaml naming every action and observation on every page in the surface exactly once, as "bound" or "unbound: <reason>":\n\ntarget: ${t}\npages:\n  <pageId>:\n    actions: { <name>: bound }\n    observations: { <name>: "unbound: <why>" }`,
+      `Write tests/adapters/${t}/bindings.yaml naming every action and observation on every page in the surface exactly once, as "bound" or "unbound: <reason>". Spell every page, action and observation exactly as spec/contract/surface.yaml spells it — "applications-new" and "submit_proposal", not the camelCased TypeScript members ("applicationsNew", "submitProposal") your adapter implements them as:\n\ntarget: ${t}\npages:\n  <pageId>:\n    actions: { <name>: bound }\n    observations: { <name>: "unbound: <why>" }`,
       `Your territory is tests/adapters/${t}/ alone. Never write under tests/acceptance or spec/ — this workspace does not even have them for you to touch by mistake.`,
       `Finish with your journal entry: what was bound, what was not and why, and any page whose route in surface.yaml did not resolve on the target.`,
     ].join("\n\n");
@@ -1085,7 +1115,11 @@ const bindAdapter = {
   },
   preChecks(projectDir, ctx) {
     if (ctx.target) resolveBindAdapterTarget(projectDir, ctx);
-    return [checkTargetOption("bind-adapter", ctx), checkBindAdapterTargetUp(ctx)];
+    return [
+      checkTargetOption("bind-adapter", ctx),
+      checkSandboxPassword("bind-adapter", ctx, "binding against"),
+      checkBindAdapterTargetUp(ctx),
+    ];
   },
   postChecks(projectDir, ctx) {
     // Stashed the same way `contract` stashes its own version: the real `proposal(ctx)`

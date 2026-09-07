@@ -5,7 +5,7 @@
 // has to reckon with what another file's helpers happen to assume.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -20,16 +20,22 @@ import { STAGES, PROFILES } from "../src/profiles.mjs";
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
 
+// Both `bind-adapter` and `calibrate` refuse a `sandbox-idp` target with nothing in
+// `SDLC_SANDBOX_PASSWORD`, and this fixture's oracle uses that identity. Only the
+// presence of the variable is checked here — the mock executor spawns no session and the
+// mock test runner opens no browser, so the value itself never reaches anything.
+process.env.SDLC_SANDBOX_PASSWORD = "set-for-tests";
+
 // Isolates the egress name list the same way test/spec-stages.test.mjs does: `init` (run
 // as part of `newProject`) seeds the default list under the real home directory unless
 // this is set first, and an existing-but-empty file wins the lookup outright.
-async function makeProject(tmp) {
+async function makeProject(tmp, from = FROM) {
   const prevEgress = process.env.SDLC_EGRESS_NAMES;
   const emptyList = join(tmp, "empty-egress-names.txt");
   writeFileSync(emptyList, "");
   process.env.SDLC_EGRESS_NAMES = emptyList;
   const dir = join(tmp, "permit-intake");
-  await newProject({ dir, from: FROM });
+  await newProject({ dir, from });
   const c = join(dir, "constitution.md");
   writeFileSync(c, readFileSync(c, "utf8").replace(/\{\{[A-Z_]+\}\}/g, "filled"));
   git(["add", "-A"], dir);
@@ -587,4 +593,187 @@ test("sdlc run bind-adapter --target old: probe fails promptly when no server li
   } finally {
     restoreEgress(prevEgress);
   }
+});
+
+test("sdlc run bind-adapter --target old: a sandbox-idp target with no sandbox password is refused before any agent turn", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-nopw-"));
+  const { dir, prevEgress } = await makeProjectWithOracle(tmp);
+  writeOldOracleLocal(dir);
+  const prevPw = process.env.SDLC_SANDBOX_PASSWORD;
+  delete process.env.SDLC_SANDBOX_PASSWORD;
+  process.env.SDLC_ORACLE = "mock";
+  try {
+    const r = await runStage(dir, "bind-adapter", { target: "old" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m === "export SDLC_SANDBOX_PASSWORD before binding against old"), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    process.env.SDLC_SANDBOX_PASSWORD = prevPw;
+    delete process.env.SDLC_ORACLE;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run bind-adapter: a session-route target needs no sandbox password", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-sessionroute-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const cfgPath = join(dir, ".sdlc", "config.yaml");
+  writeFileSync(cfgPath, readFileSync(cfgPath, "utf8") + ORACLE_BLOCK.replace("identity: sandbox-idp", "identity: session-route"));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "session-route oracle (test)"], dir);
+  const prevPw = process.env.SDLC_SANDBOX_PASSWORD;
+  delete process.env.SDLC_SANDBOX_PASSWORD;
+  process.env.SDLC_ORACLE = "mock";
+  try {
+    // The oracle is deliberately not up, so this stops at the target-up check — the
+    // sandbox-password check has nothing to say about a session-route target.
+    const r = await runStage(dir, "bind-adapter", { target: "old" });
+    assert.equal(r.ok, false);
+    assert.ok(!r.messages.some((m) => m.includes("SDLC_SANDBOX_PASSWORD")), r.messages.join(" | "));
+  } finally {
+    process.env.SDLC_SANDBOX_PASSWORD = prevPw;
+    delete process.env.SDLC_ORACLE;
+    restoreEgress(prevEgress);
+  }
+});
+
+// --- the contract post-checks that only fire on a configured project ---
+//
+// `fixture.config.yaml` configures neither `sources.old` nor an oracle, so three of
+// `contract`'s post-checks pass trivially in every test above. Each needs a fixture
+// variant, and each is judged on a mock contract response that leaves out exactly the
+// one thing that check is about.
+
+// A local git repo standing in for the old application, so the `with-sources` workspace
+// `contract` runs in when `sources.old` is configured has something `git clone` reaches.
+function makeOldRepo(tmp) {
+  const dir = join(tmp, "old-repo");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "README.md"), "# the old application\n");
+  git(["init", "-q", "-b", "main"], dir);
+  git(["config", "user.email", "t@example.org"], dir);
+  git(["config", "user.name", "t"], dir);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "old app"], dir);
+  return { dir, commit: git(["rev-parse", "HEAD"], dir) };
+}
+
+function configWith(tmp, name, extra) {
+  const path = join(tmp, `${name}.config.yaml`);
+  writeFileSync(path, readFileSync(FROM, "utf8") + extra);
+  return path;
+}
+
+// The contract a mock writes when nothing is wrong with it: both fixture pages carrying
+// their domains, both personas signing in the way the fixture's identity needs, the
+// observables, and a seed with a manifest.
+const GOOD_CONTRACT_FILES = {
+  "spec/contract/surface.yaml":
+    "pages:\n  - id: applications-new\n    domain: applications\n    route: /applications\n    title: \"New permit application\"\n"
+    + "    actions: { submit: { test_id: null } }\n    observations: { status: { test_id: null } }\n"
+    + "  - id: fees-quote\n    domain: fees\n    route: /fees/quote\n    title: \"Fee quote\"\n"
+    + "    actions: { calculate: { test_id: null } }\n    observations: { amount: { test_id: null } }\n",
+  "spec/contract/personas.yaml":
+    "personas:\n  - id: applicant\n    can: [submit a permit application]\n    sign_in: { sandbox-idp: { username: applicant-1 } }\n"
+    + "  - id: anonymous-visitor\n    can: [view a fee quote]\n    sign_in: null\n",
+  "spec/contract/observables.yaml": "email: { via: mail-catcher, api: \"${SDLC_MAIL_API}\" }\n",
+  "tests/seed/001-users.sql": "INSERT INTO users (id, email) VALUES ('1', 'applicant-1@example.test');\n",
+  "tests/seed/manifest.yaml": "users:\n  applicantOne: { id: \"1\", email: \"applicant-1@example.test\" }\n",
+};
+
+function mockContract(tmp, name, files) {
+  const mockDir = mkdtempSync(join(tmpdir(), `sdlc-${name}-mock-`));
+  writeFileSync(join(mockDir, "contract.json"), JSON.stringify({ text: `mock contract for ${name}`, files }));
+  return mockDir;
+}
+
+async function runContractWithMock(dir, mockDir) {
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try { return await runStage(dir, "contract"); }
+  finally { delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; }
+}
+
+test("sdlc run contract: a project with sources.old and no openapi.yaml fails contract-openapi", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-openapi-"));
+  const old = makeOldRepo(tmp);
+  const from = configWith(tmp, "with-sources", `sources:\n  old: { repo: ${old.dir}, commit: ${old.commit} }\n`);
+  const { dir, prevEgress } = await makeProject(tmp, from);
+  // `sdlc new` lays down an empty `openapi.yaml` stub for the stage to fill in; this run
+  // is about the file not being there at all.
+  rmSync(join(dir, "spec", "contract", "openapi.yaml"));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "no openapi stub (test)"], dir);
+  try {
+    const r = await runContractWithMock(dir, mockContract(tmp, "openapi", GOOD_CONTRACT_FILES));
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m === "spec/contract/openapi.yaml is missing"), r.messages.join(" | "));
+  } finally { restoreEgress(prevEgress); }
+});
+
+test("sdlc run contract: a project with sources.old and an openapi.yaml with no paths fails contract-openapi", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-openapi-empty-"));
+  const old = makeOldRepo(tmp);
+  const from = configWith(tmp, "with-sources", `sources:\n  old: { repo: ${old.dir}, commit: ${old.commit} }\n`);
+  const { dir, prevEgress } = await makeProject(tmp, from);
+  try {
+    const r = await runContractWithMock(dir, mockContract(tmp, "openapi-empty", {
+      ...GOOD_CONTRACT_FILES,
+      "spec/contract/openapi.yaml": "openapi: 3.1.0\ninfo: { title: nothing, version: \"0.0.0\" }\n",
+    }));
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m === "spec/contract/openapi.yaml has no paths"), r.messages.join(" | "));
+  } finally { restoreEgress(prevEgress); }
+});
+
+test("sdlc run contract: an accepted domain no surface page claims fails contract-domain-pages", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-domainpages-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  // One accepted criterion in `applications`, the state ratify leaves behind.
+  writeFileSync(join(dir, "spec", "criteria-index.json"), JSON.stringify({
+    generated_from: "",
+    criteria: [{ id: "R-1.1", version: 1, statement: "A criterion.", state: "accepted", domain: "applications", file: "spec/domains/applications.md" }],
+  }, null, 2) + "\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "an accepted applications criterion (test)"], dir);
+  try {
+    const r = await runContractWithMock(dir, mockContract(tmp, "domainpages", {
+      ...GOOD_CONTRACT_FILES,
+      // Both pages carry `domain: fees`, so nothing on the surface reaches applications.
+      "spec/contract/surface.yaml": GOOD_CONTRACT_FILES["spec/contract/surface.yaml"].replace("domain: applications", "domain: fees"),
+    }));
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m === "no page in spec/contract/surface.yaml carries domain: for accepted domain(s): applications"), r.messages.join(" | "));
+  } finally { restoreEgress(prevEgress); }
+});
+
+test("sdlc run contract: an oracle-configured project whose run writes no compose override fails contract-oracle-override", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-override-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  addOracleConfig(dir);
+  try {
+    const r = await runContractWithMock(dir, mockContract(tmp, "override", GOOD_CONTRACT_FILES));
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m === ".sdlc/oracle/compose.yml is missing"), r.messages.join(" | "));
+  } finally { restoreEgress(prevEgress); }
+});
+
+test("sdlc run contract: a seed row carrying a local home path fails the stage's own egress check, naming the file", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-egress-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  // Assembled from pieces so this file does not itself carry the pattern it is testing.
+  const homePath = "/ho" + "me/someone/exports/users.csv";
+  try {
+    const r = await runContractWithMock(dir, mockContract(tmp, "egress", {
+      ...GOOD_CONTRACT_FILES,
+      "tests/seed/001-users.sql":
+        `-- copied from ${homePath}\nINSERT INTO users (id, email) VALUES ('1', 'applicant-1@example.test');\n`,
+    }));
+    assert.equal(r.ok, false);
+    // The file is uncommitted at post-check time — the whole reason the scan reaches
+    // untracked files — and the message names it and the line.
+    assert.ok(r.messages.some((m) => m.startsWith("tests/seed/001-users.sql:1:") && m.includes("local home path")), r.messages.join(" | "));
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(contract\): post-checks failed/);
+  } finally { restoreEgress(prevEgress); }
 });

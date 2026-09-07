@@ -42,6 +42,12 @@ COMMANDS.doctor = async ({ pos }) => {
   console.log(`${deny ? "ok  " : "warn"} agent deny list ${deny ? "present in .claude/settings.json" : "missing: re-run sdlc init"}`);
   const nl = nameListState();
   console.log(`${nl === "missing" || nl === "empty" ? "warn" : "ok  "} egress name list ${nl} (${defaultNamesPath()})`);
+  // Whether the sandbox sign-in password is in the environment, never what it is: a
+  // `sandbox-idp` target cannot be bound or calibrated without it, and both stages refuse
+  // up front rather than spending a session on sign-in failures. A project with no
+  // `sandbox-idp` target never needs it, so an unset variable is a warning, not a failure.
+  const sandbox = !!process.env.SDLC_SANDBOX_PASSWORD;
+  console.log(`${sandbox ? "ok  " : "warn"} SDLC_SANDBOX_PASSWORD ${sandbox ? "set" : "not set (needed only for a sandbox-idp target)"}`);
   const cfg = checkConfig(dir);
   console.log(`${cfg.ok ? "ok  " : "FAIL"} config ${cfg.messages.join("; ")}`);
   const required = tools.filter((t) => ["node", "git"].includes(t.name)).every((t) => t.found);

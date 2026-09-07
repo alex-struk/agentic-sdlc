@@ -21,7 +21,11 @@ export const HARNESS = [
 
 const MODES = {
   "project": null,
-  "spec-only": ["spec", "tests/seed", "constitution.md", ".sdlc/config.yaml", ...HARNESS, "tests/acceptance"],
+  // `.sdlc/config.yaml` is deliberately absent: it names the old application's repository
+  // and commit, and nothing on the derive-tests path reads it from the workspace —
+  // `prepare` generates types from `spec/contract` and `tests/seed/manifest.yaml`, and the
+  // prompt is built from `ctx` in the project, before the workspace exists.
+  "spec-only": ["spec", "tests/seed", "constitution.md", ...HARNESS, "tests/acceptance"],
   "blind-adapter": ["spec/contract", "tests/adapters", "tests/seed", "constitution.md", ...HARNESS],
   "with-sources": null,
 };

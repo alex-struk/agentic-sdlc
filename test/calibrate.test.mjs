@@ -26,6 +26,12 @@ const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
 
 const COMMIT = ["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m"];
 
+// Both `bind-adapter` and `calibrate` refuse a `sandbox-idp` target with nothing in
+// `SDLC_SANDBOX_PASSWORD`, and this fixture's oracle uses that identity. Only the
+// presence of the variable is checked here — the mock executor spawns no session and the
+// mock test runner opens no browser, so the value itself never reaches anything.
+process.env.SDLC_SANDBOX_PASSWORD = "set-for-tests";
+
 async function makeProject(tmp) {
   const prevEgress = process.env.SDLC_EGRESS_NAMES;
   const emptyList = join(tmp, "empty-egress-names.txt");
@@ -656,6 +662,167 @@ test("derive-tests --stale takes the ids it has just derived off redo.yaml", asy
 
     const after = parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8"));
     assert.deepEqual(after.redo, [], "the request has been answered, so it is off the list");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+// --- the sandbox password a sandbox-idp target signs in with ---
+
+test("sdlc run calibrate: a sandbox-idp target with no sandbox password is refused before the suite runs", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-nopw-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  const prevPw = process.env.SDLC_SANDBOX_PASSWORD;
+  delete process.env.SDLC_SANDBOX_PASSWORD;
+  calibrateEnv(MOCK_DIR);
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m === "export SDLC_SANDBOX_PASSWORD before calibrating old"), r.messages.join(" | "));
+    assert.ok(!existsSync(join(dir, "tests/results/old/latest.json")), "no suite ran, so no result set");
+  } finally {
+    process.env.SDLC_SANDBOX_PASSWORD = prevPw;
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+// --- a suite run that throws after the rulings have been applied ---
+
+test("sdlc run calibrate: a suite that throws after a ruling was applied leaves a clean tree, with the rulings committed", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-throw-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+
+    const rulingMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-throw-ruling-"));
+    writeFileSync(join(rulingMock, "rule.json"), JSON.stringify({
+      text: '```json\n' + JSON.stringify({
+        verdict: "approve",
+        rationale: "the criterion overstates what the old system does",
+        conditions: ["spec-wrong R-1.1: The system shall reject a permit application from an applicant under 19 years old."],
+      }) + '\n```',
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = rulingMock;
+    await ruleByAgent(dir, "calibrate-old-1", { persona: "product-owner" });
+    delete process.env.SDLC_EXECUTOR;
+
+    // A runner that fails the way a real one can — no browser, no registry, the target
+    // gone mid-suite — after the ruling above has already rewritten the spec.
+    const throwing = mkdtempSync(join(tmpdir(), "sdlc-calibrate-throw-runner-"));
+    writeFileSync(join(throwing, "calibrate.json"), JSON.stringify({ throw: "playwright produced no report" }));
+    process.env.SDLC_MOCK_DIR = throwing;
+
+    await assert.rejects(() => runStage(dir, "calibrate", { target: "old" }), /playwright produced no report/);
+
+    // Nothing is left dirty for the next run to trip over, and the applied ruling is on
+    // main under its own commit rather than lost.
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.equal(git(["log", "-1", "--pretty=%s"], dir), "stage(calibrate): apply rulings calibrate-old-1");
+    const committed = git(["show", "--name-only", "--pretty=format:", "HEAD"], dir).split("\n").filter(Boolean).sort();
+    assert.deepEqual(committed, ["spec/criteria-index.json", "spec/domains/applications.md", "spec/spec.md", "tests/results/old/applied.yaml"]);
+    assert.match(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), /### R-1\.1 · v2 · /);
+
+    // The next run reads applied.yaml and applies nothing a second time.
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    const after = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(after.ok, true, JSON.stringify(after.messages));
+    assert.equal(readFileSync(join(dir, "spec/domains/applications.md"), "utf8").match(/### R-1\.1 · v2 · /g).length, 1);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+// --- how many failures one proposal page carries ---
+
+test("sdlc run calibrate: a page of failures is capped at 40, and says how many more there are", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-cap-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  // 45 failing rows: the three the fixture's own criteria account for, plus enough
+  // synthetic ones to run past the cap. A calibration against an application nobody has
+  // rebuilt yet fails on this scale.
+  const many = [PASSING_ROW, FAILING_ROW];
+  for (let i = 1; i <= 44; i++) {
+    many.push({
+      id: `R-2.${i}`, version: 1, domain: "applications", file: `tests/acceptance/applications/R-2.${i}.spec.ts`,
+      result: "fail",
+      tests: [{ title: `criterion R-2.${i}`, status: "failed", error: "expect(received).toBe(expected)" }],
+    });
+  }
+  calibrateEnv(mockRunnerDir("cap", many));
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(r.proposal.name, "calibrate-old-1");
+    const page = readFileSync(join(dir, ".sdlc/proposals/calibrate-old-1.md"), "utf8");
+    assert.match(page, /^45 criterion\(s\) failed against the \*\*old\*\* target/m);
+    assert.match(page, /^The 40 below are the ones to rule on now; the remaining 5 come back on the next calibration run\.$/m);
+    assert.equal((page.match(/^### /gm) ?? []).length, 40, "exactly 40 criteria are laid out");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+// --- a test-wrong ruling stops answering once the test has been written again ---
+
+test("after derive-tests --stale answers a test-wrong ruling, the same failure opens a fresh question", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-testwrong-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    assert.equal(first.proposal.name, "calibrate-old-1");
+
+    // The product owner says the criterion is right and the test is not.
+    const rulingMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-testwrong-ruling-"));
+    writeFileSync(join(rulingMock, "rule.json"), JSON.stringify({
+      text: '```json\n' + JSON.stringify({
+        verdict: "approve",
+        rationale: "the status wording the test asserts is not what the criterion states",
+        conditions: ["test-wrong R-1.2: the test asserts a status string the criterion never names"],
+      }) + '\n```',
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = rulingMock;
+    await ruleByAgent(dir, "calibrate-old-1", { persona: "product-owner" });
+    delete process.env.SDLC_EXECUTOR;
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+
+    // The ruling is applied: the id goes on the redo list and the row reads as answered.
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, "test-wrong");
+    assert.deepEqual(parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8")).redo.map((e) => e.id), ["R-1.2"]);
+    assert.ok(!second.proposal, "the failure carries a ruling, so nothing further is asked");
+
+    // derive-tests writes that test again, which answers the request.
+    process.env.SDLC_EXECUTOR = "mock";
+    const derived = await runStage(dir, "derive-tests", { domain: "applications", stale: true });
+    assert.equal(derived.ok, true, JSON.stringify(derived.messages));
+    delete process.env.SDLC_EXECUTOR;
+    rule(dir, derived.proposal.name, "approve", { by: "tech-lead" });
+
+    const applied = parseYaml(readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8"));
+    // The gate stays recorded, so the ruling is never applied to the spec twice…
+    assert.deepEqual(applied.applied, ["calibrate-old-1"]);
+    // …but the per-criterion record is gone, so the row can be asked about again.
+    assert.deepEqual(applied.rulings.filter((x) => x.id === "R-1.2"), []);
+    assert.deepEqual(parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8")).redo, []);
+
+    // The freshly written test still fails against the old target, and that is a new
+    // question rather than one already answered.
+    const third = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(third.ok, true, JSON.stringify(third.messages));
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, undefined);
+    assert.ok(third.proposal, "the same failure is asked about again");
+    assert.equal(third.proposal.name, "calibrate-old-2");
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);

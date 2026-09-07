@@ -137,7 +137,12 @@ the runner's own process, never through a tool call.
    `src/spec/criteria.mjs`). Each domain file is read once, offered the whole condition list, and
    written back only if something in it actually changed.
 3. **Regenerate the index and the spec page** if step 2 changed a domain file — before the suite,
-   for the staleness reason above.
+   for the staleness reason above — and commit steps 2 and 3 together as
+   `stage(calibrate): apply rulings <gate names>`, staging exactly the paths they wrote. The suite
+   in step 4 can throw for reasons that have nothing to do with those edits (no browser, no npm
+   registry, the target gone mid-run), and a throw leaves whatever is in the working tree behind:
+   committing first means a failure leaves a clean tree with the applied rulings safe, and the next
+   run reads `applied.yaml` and applies nothing twice. A pass that wrote nothing commits nothing.
 4. **Run the suite** (`runSuite`, `src/testrun/playwright.mjs`): the harness's dependencies and
    browser are installed if missing, Playwright runs with `SDLC_TARGET`, `SDLC_TARGET_URL` and
    `SDLC_MAIL_API` set, and its JSON report is mapped onto rows. `SDLC_TEST_RUNNER=mock` reads canned
@@ -149,9 +154,15 @@ the runner's own process, never through a tool call.
 
 ## Checks that block
 
-- **Pre-check.** `calibrate-target-option` — a target is resolved (given, or defaulted from
-  `config.oracle.target`), and it is either `old` with `config.oracle` configured, or a name in
-  `config.targets` carrying a `base_url`.
+- **Pre-checks.**
+  - `calibrate-target-option` — a target is resolved (given, or defaulted from
+    `config.oracle.target`), and it is either `old` with `config.oracle` configured, or a name in
+    `config.targets` carrying a `base_url`.
+  - `calibrate-sandbox-password` — a target whose identity is `sandbox-idp` needs
+    `SDLC_SANDBOX_PASSWORD` in the environment: without it the suite signs in with an empty
+    password, is refused, and every row comes back a failure that says nothing about the work.
+    The message names the variable and never a value (`export SDLC_SANDBOX_PASSWORD before
+    calibrating <target>`).
 - **Post-checks**, run against the working tree after `execute` returns:
   - `calibrate-results` — `tests/results/<t>/latest.json` exists, parses, and has one row for every
     accepted criterion of every domain that has at least one test file. A domain nobody has derived
@@ -174,13 +185,18 @@ run finds every failure ruled and opens nothing.
 
 Any pre-check or post-check failure exits 1 and prints the failing check's messages;
 `stage(calibrate): post-checks failed` is committed with only the journal and run record staged, and
-whatever `execute` wrote is left in the working tree to inspect.
+whatever `execute` wrote after the ruling commit — the result set — is left in the working tree to
+inspect. The applied rulings themselves are already on `main` under their own commit, so no failure
+here can lose them or leave the spec half-rewritten.
 
 ## The ruling loop
 
 Once the calibration commit has landed on `main`, `calibrate` opens a G1 proposal named
 `calibrate-<t>-<n>` (`n` continuing past any calibration proposal already ruled or open) whenever a
-row failed with no ruling. Its page lists exactly those criteria: the statement as the spec holds it,
+row failed with no ruling. Its page lists at most 40 of them — a calibration against an application
+nobody has rebuilt yet can fail hundreds of criteria at once, and a page that long is neither
+readable nor rulable in one sitting, so the page says how many more there are and the rest come back
+on the next run's proposal. For each one it carries the statement as the spec holds it,
 the criterion's given/when/then, the test file, and every failing test's title, status and failure
 message trimmed to twenty lines — enough to tell a real behavioural difference from a broken test
 without opening the report. It closes with the calibration grammar, which is the whole vocabulary the

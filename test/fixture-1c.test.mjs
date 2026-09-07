@@ -29,6 +29,12 @@ const OLD_DIR = new URL("../fixture-project/old", import.meta.url).pathname;
 
 const COMMIT = ["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m"];
 
+// Both `bind-adapter` and `calibrate` refuse a `sandbox-idp` target with nothing in
+// `SDLC_SANDBOX_PASSWORD`, and this fixture's oracle uses that identity. Only the
+// presence of the variable is checked here — the mock executor spawns no session and the
+// mock test runner opens no browser, so the value itself never reaches anything.
+process.env.SDLC_SANDBOX_PASSWORD = "set-for-tests";
+
 // A local git repo standing in for the old application, built from the fixture's own
 // plain files so `ensureSources` (the `with-sources` workspace `archaeology` and
 // `contract` run in) has something `git clone` can reach.
@@ -205,6 +211,17 @@ test("fixture project: archaeology through calibrate on the mock executor, oracl
     delete process.env.SDLC_ORACLE;
     delete process.env.SDLC_EXECUTOR;
     delete process.env.SDLC_MOCK_DIR;
+
+    // The surface's multi-word action goes through the whole chain under two spellings,
+    // and the bindings check is what holds them apart: `bindings.yaml` names it exactly
+    // as `surface.yaml` does, while the generated type and the adapter implement the
+    // camel-cased member.
+    const bindings = readFileSync(join(dir, "tests/adapters/old/bindings.yaml"), "utf8");
+    assert.match(bindings, /submit_proposal: bound/);
+    assert.ok(!bindings.includes("submitProposal"), "bindings.yaml carries surface names, not TypeScript members");
+    assert.match(readFileSync(join(dir, "tests/generated/surface.d.ts"), "utf8"), /submitProposal\(input\?: unknown\): Promise<void>;/);
+    assert.match(readFileSync(join(dir, "tests/adapters/old/index.ts"), "utf8"), /async submitProposal\(/);
+
     rule(dir, "bind-adapter-old", "approve", { by: "tech-lead" });
 
     // --- calibrate: run the merged suite against the old target and ask about what fails.

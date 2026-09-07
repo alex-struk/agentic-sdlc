@@ -20,6 +20,10 @@ To stdout, one line each for:
 - The egress name list's state (`missing`, `empty`, or `<n> names`) and the path it resolved to:
   `SDLC_EGRESS_NAMES` if set, otherwise `<XDG_CONFIG_HOME>/agentic-sdlc/egress-names.txt`, with
   `XDG_CONFIG_HOME` defaulting to `~/.config`.
+- Whether `SDLC_SANDBOX_PASSWORD` is set — never its value. A `sandbox-idp` target signs in by
+  filling a real form with it, and `bind-adapter` and `calibrate` both refuse such a target
+  without it; a project with no `sandbox-idp` target never needs it, so an unset variable is a
+  warning rather than a failure.
 - The result of `checkConfig(dir)` (see `docs/stages/checks.md`).
 
 ## Workspace the agent sees
@@ -29,8 +33,8 @@ No agent.
 ## Checks that block
 
 For the exit code only: `node` and `git` must both be found, and the config check must be `ok`.
-The deny-list line, the egress-name-list line, and the optional tools (`gh`, `claude`, `docker`)
-are reported but do not affect the exit code.
+The deny-list line, the egress-name-list line, the sandbox-password line, and the optional tools
+(`gh`, `claude`, `docker`) are reported but do not affect the exit code.
 
 ## Exit criterion
 

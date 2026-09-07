@@ -39,6 +39,12 @@ case "$stage" in
   derive-tests)
     # derive-tests is blind: its workspace never even materialises app/, tests/adapters/
     # or spec/, and its own territory is only the acceptance suite it writes.
+    #
+    # These two stages run in a temporary workspace built by `git archive`, which carries
+    # no .claude/settings.json and therefore never installs this hook. Containment for
+    # them is the workspace itself (what is not there cannot be edited) plus the scope
+    # post-checks the runner applies to what comes back. The rows stay here because they
+    # document the intent, and because the same stage name can be run in the project.
     allowed='^tests/acceptance/' ;;
   bind-adapter)
     # bind-adapter is blind the same way: its workspace never materialises app/,

@@ -124,6 +124,12 @@ test("runSuite: the playwright test call runs from projectDir with --prefix test
   assert.equal(run.env.SDLC_TARGET_URL, "http://x");
   assert.equal(run.env.SDLC_MAIL_API, "http://mail");
   assert.equal(run.env.EXTRA, "1");
+  // The report path is absolute, so where it lands never depends on which directory
+  // Playwright resolves a relative name against — and it is the path `runSuite` reads the
+  // report back from.
+  assert.equal(run.env.PLAYWRIGHT_JSON_OUTPUT_FILE, join(d, "tests", "test-results", "results.json"));
+  assert.equal(run.env.PLAYWRIGHT_JSON_OUTPUT_NAME, undefined);
+  assert.ok(run.args.includes("--config=tests/playwright.config.ts"));
 });
 
 test("runSuite: a file with one real failure alongside an unbound one is fail, not unbound", () => {

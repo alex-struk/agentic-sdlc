@@ -177,10 +177,16 @@ function sortRows(rows) {
   });
 }
 
+// The canned answer a mock run gives, from `SDLC_MOCK_DIR/calibrate.json`: `rows` is the
+// row list a real run would have produced. `throw` is the other thing a real run can do —
+// no browser, no npm registry, the target gone mid-suite — expressed as
+// `{ "throw": "<message>" }`, so a caller can be tested for what it leaves behind when
+// the suite produces no rows at all.
 function readMockRows(mockDir) {
   const p = join(mockDir, "calibrate.json");
   if (!existsSync(p)) throw new Error(`mock test runner: no canned response at ${p}`);
   const data = JSON.parse(readText(p));
+  if (typeof data.throw === "string") throw new Error(data.throw);
   return Array.isArray(data.rows) ? data.rows : [];
 }
 
@@ -211,11 +217,11 @@ export function runSuite(opts) {
     SDLC_TARGET_URL: baseUrl,
     SDLC_MAIL_API: mailApi,
     ...env,
-    // Playwright resolves a relative JSON reporter output name against the resolved
-    // config file's own directory (`tests/`, via `--config` below), not against `cwd` —
-    // so this lands at `tests/test-results/results.json` under `projectDir` regardless of
-    // where the process runs from.
-    PLAYWRIGHT_JSON_OUTPUT_NAME: "test-results/results.json",
+    // An absolute path, so where the report lands never depends on which directory
+    // Playwright resolves a relative name against — and it is the same path
+    // `reportPath` below reads back, named once here and derived from `projectDir` in
+    // both places.
+    PLAYWRIGHT_JSON_OUTPUT_FILE: join(testsDir, "test-results", "results.json"),
   };
   // `cwd: projectDir` matches `ensureDeps`/`ensureBrowsers` above, so `--prefix tests`
   // means the same thing in all three calls (npm/npx resolve a relative `--prefix`

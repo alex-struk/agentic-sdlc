@@ -44,6 +44,11 @@ never sees the running application; a redo id is derived the same blind way a fr
   the tree and before the proposal is opened, so it lands on the proposal branch with everything else
   and is merged by the same ruling. A run whose post-checks fail leaves the list untouched: the
   request was not answered.
+- `tests/results/<target>/applied.yaml`, for every target that has one, with the `test-wrong`
+  ruling record for each derived id dropped from its `rulings` list. The redo entry and the ruling
+  record are two halves of the same answer: left behind, the record would mark the freshly written
+  test's next failure as already ruled on and no new question would ever be asked about it. The
+  gate file stays named in `applied`, so the ruling is never applied to the spec a second time.
 - A journal entry and a run-record line, as every stage produces. The journal says how many
   criteria got a test, which were not, and which surface actions or observations were missing.
 - A proposal at gate G3: `derive-tests-<d>` for a full run, or `derive-tests-<d>-stale-<n>` for a
@@ -55,9 +60,10 @@ never sees the running application; a redo id is derived the same blind way a fr
 ## Workspace the agent sees
 
 `stage.workspace` is the fixed string `spec-only`: a temporary directory built by `git archive
-HEAD` over `spec/`, `tests/seed/`, `constitution.md`, `.sdlc/config.yaml`, the pipeline-owned test
-harness, and whatever already exists under `tests/acceptance/` — never `app/`, never
-`tests/adapters/`. Before the agent turn starts, `stage.prepare(wsDir)` runs `writeGenerated(wsDir)`
+HEAD` over `spec/`, `tests/seed/`, `constitution.md`, the pipeline-owned test harness, and
+whatever already exists under `tests/acceptance/` — never `app/`, never `tests/adapters/`, and
+never `.sdlc/config.yaml`, which names the old application's repository and commit and is read
+in the project rather than in the workspace. Before the agent turn starts, `stage.prepare(wsDir)` runs `writeGenerated(wsDir)`
 (`src/spec/surface.mjs`), turning the archived contract into `tests/generated/surface.d.ts`,
 `personas.ts` and `seed.ts` right there in the workspace, so the agent's very first read of
 `surface`/`persona`/`seed` is the same TypeScript a real test file imports.
@@ -66,6 +72,10 @@ Once the session ends, `tests/acceptance` and `tests/generated` are copied back 
 (`stage.collect`). The guard row for `derive-tests` allows only `tests/acceptance/` — every other
 path, including `app/`, `tests/adapters/`, `tests/seed/` and `spec/`, is out of its territory, and
 most of them are not even present in this workspace to write to.
+
+`stage.allowedTools` is `["Read", "Write", "Edit", "Glob", "Grep"]`: reading the contract and
+writing spec files is the whole of the work, and a shell is the one tool that could reach past the
+workspace to the application the stage is meant to be blind to.
 
 ## Checks that block
 

@@ -89,3 +89,23 @@ export function checkTargetOption(stageName, ctx, { target = ctx.target, require
     return { id, ok: false, messages: [`${stageName}: target "${target}" has no base_url configured`] };
   return { id, ok: true, messages: [] };
 }
+
+// The identity a target signs in through: `old` is the oracle's own, every other target
+// names its own in `config.targets`. Shared so `bind-adapter` and `calibrate` read the
+// same answer for the same target rather than each walking the config themselves.
+export function targetIdentity(ctx, target = ctx.target) {
+  if (target === "old") return ctx.config?.oracle?.identity;
+  return ctx.config?.targets?.[target]?.identity;
+}
+
+// A `sandbox-idp` target signs in by filling a real form with a password that lives only
+// in the environment. Without it the browser reaches the form, submits an empty password
+// and is refused — so an agent turn or a whole suite run spends itself producing failures
+// that say nothing about the work. Checked before either starts, and the message names
+// the variable and nothing else: the value is never printed anywhere.
+export function checkSandboxPassword(stageName, ctx, action, target = ctx.target) {
+  const id = `${stageName}-sandbox-password`;
+  if (!target || targetIdentity(ctx, target) !== "sandbox-idp") return { id, ok: true, messages: [] };
+  if (process.env.SDLC_SANDBOX_PASSWORD) return { id, ok: true, messages: [] };
+  return { id, ok: false, messages: [`export SDLC_SANDBOX_PASSWORD before ${action} ${target}`] };
+}

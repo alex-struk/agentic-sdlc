@@ -34,7 +34,14 @@ baseURL: string; persona: typeof persona }): Surface`, implementing every page
 
 Write `tests/adapters/<target>/bindings.yaml`, naming every action and observation of every page
 in the surface exactly once, as `bound` or `unbound: <reason>` — nothing named twice, nothing left
-out, nothing named that is not in the surface:
+out, nothing named that is not in the surface.
+
+Every name in this file is spelled exactly as `spec/contract/surface.yaml` spells it, not as the
+TypeScript member it becomes: a page `applications-new` with an action `submit_proposal` is
+`applications-new:` and `submit_proposal:` here, even though the adapter you just wrote implements
+them as `applicationsNew.submitProposal`. The check compares this file against the contract, so a
+camel-cased name reads as one the surface does not have and a surface name as one you left out —
+two failures for one mistake.
 
 ```yaml
 target: <target>

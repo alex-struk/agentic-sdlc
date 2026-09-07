@@ -73,6 +73,10 @@ dry run's screen.
 - **Pre-checks.**
   - `--target <t>` is set; `old` requires `config.oracle` with `oracle.target: old`; any other name
     must be a key of `config.targets` — `target "<t>" is not "old" and not in config.targets: ...`.
+  - A target whose identity is `sandbox-idp` needs `SDLC_SANDBOX_PASSWORD` in the environment:
+    without it the session reaches the sign-in form, submits an empty password and is refused, and
+    a whole agent turn is spent producing nothing. The message names the variable and never a
+    value (`export SDLC_SANDBOX_PASSWORD before binding against <target>`).
   - The target answers HTTP at its base URL: for `old`, resolved from
     `.sdlc/oracle-old.local.yaml`, failing `bind-adapter: the old target is not up; run sdlc oracle
     up first` when that file does not exist; for any other target, `targets.<t>.base_url`. The
@@ -84,6 +88,10 @@ dry run's screen.
   - `bindings.yaml` exists, parses, and names every surface page's action and observation exactly
     once — `bound` or `unbound: <reason>` — and names nothing the surface does not declare, judged
     against the same `loadContract` result `tests/generated/surface.d.ts` was generated from.
+    Names are compared as `spec/contract/surface.yaml` spells them, not as the camelCased
+    TypeScript members the adapter implements: `submit_proposal`, not `submitProposal`. The prompt
+    and the skill say so, because getting it wrong reports twice — once as a surface name left out
+    and once as a name the surface does not have.
   - `tests/adapters/<t>/index.ts` exists.
   - Every changed path is under `tests/adapters/<t>/` — which, since this workspace never even
     materialises `tests/acceptance/` or `spec/`, is also the guarantee that neither was touched.

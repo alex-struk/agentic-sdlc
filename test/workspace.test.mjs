@@ -222,3 +222,34 @@ egress:
   assert.doesNotThrow(() => ws.cleanup());
   assert.ok(existsSync(d), "cleanup did not remove the project dir");
 });
+
+test("materialise spec-only never carries .sdlc/config.yaml into the workspace", () => {
+  const d = makeProject();
+  // The project's config names the old application's repository and commit. Nothing on
+  // the derive-tests path reads it from the workspace — `prepare` generates types from
+  // `spec/contract` and `tests/seed/manifest.yaml`, and the prompt is built from `ctx`
+  // in the project — so a blind session is never given it to read.
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), "sources:\n  old: { repo: https://example.org/old.git, commit: 0123abc }\n");
+  git(["add", "-A"], d);
+  git(["commit", "-q", "-m", "config"], d);
+
+  const ws = materialise(d, "spec-only");
+  assert.ok(!existsSync(join(ws.dir, ".sdlc/config.yaml")));
+  assert.ok(!existsSync(join(ws.dir, ".sdlc")));
+  // The paths the stage does need are still there.
+  assert.ok(existsSync(join(ws.dir, "spec/spec.md")));
+  assert.ok(existsSync(join(ws.dir, "tests/seed/s.sql")));
+  ws.cleanup();
+});
+
+test("materialise blind-adapter never carries .sdlc/config.yaml either", () => {
+  const d = makeProject();
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), "sources:\n  old: { repo: https://example.org/old.git, commit: 0123abc }\n");
+  git(["add", "-A"], d);
+  git(["commit", "-q", "-m", "config"], d);
+  const ws = materialise(d, "blind-adapter");
+  assert.ok(!existsSync(join(ws.dir, ".sdlc/config.yaml")));
+  ws.cleanup();
+});

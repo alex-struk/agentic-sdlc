@@ -358,3 +358,30 @@ test("writeGenerated: throws with the errors listed when the contract is invalid
   write(dir, "spec/contract/surface.yaml", `pages:\n  - route: /opportunities\n`);
   assert.throws(() => writeGenerated(dir), /page\[0\] is missing "id"/);
 });
+
+// ---- generateTypes: how a contract name becomes a TypeScript member ----
+
+test("generateTypes: a name already in camel case keeps its capitals; a multi-word one is joined", () => {
+  const contract = {
+    surface: {
+      pages: [{
+        id: "applications-new",
+        route: "/applications",
+        title: "New application",
+        actions: { submit_proposal: { test_id: null }, viewStatus: { test_id: null } },
+        observations: { amountDue: { test_id: null } },
+      }],
+    },
+    personas: { personas: [] },
+    observables: {},
+    manifest: {},
+  };
+  const files = generateTypes(contract);
+  const surface = files["tests/generated/surface.d.ts"];
+  assert.match(surface, /applicationsNew: ApplicationsNewPage;/);
+  assert.match(surface, /submitProposal\(input\?: unknown\): Promise<void>;/);
+  // `viewStatus` would have come out as `viewstatus` if the whole first segment were
+  // lowercased, and no adapter member would ever have matched it.
+  assert.match(surface, /viewStatus\(input\?: unknown\): Promise<void>;/);
+  assert.match(surface, /amountDue\(\): Promise<string>;/);
+});
