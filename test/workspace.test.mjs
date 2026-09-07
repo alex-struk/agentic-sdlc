@@ -59,6 +59,22 @@ test("collect copies tests/acceptance back into the project", () => {
   ws.cleanup();
 });
 
+test("collect overwrites a file that already exists in the project — the workspace's edit wins", () => {
+  const d = makeProject();
+  const ws = materialise(d, "spec-only");
+  // The project's own scaffold already carries this file (the way `tests/acceptance/
+  // not-testable.yaml` ships in every project); the workspace, archived from the same
+  // commit, starts with an identical copy — then an agent turn rewrites it in the
+  // workspace, and that rewrite has to survive being collected back.
+  mkdirSync(join(d, "tests/acceptance"), { recursive: true });
+  writeFileSync(join(d, "tests/acceptance/not-testable.yaml"), "criteria: []\n");
+  mkdirSync(join(ws.dir, "tests/acceptance"), { recursive: true });
+  writeFileSync(join(ws.dir, "tests/acceptance/not-testable.yaml"), "criteria:\n  - { id: R-1.1, reason: x }\n");
+  collect(d, ws.dir, ["tests/acceptance"]);
+  assert.equal(readFileSync(join(d, "tests/acceptance/not-testable.yaml"), "utf8"), "criteria:\n  - { id: R-1.1, reason: x }\n");
+  ws.cleanup();
+});
+
 test("cleanup removes the temp workspace directory", () => {
   const d = makeProject();
   const ws = materialise(d, "spec-only");

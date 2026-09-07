@@ -36,9 +36,9 @@ test("probe post-check fails when app/PROBE.md is missing the sentence", () => {
   assert.ok(results.some((r) => !r.ok));
 });
 
-test("every stage name from profiles.mjs other than probe, intent, archaeology, ratify and contract is an unimplemented stub", () => {
+test("every stage name from profiles.mjs other than probe, intent, archaeology, ratify, contract and derive-tests is an unimplemented stub", () => {
   for (const name of STAGES) {
-    if (name === "intent" || name === "archaeology" || name === "ratify" || name === "contract") continue;
+    if (["intent", "archaeology", "ratify", "contract", "derive-tests"].includes(name)) continue;
     const stage = stageFor(name);
     assert.equal(stage.implemented, false, name);
     assert.equal(stage.workspace, "project", name);
@@ -71,6 +71,17 @@ test("archaeology pre-checks fail without --domain, and with a domain not in con
   assert.ok(wrong.some((r) => !r.ok && /not in project\.domains/.test(r.messages.join(" "))));
   const noSources = stage.preChecks(".", { domain: "applications", config: { project: { domains: ["applications"] } } });
   assert.ok(noSources.some((r) => !r.ok && /sources\.old/.test(r.messages.join(" "))));
+});
+
+test("derive-tests holds gate G3, is implemented, workspace spec-only, and its pre-checks fail without --domain", () => {
+  const stage = stageFor("derive-tests");
+  assert.equal(stage.implemented, true);
+  assert.equal(stage.gate, "G3");
+  assert.equal(stage.workspace, "spec-only");
+  assert.deepEqual(stage.collect, ["tests/acceptance", "tests/generated"]);
+  assert.equal(typeof stage.prepare, "function");
+  const missing = stage.preChecks(".", { domain: undefined, config: { project: { domains: ["applications"] } } });
+  assert.ok(missing.some((r) => !r.ok && /--domain/.test(r.messages.join(" "))));
 });
 
 test("ratify holds no gate, is implemented, runs no agent, and its pre-checks fail without --domain", () => {

@@ -37,7 +37,9 @@ case "$stage" in
   build|verify|review-and-ship)
     blocked='^(spec/|tests/acceptance/|constitution\.md$|\.sdlc/config\.yaml$|\.github/workflows/|sources/)' ;;
   derive-tests)
-    blocked='^(app/|tests/adapters/|tests/seed/|spec/|constitution\.md$|\.sdlc/|sources/)' ;;
+    # derive-tests is blind: its workspace never even materialises app/, tests/adapters/
+    # or spec/, and its own territory is only the acceptance suite it writes.
+    allowed='^tests/acceptance/' ;;
   bind-adapter)
     blocked='^(app/|tests/acceptance/|spec/|constitution\.md$|\.sdlc/|sources/)' ;;
   intent)

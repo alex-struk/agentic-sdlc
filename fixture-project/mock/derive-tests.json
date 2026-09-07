@@ -1,0 +1,8 @@
+{
+  "text": "Wrote acceptance tests for R-1.1 and R-1.2, the two applications criteria the current surface can exercise. R-1.3 (the recalculated fee) has no observable amount on any applications page, so it is recorded in not-testable.yaml instead of a file. No further surface actions or observations were needed for these three criteria.",
+  "files": {
+    "tests/acceptance/applications/R-1.1.spec.ts": "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\nimport { test, expect, persona } from \"../../fixtures\";\n\ntest(\"When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.\", async ({ surface }) => {\n  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: 17 });\n  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
+    "tests/acceptance/applications/R-1.2.spec.ts": "// criterion: @R-1.2 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\nimport { test, expect, persona } from \"../../fixtures\";\n\ntest(\"When a permit application is accepted, the system shall change its status to accepted.\", async ({ surface }) => {\n  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: 25 });\n  expect(await surface.applicationsNew.status()).toBe(\"accepted\");\n});\n",
+    "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount; applications-new only observes status\" }\n"
+  }
+}

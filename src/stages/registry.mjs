@@ -8,7 +8,9 @@ import { STAGES } from "../profiles.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR } from "../spec/criteria.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
-import { loadContract } from "../spec/surface.mjs";
+import { checkTests, coverage } from "../checks/tests.mjs";
+import { checkSeparation } from "../checks/separation.mjs";
+import { loadContract, writeGenerated } from "../spec/surface.mjs";
 import { propose } from "../commands/propose.mjs";
 
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
@@ -550,6 +552,224 @@ const contract = {
   },
 };
 
+// The accepted criteria of one domain, read straight from `spec/criteria-index.json` —
+// the same source `coverage` and `checkTests` judge a run's output against, so
+// `derive-tests`' own notion of "what needs a test" can never drift from what those
+// checks hold it to. A missing or unparseable index is not this function's business to
+// fail on — it returns an empty list, and the domain-ratified pre-check below is what
+// turns that into a real failure with a real message.
+function acceptedCriteria(projectDir, domain) {
+  const idxPath = join(projectDir, "spec", "criteria-index.json");
+  if (!existsSync(idxPath)) return { criteria: [], generatedFrom: "" };
+  let index;
+  try { index = JSON.parse(readText(idxPath)); } catch { return { criteria: [], generatedFrom: "" }; }
+  const criteria = (index.criteria ?? []).filter((c) => c.domain === domain && c.state === "accepted");
+  return { criteria, generatedFrom: index.generated_from ?? "" };
+}
+
+// Ids named in `tests/acceptance/redo.yaml` (`{ redo: [{ id, why }] }`) for one domain —
+// an optional, hand-maintained file a person uses to ask `--stale` to redo a criterion
+// `checkTests` would not otherwise flag as stale (its header version already matches the
+// index, but something else about it needs another pass). An id the file names that does
+// not belong to this domain's own accepted criteria is silently not this domain's
+// business, the same way a stray id elsewhere in the file is not an error here.
+function readRedoIds(projectDir, domain, byId) {
+  const p = join(projectDir, "tests", "acceptance", "redo.yaml");
+  if (!existsSync(p)) return [];
+  let parsed;
+  try { parsed = parseYaml(readText(p)); } catch { return []; }
+  const redo = Array.isArray(parsed?.redo) ? parsed.redo : [];
+  return redo.map((r) => r?.id).filter((id) => byId.get(id)?.domain === domain);
+}
+
+// The criteria this run will actually write tests for: every accepted criterion of the
+// domain on a full run; on a `--stale` run, only the ones `checkTests` reports as stale
+// (a spec file whose header version trails the index) or named in
+// `tests/acceptance/redo.yaml` for this domain. Called once, in `preChecks` — the only
+// hook that ever sees the real project directory before `prompt(ctx)` runs with nothing
+// but `ctx` itself — and its result is stashed there for `prompt` to read back.
+function resolveCriteriaToDerive(projectDir, ctx) {
+  const { criteria, generatedFrom } = acceptedCriteria(projectDir, ctx.domain);
+  if (!ctx.stale) return { criteria, generatedFrom };
+  const byId = new Map(criteria.map((c) => [c.id, c]));
+  const { stale } = checkTests(projectDir, ctx);
+  const ids = new Set(stale.filter((id) => byId.has(id)));
+  for (const id of readRedoIds(projectDir, ctx.domain, byId)) ids.add(id);
+  return { criteria: criteria.filter((c) => ids.has(c.id)), generatedFrom };
+}
+
+function checkDeriveTestsDomainRatified(projectDir, ctx) {
+  const id = "derive-tests-domain-ratified";
+  if (!ctx.domain) return { id, ok: true, messages: [] };
+  const { criteria } = acceptedCriteria(projectDir, ctx.domain);
+  if (criteria.length === 0)
+    return { id, ok: false, messages: [`derive-tests: domain ${ctx.domain} has no accepted criteria; run ratify first`] };
+  return { id, ok: true, messages: [] };
+}
+
+// Reads `ctx.deriveTestsCriteria`, already resolved and stashed by `preChecks` above —
+// not recomputed here, so this reports on exactly the same set `prompt(ctx)` is about to
+// hand the agent, whatever the domain's ratified state turned out to be.
+function checkDeriveTestsStaleHasWork(ctx) {
+  const id = "derive-tests-stale-has-work";
+  if (!ctx.domain || !ctx.stale) return { id, ok: true, messages: [] };
+  if ((ctx.deriveTestsCriteria ?? []).length === 0)
+    return { id, ok: false, messages: [`derive-tests: nothing stale in ${ctx.domain}`] };
+  return { id, ok: true, messages: [] };
+}
+
+// The proposal name a `--stale` re-run opens: `n` counts up from every ruled
+// `derive-tests-<d>-stale-*` gate file already on disk — a gate file only exists once
+// `sdlc rule` has recorded a verdict, so this counts rulings, not attempts, the same
+// counting rule `contract`'s own versioning follows. A full run's own name
+// (`derive-tests-<d>`) needs no such counting: like `archaeology`'s, it is fixed per
+// domain, and a second full run is refused outright until the first is ruled.
+function nextDeriveTestsStaleVersion(projectDir, domain) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return 1;
+  const re = new RegExp(`^derive-tests-${escapeRe(domain)}-stale-(\\d+)\\.yaml$`);
+  return readdirSync(dir).filter((f) => re.test(f)).length + 1;
+}
+
+// `checkTests` resolves a spec file's `blind` claim against git history — a file this
+// run just wrote is still uncommitted at post-check time, so only `derive-tests`'s own
+// env var lets a `blind` claim on a dirty file stand (`resolveProvenance`,
+// `src/checks/tests.mjs`). Set for the duration of the call and restored after, rather
+// than left on `process.env` for the rest of the process, so a later check in the same
+// run (or a later stage entirely) never inherits it by accident.
+function checkTestsBlind(projectDir, ctx) {
+  const prev = process.env.SDLC_STAGE;
+  process.env.SDLC_STAGE = "derive-tests";
+  try {
+    return checkTests(projectDir, ctx);
+  } finally {
+    if (prev === undefined) delete process.env.SDLC_STAGE;
+    else process.env.SDLC_STAGE = prev;
+  }
+}
+
+function checkDeriveTestsCoverage(projectDir, domain) {
+  const id = "derive-tests-coverage";
+  const { missing } = coverage(projectDir, domain);
+  if (missing.length)
+    return { id, ok: false, messages: [`${domain}: no test and no not-testable.yaml entry for: ${missing.join(", ")}`] };
+  return { id, ok: true, messages: [] };
+}
+
+// `derive-tests` may only ever change the acceptance suite for its own domain, the
+// shared `not-testable.yaml`, and the generated types `prepare` regenerated on its way
+// in — never `tests/adapters/`, never `app/`, and never another domain's own tests.
+function checkDeriveTestsScope(projectDir, domain) {
+  const id = "derive-tests-scope";
+  const allowed = new RegExp(`^(tests/acceptance/${domain}/|tests/acceptance/not-testable\\.yaml$|tests/generated/)`);
+  const outside = changedPaths(projectDir).filter((p) => !allowed.test(p));
+  if (outside.length)
+    return {
+      id, ok: false,
+      messages: [`derive-tests may only change tests/acceptance/${domain}/, tests/acceptance/not-testable.yaml and tests/generated/, but also touched: ${outside.join(", ")}`],
+    };
+  return { id, ok: true, messages: [] };
+}
+
+// The claim every spec file's header makes for itself (`checkTests` resolves whether it
+// actually earns it, against git history) still has to be the claim written on the file:
+// a `derive-tests` run can never leave a new or changed spec file's own header saying
+// `unverified` — that would be a blind stage quietly admitting its own output cannot be
+// trusted, rather than the stage that exists to make the claim true in the first place.
+function checkDeriveTestsBlindHeader(projectDir, domain) {
+  const id = "derive-tests-blind-header";
+  const changed = changedPaths(projectDir).filter((p) => p.startsWith(`tests/acceptance/${domain}/`) && p.endsWith(".spec.ts"));
+  const messages = [];
+  for (const rel of changed) {
+    const full = join(projectDir, rel);
+    if (!existsSync(full)) continue;
+    const second = readText(full).split("\n")[1] ?? "";
+    if (!second.includes("provenance: blind"))
+      messages.push(`${rel}: second line must declare "provenance: blind" — a derive-tests file can never claim unverified provenance`);
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+// `derive-tests` is the blind stage: an agent that sees only the contract (generated
+// into `tests/generated/*` by its own `prepare` step) and the seed writes one Playwright
+// spec per accepted criterion, calling the abstract surface and never a locator. It holds
+// gate G3: the reviewer persona rules whether each test asserts only what its criterion
+// states and nothing about how the system is built.
+const deriveTests = {
+  name: "derive-tests",
+  title: "derive tests",
+  skill: skillPath("derive-tests"),
+  // A fresh temporary directory built from committed content only (`git archive HEAD`),
+  // so the agent writing tests never sees an uncommitted edit to the contract or to
+  // another domain's own criteria.
+  workspace: "spec-only",
+  gate: "G3",
+  // Copied back into the project once the session ends: the acceptance suite the agent
+  // wrote, and the generated types `prepare` (below) regenerated in the workspace before
+  // the agent ever saw it.
+  collect: ["tests/acceptance", "tests/generated"],
+  implemented: true,
+  // Generates `tests/generated/*` from the contract already sitting in the workspace
+  // (`git archive` put it there), so the agent's very first read of `surface`/`persona`/
+  // `seed` is the same TypeScript a real test file imports — never regenerated from a
+  // contract the agent could have edited itself, since this workspace never lets it.
+  prepare(wsDir) {
+    writeGenerated(wsDir);
+  },
+  prompt(ctx) {
+    const d = ctx.domain;
+    const criteria = ctx.deriveTestsCriteria ?? [];
+    const specSha = ctx.deriveTestsGeneratedFrom || "0000000000000000000000000000000000000000";
+    const today = new Date().toISOString().slice(0, 10);
+    const list = criteria.map((c) => `- ${c.id} (v${c.version}): ${c.statement}`).join("\n");
+    return [
+      `Write one Playwright acceptance test per criterion below, for the "${d}" domain, and nothing else. You see only the contract (tests/generated/*, generated from spec/contract) and the seed; there is no app/ in this workspace and nothing here lets you read one.`,
+      `The criteria to derive tests for:\n\n${list}`,
+      `For each one, write tests/acceptance/${d}/<ID>.spec.ts, starting with exactly these two header lines:\n\n// criterion: @<ID> v<version>\n// provenance: blind, spec@${specSha}, derived ${today}\n\nImport only from "../../fixtures" and "../../generated/*". Sign in through persona.<id> when the criterion needs a signed-in actor, act through surface.<page>.<action>(), read through surface.<page>.<observation>(), and refer to a record through seed.<group>.<handle> rather than an id or a value you invented. Write one test() per given/when/then the criterion states, titled with the criterion's own statement. Never read or guess at how the system is built, and never write a selector, a locator call, a data-testid, a hardcoded route, or anything else that reaches past surface — the surface is the whole world.`,
+      `A criterion nothing in surface reaches — no page, action or observation gets you there — gets an entry in tests/acceptance/not-testable.yaml instead of a file: { id: <ID>, version: <version>, reason: "<why>" }. A reason has to name what is actually missing, not that the criterion is hard.`,
+      `Finish with your journal entry: how many criteria got a test, which were not testable and why, and which surface actions or observations you needed but did not find — name them, so the contract can be extended to reach them.`,
+    ].join("\n\n");
+  },
+  proposal(ctx) {
+    const d = ctx.domain;
+    const name = ctx.stale
+      ? `derive-tests-${d}-stale-${ctx.deriveTestsStaleN ?? nextDeriveTestsStaleVersion(ctx.projectDir, d)}`
+      : `derive-tests-${d}`;
+    return {
+      name,
+      question: `Do these tests follow from the ${d} criteria and from nothing else?`,
+      recommendation: recommendationFrom(ctx.agentText),
+    };
+  },
+  preChecks(projectDir, ctx) {
+    // Resolved once here — the real project directory, before a workspace exists — and
+    // stashed on `ctx` for `prompt(ctx)` to read back later with nothing else to go on.
+    if (ctx.domain) {
+      const resolved = resolveCriteriaToDerive(projectDir, ctx);
+      ctx.deriveTestsCriteria = resolved.criteria;
+      ctx.deriveTestsGeneratedFrom = resolved.generatedFrom;
+    }
+    return [
+      checkDomainOption(ctx, "derive-tests"),
+      checkDeriveTestsDomainRatified(projectDir, ctx),
+      checkDeriveTestsStaleHasWork(ctx),
+    ];
+  },
+  postChecks(projectDir, ctx) {
+    // Stashed the same way `contract` stashes its own version: the real `proposal(ctx)`
+    // call in `finishStage` does not carry `projectDir`, so a `--stale` run's number has
+    // to be resolved here, while it is available, for `proposal` to read back.
+    if (ctx.stale) ctx.deriveTestsStaleN = nextDeriveTestsStaleVersion(projectDir, ctx.domain);
+    return [
+      checkTestsBlind(projectDir, ctx),
+      checkSeparation(projectDir),
+      checkDeriveTestsCoverage(projectDir, ctx.domain),
+      checkDeriveTestsScope(projectDir, ctx.domain),
+      checkDeriveTestsBlindHeader(projectDir, ctx.domain),
+    ];
+  },
+};
+
 function ratifyGateName(domain) {
   return `archaeology-${domain}`;
 }
@@ -990,6 +1210,7 @@ STAGES_BY_NAME.intent = intent;
 STAGES_BY_NAME.archaeology = archaeology;
 STAGES_BY_NAME.ratify = ratify;
 STAGES_BY_NAME.contract = contract;
+STAGES_BY_NAME["derive-tests"] = deriveTests;
 
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { copyTree, ensureDir } from "../lib/fsx.mjs";
+import { copyTreeOverwrite, ensureDir } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { ensureSources } from "./sources.mjs";
 
@@ -58,6 +58,12 @@ export function materialise(projectDir, mode) {
   return { dir, mode, cleanup() { rmSync(dir, { recursive: true, force: true }); } };
 }
 
+// Copies an agent's own output back out of a temporary workspace — always overwriting
+// (`copyTreeOverwrite`, not `copyTree`), since a destination path that already exists in
+// the project is exactly the file the workspace started from and the agent may have
+// rewritten: `derive-tests` rewriting an already-committed spec file on a `--stale`
+// re-run, or updating the project's own `tests/acceptance/not-testable.yaml`, both
+// depend on the workspace's version winning rather than being silently discarded.
 export function collect(projectDir, dir, paths) {
-  for (const p of paths) if (existsSync(join(dir, p))) { ensureDir(join(projectDir, p)); copyTree(join(dir, p), join(projectDir, p)); }
+  for (const p of paths) if (existsSync(join(dir, p))) { ensureDir(join(projectDir, p)); copyTreeOverwrite(join(dir, p), join(projectDir, p)); }
 }

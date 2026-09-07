@@ -12,6 +12,7 @@ import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule } from "../src/commands/rule.mjs";
+import { propose } from "../src/commands/propose.mjs";
 import { STAGES, PROFILES } from "../src/profiles.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
@@ -140,6 +141,228 @@ test("sdlc run contract: re-run after approving contract-v1 opens contract-v2", 
     assert.equal(second.proposal.name, "contract-v2");
     assert.equal(second.proposal.branch, "proposal/contract-v2");
   } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// --- derive-tests ---
+//
+// Three permanent criteria, minted for a domain file this suite writes and ratifies
+// directly (`ratifyApplicationsDirectly`) rather than through a real `sdlc run
+// archaeology` turn: every criterion below is already `confirmed`, so a plain approval
+// (no ratification conditions) mints all three in one pass, and derive-tests' own tests
+// care only about the ratified result — three accepted criteria under known ids — not
+// the path that produced it.
+const DERIVE_TESTS_DOMAIN_TEXT = `# applications
+
+### D-applications-1 · v1 · confirmed · recovered
+When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.
+- cites: src/routes.js:4
+- reconciliation: implemented-only
+- given: an applicant submitting a permit application
+- when: the applicant is under 19 years old
+- then: the application is rejected with an error and no record is created
+
+### D-applications-2 · v1 · confirmed · recovered
+When a permit application is accepted, the system shall change its status to accepted.
+- cites: src/routes.js:10
+- reconciliation: implemented-only
+- given: a submitted permit application that passes the age check
+- when: the application is accepted
+- then: the application's status changes to accepted
+
+### D-applications-3 · v1 · confirmed · recovered
+The system shall recalculate the intake fee whenever an accepted application is edited.
+- cites: src/routes.js:14
+- reconciliation: implemented-only
+- given: an accepted permit application
+- when: the application is edited
+- then: the intake fee is recalculated from the current record
+`;
+
+async function ratifyApplicationsDirectly(dir) {
+  writeFileSync(join(dir, "spec", "domains", "applications.md"), DERIVE_TESTS_DOMAIN_TEXT);
+  propose(dir, "archaeology-applications", {
+    gate: "G1",
+    question: "Is this what the applications domain does, and which of it is the contract?",
+    recommendation: "recovered three criteria from the fixture's old application",
+    paths: ["spec/domains/applications.md"],
+  });
+  rule(dir, "archaeology-applications", "approve", { by: "tech-lead" });
+  const r = await runStage(dir, "ratify", { domain: "applications" });
+  if (!r.ok) throw new Error(`ratify failed: ${JSON.stringify(r.messages)}`);
+}
+
+// A project with the applications domain ratified (R-1.1, R-1.2, R-1.3, all accepted)
+// and the contract completed and approved (contract-v1) — spec/contract is committed on
+// main, which the `spec-only` workspace `derive-tests` runs in needs, since it archives
+// only committed content.
+async function makeReadyForDeriveTests(tmp) {
+  const { dir, prevEgress } = await makeProject(tmp);
+  await ratifyApplicationsDirectly(dir);
+
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  const contractRun = await runStage(dir, "contract");
+  if (!contractRun.ok) throw new Error(`contract failed: ${JSON.stringify(contractRun.messages)}`);
+  delete process.env.SDLC_EXECUTOR;
+  delete process.env.SDLC_MOCK_DIR;
+  rule(dir, "contract-v1", "approve", { by: "tech-lead" });
+
+  return { dir, prevEgress };
+}
+
+const DERIVE_TESTS_MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
+
+test("sdlc run derive-tests --domain fees: refused before any agent turn — fees has no accepted criteria yet", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-unratified-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    const r = await runStage(dir, "derive-tests", { domain: "fees" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /derive-tests: domain fees has no accepted criteria; run ratify first/.test(m)), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run derive-tests --domain applications: the mock run opens proposal/derive-tests-applications at G3 with the two spec files, the not-testable entry and tests/generated", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-ok-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = DERIVE_TESTS_MOCK_DIR;
+  try {
+    const r = await runStage(dir, "derive-tests", { domain: "applications" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(r.proposal);
+    assert.equal(r.proposal.name, "derive-tests-applications");
+    assert.equal(r.proposal.gate, "G3");
+    assert.equal(r.proposal.branch, "proposal/derive-tests-applications");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/derive-tests-applications");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+
+    const proposalText = readFileSync(join(dir, ".sdlc/proposals/derive-tests-applications.md"), "utf8");
+    assert.match(proposalText, /gate: G3/);
+    assert.match(proposalText, /"Do these tests follow from the applications criteria and from nothing else\?"/);
+
+    assert.ok(existsSync(join(dir, "tests/acceptance/applications/R-1.1.spec.ts")));
+    assert.ok(existsSync(join(dir, "tests/acceptance/applications/R-1.2.spec.ts")));
+    const notTestable = readFileSync(join(dir, "tests/acceptance/not-testable.yaml"), "utf8");
+    assert.match(notTestable, /R-1\.3/);
+    assert.ok(existsSync(join(dir, "tests/generated/surface.d.ts")));
+
+    const committed = git(["show", "--name-only", "--format=", "HEAD"], dir);
+    assert.match(committed, /tests\/acceptance\/applications\/R-1\.1\.spec\.ts/);
+    assert.match(committed, /tests\/acceptance\/not-testable\.yaml/);
+    assert.match(committed, /tests\/generated\/surface\.d\.ts/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run derive-tests --domain applications: a mock file that touches locator( fails separation", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-locator-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-locator-mock-"));
+  writeFileSync(join(mockDir, "derive-tests.json"), JSON.stringify({
+    text: "wrote a test that reaches past the surface",
+    files: {
+      "tests/acceptance/applications/R-1.1.spec.ts":
+        "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+        + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+        + "test(\"age check\", async ({ surface, page }) => {\n  await surface.signIn(persona.applicant);\n"
+        + "  await page.locator('#submit').click();\n  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
+      "tests/acceptance/applications/R-1.2.spec.ts":
+        "// criterion: @R-1.2 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+        + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+        + "test(\"acceptance status\", async ({ surface }) => {\n  await surface.signIn(persona.applicant);\n"
+        + "  await surface.applicationsNew.submit({ age: 25 });\n  expect(await surface.applicationsNew.status()).toBe(\"accepted\");\n});\n",
+      "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\" }\n",
+    },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "derive-tests", { domain: "applications" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m.includes("locator(")), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(derive-tests\): post-checks failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run derive-tests --domain applications: a mock omitting a criterion fails coverage, naming the id", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-coverage-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-coverage-mock-"));
+  writeFileSync(join(mockDir, "derive-tests.json"), JSON.stringify({
+    text: "wrote only one test, forgot the acceptance-status criterion entirely",
+    files: {
+      "tests/acceptance/applications/R-1.1.spec.ts":
+        "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+        + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+        + "test(\"age check\", async ({ surface }) => {\n  await surface.signIn(persona.applicant);\n"
+        + "  await surface.applicationsNew.submit({ age: 17 });\n  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
+      "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\" }\n",
+    },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "derive-tests", { domain: "applications" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m.includes("R-1.2")), r.messages.join(" | "));
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run derive-tests --domain applications --stale: after bumping one criterion's version in the index, --dry-run lists only that criterion", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-stale-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = DERIVE_TESTS_MOCK_DIR;
+  const logs = [];
+  const origLog = console.log;
+  try {
+    const first = await runStage(dir, "derive-tests", { domain: "applications" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    // `checkTests` compares a spec file's own header version against the index, so the
+    // spec files this run wrote have to actually be on main (via a real ruling) before a
+    // later version bump can show up as staleness — G3's holder is agent:reviewer, but
+    // tech-lead is its escalate_to and a human may rule directly through it.
+    rule(dir, "derive-tests-applications", "approve", { by: "tech-lead" });
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+
+    const idxPath = join(dir, "spec/criteria-index.json");
+    const index = JSON.parse(readFileSync(idxPath, "utf8"));
+    index.criteria.find((c) => c.id === "R-1.2").version = 2;
+    writeFileSync(idxPath, JSON.stringify(index, null, 2) + "\n");
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "bump R-1.2's version (test)"], dir);
+
+    console.log = (...a) => logs.push(a.join(" "));
+    const dry = await runStage(dir, "derive-tests", { domain: "applications", stale: true, dryRun: true });
+    console.log = origLog;
+    assert.equal(dry.ok, true, JSON.stringify(dry.messages));
+
+    const printed = logs.join("\n");
+    assert.match(printed, /R-1\.2/);
+    assert.ok(!printed.includes("R-1.1"), printed);
+    assert.ok(!printed.includes("R-1.3"), printed);
+  } finally {
+    console.log = origLog;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }

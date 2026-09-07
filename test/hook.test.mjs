@@ -15,10 +15,15 @@ test("build stage cannot edit spec, acceptance tests, constitution or config", (
   assert.equal(run("app/src/index.ts", "build").status, 0);
 });
 
-test("derive-tests stage cannot see app or adapters", () => {
-  assert.equal(run("app/src/index.ts", "derive-tests").status, 2);
-  assert.equal(run("tests/adapters/new/a.ts", "derive-tests").status, 2);
-  assert.equal(run("tests/acceptance/x.spec.ts", "derive-tests").status, 0);
+test("derive-tests may write only tests/acceptance/, and nothing else at all", () => {
+  assert.equal(run("tests/acceptance/applications/R-1.1.spec.ts", "derive-tests").status, 0);
+  assert.equal(run("tests/acceptance/not-testable.yaml", "derive-tests").status, 0);
+  // An allow rule, so a path nobody thought to name is refused rather than permitted —
+  // in particular tests/generated/, which `prepare` regenerates but the agent never
+  // writes to directly.
+  for (const p of ["app/src/index.ts", "tests/adapters/new/a.ts", "tests/seed/001-users.sql",
+    "tests/generated/surface.d.ts", "spec/domains/x.md", "constitution.md", ".sdlc/config.yaml"])
+    assert.equal(run(p, "derive-tests").status, 2, p);
 });
 
 test("spec stages (design, plan) may edit spec but not app or tests", () => {
