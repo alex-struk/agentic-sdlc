@@ -8,6 +8,14 @@ import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
 import { endedBecause } from "./executor.mjs";
 
+// A stage's own commit-and-journal subject: a plain string for most stages, or (`ratify`,
+// `archaeology`) a function of `ctx` for one whose subject folds in something only known
+// once the stage actually runs against a domain — `ratify applications`, `archaeology
+// applications (revise)`, not just the bare stage name.
+function resolveTitle(stage, ctx) {
+  return typeof stage.title === "function" ? stage.title(ctx) : stage.title ?? stage.name;
+}
+
 // A stage that opened a proposal on a previous run and has not been ruled yet is not
 // safe to run again under the same name: `propose`'s own `git checkout -q -b` refuses
 // to recreate a branch that already exists. Called three ways: by `runStage`, before a
@@ -121,7 +129,7 @@ export function finishDeterministicNoOp(projectDir, stage, ctx, text) {
     .filter((p) => p !== ".sdlc/run-state.json")
     .filter((p) => !stagedBySite.includes(p) && !(stagedBySite.includes("site") && p.startsWith("site/")));
   stageAll(projectDir, batch);
-  const title = typeof stage.title === "function" ? stage.title(ctx) : stage.title ?? stage.name;
+  const title = resolveTitle(stage, ctx);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${title} (regenerated)`], projectDir);
   return { ok: true, changed, text };
 }
@@ -163,7 +171,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
 
   const journal = writeJournal(projectDir, {
     stage: stage.name,
-    title: stage.name,
+    title: resolveTitle(stage, ctx),
     body: agentResult.text,
     metrics: { cost: agentResult.cost, turns: agentResult.turns, session: agentResult.sessionId },
   });
@@ -215,10 +223,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     const batch = changed.filter((p) => !stagedBySite.includes(p)
       && !(stagedBySite.includes("site") && p.startsWith("site/")));
     stageAll(projectDir, batch);
-    // `title` may be a plain string (every stage but `ratify`) or a function of `ctx`
-    // (`ratify`, whose commit subject folds in the domain — `ratify applications`, not
-    // just `ratify` — and which cannot know that until it is actually run for a domain).
-    const title = typeof stage.title === "function" ? stage.title(ctx) : stage.title ?? stage.name;
+    const title = resolveTitle(stage, ctx);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${title}`], projectDir);
   }
 

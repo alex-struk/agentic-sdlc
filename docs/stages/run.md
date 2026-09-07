@@ -9,8 +9,8 @@ proposal, depending on whether the stage holds a gate.
 
 ## Inputs
 
-`sdlc run <stage> [--slice N] [--domain X] [--dry-run] [--again]`, run from inside the project's
-working tree, on `main`.
+`sdlc run <stage> [--slice N] [--domain X] [--dry-run] [--again] [--revise]`, run from inside the
+project's working tree, on `main`.
 
 `<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Four are implemented:
 `probe` (which proves the runner itself and is not one of the pipeline's own stages), `intent`,
@@ -20,6 +20,12 @@ throws `stage <name> is not implemented yet` before touching the working tree.
 `--slice` and `--domain` are threaded into the stage's context as `ctx.slice` and `ctx.domain`.
 `archaeology` and `ratify` both require `--domain <d>`, and `<d>` must be one of
 `config.project.domains`; `probe` and `intent` ignore both flags.
+
+`--revise` is threaded the same way, as `ctx.revise`, and carried through `.sdlc/run-state.json`
+for `resume` the same way `slice` and `domain` are. Only `archaeology` reads it — `sdlc run
+archaeology --domain <d> --revise` revises the domain from a returned G1 ruling instead of
+recovering it from scratch (`docs/stages/archaeology.md`, "Revising after a return"); every other
+stage ignores it.
 
 `--dry-run` writes nothing at all. For an agent stage it prints the prompt the stage would send
 and the path of the scratch file holding its skill text; for a stage with no agent turn it prints

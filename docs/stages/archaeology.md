@@ -91,6 +91,44 @@ escalated proposal's branch, never merged, is left for a person to clean up. Run
 against a different `--domain` on the same project is ordinary and expected — one run, one domain, one
 proposal, and only a domain whose own proposal is currently open is refused.
 
+## Revising after a return
+
+A ruling at G1 can find that one criterion's evidence — its citations, or its given/when/then — is
+wrong in a way no ratification condition can repair, and return the proposal instead of approving
+it. Neither `sdlc rule` nor `sdlc run archaeology --domain <d>` on its own does anything with that:
+the ruling's rationale says what archaeology has to go back and redo, and `--revise` is what acts
+on it.
+
+`sdlc run archaeology --domain <d> --revise` looks for a returned ruling to revise from: among
+`proposal/archaeology-<d>` and every `proposal/ratify-<d>-<n>` follow-up, the one whose gate file
+records `verdict: return` and has not already landed on `main` — the highest-numbered follow-up if
+more than one qualifies, otherwise the archaeology proposal itself. None found fails the pre-check
+with `archaeology --revise: no returned ruling for <d> to revise from`.
+
+Once found, before the agent turn runs (and before a `--dry-run` print, since the prompt needs the
+rationale), that branch's gate file and proposal page are copied onto `main`, committed as
+`record(G1): <name> returned`, and the branch — never merged, since a return merges nothing — is
+deleted. This is what makes the return visible everywhere a ruling normally is: the state site, and
+`readRulings`/`followUpState`'s own count of what has been ruled on, so the next follow-up a further
+ratify pass opens continues the numbering past it rather than reusing its number. The working tree
+is clean again once this commit lands, so the rest of the run — and `propose`, later — works exactly
+as an ordinary run's does.
+
+The prompt is different from a first recovery: it quotes the returning ruling's rationale verbatim
+and asks for a revision, not a fresh recovery — rewrite the statement, citations, given/when/then,
+note and confidence of exactly the criteria the rationale names, leave every other criterion alone
+unless the rationale's own evidence contradicts it, and never renumber anything. Two post-checks
+enforce the boundary this implies: `archaeology-no-minted-ids` only fails on an `R-` id that is new
+relative to `HEAD` (an id the domain file already carried, from an earlier ratify pass, is not this
+run's doing, in `--revise` mode or not), and `archaeology-revise-keeps-minted` fails if any `R-`
+criterion in the changed domain file no longer matches `HEAD`'s — the permanent record a revision
+must never touch.
+
+The proposal it opens reuses the name `archaeology-<d>` — its earlier branch, if any, was already
+deleted by the pre-flight above or by the ordinary re-run cleanup — with the question "Is the
+revised `<d>` domain right where the return said it was wrong?" and a recommendation taken from the
+journal, the same way any other archaeology proposal's is.
+
 ## Failure modes
 
 - The domain's own proposal (`proposal/archaeology-<d>`) is still open: refused before a workspace
@@ -99,11 +137,14 @@ proposal, and only a domain whose own proposal is currently open is refused.
   anything else runs (see above).
 - `config.sources.old` is not configured: the pre-check fails the same way, before any clone is
   attempted.
+- `--revise` with no returned ruling to revise from: the pre-check fails with `archaeology
+  --revise: no returned ruling for <d> to revise from` (see "Revising after a return" above).
 - The agent session itself fails to run, or reports failure (turn limit, an error result): handled
   the same way every stage's agent-turn failure is (`docs/stages/run.md`) — no post-checks run,
   the turn's own text becomes the journal entry, and `run` returns `{ ok: false }`.
 - The agent writes no domain file, a domain file with a parse error or zero criteria, a domain
-  file that mints an `R-` ID, or touches a path outside `spec/`: the matching post-check fails,
-  `finishStage` commits `stage(archaeology): post-checks failed` with only the journal and run
-  record staged, and whatever the agent actually wrote is left untracked in the working tree for a
-  person to look at.
+  file that mints an `R-` ID that is new relative to `HEAD`, touches a path outside `spec/`, or —
+  in `--revise` mode — alters or removes an already-minted `R-` criterion: the matching post-check
+  fails, `finishStage` commits `stage(archaeology): post-checks failed` with only the journal and
+  run record staged, and whatever the agent actually wrote is left untracked in the working tree
+  for a person to look at.

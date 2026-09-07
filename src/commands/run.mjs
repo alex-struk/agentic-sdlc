@@ -58,7 +58,7 @@ function followUp(projectDir, stage, ctx, result) {
   return { ...result, proposal: opened };
 }
 
-export async function runStage(projectDir, name, { slice, domain, dryRun = false, again = false } = {}) {
+export async function runStage(projectDir, name, { slice, domain, dryRun = false, again = false, revise = false } = {}) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
   assertOnMain(projectDir, "run");
@@ -67,7 +67,7 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
 
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
-  const ctx = { slice, domain, config };
+  const ctx = { slice, domain, config, revise };
 
   const pre = stage.preChecks(projectDir, ctx);
   const preFail = pre.filter((r) => !r.ok);
@@ -134,7 +134,7 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
 
       // Written only once the dry-run return above is behind us: a dry run makes no
       // change of any kind, so nothing should exist for `sdlc resume` to find.
-      const state = { stage: name, ctx: { slice, domain }, startedAt: new Date().toISOString(), phase: "agent" };
+      const state = { stage: name, ctx: { slice, domain, revise }, startedAt: new Date().toISOString(), phase: "agent" };
       writeRunState(projectDir, state);
 
       const r = await runAgent({ cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name) });
@@ -157,6 +157,7 @@ COMMANDS.run = async ({ pos, flags }) => {
     domain: flags.domain,
     dryRun: !!flags["dry-run"],
     again: !!flags.again,
+    revise: !!flags.revise,
   });
   if (r.dryRun) return 0;
   if (!r.ok) { console.error(`run ${pos[0]}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }
