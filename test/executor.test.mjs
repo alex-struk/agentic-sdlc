@@ -19,9 +19,13 @@ test("config home is created with a credentials symlink when the source exists",
   } finally { delete process.env.SDLC_CLAUDE_HOME; delete process.env.SDLC_CREDENTIALS; }
 });
 
-test("buildArgs carries isolation flags and the stage", () => {
-  const { args, env } = buildArgs({ prompt: "hi", stage: "build", maxTurns: 7, systemPromptFile: "/x/skill.md", addDirs: ["/tmp/a"] }, "/cfg");
-  assert.deepEqual(args.slice(0, 2), ["-p", "hi"]);
+test("buildArgs carries isolation flags and the stage, and hands the prompt back as input rather than argv", () => {
+  const { args, env, input } = buildArgs({ prompt: "hi", stage: "build", maxTurns: 7, systemPromptFile: "/x/skill.md", addDirs: ["/tmp/a"] }, "/cfg");
+  // `-p` with no positional prompt: the prompt travels on stdin (`input`), never argv,
+  // so a diff-sized prompt cannot trip the OS's argv size limit (`spawn E2BIG`).
+  assert.equal(args[0], "-p");
+  assert.ok(!args.includes("hi"));
+  assert.equal(input, "hi");
   for (const f of ["--output-format", "json", "--permission-mode", "acceptEdits", "--strict-mcp-config", "--no-session-persistence", "--max-turns", "7", "--append-system-prompt-file", "/x/skill.md", "--add-dir", "/tmp/a"]) assert.ok(args.includes(f), f);
   assert.equal(env.CLAUDE_CONFIG_DIR, "/cfg"); assert.equal(env.SDLC_STAGE, "build");
   // No caller-supplied tool list, so the flag is absent rather than present and empty.
@@ -103,18 +107,24 @@ test("ensureConfigHome replaces whatever is already at the credentials path", ()
 });
 
 // A stand-in for the `claude` binary: a real subprocess, so `runAgent`'s own use of
-// `execFile` — its JSON parsing, its `??` fallbacks, the flags it actually passed — is
-// exercised rather than bypassed by the in-process mock. It prints whatever the file
-// named by `FAKE_OUT` holds, after substituting `__MAX_TURNS__` for the value it was
-// actually given on the command line, and exits with `FAKE_EXIT` if that is set.
+// `execFile` — its JSON parsing, its `??` fallbacks, the flags it actually passed, and
+// now how it feeds the child's stdin — is exercised rather than bypassed by the
+// in-process mock. It reads the prompt off its own stdin (fd 0), the same place
+// `runAgent` writes it, and echoes that verbatim to `FAKE_STDIN_OUT` so a test can
+// assert on what actually arrived rather than trusting that the write succeeded. It
+// prints whatever the file named by `FAKE_OUT` holds, after substituting
+// `__MAX_TURNS__` for the value it was actually given on the command line, and exits
+// with `FAKE_EXIT` if that is set.
 function fakeClaude(root) {
   const bin = join(root, "fake-claude");
   writeFileSync(bin, [
     "#!/usr/bin/env node",
-    'import { readFileSync } from "node:fs";',
+    'import { readFileSync, writeFileSync } from "node:fs";',
     "const args = process.argv.slice(2);",
     'const i = args.indexOf("--max-turns");',
     'const maxTurns = i === -1 ? "" : args[i + 1];',
+    'const prompt = readFileSync(0, "utf8");',
+    'if (process.env.FAKE_STDIN_OUT) writeFileSync(process.env.FAKE_STDIN_OUT, prompt);',
     'const out = readFileSync(process.env.FAKE_OUT, "utf8").replaceAll("__MAX_TURNS__", maxTurns);',
     "process.stdout.write(out);",
     "if (process.env.FAKE_EXIT) process.exit(Number(process.env.FAKE_EXIT));",
@@ -130,11 +140,12 @@ function withFakeClaude(root, output, { exitCode = null } = {}) {
   process.env.SDLC_CLAUDE_HOME = join(root, "claude-home");
   process.env.SDLC_CREDENTIALS = join(root, "no-such-credentials.json");
   process.env.FAKE_OUT = outPath;
+  process.env.FAKE_STDIN_OUT = join(root, "stdin.txt");
   if (exitCode !== null) process.env.FAKE_EXIT = String(exitCode);
 }
 
 function clearFakeClaude() {
-  for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "FAKE_EXIT"]) delete process.env[k];
+  for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "FAKE_STDIN_OUT", "FAKE_EXIT"]) delete process.env[k];
 }
 
 test("runAgent parses the CLI's JSON and reports a real result", async () => {
@@ -196,6 +207,33 @@ test("runAgent throws when the CLI exits non-zero with nothing on stdout", async
   withFakeClaude(root, "", { exitCode: 3 });
   try {
     await assert.rejects(() => runAgent({ cwd: root, prompt: "x", stage: "probe" }), /claude failed/);
+  } finally { clearFakeClaude(); }
+});
+
+test("runAgent writes the prompt to the child's stdin rather than argv", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-exec-stdin-"));
+  withFakeClaude(root, JSON.stringify({ is_error: false, result: "ok" }));
+  try {
+    const r = await runAgent({ cwd: root, prompt: "rule on this diff", stage: "rule" });
+    assert.equal(r.ok, true);
+    assert.equal(readFileSync(process.env.FAKE_STDIN_OUT, "utf8"), "rule on this diff");
+  } finally { clearFakeClaude(); }
+});
+
+// A G3 ruling's diff can run to `DIFF_CAP_BY_GATE.G3` (120,000 characters,
+// src/runner/persona.mjs); this prompt is larger still, to prove the fix by margin
+// rather than by coincidence. Passed as argv it would exceed the OS's argv/environment
+// size limit (`spawn E2BIG`, the failure this fix exists for); on stdin it round-trips
+// intact.
+test("a 200,000-character prompt round-trips through the fake claude on stdin without error", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-exec-bigprompt-"));
+  const bigPrompt = "x".repeat(200_000);
+  withFakeClaude(root, JSON.stringify({ is_error: false, result: "ok" }));
+  try {
+    const r = await runAgent({ cwd: root, prompt: bigPrompt, stage: "rule" });
+    assert.equal(r.ok, true);
+    assert.equal(readFileSync(process.env.FAKE_STDIN_OUT, "utf8").length, 200_000);
+    assert.equal(readFileSync(process.env.FAKE_STDIN_OUT, "utf8"), bigPrompt);
   } finally { clearFakeClaude(); }
 });
 

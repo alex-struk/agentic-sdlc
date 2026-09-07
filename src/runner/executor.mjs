@@ -64,8 +64,14 @@ export function endedBecause(raw) {
   return `ended with ${reason}`;
 }
 
+// The prompt travels on stdin, not argv: a persona ruling at G3 carries a diff of up to
+// `DIFF_CAP_BY_GATE.G3` (120,000 characters, `src/runner/persona.mjs`), and an argument
+// that size runs into the OS's argv/environment size limit (`spawn E2BIG`) well before
+// it reaches that cap. `-p` with no positional prompt reads the prompt from stdin the
+// same way an operator's own piped `claude -p` invocation would, so `runAgent` writes
+// `input` to the child's stdin instead of appending it to `args`.
 export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {}, mcpConfig }, configHome) {
-  const args = ["-p", prompt, "--output-format", "json", "--permission-mode", "acceptEdits",
+  const args = ["-p", "--output-format", "json", "--permission-mode", "acceptEdits",
     "--strict-mcp-config"];
   // `--mcp-config` sits right after `--strict-mcp-config`: strict mode refuses any
   // server not named in a config passed this way, so the two flags are read together —
@@ -79,7 +85,7 @@ export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemP
   if (allowedTools.length) args.push("--allowedTools", ...allowedTools);
   if (systemPromptFile) args.push("--append-system-prompt-file", systemPromptFile);
   for (const d of addDirs) args.push("--add-dir", d);
-  return { args, env: { ...process.env, ...env, CLAUDE_CONFIG_DIR: configHome, SDLC_STAGE: stage } };
+  return { args, env: { ...process.env, ...env, CLAUDE_CONFIG_DIR: configHome, SDLC_STAGE: stage }, input: prompt };
 }
 
 // How many times each canned file has been consumed in this process, so a `sequence`
@@ -119,12 +125,19 @@ export function claudeBin() {
 
 export async function runAgent(opts) {
   if (process.env.SDLC_EXECUTOR === "mock") return runMock(opts);
-  const { args, env } = buildArgs(opts, ensureConfigHome());
+  const { args, env, input } = buildArgs(opts, ensureConfigHome());
   const raw = await new Promise((resolve, reject) => {
-    execFile(claudeBin(), args, { cwd: opts.cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFile(claudeBin(), args, { cwd: opts.cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err && !stdout) return reject(new Error(`claude failed: ${stderr || err.message}`));
       resolve(stdout);
     });
+    // A child that exits before reading all of stdin (a crash, a non-zero exit before
+    // the prompt is fully drained) raises 'error' on the stream; left unhandled that is
+    // an uncaught exception that would crash this process instead of surfacing through
+    // the exec callback's own err/stderr above, which is where a failure like that
+    // already gets reported.
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
   });
   let j; try { j = JSON.parse(raw); } catch { throw new Error(`claude returned non-JSON output:\n${raw.slice(0, 500)}`); }
   return { ok: !j.is_error, text: j.result ?? "", cost: j.total_cost_usd ?? 0, turns: j.num_turns ?? 0, sessionId: j.session_id ?? "", raw: j };

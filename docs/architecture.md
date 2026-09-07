@@ -27,7 +27,9 @@ repository are the primitives that shape composes into:
   action, so calling it twice around a stage's work is exactly as sound as calling it once.
 - **Agent** — `sdlc run <stage>` (`docs/stages/run.md`) is the dispatcher: it materialises the
   stage's workspace (`src/runner/workspace.mjs`), runs the stage's pre-checks, and calls
-  `runAgent` (`src/runner/executor.mjs`), which spawns `claude -p` — or, in CI, whichever cloud
+  `runAgent` (`src/runner/executor.mjs`), which spawns `claude -p` with the prompt written to the
+  child's stdin rather than passed as a command-line argument — a G3 persona ruling's diff can run
+  to 120,000 characters, well past what an argument list can carry — or, in CI, whichever cloud
   executor the configuration names, and in tests a mock executor selected by
   `SDLC_EXECUTOR=mock` — confined to the workspace by three mechanisms: an isolated
   `CLAUDE_CONFIG_DIR` holding only a link to the operator's credentials
