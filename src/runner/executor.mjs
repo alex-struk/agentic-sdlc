@@ -50,11 +50,19 @@ function runMock({ cwd, stage }) {
   return { ok: m.ok !== false, text: m.text ?? "", cost: 0, turns: 1, sessionId: "mock", raw: m };
 }
 
+// The binary a real agent turn spawns. Overridable so the executor's own behaviour —
+// how it reads the CLI's JSON, what it does with output that is not JSON at all, which
+// flags it actually passed — can be exercised against a real subprocess, rather than only
+// through the in-process mock that never goes near `execFile`.
+export function claudeBin() {
+  return process.env.SDLC_CLAUDE_BIN || "claude";
+}
+
 export async function runAgent(opts) {
   if (process.env.SDLC_EXECUTOR === "mock") return runMock(opts);
   const { args, env } = buildArgs(opts, ensureConfigHome());
   const raw = await new Promise((resolve, reject) => {
-    execFile("claude", args, { cwd: opts.cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(claudeBin(), args, { cwd: opts.cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err && !stdout) return reject(new Error(`claude failed: ${stderr || err.message}`));
       resolve(stdout);
     });
