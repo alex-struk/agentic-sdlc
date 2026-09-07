@@ -156,16 +156,26 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
   });
   appendRun(projectDir, `run ${stage.name}: ok, cost ${agentResult.cost}, turns ${agentResult.turns}`);
 
-  buildSite(projectDir);
-  // The site is regenerated on every successful run so it is always current on disk,
-  // and it is a tracked artifact: staging it here (which un-ignores it first on a
-  // project whose `.gitignore` still hides it) means `changedPaths()` below reports the
-  // freshly written `site/*.md` files the same as any other change, so they are
-  // committed alongside the journal and run record. The returned list is exactly what
-  // it staged (a subset of ["site", ".gitignore"]) and is used below to keep those paths
-  // out of this function's own `stageAll` batch — naming an already-staged, still-
-  // ignored `site` again there would make `stageAll` refuse the whole batch.
-  const stagedBySite = stageSite(projectDir);
+  // The state site is a tracked artifact of `main` and of nothing else. A gated stage's
+  // work lands on a `proposal/<name>` branch, and every page of the site is regenerated
+  // whole from the whole project, so two proposals open at once each carry a different
+  // complete site: merging the second one conflicts on every page, for content neither
+  // proposal is about. So a gated stage builds no site at all, and regenerating it is the
+  // ruling's job, on `main`, after the merge (`docs/stages/rule.md`).
+  //
+  // A gate-less stage commits straight to `main`, so it builds and stages the site here.
+  // Staging it (which un-ignores it first on a project whose `.gitignore` still hides it)
+  // means `changedPaths()` below reports the freshly written `site/*.md` files the same
+  // as any other change, so they are committed alongside the journal and run record. The
+  // returned list is exactly what it staged (a subset of ["site", ".gitignore"]) and is
+  // used below to keep those paths out of this function's own `stageAll` batch — naming
+  // an already-staged, still-ignored `site` again there would make `stageAll` refuse the
+  // whole batch.
+  let stagedBySite = [];
+  if (!stage.gate) {
+    buildSite(projectDir);
+    stagedBySite = stageSite(projectDir);
+  }
   // `.sdlc/run-state.json` is this run's own scratch and is never part of a stage's
   // commit. A project that has it ignored never shows it here at all; one that does not
   // would otherwise commit a half-finished run's bookkeeping into the stage's own

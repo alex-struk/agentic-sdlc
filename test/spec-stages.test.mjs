@@ -211,20 +211,19 @@ test("sdlc run intent: a second run while the proposal is open is refused before
     assert.equal(first.ok, true, JSON.stringify(first.messages));
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
 
-    // Before this fix, `intent.proposal` returned `null` until `ctx.intentFile` existed,
-    // so this pre-flight had nothing to check and a second run reached the agent turn —
-    // which then collided with the still-open proposal partway through `finishStage`.
-    // `intent.proposal` now derives the same slug the agent itself builds its filename
-    // from straight out of `intent/brief.md`'s own heading, so the pre-flight catches
-    // this the same way any other gated stage's does: before a workspace is even
+    // A run starts on main, so that is where a person stands to try this again.
+    // `intent.proposal` derives the same slug the agent itself builds its filename from
+    // straight out of `intent/brief.md`'s own heading, so the pre-flight catches the open
+    // proposal the same way any other gated stage's does: before a workspace is even
     // materialised, no agent turn, tree left exactly as it was.
+    git(["checkout", "-q", "main"], dir);
     const second = await runStage(dir, "intent");
     assert.equal(second.ok, false);
     assert.deepEqual(second.messages, [
       "proposal intent-permit-intake is still open; rule it (or delete the branch) before running intent again",
     ]);
     assert.equal(git(["status", "--porcelain"], dir), "");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(intent\): proposal still open/);
     // No second journal entry was written — the pre-flight caught this before any agent
     // turn, so there is nothing to journal.
@@ -331,15 +330,16 @@ test("sdlc run archaeology --domain applications: a second run while the proposa
     assert.equal(first.ok, true, JSON.stringify(first.messages));
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
 
-    // The proposal is still open: a second run must not touch the workspace or run an
-    // agent turn at all, only report the block and leave the tree exactly as it was.
+    // The proposal is still open: a second run from main must not touch the workspace or
+    // run an agent turn at all, only report the block and leave the tree exactly as it was.
+    git(["checkout", "-q", "main"], dir);
     const second = await runStage(dir, "archaeology", { domain: "applications" });
     assert.equal(second.ok, false);
     assert.deepEqual(second.messages, [
       "proposal archaeology-applications is still open; rule it (or delete the branch) before running archaeology again",
     ]);
     assert.equal(git(["status", "--porcelain"], dir), "");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(archaeology\): proposal still open/);
 
     // G1's holder is the human role tech-lead, not an agent, so this rules directly

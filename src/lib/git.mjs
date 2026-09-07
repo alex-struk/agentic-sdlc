@@ -51,6 +51,24 @@ export function assertCleanTree(projectDir, command) {
   throw new Error(`${command}: the working tree has uncommitted changes. Commit or stash them first:\n${paths}`);
 }
 
+// The branch the working tree is on, or "HEAD" when it is detached.
+export function currentBranch(projectDir) {
+  return git(["rev-parse", "--abbrev-ref", "HEAD"], projectDir);
+}
+
+// A run has to start from `main` for the same reason it has to start from a clean tree:
+// everything downstream assumes it. `propose` opens a proposal branch off `main`, the
+// persona's diff is `main...proposal/<name>`, and `checkProposalNotOpen` reads
+// `git branch --merged main` — so a run started on a leftover proposal branch (the state
+// `sdlc run` itself leaves the tree in after opening one) would branch off that branch,
+// diff against the wrong base, and produce a proposal carrying the previous proposal's
+// changes as if they were its own. Checked before any agent turn, so nothing has been
+// spent by the time it fails.
+export function assertOnMain(projectDir, command) {
+  const branch = currentBranch(projectDir);
+  if (branch !== "main") throw new Error(`${command} must start on main; you are on ${branch}`);
+}
+
 // Stages exactly the given project-relative paths, skipping any that do not exist on
 // disk — a path a command did not end up writing (a run record on a command that wrote
 // none, say) is skipped rather than making `git add` fail. This cannot represent a

@@ -1,7 +1,7 @@
 import { join, relative, resolve } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { git, assertCleanTree, stageAll, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, assertCleanTree, assertOnMain, stageAll, SDLC_AUTHOR } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -61,6 +61,7 @@ function agentTurnFailed(projectDir, stage, r) {
 export async function runStage(projectDir, name, { slice, domain, dryRun = false, again = false } = {}) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
+  assertOnMain(projectDir, "run");
   const stage = stageFor(name);
   if (!stage.implemented) throw new Error(`stage ${name} is not implemented yet`);
 

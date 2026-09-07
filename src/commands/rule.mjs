@@ -1,6 +1,6 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitOk, assertCleanTree, stagePaths, stageSite, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, stagePaths, stageSite, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -70,17 +70,38 @@ function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, 
   return text;
 }
 
-// The state site is rebuilt and folded into the commit a ruling just made — the merge
-// commit on `main` for an approval, the plain ruling commit otherwise — via `--amend`
-// rather than a trailing uncommitted diff or a second commit. Doing it here, after any
-// merge, also means an approval's site reflects `main`'s complete gate history: a
-// proposal branch built and carried its own site through the merge, cross-branch
-// regeneration (each side producing fresh, always-different content) would conflict
-// on every concurrent approval.
-function commitSite(projectDir) {
+// The state site is a tracked artifact of `main` and of nothing else: every page is
+// regenerated whole from the whole project, so a site carried on a proposal branch
+// conflicts with every other open proposal's on the way in. Stages that hold a gate
+// therefore build no site (`src/runner/finish-stage.mjs`), and rulings own it.
+//
+// An approval has already merged onto `main` by the time this runs, so the rebuilt site
+// is folded into that merge commit with `--amend` rather than trailing behind it as a
+// second commit or an uncommitted diff. The site it produces reflects `main`'s complete
+// gate history, this ruling included.
+function amendSiteOntoMergeCommit(projectDir) {
   buildSite(projectDir);
   stageSite(projectDir);
   git([...SDLC_AUTHOR, "commit", "-q", "--amend", "--no-edit"], projectDir);
+}
+
+// A return or an escalation leaves its ruling commit on the proposal branch, where it
+// belongs — nothing about it has been accepted. The site still gets regenerated, on
+// `main`, so the pages stay current with whatever `main` actually holds; when that turns
+// out to be unchanged, nothing is committed. The caller is put back on the branch it was
+// on, so a returned proposal is still checked out for whoever has to act on it.
+function regenerateSiteOnMain(projectDir, reason) {
+  const branch = currentBranch(projectDir);
+  if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
+  try {
+    buildSite(projectDir);
+    stageSite(projectDir);
+    if (git(["diff", "--cached", "--name-only"], projectDir)) {
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", `chore(site): regenerate after ${reason}`], projectDir);
+    }
+  } finally {
+    if (branch !== "main") git(["checkout", "-q", branch], projectDir);
+  }
 }
 
 // Shared by the human path and the agent-approve/return path: write the gate file,
@@ -95,8 +116,12 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   if (proposalAppended) paths.push(relative(projectDir, proposalPath));
   stagePaths(projectDir, paths);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${verdict} by ${by}`], projectDir);
-  if (verdict === "approve") mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
-  commitSite(projectDir);
+  if (verdict === "approve") {
+    mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
+    amendSiteOntoMergeCommit(projectDir);
+  } else {
+    regenerateSiteOnMain(projectDir, `${name} ${verdict}`);
+  }
 }
 
 function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics }) {
@@ -105,7 +130,7 @@ function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, me
   const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`);
   stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} escalated to ${escalateTo ?? "?"}`], projectDir);
-  commitSite(projectDir);
+  regenerateSiteOnMain(projectDir, `${name} escalated`);
 }
 
 function appendRulingSection(text, { verdict, by, rationale, conditions = [] }) {

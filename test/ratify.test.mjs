@@ -298,8 +298,10 @@ test("sdlc run ratify: fails pre-checks when archaeology has not been approved y
   try {
     const archaeologyRun = await runStage(dir, "archaeology", { domain: "applications" });
     assert.equal(archaeologyRun.ok, true, JSON.stringify(archaeologyRun.messages));
-    // Still on the open proposal branch: nothing has ruled it yet.
+    // Still on the open proposal branch: nothing has ruled it yet. A run starts on main,
+    // so that is where a person would be standing when they tried this.
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+    git(["checkout", "-q", "main"], dir);
 
     const r = await runStage(dir, "ratify", { domain: "applications" });
     assert.equal(r.ok, false);

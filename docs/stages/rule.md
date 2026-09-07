@@ -45,8 +45,8 @@ conflicted files — `main` is never left mid-merge.
 On `return`, the proposal branch is left exactly as it is — not merged — so it stays open for
 another round.
 
-`sdlc status` (`buildSite`) runs after every ruling, human or agent, so the state site's gate log
-and coverage numbers are never more than one ruling stale. The site is a tracked artifact: every
+`buildSite` runs after every ruling, human or agent, so the state site's gate log and coverage
+numbers are never more than one ruling stale. The site is a tracked artifact: every
 page it generates —
 
 - `site/index.md` (coverage, the page list, and the cost, ruling, escalation and open-proposal
@@ -56,10 +56,23 @@ page it generates —
 - `site/journal.md` (the stage journal), and
 - `site/proposals/<name>.md`, one page per proposal, ruled or open, including this one
 
-— is folded into the same commit the ruling made: the merge commit on `main` for an approval, the
-plain ruling commit otherwise, rather than left as an uncommitted diff. A project whose
-`.gitignore` still hides `site/` has that line reconciled away first (`docs/stages/init.md`), so
-the pages are committed rather than silently regenerated and dropped.
+— lives on `main` and nowhere else. Every page is regenerated whole from the whole project, so a
+copy carried on a proposal branch would differ from every other open proposal's on every page, and
+the second merge would conflict on all of them for content neither proposal is about. A stage that
+holds a gate therefore builds no site at all (`docs/stages/run.md`), and regenerating it is this
+command's job:
+
+- **Approve** — the branch is merged into `main` first, then the site is rebuilt there and folded
+  into that merge commit with `--amend`, rather than trailing behind it as a second commit or an
+  uncommitted diff. What it reflects is `main`'s complete gate history, this ruling included.
+- **Return or escalate** — the ruling commit stays on the proposal branch, where it belongs, since
+  nothing about it has been accepted. The site is still regenerated on `main` — checked out for
+  that and checked back out afterwards, so a returned proposal is still the working tree a person
+  lands in — and committed as `chore(site): regenerate after <name> <verdict>` only if `main`
+  actually changed. Usually it has not, and nothing is committed.
+
+A project whose `.gitignore` still hides `site/` has that line reconciled away first
+(`docs/stages/init.md`), so the pages are committed rather than silently regenerated and dropped.
 
 ## The agent path
 
