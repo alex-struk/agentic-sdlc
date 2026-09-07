@@ -1,6 +1,6 @@
 .superpowers/
 node_modules/
-site/
+/site/
 *.local.yaml
 *.local.txt
 docs/superpowers/

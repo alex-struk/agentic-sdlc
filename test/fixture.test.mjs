@@ -40,7 +40,7 @@ test("fixture project: create, fill constitution, checks green, propose, approve
     rule(dir, "harness-ready", "approve", { by: "tech-lead", note: "phase 0 exit" });
     const { pages } = buildSite(dir);
     // index, gates, runs, results, journal, and one proposal page (harness-ready).
-    assert.equal(pages.length, 6);
+    assert.equal(pages.filter((p) => p.endsWith(".md")).length, 6);
     assert.ok(existsSync(join(dir, "site/gates.md")));
     assert.ok(existsSync(join(dir, "site/proposals/harness-ready.md")));
     // The ruling above already folded a rebuilt site into its own commit, and the site

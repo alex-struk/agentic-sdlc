@@ -19,7 +19,7 @@ test("site pages summarise criteria, gates and runs", () => {
   // index, gates, runs, results, journal, and one criteria page (domain "a", the only
   // domain present in the index) — no .sdlc/journal or .sdlc/proposals directory here, so
   // the journal page is still written (empty) and there are no proposal pages.
-  assert.equal(pages.length, 6);
+  assert.equal(pages.filter((p) => p.endsWith(".md")).length, 6);
   const index = readFileSync(join(d, "site/index.md"), "utf8");
   assert.match(index, /\| a \| 1 \| 1 \| 0 \| 0 \| 0 \| 0 \| 0 \| 2 \|/);
   assert.match(index, /\[a\]\(criteria\/a\.md\)/);

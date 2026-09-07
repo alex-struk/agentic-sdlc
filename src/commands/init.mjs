@@ -17,6 +17,7 @@ const TEMPLATE_FILES = [
   { src: ["templates", "project", ".claude", "settings.json"], dst: [".claude", "settings.json"] },
   { src: ["templates", "hooks", "implement-guard.sh"], dst: [".sdlc", "hooks", "implement-guard.sh"], mode: 0o755 },
   { src: ["templates", "project", ".gitattributes"], dst: [".gitattributes"] },
+  { src: ["templates", "project", ".github", "workflows", "pages.yml"], dst: [".github", "workflows", "pages.yml"] },
   { src: ["templates", "project", ".sdlc", "personas", "ux-reviewer.md"], dst: [".sdlc", "personas", "ux-reviewer.md"] },
   { src: ["templates", "project", ".sdlc", "personas", "tech-lead.md"], dst: [".sdlc", "personas", "tech-lead.md"] },
   { src: ["templates", "project", ".sdlc", "personas", "product-owner.md"], dst: [".sdlc", "personas", "product-owner.md"] },
