@@ -9,7 +9,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { readText } from "../lib/fsx.mjs";
-import { git, gitOk } from "../lib/git.mjs";
+import { git } from "../lib/git.mjs";
 
 const CRITERION_LINE_RE = /^\/\/ criterion: @(\S+) v(\d+)$/;
 const PROVENANCE_LINE_RE = /^\/\/ provenance: (blind|unverified), spec@([0-9a-fA-F]+), derived (\d{4}-\d{2}-\d{2})$/;
@@ -27,16 +27,27 @@ function loadIndex(projectDir) {
   }
 }
 
-function readYamlList(projectDir, relPath, key) {
-  const p = join(projectDir, "tests", "acceptance", relPath);
+// `messages` is optional: `checkTests` passes its own message list so a parse failure is
+// reported as a check failure naming the file, the same way `loadIndex` reports one for
+// the criteria index; `coverage` (a read, not a check — see its own comment below) omits
+// it and gets the pre-fix behaviour of treating an unparseable file as an empty list,
+// since there is nothing there for it to fail.
+function readYamlList(projectDir, relFile, key, messages) {
+  const relPath = `tests/acceptance/${relFile}`;
+  const p = join(projectDir, "tests", "acceptance", relFile);
   if (!existsSync(p)) return [];
   let parsed;
-  try { parsed = parse(readText(p)); } catch { return []; }
+  try {
+    parsed = parse(readText(p));
+  } catch (e) {
+    if (messages) messages.push(`${relPath}: does not parse: ${e.message}`);
+    return [];
+  }
   return Array.isArray(parsed?.[key]) ? parsed[key] : [];
 }
 
-const readNotTestable = (projectDir) => readYamlList(projectDir, "not-testable.yaml", "criteria");
-const readAttestations = (projectDir) => readYamlList(projectDir, "attestations.yaml", "attestations");
+const readNotTestable = (projectDir, messages) => readYamlList(projectDir, "not-testable.yaml", "criteria", messages);
+const readAttestations = (projectDir, messages) => readYamlList(projectDir, "attestations.yaml", "attestations", messages);
 
 // Whether a spec file claiming `blind` provenance actually earned it. A file whose header
 // says `unverified` is unverified regardless of what git says — the header is the claim
@@ -48,14 +59,23 @@ const readAttestations = (projectDir) => readYamlList(projectDir, "attestations.
 // until it is committed. Once there is a clean, committed version, the real subject line
 // decides — a subject `derive-tests` did not write means the file was hand-edited or
 // carried over from somewhere else, whatever the header claims.
+//
+// Both `git status` and `git log` run inside one try/catch rather than probing first with
+// `gitOk` and then repeating the same call for real: a project that is not a git
+// repository at all (or a file `git log` otherwise can't answer for) has no history to
+// verify a blind claim against either way, so it degrades to `unverified` the same as an
+// uncommitted file outside `derive-tests`, instead of throwing and taking the whole check
+// down with it.
 function resolveProvenance(projectDir, relFile, claim) {
   if (claim === "unverified") return "unverified";
-  const dirty = git(["status", "--porcelain", "--", relFile], projectDir).length > 0;
-  if (dirty) return process.env.SDLC_STAGE === "derive-tests" ? "blind" : "unverified";
-  const subject = gitOk(["log", "-1", "--format=%s", "--", relFile], projectDir)
-    ? git(["log", "-1", "--format=%s", "--", relFile], projectDir)
-    : "";
-  return DERIVE_TESTS_SUBJECT_RE.test(subject) ? "blind" : "unverified";
+  try {
+    const dirty = git(["status", "--porcelain", "--", relFile], projectDir).length > 0;
+    if (dirty) return process.env.SDLC_STAGE === "derive-tests" ? "blind" : "unverified";
+    const subject = git(["log", "-1", "--format=%s", "--", relFile], projectDir);
+    return DERIVE_TESTS_SUBJECT_RE.test(subject) ? "blind" : "unverified";
+  } catch {
+    return "unverified";
+  }
 }
 
 export function checkTests(projectDir, ctx = {}) {
@@ -74,6 +94,10 @@ export function checkTests(projectDir, ctx = {}) {
   const criteria = Array.isArray(index.criteria) ? index.criteria : [];
   const byId = new Map(criteria.map((c) => [c.id, c]));
   const defaultTier = ctx.config?.policy?.default_tier ?? "STANDARD";
+  // Read once, with `messages` so either file's own YAML parse failure is reported by
+  // name instead of silently read back as empty — the same file each is used from below.
+  const notTestable = readNotTestable(projectDir, messages);
+  const attestations = readAttestations(projectDir, messages);
 
   const acceptanceDir = join(projectDir, "tests", "acceptance");
   const specFiles = [];
@@ -133,14 +157,14 @@ export function checkTests(projectDir, ctx = {}) {
       if (tier === "HIGH" || tier === "CRITICAL") {
         messages.push(`${f.relPath}: unverified provenance fails outright at tier ${tier}`);
       } else {
-        const attested = readAttestations(projectDir).some((a) => a && a.file === f.relPath && a.by);
+        const attested = attestations.some((a) => a && a.file === f.relPath && a.by);
         if (!attested)
           messages.push(`${f.relPath}: unverified provenance at tier ${tier} needs an entry in tests/acceptance/attestations.yaml naming the file and a "by"`);
       }
     }
   }
 
-  for (const entry of readNotTestable(projectDir)) {
+  for (const entry of notTestable) {
     const idx = byId.get(entry?.id);
     if (!idx || idx.state !== "accepted")
       messages.push(`tests/acceptance/not-testable.yaml: ${entry?.id} is not an accepted criterion`);

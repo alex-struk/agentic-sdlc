@@ -57,6 +57,60 @@ test("separation: an adapter importing from playwright is fine", () => {
   assert.equal(r.ok, true);
 });
 
+// ---- "app" only matches as its own path segment, not a fragment of a longer one ----
+
+test("separation: an adapter importing from webapp/ (not app/ as a segment) is fine", () => {
+  const d = project();
+  write(d, "tests/adapters/old/opportunity.ts", 'import { util } from "webapp/utils";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, true, r.messages.join("\n"));
+});
+
+test("separation: an acceptance test importing from webapp/ (not app/ as a segment) is fine", () => {
+  const d = project();
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", 'import { util } from "webapp/utils";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, true, r.messages.join("\n"));
+});
+
+// ---- multi-line imports are still caught: the regex only matches "import" and "from" on
+// the same physical line, so a statement spread over several lines has to be joined first ----
+
+test("separation: a multi-line adapter import from tests/acceptance fails, naming the statement's first line", () => {
+  const d = project();
+  write(
+    d,
+    "tests/adapters/old/opportunity.ts",
+    ['import {', '  helper,', '} from "../acceptance/shared";', ''].join("\n"),
+  );
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m === 'tests/adapters/old/opportunity.ts:1: adapters must not import from tests/acceptance or app/: ../acceptance/shared'));
+});
+
+test("separation: a multi-line acceptance import from tests/adapters fails, naming the statement's first line", () => {
+  const d = project();
+  write(
+    d,
+    "tests/acceptance/opportunities/R-1.1.spec.ts",
+    ['import {', '  opportunity,', '} from "../../adapters/old/opportunity";', ''].join("\n"),
+  );
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m === 'tests/acceptance/opportunities/R-1.1.spec.ts:1: tests must not import from tests/adapters or app/: ../../adapters/old/opportunity'));
+});
+
+test("separation: a multi-line adapter import from an allowed path is fine", () => {
+  const d = project();
+  write(
+    d,
+    "tests/adapters/old/opportunity.ts",
+    ['import {', '  Page,', '} from "playwright";', ''].join("\n"),
+  );
+  const r = checkSeparation(d);
+  assert.equal(r.ok, true, r.messages.join("\n"));
+});
+
 // ---- adapters: test( ----
 
 test("separation: an adapter defining its own test() fails", () => {
@@ -163,6 +217,32 @@ test("separation: a lone \"/\" literal is allowed", () => {
   write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", 'const sep = "/";\n');
   const r = checkSeparation(d);
   assert.equal(r.ok, true);
+});
+
+// ---- route literals starting with a digit, "_" or ":" are caught too, not just letters ----
+
+test("separation: a versioned route literal starting with a digit fails", () => {
+  const d = project();
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", 'const url = "/1.0/opportunities";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("a test must not hardcode a route")));
+});
+
+test("separation: a route literal starting with an underscore fails", () => {
+  const d = project();
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", 'const url = "/_admin";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("a test must not hardcode a route")));
+});
+
+test("separation: a route literal starting with a param placeholder fails", () => {
+  const d = project();
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", 'const url = "/:id";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("a test must not hardcode a route")));
 });
 
 // ---- acceptance: goto( ----

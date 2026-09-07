@@ -37,17 +37,63 @@ function importPath(line) {
   return m ? m[1] : null;
 }
 
+// True when "app" appears as its own path segment (`app/x`, `./app/x`, `../../app/x`) —
+// not as a fragment of a longer segment such as `webapp/utils`, which is a real project
+// directory that has nothing to do with the application source the separation rules
+// exist to keep out of adapters and tests.
+function isAppSegment(path) {
+  return /(^|\/)app\//.test(path);
+}
+
+// `importPath` only ever matches a single physical line, so a multi-line import —
+// `import {\n  x,\n} from "../../adapters/old/x";` — is invisible to it: "import" and
+// `from "..."` never share a line. This walks the file once, and for any line starting
+// an `import` statement, joins forward (skipping the lines it consumes for the per-line
+// scan below) until `importPath` resolves against the joined text or the statement
+// plainly ends (a trailing `;` or a trailing quoted path with no semicolon). A
+// `require(...)` call is always single-line in practice and needs no joining. Reported
+// against the statement's first line, 1-based, matching every other message in this file.
+function collectImports(lines) {
+  const found = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/^\s*import\b/.test(line)) {
+      const p = importPath(line);
+      if (p) found.push({ line: i + 1, path: p });
+      continue;
+    }
+    let end = i;
+    let joined = line;
+    while (
+      importPath(joined) === null &&
+      !/;\s*$/.test(lines[end].trimEnd()) &&
+      !/["'`]\s*$/.test(lines[end].trimEnd()) &&
+      end + 1 < lines.length
+    ) {
+      end++;
+      joined += " " + lines[end];
+    }
+    const p = importPath(joined);
+    if (p) found.push({ line: i + 1, path: p });
+    i = end;
+  }
+  return found;
+}
+
 // A quoted string literal (single, double or backtick), captured without its quotes.
 // Escaped quotes inside the literal are tolerated so an ordinary escaped-apostrophe
 // string does not truncate the match early.
 const STRING_LITERAL_RE = /(['"`])((?:\\.|(?!\1).)*)\1/g;
 
 // True for a string that reads as a route: an absolute URL, or a path that starts with
-// `/` followed by a letter. A lone `"/"` is allowed — it is as likely to be division or a
-// default value as a route, and flagging it produces nothing but noise.
+// `/` followed by a path character — a letter, digit, or one of `_:.` so a versioned
+// route (`/1.0/x`), a framework-prefixed one (`/_admin`) and a param placeholder
+// (`/:id`) are all caught, not just plain word paths. A lone `"/"` is allowed — it is as
+// likely to be division or a default value as a route, and flagging it produces nothing
+// but noise.
 function isRouteLiteral(value) {
   if (value === "/") return false;
-  return /^https?:\/\//.test(value) || /^\/[A-Za-z]/.test(value);
+  return /^https?:\/\//.test(value) || /^\/[A-Za-z0-9_:.]/.test(value);
 }
 
 function findRouteLiteral(line) {
@@ -69,11 +115,8 @@ const ADAPTER_RULES = [
     message: () => "adapters must not assert: contains expect(",
   },
   {
-    test: (l) => {
-      const p = importPath(l);
-      if (!p) return null;
-      return p.includes("../acceptance") || p.includes("app/") ? p : null;
-    },
+    isImportRule: true,
+    test: (p) => (p.includes("../acceptance") || isAppSegment(p) ? p : null),
     message: (p) => `adapters must not import from tests/acceptance or app/: ${p}`,
   },
   {
@@ -91,11 +134,8 @@ const ADAPTER_RULES = [
 // locator is must not itself trip the rule that forbids using one.
 const ACCEPTANCE_RULES = [
   {
-    test: (l) => {
-      const p = importPath(l);
-      if (!p) return null;
-      return p.includes("/adapters/") || p.includes("app/") || p.includes("../../app") ? p : null;
-    },
+    isImportRule: true,
+    test: (p) => (p.includes("/adapters/") || isAppSegment(p) || p.includes("../../app") ? p : null),
     message: (p) => `tests must not import from tests/adapters or app/: ${p}`,
   },
   {
@@ -137,11 +177,22 @@ const ACCEPTANCE_RULES = [
 function scanFile(absPath, projectDir, rules) {
   const rel = relPath(projectDir, absPath);
   const lines = readText(absPath).split("\n");
+  // Import rules are checked once per logical import statement (joined across lines when
+  // it spans more than one), keyed by the statement's first line; every other rule stays
+  // line-based, scanning the file exactly as it is written.
+  const importsByLine = new Map(collectImports(lines).map((im) => [im.line, im.path]));
   const messages = [];
   lines.forEach((line, i) => {
     const isComment = line.trim().startsWith("//");
     for (const rule of rules) {
       if (rule.skipComments && isComment) continue;
+      if (rule.isImportRule) {
+        const p = importsByLine.get(i + 1);
+        if (p === undefined) continue;
+        const hit = rule.test(p);
+        if (hit) messages.push(`${rel}:${i + 1}: ${rule.message(hit)}`);
+        continue;
+      }
       const hit = rule.test(line);
       if (hit) messages.push(`${rel}:${i + 1}: ${rule.message(hit)}`);
     }

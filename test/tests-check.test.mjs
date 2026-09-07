@@ -15,6 +15,12 @@ function project() {
   return d;
 }
 
+// A plain temp directory, deliberately never `git init`-ed — for the case where a project
+// is not a git repository at all.
+function nonRepoProject() {
+  return mkdtempSync(join(tmpdir(), "sdlc-tests-check-nogit-"));
+}
+
 function write(dir, relPath, text) {
   const abs = join(dir, relPath);
   mkdirSync(join(abs, ".."), { recursive: true });
@@ -191,6 +197,15 @@ test("checkTests: an uncommitted blind file counts as blind only when SDLC_STAGE
   }
 });
 
+test("checkTests: a project that is not a git repository degrades a blind claim to unverified instead of throwing", () => {
+  const d = nonRepoProject();
+  writeIndex(d, [R11]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1, "blind"));
+  const r = checkTests(d, { config: CONFIG_STANDARD });
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("unverified provenance") && m.includes("attestations.yaml")));
+});
+
 // ---- tests must live under a domain folder ----
 
 test("checkTests: a spec file directly under tests/acceptance/, with no domain folder, fails", () => {
@@ -243,6 +258,27 @@ test("checkTests: a not-testable entry naming a criterion that also has a test f
   const r = checkTests(d, { config: CONFIG_STANDARD });
   assert.equal(r.ok, false);
   assert.ok(r.messages.some((m) => m.includes("R-1.1 also has a test")));
+});
+
+test("checkTests: a malformed not-testable.yaml fails the check, naming the file, instead of reading back as empty", () => {
+  const d = project();
+  writeIndex(d, [R11]);
+  write(d, "tests/acceptance/not-testable.yaml", "criteria:\n  - { id: R-1.1\n"); // unclosed flow mapping
+  commit(d, "chore: harness scaffolding");
+  const r = checkTests(d, { config: CONFIG_STANDARD });
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("tests/acceptance/not-testable.yaml") && m.includes("does not parse")));
+});
+
+test("checkTests: a malformed attestations.yaml fails the check, naming the file, instead of reading back as empty", () => {
+  const d = project();
+  writeIndex(d, [R11]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1, "blind"));
+  write(d, "tests/acceptance/attestations.yaml", "attestations:\n  - { file: x\n"); // unclosed flow mapping
+  commit(d, "chore: hand-edit the spec file"); // unverified: falls through to the attestations read
+  const r = checkTests(d, { config: CONFIG_STANDARD });
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("tests/acceptance/attestations.yaml") && m.includes("does not parse")));
 });
 
 test("checkTests: a not-testable entry for a criterion that is not accepted fails", () => {
@@ -314,6 +350,20 @@ test("checkGenerated: passes when every generated file matches the contract exac
   writeGenerated(d);
   const r = checkGenerated(d);
   assert.equal(r.ok, true, r.messages.join("\n"));
+});
+
+test("checkGenerated: a file under tests/generated/ that the generator would never produce fails, the reverse direction from drift", () => {
+  const d = project();
+  write(d, "spec/contract/surface.yaml", "pages:\n  - id: opportunity\n    route: /opportunities/:id\n");
+  write(d, "spec/contract/personas.yaml", "personas: []\n");
+  write(d, "tests/seed/manifest.yaml", "description: seed handles\n");
+  // writeGenerated produces exactly the three real files; this one is added by hand
+  // afterwards and the generator has no idea it exists.
+  writeGenerated(d);
+  writeFileSync(join(d, "tests/generated/leftover.ts"), "// not produced by generateTypes\n");
+  const r = checkGenerated(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m === "tests/generated/leftover.ts: not produced by the generator"));
 });
 
 test("checkGenerated: a contract with load errors is reported as a failure", () => {
