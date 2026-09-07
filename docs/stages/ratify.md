@@ -32,27 +32,27 @@ earlier one's. A follow-up that was returned or escalated decided nothing and is
   carried across byte for byte (`docs/spec-format.md`, "Above the first criterion"). Every
   criterion the ruling's conditions named has been changed as that condition says
   (`applyConditions`, `src/spec/criteria.mjs`) — `contract` alone changes nothing at all, being the
-  marker for a criterion the persona looked at and left as it stands, while `confirm` is the verb
-  that raises confidence and so the only one that makes an `inferred` or `open` criterion eligible
-  to mint — and every criterion
+  marker for a criterion the persona looked at and left as it stands, while `confirm`, `edit` and
+  `defect` all raise confidence to `confirmed` and so are the ones that make an `inferred` or `open`
+  criterion eligible to mint — and every criterion
   left `confirmed` and not `obsolete` — whether a condition named it or not — has been minted a
   permanent `R-<k>.<n>` id (`mintIds`), `k` the domain's 1-based position in `project.domains` and
   `n` continuing from the highest `n` already minted under that ordinal *anywhere in the project*,
   not only in this domain's own file — a domain reorder in `project.domains` after some ids were
   already minted could otherwise strand an old `R-<k>.<n>` in a file this run never looks at, and a
   fresh id minted from this domain's own count alone could collide with it.
-  A `defect` condition keeps the row it corrects, marking it `reconciliation: defect` and adding a
-  `superseded-by` and a note naming the new criterion, and appends that new, `authored` criterion
-  with the corrected statement and `replaces: <the corrected row's id>`. `replaces` and
-  `superseded-by` point at whatever id their target had at the moment they were written
-  (`applyConditions`, which runs before minting); `mintIds`, right after, rewrites each one — and
-  any mention of the same id inside a note — to the permanent id its target actually ends up with,
-  but only when that target is minted in the *same* pass. The replacement (always authored
-  `confirmed`) almost always mints immediately, so in the ordinary case both the row's
-  `superseded-by` and its note end up naming a permanent id, not the provisional one that no longer
-  exists anywhere in the file once the pass is done. The row being corrected does not necessarily
-  mint alongside it — if the ruling left it `inferred` or `open` rather than confirming it, it keeps
-  its own provisional `D-` id regardless of what happens to its replacement.
+  A `defect` condition keeps the row it corrects, marking it `reconciliation: defect`, raising its
+  confidence to `confirmed` (it is a confirmed record of what the old system does, merely marked as
+  a defect), and adding a `superseded-by` and a note naming the new criterion, and appends that new,
+  `authored` criterion with the corrected statement and `replaces: <the corrected row's id>`.
+  `replaces` and `superseded-by` point at whatever id their target had at the moment they were
+  written (`applyConditions`, which runs before minting); `mintIds`, right after, rewrites each one
+  — and any mention of the same id inside a note — to the permanent id its target actually ends up
+  with, but only when that target is minted in the *same* pass. Because both the row being
+  corrected and its replacement are `confirmed` the moment `defect` is applied, they always mint
+  together in the same pass, so `superseded-by`, `replaces` and both notes end up naming each
+  other's permanent ids, not a provisional one that no longer exists anywhere in the file once the
+  pass is done.
 - Applying the same gate-file conditions again, on a domain that still has some other `D-`
   criterion left in it (see "Re-run behaviour"), changes nothing further: every verb `applyConditions`
   applies checks the row it targets before acting — a note is pushed only if the row does not
@@ -176,15 +176,22 @@ closed.
 **The loop bound.** `contract` and `spike` both answer a follow-up without ever resolving it —
 `contract` changes nothing at all, and `spike` only records a question — so a persona that keeps
 choosing one of them (or a follow-up nobody rules on the way the grammar means it to be ruled)
-would otherwise never close the loop. `execute` counts how many of a domain's approved follow-up
-rulings (`ratify-<d>-<n>`, not the archaeology ruling itself) have been read so far; once a
-criterion still `inferred` or `open` has been through two of them with nothing resolving it,
-`execute` marks it `state: obsolete` itself, with the note `unresolved after two rulings`, before
-minting anything else in that pass. The journal lists it under "Obsolete" the same way any other
-obsoleted criterion is listed. Once it is `obsolete` it is no longer an open question, so the next
-`followUp` call does not list it and, once every criterion in the domain has resolved this way or
-another, opens no further proposal — the loop always terminates, whether or not the persona ever
-rules a criterion out of `inferred`/`open` directly.
+would otherwise never close the loop. `confirm`, `edit` and `defect` are the three verbs that
+actually resolve a criterion (`applyConditions` raises confidence to `confirmed` for all three),
+so a criterion ruled on with any of them is already out of `inferred`/`open` — and therefore out of
+this sweep's reach — before this bound is even checked. `execute` counts how many of a domain's
+approved follow-up rulings (`ratify-<d>-<n>`, not the archaeology ruling itself) have been read so
+far; once a criterion still `inferred` or `open` has been through two of them with nothing
+resolving it, `execute` marks it `state: obsolete` itself, with the note `unresolved after two
+rulings`, before minting anything else in that pass. The sweep only ever considers a `D-` id — an
+`R-` criterion was already minted, which only happens once it was already `confirmed`, so it can
+never legitimately be looked at here; the guard exists in case a condition line names an
+already-minted `R-` id (a stray `spike` re-run, say) and leaves it with a stale `inferred`/`open`
+confidence that must never cost it its permanent-id status. The journal lists a swept criterion
+under "Obsolete" the same way any other obsoleted criterion is listed. Once it is `obsolete` it is
+no longer an open question, so the next `followUp` call does not list it and, once every criterion
+in the domain has resolved this way or another, opens no further proposal — the loop always
+terminates, whether or not the persona ever rules a criterion out of `inferred`/`open` directly.
 
 ## Failure modes
 

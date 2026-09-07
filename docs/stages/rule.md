@@ -140,8 +140,12 @@ ratify` (`docs/stages/ratify.md`) reads back out of this same gate file and appl
 Two of those are easy to read as each other's synonym and are not. `contract <ID>` changes nothing:
 the row's confidence, state and wording are untouched, and it is recorded only so the journal can
 say the ID was looked at. It does not promote anything — a criterion still `inferred` or `open`
-stays that way and is not minted a permanent id. `confirm <ID>` is the one that promotes, and the
-persona is required to say in its rationale what evidence tipped it. A criterion nobody mentions at
+stays that way and is not minted a permanent id. `confirm`, `edit` and `defect` all resolve a
+criterion; `contract` and `spike` do not. `confirm <ID>` raises confidence on the strength of the
+evidence alone, and the persona is required to say in its rationale what tipped it; `edit <ID>:
+<text>` and `defect <ID>: <text>` raise it too, each for its own reason — an edited statement is
+itself a second witness, and a defect row is a confirmed record of what the old system does, merely
+marked as a defect rather than carried forward as-is. A criterion nobody mentions at
 all is treated exactly as `contract`, so approving a proposal without a line per ID is normal.
 
 An archaeology proposal legitimately carries criteria marked `inferred` or `open` — that is

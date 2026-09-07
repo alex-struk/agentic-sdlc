@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, cpSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -9,6 +9,8 @@ import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { ruleByAgent } from "../src/commands/rule.mjs";
 import { COMMANDS } from "../src/cli.mjs";
+import { stageFor } from "../src/stages/registry.mjs";
+import { parseDomainFile } from "../src/spec/criteria.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -682,6 +684,137 @@ test("the closing loop's bound: a criterion answered `contract` twice on follow-
     assert.equal(pass4.proposal ?? null, null);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("the closing loop: a second follow-up that edits one criterion and defects another resolves both on the third ratify — neither is obsoleted, both mint, and no third follow-up opens", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-loop-edit-defect-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    const archaeologyRun = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(archaeologyRun.ok, true, JSON.stringify(archaeologyRun.messages));
+
+    // Both criteria are spiked, so neither mints on the first pass and both need a
+    // follow-up.
+    process.env.SDLC_MOCK_DIR = mockRuling("approve",
+      "neither is decided yet — the age minimum needs a renewals answer and the fee basis needs its own",
+      [
+        "spike D-applications-1: does the age minimum hold for renewals too?",
+        "spike D-applications-2: is the fee basis stable across seasons?",
+      ]);
+    assert.equal((await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" })).verdict, "approve");
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    const pass1 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(pass1.ok, true, JSON.stringify(pass1.messages));
+    assert.equal(pass1.proposal.name, "ratify-applications-1");
+    assert.equal(pass1.proposal.unresolved, 2);
+
+    // First follow-up: a non-answer for both, same as the loop-bound test — this is what
+    // makes the SECOND follow-up (below) the one that would trip the sweep's two-rulings
+    // bound if `edit`/`defect` did not themselves resolve confidence.
+    process.env.SDLC_MOCK_DIR = mockRuling("approve", "leaving both exactly as recovered for now",
+      ["contract D-applications-1", "contract D-applications-2"]);
+    assert.equal(await rule(dir, "ratify-applications-1"), "approve");
+
+    const pass2 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(pass2.ok, true, JSON.stringify(pass2.messages));
+    assert.equal(pass2.proposal.name, "ratify-applications-2");
+    assert.match(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), /### D-applications-1 · v1 · open · recovered/,
+      "still unresolved after one non-answer each");
+
+    // Second follow-up: this time the persona actually rules — `edit` for the age
+    // minimum's wording, `defect` for the fee basis. Per the ruling, both raise
+    // confidence to `confirmed`, which is what has to keep them out of the sweep.
+    process.env.SDLC_MOCK_DIR = mockRuling("approve",
+      "the age minimum's wording needed to cover renewals explicitly; the fee basis was fixed at intake in the old system but should not have been",
+      [
+        "edit D-applications-1: When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old, including on renewal applications.",
+        "defect D-applications-2: the fee is recalculated whenever the application is amended, not fixed at intake",
+      ]);
+    assert.equal(await rule(dir, "ratify-applications-2"), "approve");
+
+    // Third ratify: `followUpRulingsRead` is now 2 (both follow-ups were read and
+    // approved), which is exactly the sweep's bound — but `edit` and `defect` already
+    // moved both criteria to `confirmed` inside `applyConditions`, before the sweep ever
+    // runs, so neither is `inferred`/`open` by the time it is checked.
+    const pass3 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(pass3.ok, true, JSON.stringify(pass3.messages));
+    const domainText = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    assert.ok(!domainText.includes("D-applications-"), "no provisional ids remain — both minted");
+    assert.ok(!domainText.includes("unresolved after two rulings"), "the sweep never fired");
+    assert.ok(!/- state: obsolete/.test(domainText), "neither criterion was force-obsoleted");
+    assert.match(domainText, /the fee is recalculated whenever the application is amended, not fixed at intake/, "the defect replacement was minted");
+
+    const index = JSON.parse(readFileSync(join(dir, "spec/criteria-index.json"), "utf8"));
+    assert.equal(index.criteria.length, 3, "the edited criterion, the defect's original row, and its replacement");
+    assert.ok(index.criteria.every((c) => c.state === "accepted"), "every criterion minted, none obsolete");
+
+    // Nothing is left short of the contract, so the loop closes: no third follow-up.
+    assert.equal(pass3.proposal ?? null, null);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.ok(!existsSync(join(dir, ".sdlc/proposals/ratify-applications-3.md")));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("the closing loop's sweep never touches an already-minted R- id, even one a stray condition left inferred/open", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-sweep-guard-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    // Exercised directly against `execute` (bypassing `runStage`'s pre/post-checks and
+    // the propose/rule machinery) so the precondition — a permanent `R-` criterion that
+    // somehow still carries `inferred`/`open` confidence, the way a stray condition
+    // naming an already-minted id by mistake would leave one — can be set up exactly,
+    // without first tripping an unrelated check.
+    const domainsDir = join(dir, "spec", "domains");
+    mkdirSync(domainsDir, { recursive: true });
+    writeFileSync(join(domainsDir, "applications.md"), `# applications
+
+### R-1.1 · v1 · open · recovered
+When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.
+- cites: src/routes.js:4
+- reconciliation: implemented-only
+- state: accepted
+- note: a stray condition naming this already-minted id left confidence at open
+
+### D-applications-2 · v1 · inferred · recovered
+When a permit application is accepted, the system shall calculate an intake fee for it from the applicant's age.
+- cites: src/routes.js:10
+- reconciliation: implemented-only
+- state: proposed
+`);
+
+    const gatesDir = join(dir, ".sdlc", "gates");
+    mkdirSync(gatesDir, { recursive: true });
+    const approvedGate = "gate: G1\nverdict: approve\nby: agent:product-owner\nheld_by: agent\nconditions: []\n";
+    writeFileSync(join(gatesDir, "archaeology-applications.yaml"), approvedGate);
+    // Two follow-up rulings already read is exactly the sweep's bound.
+    writeFileSync(join(gatesDir, "ratify-applications-1.yaml"), approvedGate);
+    writeFileSync(join(gatesDir, "ratify-applications-2.yaml"), approvedGate);
+
+    const ctx = { domain: "applications", config: { project: { domains: ["applications", "fees"] } } };
+    stageFor("ratify").execute(dir, ctx);
+
+    const domainText = readFileSync(join(domainsDir, "applications.md"), "utf8");
+    const { criteria } = parseDomainFile(domainText, "applications");
+    const permanent = criteria.find((c) => c.id === "R-1.1");
+    assert.ok(permanent, "the permanent id is untouched — never renamed or removed");
+    assert.equal(permanent.state, "accepted", "the sweep never marks an R- id obsolete, no matter its confidence");
+    assert.ok(!(permanent.notes ?? []).some((n) => n.includes("unresolved after two rulings")),
+      "the sweep's note is never written against an R- id");
+
+    const provisional = criteria.find((c) => c.id === "D-applications-2");
+    assert.ok(provisional, "the D- criterion is exactly what the sweep is supposed to reach");
+    assert.equal(provisional.state, "obsolete", "unlike the R- id, an unresolved D- id is still swept after two rulings");
+    assert.ok((provisional.notes ?? []).includes("unresolved after two rulings"));
+  } finally {
     restoreEgress(prevEgress);
   }
 });

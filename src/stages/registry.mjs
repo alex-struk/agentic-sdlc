@@ -599,15 +599,22 @@ const ratify = {
 
     // The closing loop's bound: `contract` and `spike` are the two verbs that answer a
     // follow-up without ever raising a criterion's confidence (see `readRulings`'s own
-    // comment on `answered`), so a persona that keeps choosing one of them — or simply
-    // says nothing, which the grammar treats the same as `contract` — would otherwise
-    // never close the loop out. Once a still-unresolved criterion has been through two
-    // follow-up rulings with nothing resolving it, `ratify` decides for it: `obsolete`,
-    // with the reason on the row itself, so the next `followUp` call finds nothing left
-    // to ask about and the loop actually terminates.
+    // comment on `answered`) — `confirm`, `edit` and `defect` all resolve a criterion
+    // (`applyConditions` sets confidence to `confirmed` for all three), so any of those
+    // takes a criterion out of `inferred`/`open` before this sweep ever runs. A persona
+    // that keeps choosing `contract` or `spike` — or simply says nothing, which the
+    // grammar treats the same as `contract` — would otherwise never close the loop out.
+    // Once a still-unresolved criterion has been through two follow-up rulings with
+    // nothing resolving it, `ratify` decides for it: `obsolete`, with the reason on the
+    // row itself, so the next `followUp` call finds nothing left to ask about and the
+    // loop actually terminates. Guarded to `D-` ids only: an `R-` criterion was minted
+    // because a prior pass already confirmed it, so it can never legitimately be the
+    // target of this sweep — the only way one could carry `inferred`/`open` confidence
+    // at all is a stray `spike` condition naming an already-minted id, and that must not
+    // force-obsolete a permanent criterion the contract already depends on.
     if (followUpRulingsRead(read, domain) >= 2) {
       for (const c of withConditions) {
-        if ((c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete") {
+        if (c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete") {
           c.state = "obsolete";
           if (!c.notes.includes("unresolved after two rulings")) c.notes.push("unresolved after two rulings");
         }

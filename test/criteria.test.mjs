@@ -461,6 +461,16 @@ test("applyConditions: edit replaces the statement and bumps the version", () =>
   assert.equal(out[0].version, 2);
 });
 
+test("applyConditions: edit raises confidence to confirmed, the same as confirm — the deliberate rewording is the second witness", () => {
+  const { criteria } = parseDomainFile("### D-permits-1 · v1 · inferred · authored\nOld statement.\n", "permits");
+  const { criteria: out } = applyConditions(criteria, ["edit D-permits-1: A corrected statement."]);
+  assert.equal(out[0].confidence, "confirmed");
+
+  const { criteria: openCriteria } = parseDomainFile("### D-permits-1 · v1 · open · authored\nOld statement.\n", "permits");
+  const { criteria: openOut } = applyConditions(openCriteria, ["edit D-permits-1: A corrected statement."]);
+  assert.equal(openOut[0].confidence, "confirmed");
+});
+
 test("applyConditions: obsolete and drop both set state obsolete with a note recording why", () => {
   const { criteria: c1 } = parseDomainFile("### D-permits-1 · v1 · confirmed · authored\nA statement.\n", "permits");
   const { criteria: out1 } = applyConditions(c1, ["obsolete D-permits-1: no longer needed"]);
@@ -495,6 +505,7 @@ Something unrelated.
   assert.equal(out.length, 3);
   const original = out.find((c) => c.id === "D-permits-1");
   assert.equal(original.reconciliation, "defect");
+  assert.equal(original.confidence, "confirmed", "a defect row is a confirmed record of current behaviour");
   const addition = out.find((c) => c.id === "D-permits-3");
   assert.ok(addition, "the replacement's provisional id continues from the highest id already in the domain (2), not from 1");
   assert.equal(addition.origin, "authored");
@@ -504,6 +515,20 @@ Something unrelated.
   assert.equal(addition.statement, "the fee is recalculated when the application is edited");
   assert.equal(applied.length, 1);
   assert.equal(applied[0].verb, "defect");
+});
+
+test("applyConditions: defect raises an inferred/open target's confidence to confirmed, not just a confirmed one's", () => {
+  const { criteria: inferredCriteria } = parseDomainFile(
+    "### D-permits-1 · v1 · inferred · recovered\nThe fee is fixed at intake.\n- cites: app.js:1\n", "permits");
+  const { criteria: inferredOut } = applyConditions(inferredCriteria,
+    ["defect D-permits-1: the fee is recalculated when the application is edited"]);
+  assert.equal(inferredOut.find((c) => c.id === "D-permits-1").confidence, "confirmed");
+
+  const { criteria: openCriteria } = parseDomainFile(
+    "### D-permits-1 · v1 · open · recovered\nThe fee is fixed at intake.\n- cites: app.js:1\n", "permits");
+  const { criteria: openOut } = applyConditions(openCriteria,
+    ["defect D-permits-1: the fee is recalculated when the application is edited"]);
+  assert.equal(openOut.find((c) => c.id === "D-permits-1").confidence, "confirmed");
 });
 
 test("applyConditions: defect on a target with no note gives it one and points superseded-by at the replacement, satisfying checkCriteria", () => {
@@ -526,7 +551,7 @@ The fee is fixed at intake.
   assert.equal(r.ok, true, r.messages.join("\n"));
 });
 
-test("applyConditions + mintIds: replaying spike, edit and defect conditions three times against a target that stays D- (never confirmed) is idempotent", () => {
+test("applyConditions + mintIds: replaying spike, edit and defect conditions three times settles after one pass — edit and defect mint immediately (they resolve confidence), spike's target stays D- (never confirmed) and its condition keeps applying idempotently", () => {
   let text = `### D-x-1 · v1 · inferred · authored
 Statement to edit.
 
@@ -543,6 +568,7 @@ Statement to defect.
     "spike D-x-2: does this hold for renewals too?",
     "defect D-x-3: the fee is recalculated when the application is edited",
   ];
+  const textByPass = [];
   for (let pass = 0; pass < 3; pass++) {
     const { criteria, errors } = parseDomainFile(text, "x");
     assert.deepEqual(errors, [], `pass ${pass}: domain file still parses`);
@@ -552,20 +578,31 @@ Statement to defect.
     for (const c of withConditions) { const m = re.exec(c.id); if (m) existingMax = Math.max(existingMax, Number(m[1])); }
     const minted = mintIds(withConditions, 1, existingMax);
     text = serialiseDomainFile(minted, "x");
+    textByPass.push(text);
   }
+  assert.equal(textByPass[1], textByPass[0], "pass 2 leaves the file exactly as pass 1 wrote it");
+  assert.equal(textByPass[2], textByPass[0], "pass 3 leaves the file exactly as pass 1 wrote it");
   const { criteria: final } = parseDomainFile(text, "x");
 
-  const edited = final.find((c) => c.id === "D-x-1");
-  assert.equal(edited.statement, "A corrected statement.");
+  assert.ok(!final.some((c) => c.id.startsWith("D-x-1") || c.id.startsWith("D-x-3")),
+    "edit and defect both raise confidence to confirmed, so their targets mint to R- ids on the first pass rather than staying D-");
+
+  const edited = final.find((c) => c.statement === "A corrected statement.");
+  assert.ok(edited, "the edited criterion, now under its minted id");
+  assert.equal(edited.confidence, "confirmed");
   assert.equal(edited.version, 2, "edited exactly once across three passes, not bumped again each time");
 
   const spiked = final.find((c) => c.id === "D-x-2");
-  assert.deepEqual(spiked.notes, ["initial", "does this hold for renewals too?"], "the spike note appears exactly once");
+  assert.ok(spiked, "spike never raises confidence, so its target is never eligible to mint and keeps its D- id");
+  assert.equal(spiked.confidence, "open");
+  assert.deepEqual(spiked.notes, ["initial", "does this hold for renewals too?"], "the spike note appears exactly once, replayed idempotently every pass");
 
   const replacements = final.filter((c) => c.statement === "the fee is recalculated when the application is edited");
   assert.equal(replacements.length, 1, "defect appended exactly one replacement across three passes");
-  const defectTarget = final.find((c) => c.id === "D-x-3");
+  const defectTarget = final.find((c) => c.statement === "Statement to defect.");
+  assert.ok(defectTarget, "the defect target, now under its minted id");
   assert.equal(defectTarget.reconciliation, "defect");
+  assert.equal(defectTarget.confidence, "confirmed");
   assert.equal(defectTarget.notes.length, 1, "the defect target carries exactly one note across three passes");
 });
 

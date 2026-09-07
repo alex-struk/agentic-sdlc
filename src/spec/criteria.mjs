@@ -339,11 +339,14 @@ function collapseWhitespace(s) {
 export const CONDITION_GRAMMAR = [
   "One condition per line, and exactly one of these forms:",
   "",
-  "- `contract <ID>` — leave as recovered. It does not promote the criterion — only `confirm` does — so",
-  "  this is a no-op on anything still `inferred` or `open`. No text after the ID.",
+  "- `contract <ID>` — leave as recovered. It does not promote the criterion — `confirm`, `edit` and",
+  "  `defect` all do — so this is a no-op on anything still `inferred` or `open`. No text after the ID.",
   "- `confirm <ID>` — the evidence now supports raising its confidence to `confirmed`. No text after the ID.",
-  "- `edit <ID>: <new statement>` — the behaviour is right, the wording is not.",
-  "- `defect <ID>: <replacement statement>` — the old system does this and the new one should not; the row is kept as the record and the replacement is filed against it.",
+  "- `edit <ID>: <new statement>` — the behaviour is right, the wording is not; confidence rises to",
+  "  `confirmed` too, since the deliberate rewording is itself a second witness.",
+  "- `defect <ID>: <replacement statement>` — the old system does this and the new one should not; the row",
+  "  is kept as the record, its confidence rises to `confirmed` (it is a confirmed record of current",
+  "  behaviour, marked defect), and the replacement is filed against it.",
   "- `spike <ID>: <question>` — not yet decided; confidence drops to `open` and the question is recorded.",
   "- `obsolete <ID>: <why>` or `drop <ID>: <why>` — not to be carried forward at all.",
   "",
@@ -384,6 +387,10 @@ function parseCondition(line) {
 // `defect <ID>: <replacement>` is the one verb that adds a row rather than editing one:
 // the old behaviour (`<ID>`) is kept, marked `reconciliation: defect`, and a new
 // `authored`/`confirmed` criterion carries the corrected statement with `replaces: <ID>`.
+// The old row's own confidence is also set to `confirmed` — it is a confirmed record of
+// what the old system actually does, merely marked as a defect rather than carried
+// forward as-is — so a `defect`ed row mints alongside its replacement in the same pass
+// instead of being left `inferred`/`open` for the closing-loop sweep to reach later.
 // Its own provisional ID is minted here (`D-<domain>-<n>`, continuing from the highest
 // number already used for that domain across both the input and any earlier addition in
 // this same call) — `mintIds`, run right after, promotes it to a permanent `R-` id the
@@ -431,11 +438,17 @@ export function applyConditions(criteria, conditions) {
       case "edit":
         // Only a real change costs a version: replaying the same `edit` condition
         // against a row it already brought up to date must not keep bumping the
-        // version every run.
+        // version every run. Confidence is set to `confirmed` every time regardless —
+        // idempotent on a row already there — because the persona's deliberate
+        // rewording is itself the second witness that resolves the criterion; a
+        // criterion `edit`ed on a follow-up must not be left `inferred`/`open` for the
+        // closing-loop sweep to force-obsolete later (see `registry.mjs`'s ratify
+        // `execute`).
         if (target.statement !== text) {
           target.statement = text;
           target.version += 1;
         }
+        target.confidence = "confirmed";
         break;
       case "obsolete":
       case "drop":
@@ -448,6 +461,7 @@ export function applyConditions(criteria, conditions) {
         break;
       case "defect": {
         target.reconciliation = "defect";
+        target.confidence = "confirmed";
         const domain = domainOf(target.id) ?? domainOf(id);
         // Idempotency check: a replacement for this exact defect — same target, same
         // corrected text — may already exist, either as an earlier addition in this same
