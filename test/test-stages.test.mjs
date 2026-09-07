@@ -831,6 +831,41 @@ test("sdlc run contract: an oracle-configured project whose run writes no compos
   } finally { restoreEgress(prevEgress); }
 });
 
+test("sdlc run contract: a compose override using !override and !reset passes contract-oracle-override with no YAMLWarning", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-override-tags-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  addOracleConfig(dir);
+  const warnings = [];
+  const onWarning = (w) => warnings.push(w);
+  process.on("warning", onWarning);
+  try {
+    const r = await runContractWithMock(dir, mockContract(tmp, "override-tags", {
+      ...GOOD_CONTRACT_FILES,
+      ".sdlc/oracle/compose.yml":
+        "services:\n  app:\n    environment: !override\n      NODE_ENV: test\n    command: !reset []\n",
+    }));
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(!warnings.some((w) => /Unresolved tag/.test(w.message ?? String(w))), warnings.map((w) => w.message).join(" | "));
+  } finally {
+    process.off("warning", onWarning);
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run contract: a genuinely malformed compose override still fails contract-oracle-override", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-override-malformed-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  addOracleConfig(dir);
+  try {
+    const r = await runContractWithMock(dir, mockContract(tmp, "override-malformed", {
+      ...GOOD_CONTRACT_FILES,
+      ".sdlc/oracle/compose.yml": "services:\n  app: [unterminated\n",
+    }));
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => m.includes(".sdlc/oracle/compose.yml is not valid YAML")), r.messages.join(" | "));
+  } finally { restoreEgress(prevEgress); }
+});
+
 test("sdlc run contract: a seed row carrying a local home path fails the stage's own egress check, naming the file", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-egress-"));
   const { dir, prevEgress } = await makeProject(tmp);

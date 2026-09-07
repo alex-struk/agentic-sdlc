@@ -550,6 +550,26 @@ function checkSeed(projectDir) {
   return { id, ok: messages.length === 0, messages };
 }
 
+// `!override` and `!reset` are Compose's own merge tags (not YAML's) — legitimate on the
+// override file this check parses, telling Compose to replace rather than merge a
+// mapping or a sequence it collides with in the base file. The `yaml` package does not
+// know either one and, left to its defaults, logs a `YAMLWarning: Unresolved tag` for
+// every occurrence — noise on a file this check is about to pass anyway. Registering
+// both as plain custom tags (one entry per collection shape they can appear over) makes
+// the parser treat them as it treats a plain map or sequence, silencing the warning
+// without touching what a real syntax error does: `{ logLevel: "silent" }` would have
+// silenced those too, since this version of `yaml` treats a silent log level as "don't
+// even throw," which is not the trade this check means to make.
+function composeMergeTag(tag, collection) {
+  return { tag, collection, resolve: (node) => node };
+}
+const COMPOSE_MERGE_TAGS = [
+  composeMergeTag("!override", "map"),
+  composeMergeTag("!override", "seq"),
+  composeMergeTag("!reset", "map"),
+  composeMergeTag("!reset", "seq"),
+];
+
 // The compose override is only judged when the project configures an oracle at all, and
 // only for shape: it exists and parses as YAML. Nothing here brings up Docker — that is
 // `sdlc oracle`'s job, and it is not available in a check that runs in every test.
@@ -560,7 +580,7 @@ function checkOracleOverride(projectDir, config) {
   const full = join(projectDir, rel);
   if (!existsSync(full)) return { id, ok: false, messages: [`${rel} is missing`] };
   try {
-    parseYaml(readText(full));
+    parseYaml(readText(full), { customTags: COMPOSE_MERGE_TAGS });
   } catch (e) {
     return { id, ok: false, messages: [`${rel} is not valid YAML: ${e.message}`] };
   }
