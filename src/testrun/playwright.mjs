@@ -28,7 +28,11 @@ const UNBOUND_RE = /^unbound: /m;
 // `playwright test` failure surfaces through the report it wrote either way).
 function defaultExec(cmd, args, { cwd, env = {} } = {}) {
   const res = spawnSync(cmd, args, { cwd, env: { ...process.env, ...env }, encoding: "utf8" });
-  return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+  // `spawnSync` never throws, but a command it couldn't even launch (no `npm` on PATH)
+  // reports that through `res.error` instead of `res.stderr` — folded in here so a
+  // missing-report failure downstream still names the real reason.
+  const stderr = res.stderr || (res.error ? res.error.message : "");
+  return { status: res.status, stdout: res.stdout ?? "", stderr };
 }
 
 // `npm ci --prefix tests` when the harness's own `node_modules` is missing or stale
