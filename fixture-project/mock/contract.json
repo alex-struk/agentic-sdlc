@@ -1,0 +1,10 @@
+{
+  "text": "Completed spec/contract/ with two pages: applications-new for submitting a permit application and fees-quote for calculating a fee. The applicant persona signs in through sandbox-idp with a synthetic username; anonymous-visitor has no sign-in at all. The seed inserts one synthetic applicant user with a matching manifest handle.\n\nI could not recover an OpenAPI description because this project has no sources.old configured.",
+  "files": {
+    "spec/contract/surface.yaml": "# Pages, and the actions and observations each offers. Test IDs are filled at the design gate.\npages:\n  - id: applications-new\n    domain: applications\n    route: /applications\n    title: \"New permit application\"\n    actions: { submit: { test_id: null } }\n    observations: { status: { test_id: null } }\n  - id: fees-quote\n    domain: fees\n    route: /fees/quote\n    title: \"Fee quote\"\n    actions: { calculate: { test_id: null } }\n    observations: { amount: { test_id: null } }\n",
+    "spec/contract/personas.yaml": "# Roles a test can act as, and how a test signs in as each on every target.\npersonas:\n  - id: applicant\n    can: [submit a permit application, view a fee quote]\n    sign_in: { sandbox-idp: { username: applicant-1 } }\n  - id: anonymous-visitor\n    can: [view a fee quote]\n    sign_in: null\n",
+    "spec/contract/observables.yaml": "# Side effects a test may observe, and how.\nemail: { via: mail-catcher, api: \"${SDLC_MAIL_API}\" }\n",
+    "tests/seed/001-users.sql": "-- Synthetic users for the sign-in identities the contract's personas name.\nINSERT INTO users (id, email, username) VALUES\n  ('00000000-0000-0000-0000-000000000001', 'applicant-1@example.test', 'applicant-1');\n",
+    "tests/seed/manifest.yaml": "description: Records tests/acceptance refers to by handle.\nusers:\n  applicantOne: { id: \"00000000-0000-0000-0000-000000000001\", email: \"applicant-1@example.test\" }\n"
+  }
+}

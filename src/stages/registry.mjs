@@ -7,6 +7,8 @@ import { changedPaths, git, gitOk } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR } from "../spec/criteria.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
+import { checkEgress } from "../checks/egress.mjs";
+import { loadContract } from "../spec/surface.mjs";
 import { propose } from "../commands/propose.mjs";
 
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
@@ -319,6 +321,231 @@ const archaeology = {
       checkDomainFileParses(projectDir, ctx.domain, "archaeology-domain-file"),
       checkArchaeologyNoMintedIds(projectDir),
       checkArchaeologyScope(projectDir),
+    ];
+  },
+};
+
+// The default path for the compose override `contract` writes when a project configures
+// an oracle at all — `.sdlc/oracle/compose.yml`, applied here in code rather than in the
+// schema, so a project that never sets `oracle.compose_override` still gets a fixed,
+// predictable path for `sdlc oracle` (and this stage's own post-check) to find.
+function oracleOverridePath(config) {
+  return config?.oracle?.compose_override ?? ".sdlc/oracle/compose.yml";
+}
+
+// The proposal `contract` re-runs land on: `contract-v<n>`, `n` counting up from every
+// ruled `contract-v*` gate file already on disk — a gate file only exists once `sdlc
+// rule` has recorded a verdict, so this counts rulings, not attempts, the same way the
+// brief's naming rule reads. Unlike archaeology's `archaeology-<domain>` (one name per
+// domain, forever), `contract` has no natural per-run key of its own — a rebuild is a
+// rebuild — so the run itself is what versions the name.
+function nextContractVersion(projectDir) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return 1;
+  const re = /^contract-v(\d+)\.yaml$/;
+  return readdirSync(dir).filter((f) => re.test(f)).length + 1;
+}
+
+// Every identity a session might need to sign in through: the oracle's own, plus every
+// configured target's, de-duplicated. This is the set `contract`'s personas are judged
+// against — a persona is only obliged to carry a `sign_in` for an identity something in
+// this project actually uses.
+function configuredIdentities(config) {
+  const identities = new Set();
+  if (config?.oracle?.identity) identities.add(config.oracle.identity);
+  for (const target of Object.values(config?.targets ?? {})) if (target?.identity) identities.add(target.identity);
+  return [...identities];
+}
+
+function checkContractLoads(projectDir) {
+  const id = "contract-loads";
+  const { errors } = loadContract(projectDir);
+  if (!errors.length) return { id, ok: true, messages: [] };
+  return { id, ok: false, messages: errors.map((e) => `${e.file}: ${e.message}`) };
+}
+
+// A persona whose `sign_in` is exactly `null` is anonymous by design and exempt; every
+// other persona needs an entry for every identity the config actually uses, named so
+// whoever rules on the proposal knows exactly which persona and which identity is short.
+function checkPersonaSignIns(projectDir, config) {
+  const id = "contract-persona-sign-in";
+  const identities = configuredIdentities(config);
+  if (!identities.length) return { id, ok: true, messages: [] };
+  const { personas, errors } = loadContract(projectDir);
+  // A file that fails to load at all is `checkContractLoads`'s finding to report, not
+  // this check's — asking about sign-ins on personas that could not even be parsed would
+  // just repeat the same complaint in different words.
+  if (errors.length) return { id, ok: true, messages: [] };
+  const messages = [];
+  for (const p of personas.personas) {
+    if (p.sign_in === null) continue;
+    for (const identity of identities) {
+      if (!p.sign_in?.[identity]) messages.push(`persona "${p.id}" has no sign_in for identity "${identity}"`);
+    }
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+// Every domain with at least one `accepted` criterion needs somewhere in `surface.yaml`
+// for a test to act through — a criterion nobody can reach through a page is not
+// actually testable, whatever the domain file says about it. Skipped entirely when
+// `spec/criteria-index.json` does not exist yet: a project that has not ratified
+// anything has no accepted criteria to hold this stage to.
+function checkCriteriaDomainsHavePages(projectDir) {
+  const id = "contract-domain-pages";
+  const idxPath = join(projectDir, "spec", "criteria-index.json");
+  if (!existsSync(idxPath)) return { id, ok: true, messages: [] };
+  let index;
+  try {
+    index = JSON.parse(readText(idxPath));
+  } catch (e) {
+    return { id, ok: false, messages: [`spec/criteria-index.json does not parse: ${e.message}`] };
+  }
+  const acceptedDomains = new Set((index.criteria ?? []).filter((c) => c.state === "accepted").map((c) => c.domain));
+  if (!acceptedDomains.size) return { id, ok: true, messages: [] };
+  const { surface } = loadContract(projectDir);
+  const pageDomains = new Set(surface.pages.map((p) => p?.domain).filter(Boolean));
+  const missing = [...acceptedDomains].filter((d) => !pageDomains.has(d));
+  if (!missing.length) return { id, ok: true, messages: [] };
+  return { id, ok: false, messages: [`no page in spec/contract/surface.yaml carries domain: for accepted domain(s): ${missing.join(", ")}`] };
+}
+
+// `openapi.yaml` is only judged when there is an old application to have recovered it
+// from — a greenfield contract with nothing to reverse-engineer is not held to writing
+// an API description sight unseen.
+function checkOpenapi(projectDir, config) {
+  const id = "contract-openapi";
+  if (!config?.sources?.old) return { id, ok: true, messages: [] };
+  const file = "spec/contract/openapi.yaml";
+  const full = join(projectDir, file);
+  if (!existsSync(full)) return { id, ok: false, messages: [`${file} is missing`] };
+  let doc;
+  try {
+    doc = parseYaml(readText(full));
+  } catch (e) {
+    return { id, ok: false, messages: [`${file} is not valid YAML: ${e.message}`] };
+  }
+  const messages = [];
+  if (!doc || typeof doc !== "object" || !doc.openapi) messages.push(`${file} is missing the top-level "openapi" key`);
+  const paths = doc && typeof doc === "object" ? doc.paths : undefined;
+  if (!paths || typeof paths !== "object" || Array.isArray(paths) || Object.keys(paths).length === 0)
+    messages.push(`${file} has no paths`);
+  return { id, ok: messages.length === 0, messages };
+}
+
+// Every seed file the agent wrote has to actually insert something — an empty
+// `tests/seed/*.sql` file would apply cleanly and seed nothing, which is worse than
+// missing because nothing else would notice. `manifest.yaml`'s own parse errors are
+// already `checkContractLoads`'s to report (`loadContract` reads it too), so this does
+// not repeat them.
+function checkSeed(projectDir) {
+  const id = "contract-seed";
+  const dir = join(projectDir, "tests", "seed");
+  if (!existsSync(dir)) return { id, ok: true, messages: [] };
+  const messages = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".sql")) continue;
+    if (!readText(join(dir, f)).trim()) messages.push(`tests/seed/${f} is empty`);
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+// The compose override is only judged when the project configures an oracle at all, and
+// only for shape: it exists and parses as YAML. Nothing here brings up Docker — that is
+// `sdlc oracle`'s job, and it is not available in a check that runs in every test.
+function checkOracleOverride(projectDir, config) {
+  const id = "contract-oracle-override";
+  if (!config?.oracle) return { id, ok: true, messages: [] };
+  const rel = oracleOverridePath(config);
+  const full = join(projectDir, rel);
+  if (!existsSync(full)) return { id, ok: false, messages: [`${rel} is missing`] };
+  try {
+    parseYaml(readText(full));
+  } catch (e) {
+    return { id, ok: false, messages: [`${rel} is not valid YAML: ${e.message}`] };
+  }
+  return { id, ok: true, messages: [] };
+}
+
+// `contract` may only touch the paths the guard hook allows it: the contract itself, the
+// synthetic seed, and the oracle's compose override.
+function checkContractScope(projectDir) {
+  const id = "contract-scope";
+  const outside = changedPaths(projectDir).filter((p) => !/^(spec\/contract\/|tests\/seed\/|\.sdlc\/oracle\/)/.test(p));
+  if (!outside.length) return { id, ok: true, messages: [] };
+  return { id, ok: false, messages: [`contract may only change spec/contract/, tests/seed/ and .sdlc/oracle/, but also touched: ${outside.join(", ")}`] };
+}
+
+// `contract` completes `spec/contract/` — the pages, personas, API description and
+// observables the acceptance tests and the oracle will act through — from what the
+// ratified criteria say the system does, reading `sources/old` when this project has
+// one. It holds gate G1 again, alongside archaeology: the contract is spec content, not
+// implementation, and nothing later builds tests against it until the product-owner
+// persona rules it.
+const contract = {
+  name: "contract",
+  title: "contract",
+  skill: skillPath("contract"),
+  // `with-sources` only when there is actually an old application configured — a
+  // greenfield project has nothing under `sources/old` for `ensureSources` to check out,
+  // and asking for it would fail the workspace before the agent ever got a prompt.
+  workspace: (config) => (config?.sources?.old ? "with-sources" : "project"),
+  gate: "G1",
+  collect: [],
+  implemented: true,
+  prompt(ctx) {
+    const config = ctx.config;
+    const fromSources = !!config?.sources?.old;
+    const identities = configuredIdentities(config);
+    const oracle = config?.oracle;
+    const lines = [
+      fromSources
+        ? "Complete spec/contract/ from sources/old and the ratified criteria: this project has an old application to recover the contract from, so read it the same way archaeology did — code and docs, never sources/old/tests."
+        : "Complete spec/contract/ by authoring the contract from the ratified criteria: this project has no old application configured, so there is nothing under sources/old to read — write the contract from what the criteria in spec/domains/ (and spec/criteria-index.json, if ratify has already run) say the system does.",
+      "1. spec/contract/surface.yaml: one entry per page the criteria need, each carrying a \"domain:\" field, a route, a title, and actions/observations named in the vocabulary the criteria use — never a CSS selector or a test ID, which are filled in at the design gate, not here. Keep and normalise whatever archaeology already appended; delete nothing.",
+      identities.length
+        ? `2. spec/contract/personas.yaml: every role with a "can" list and a "sign_in" entry for every identity this project configures (${identities.join(", ")}). "session-route" needs { route: <path> }; "sandbox-idp" needs { username: <name> }. A persona with no sign-in at all (an anonymous visitor) writes "sign_in: null" rather than omitting the key.`
+        : "2. spec/contract/personas.yaml: every role with a \"can\" list. This project configures no identity at all (no oracle, no targets), so no persona needs a sign_in entry yet.",
+      fromSources
+        ? "3. spec/contract/openapi.yaml: assembled from the old application's own API description files if it has any, else written from its routes — one operationId per route — with a top comment \"# recovered from <path(s)> at <commit>\" naming exactly where it came from."
+        : "3. spec/contract/openapi.yaml: leave as is; there is no old application to recover an API description from.",
+      "4. spec/contract/observables.yaml: email observed through a mail catcher at ${SDLC_MAIL_API}, plus any file or notification endpoint the criteria depend on.",
+      "5. tests/seed/: one or more NNN-<name>.sql files, applied in name order, inserting one user per persona whose identity a session route or sandbox IdP looks up, plus whatever fixture records the accepted criteria's given-clauses need — all synthetic (example.test addresses, invented names that are not real people). Write tests/seed/manifest.yaml naming every inserted record a test will refer to by handle.",
+      oracle
+        ? `6. ${oracleOverridePath(config)}: a Compose override for ${oracle.compose} that publishes the app on \${SDLC_APP_PORT}, the database on \${SDLC_DB_PORT}, adds a "mailpit" service (axllent/mailpit:v1.28.0) publishing its API on \${SDLC_MAIL_API_PORT}, points the app's own mail settings at that mailpit service, sets whatever environment the app needs to run outside production with its test sign-in routes enabled (use "!override" for any env_file the base compose file declares, so this override's own environment actually wins), and defines the migration one-off service the config names (${oracle.migrate_service ?? "none configured"}), if any.`
+        : "6. This project configures no oracle, so there is nothing to write under .sdlc/oracle/.",
+      "Finish with your journal entry: say which pages exist, which sign-in method each persona uses, what the seed contains, and what could not be recovered.",
+    ];
+    return lines.join("\n\n");
+  },
+  proposal(ctx) {
+    const n = ctx.contractVersion ?? nextContractVersion(ctx.projectDir);
+    return {
+      name: `contract-v${n}`,
+      question: "Is this the contract the tests will act through?",
+      recommendation: recommendationFrom(ctx.agentText),
+    };
+  },
+  // Nothing beyond what the workspace itself needs — unlike archaeology, `contract`
+  // takes no `--domain`: a rebuild covers every domain's pages and personas at once, not
+  // one domain per run.
+  preChecks() {
+    return [];
+  },
+  postChecks(projectDir, ctx) {
+    // Stashed on `ctx` the same way `intent` stashes the file it discovers: the real
+    // proposal call in `finishStage` does not carry `projectDir`, so the version has to
+    // be resolved here, while it is available, for `proposal` to read back.
+    ctx.contractVersion = nextContractVersion(projectDir);
+    return [
+      checkContractLoads(projectDir),
+      checkPersonaSignIns(projectDir, ctx.config),
+      checkCriteriaDomainsHavePages(projectDir),
+      checkOpenapi(projectDir, ctx.config),
+      checkSeed(projectDir),
+      checkEgress(projectDir, ctx),
+      checkOracleOverride(projectDir, ctx.config),
+      checkContractScope(projectDir),
     ];
   },
 };
@@ -762,6 +989,7 @@ STAGES_BY_NAME.probe = probe;
 STAGES_BY_NAME.intent = intent;
 STAGES_BY_NAME.archaeology = archaeology;
 STAGES_BY_NAME.ratify = ratify;
+STAGES_BY_NAME.contract = contract;
 
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];

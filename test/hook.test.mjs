@@ -45,13 +45,22 @@ test("archaeology may write only spec/, reading sources/ read-only", () => {
     assert.equal(run(p, "archaeology").status, 2, p);
 });
 
+test("contract may write spec/contract/, tests/seed/ and .sdlc/oracle/, reading sources/ read-only", () => {
+  assert.equal(run("spec/contract/surface.yaml", "contract").status, 0);
+  assert.equal(run("tests/seed/001-users.sql", "contract").status, 0);
+  assert.equal(run(".sdlc/oracle/compose.yml", "contract").status, 0);
+  for (const p of ["app/x", "spec/domains/x.md", "intent/x.md", "constitution.md",
+    ".github/workflows/a.yml", ".sdlc/config.yaml", "sources/old/README.md"])
+    assert.equal(run(p, "contract").status, 2, p);
+});
+
 test("ratify is deterministic and writes nothing at all", () => {
   for (const p of ["app/x.ts", "spec/spec.md", "intent/x.md", "sources/old/README.md", "README.md"])
     assert.equal(run(p, "ratify").status, 2, p);
 });
 
 test("every stage blocks sources/, the read-only checkout of the old application", () => {
-  for (const stage of ["build", "derive-tests", "bind-adapter", "intent", "archaeology", "design", "plan"])
+  for (const stage of ["build", "derive-tests", "bind-adapter", "intent", "archaeology", "contract", "design", "plan"])
     assert.equal(run("sources/old/README.md", stage).status, 2, stage);
 });
 

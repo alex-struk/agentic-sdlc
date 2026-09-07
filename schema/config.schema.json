@@ -18,7 +18,14 @@
     "oracle": { "type": "object", "additionalProperties": false, "required": ["target", "compose", "seed", "base_url", "identity"],
       "properties": {
         "target": { "type": "string" }, "compose": { "type": "string" }, "seed": { "type": "string" },
-        "base_url": { "type": "string", "format": "uri" }, "identity": { "enum": ["session-route", "sandbox-idp"] } } },
+        "base_url": { "type": "string", "format": "uri" }, "identity": { "enum": ["session-route", "sandbox-idp"] },
+        "compose_override": { "type": "string" },
+        "service": { "type": "string" },
+        "up": { "type": "array", "items": { "type": "string" } },
+        "migrate_service": { "type": "string" },
+        "db": { "type": "object", "additionalProperties": false, "required": ["service", "user", "database"],
+          "properties": { "service": { "type": "string" }, "user": { "type": "string" }, "database": { "type": "string" } } },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } } } },
     "targets": { "type": "object", "additionalProperties": { "$ref": "#/definitions/target" } },
     "policy": { "type": "object", "additionalProperties": false, "required": ["gates", "default_tier"],
       "properties": {

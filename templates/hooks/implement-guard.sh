@@ -50,6 +50,11 @@ case "$stage" in
     # archaeology reads the old app under sources/ read-only and may write only spec/ —
     # every other path, named or not, is out of its territory.
     allowed='^spec/' ;;
+  contract)
+    # contract completes spec/contract/, writes synthetic seed data under tests/seed/, and
+    # writes the oracle's compose override under .sdlc/oracle/ — nothing else, including
+    # sources/old, which stays read-only the same way it does for archaeology.
+    allowed='^(spec/contract/|tests/seed/|\.sdlc/oracle/)' ;;
   ratify)
     # A deterministic gate with no agent: nothing is written here at all.
     blocked='^' ;;

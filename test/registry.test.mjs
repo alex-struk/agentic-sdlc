@@ -36,9 +36,9 @@ test("probe post-check fails when app/PROBE.md is missing the sentence", () => {
   assert.ok(results.some((r) => !r.ok));
 });
 
-test("every stage name from profiles.mjs other than probe, intent, archaeology and ratify is an unimplemented stub", () => {
+test("every stage name from profiles.mjs other than probe, intent, archaeology, ratify and contract is an unimplemented stub", () => {
   for (const name of STAGES) {
-    if (name === "intent" || name === "archaeology" || name === "ratify") continue;
+    if (name === "intent" || name === "archaeology" || name === "ratify" || name === "contract") continue;
     const stage = stageFor(name);
     assert.equal(stage.implemented, false, name);
     assert.equal(stage.workspace, "project", name);

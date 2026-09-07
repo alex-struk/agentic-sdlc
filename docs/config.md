@@ -43,6 +43,17 @@ Optional. Container describing the reference system (usually the legacy system t
 - `seed` (string): Path to database seed files or scripts.
 - `base_url` (string, format URI): A URL starting with `http://` or `https://`.
 - `identity` (enum): One of `session-route` or `sandbox-idp`.
+- `compose_override` (string, optional): Path to the compose override the `contract` stage writes (mailpit, published ports, the app's non-production sign-in routes). Defaults to `.sdlc/oracle/compose.yml`, applied in code rather than in the schema.
+- `service` (string, optional): The base compose service that runs the application itself. Defaults to `app`.
+- `up` (array of strings, optional): Services to bring up before running the migration. Defaults to `[]`, meaning every service except `service` and `migrate_service`.
+- `migrate_service` (string, optional): A one-off compose service that applies database migrations, run once before the seed is loaded.
+- `db` (object, optional): Where to load `tests/seed/*.sql` into. All three keys are required inside `db` when it is present:
+  - `service` (string): The compose service running the database.
+  - `user` (string): The database user to connect as.
+  - `database` (string): The database name.
+- `env` (object of strings, optional): Extra environment variables passed to `docker compose` when the oracle comes up.
+
+The mailpit API port the oracle publishes is not a config key: it always reaches the running application as the environment variable `SDLC_MAIL_API_PORT`, chosen by the runner the same way the app and database ports are.
 
 ## targets
 
