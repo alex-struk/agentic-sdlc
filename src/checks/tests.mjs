@@ -19,6 +19,12 @@ const PROVENANCE_LINE_RE = /^\/\/ provenance: (blind|unverified), spec@([0-9a-fA
 // that let a `blind` claim stand once the file has real git history.
 const DERIVE_TESTS_SUBJECT_RE = /^(propose\(G3\): derive-tests-|stage\(derive-tests\)|merge: derive-tests-)/;
 
+// The files that legitimately sit directly under `tests/acceptance/` rather than inside a
+// domain folder: the two exemption lists a spec file's absence is recorded in, and the
+// list `calibrate` writes and `derive-tests --stale` reads (`redo.yaml`). Anything else
+// loose in that directory is a test nothing can attribute to a domain.
+const ACCEPTANCE_FILES = new Set(["not-testable.yaml", "attestations.yaml", "redo.yaml"]);
+
 // Exported for `runSuite` (`src/testrun/playwright.mjs`), which needs the same
 // criterion-to-domain lookup to report a `not-testable` row's domain — the index has no
 // other reader, so there is nothing to duplicate by sharing this one.
@@ -130,7 +136,7 @@ export function checkTests(projectDir, ctx = {}) {
           if (statSync(fabs).isDirectory()) continue;
           specFiles.push({ relPath: `tests/acceptance/${entry}/${filename}`, filename, abs: fabs });
         }
-      } else if (entry !== "not-testable.yaml" && entry !== "attestations.yaml") {
+      } else if (!ACCEPTANCE_FILES.has(entry)) {
         // A test file sitting directly under tests/acceptance/, with no domain folder
         // above it, has nowhere for `coverage` to attribute it to.
         messages.push(`tests/acceptance/${entry}: tests live under a domain folder`);

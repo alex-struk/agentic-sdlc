@@ -76,7 +76,7 @@ function recordRun(projectDir, line) {
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `chore(oracle): ${line}`], projectDir);
 }
 
-async function oracleUp(projectDir, config, target) {
+async function startOracle(projectDir, config, target) {
   const composePath = join(projectDir, config.oracle.compose);
   if (!existsSync(composePath)) {
     console.error(`oracle up: compose file not found: ${config.oracle.compose}`);
@@ -194,9 +194,23 @@ export async function runOracle(projectDir, sub, { target: wantedTarget } = {}) 
     console.error(`oracle: "${target}" is not config.oracle.target ("${config.oracle.target}") — this project has only one oracle target`);
     return 1;
   }
-  if (sub === "up") return oracleUp(projectDir, config, target);
+  if (sub === "up") return startOracle(projectDir, config, target);
   if (sub === "down") return oracleDown(projectDir, config, target);
   return oracleStatus(projectDir, config, target);
+}
+
+// The programmatic form of `sdlc oracle up`, for a stage that needs the old application
+// running before it can do anything (`calibrate`, `src/stages/registry.mjs`). It runs the
+// same lifecycle the command does — idempotent, so a target already up is found through
+// its own local file rather than started a second time — and returns what that run
+// recorded (`base_url`, `mail_api`, the ports, the compose project) instead of an exit
+// code, so the caller does not have to read the local file itself to find out where the
+// target ended up.
+export async function oracleUp(projectDir, { target } = {}) {
+  const code = await runOracle(projectDir, "up", { target });
+  if (code !== 0) throw new Error(`oracle up failed for target "${target ?? "(the configured one)"}"`);
+  const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+  return readLocal(projectDir, target ?? config?.oracle?.target);
 }
 
 COMMANDS.oracle = async ({ pos, flags }) => runOracle(resolve(process.cwd()), pos[0], { target: typeof flags.target === "string" ? flags.target : undefined });

@@ -166,6 +166,22 @@ on that gate file at all until a person rewrites the lines in place.
 What is still *not* checked here is whether a condition's ID exists in the domain: this command has
 no domain file in hand. `ratify` reports an unknown ID later, against the file it actually has.
 
+### Calibration conditions
+
+Not every G1 proposal asks the ratification question. A proposal whose name begins `calibrate-` asks
+a different one — which of the application, the criterion or the test is wrong, for a criterion the
+acceptance suite failed against a running target (`docs/stages/calibrate.md`) — and its conditions
+are read in the calibration grammar instead: `defect-in-old <ID>`, `spec-wrong <ID>: <corrected
+statement>`, `test-wrong <ID>: <why>`, described in the product owner's own brief under "Calibration
+rulings". The proposal's name is what selects the grammar, because a condition read in the wrong one
+is not a parse error, it is a ruling that would be dropped in silence: `confirm R-1.1` is a perfectly
+well-formed ratification condition and means nothing at all on a calibration proposal.
+
+Everything else about the mechanism is the same. The lines are parsed before the ruling is written,
+an unreadable line gets the persona one re-prompt with the calibration grammar restated, and
+whatever is still unreadable lands on the gate file under `unparsed_conditions` — where `calibrate`
+reports it as a dead condition on its next run rather than applying it.
+
 At G1 a `return` also carries no conditions in practice: its rationale paragraph says what
 archaeology has to go back and change instead.
 
