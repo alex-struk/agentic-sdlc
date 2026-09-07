@@ -191,6 +191,15 @@ reports it as a dead condition on its next run rather than applying it.
 At G1 a `return` also carries no conditions in practice: its rationale paragraph says what
 archaeology has to go back and change instead.
 
+At G3 a `return` is read the other way around: its conditions are not run through a grammar at
+all — they are read back as plain free-text lines, one per thing that has to change, alongside the
+rationale. `sdlc run derive-tests --domain <d> --revise` is what acts on them: it quotes both
+verbatim to the agent and asks it to change only what the conditions name
+(`docs/stages/derive-tests.md`, "Revising after a return"). A human `rule <name> return --by <role>
+--note "..."` records only that single free-text `note` and no structured `conditions` list at
+all; a real, multi-condition return needs the agent path (`rule <name> --by agent:<persona>`),
+whose `conditions` array is exactly what a revise run reads.
+
 ## Mandatory escalation
 
 Some proposals never reach the persona at all. Before asking, `sdlc rule` escalates on its own

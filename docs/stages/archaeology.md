@@ -125,7 +125,7 @@ committed as `record(G1): <name> returned`, and the branch — never merged, sin
 nothing — is deleted. This is what makes the return visible everywhere a ruling normally is: the
 state site, and `followUpState`'s own count of what has been ruled on, so the next
 follow-up a further ratify pass opens continues the numbering past it rather than reusing its
-number. It does not make the return visible to `readRulings` (`registry.mjs` ~1131-1161), which
+number. It does not make the return visible to `readRulings` (`registry.mjs`, ~1393-1447), which
 only reads a gate file whose `verdict` is `approve` and skips every other gate — a return
 contributes nothing to `ratify`'s own conditions no matter where its gate file lives. The working
 tree is clean again once this commit lands, so the rest of the run — and `propose`, later — works

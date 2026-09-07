@@ -32,7 +32,7 @@ every `.sdlc/proposals/*.md`, every `.sdlc/runs/*.md`, `tests/acceptance/<domain
 
   | Column | What it shows |
   | --- | --- |
-  | `tests` | `<covered>/<accepted>` from `coverage(projectDir, domain)`, plus ` (n/t <count>)` when any of the domain's accepted criteria are recorded not-testable. Blank when the domain has neither a `*.spec.ts` file under `tests/acceptance/<domain>/` nor a not-testable entry — a bare `0/0` would misread as "nothing accepted" rather than "coverage not run yet". |
+  | `tests` | `<covered>/<accepted>` from `coverage(projectDir, domain)`, plus ` (n/t <count>)` when any of the domain's accepted criteria are recorded not-testable. `accepted` excludes a criterion carrying `superseded-by`: it has been replaced by another, and a test for it could only ever contradict the replacement, so it counts toward neither `covered` nor `accepted`. Blank when the domain has neither a `*.spec.ts` file under `tests/acceptance/<domain>/` nor a not-testable entry — a bare `0/0` would misread as "nothing accepted" rather than "coverage not run yet". |
   | `<target>` | `<n> pass · <n> fail · <n> unbound · <n> stale`, counting this domain's rows in `tests/results/<target>/latest.json` (a `not-testable` row is not counted again here — the `tests` column already covers it). Blank when that target has no `latest.json` yet. |
 
   | Total | What it sums |

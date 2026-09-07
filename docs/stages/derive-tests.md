@@ -12,16 +12,20 @@ is ruled at G3 by a persona rather than at G1 by the product owner:
 
 ## Inputs
 
-`sdlc run derive-tests --domain <d> [--stale] [--dry-run]`, run from inside the project's working
-tree, on `main`. `<d>` must be one of `config.project.domains`, and the domain must already carry
-at least one `accepted` `R-` criterion in `spec/criteria-index.json` — `ratify` is what puts one
-there.
+`sdlc run derive-tests --domain <d> [--stale] [--revise] [--dry-run]`, run from inside the
+project's working tree, on `main`. `<d>` must be one of `config.project.domains`, and the domain
+must already carry at least one `accepted` `R-` criterion in `spec/criteria-index.json` — `ratify`
+is what puts one there. `accepted` here excludes a criterion carrying `superseded-by`: it has been
+replaced by another, and a test for it could only ever contradict the replacement, never confirm
+it — see "Superseded criteria" below.
 
-Without `--stale`, every accepted criterion of the domain gets a test (or a `not-testable` entry).
-With `--stale`, only the criteria `checkTests` reports as stale (a spec file whose header version
-trails the index) plus any id listed for this domain in `tests/acceptance/redo.yaml` — a `--stale`
-run against a domain with nothing stale and nothing listed fails its own pre-check rather than
-opening an empty proposal.
+Without `--stale` or `--revise`, every accepted, non-superseded criterion of the domain gets a
+test (or a `not-testable` entry). With `--stale`, only the criteria `checkTests` reports as stale
+(a spec file whose header version trails the index) plus any id listed for this domain in
+`tests/acceptance/redo.yaml` — a `--stale` run against a domain with nothing stale and nothing
+listed fails its own pre-check rather than opening an empty proposal. With `--revise`, this run
+acts on a G3 ruling that returned a test proposal instead of approving it — see "Revising after a
+return" below; `--stale` and `--revise` are not meant to be combined.
 
 `tests/acceptance/redo.yaml` (`{ redo: [{ id, version, why }] }`) is written by `calibrate` when the
 product owner rules `test-wrong <ID>` — the criterion is right and the test is not, which is a reason
@@ -50,12 +54,36 @@ never sees the running application; a redo id is derived the same blind way a fr
   test's next failure as already ruled on and no new question would ever be asked about it. The
   gate file stays named in `applied`, so the ruling is never applied to the spec a second time.
 - A journal entry and a run-record line, as every stage produces. The journal says how many
-  criteria got a test, which were not, and which surface actions or observations were missing.
-- A proposal at gate G3: `derive-tests-<d>` for a full run, or `derive-tests-<d>-stale-<n>` for a
+  criteria got a test, which were not, and which surface actions or observations were missing —
+  or, on a `--revise` run, what changed for each of the returning ruling's conditions and which, if
+  any, were not actionable and why.
+- A proposal at gate G3: `derive-tests-<d>` for a full run, `derive-tests-<d>-stale-<n>` for a
   `--stale` run (`<n>` = 1 + however many `derive-tests-<d>-stale-*` gate files already exist —
-  one per ruling, the same counting rule `contract`'s own versioning follows), holding the
-  question "Do these tests follow from the <d> criteria and from nothing else?" and a
+  one per ruling, the same counting rule `contract`'s own versioning follows), or
+  `derive-tests-<d>-<n>` for a `--revise` run (see "Revising after a return" below for `<n>`),
+  holding the question "Do these tests follow from the <d> criteria and from nothing else?" (or,
+  revising, "Do the revised <d> tests now follow from their criteria and from nothing else?") and a
   recommendation taken from the agent's own journal text.
+
+## Superseded criteria
+
+A criterion carrying `superseded-by` (`docs/spec-format.md`) has been replaced by another — a
+`defect` ratification condition adds the replacement and points the old criterion at it
+(`docs/stages/ratify.md`). A test for a superseded criterion could only ever contradict its
+replacement, never confirm it, so:
+
+- `coverage(projectDir, domain)` (`src/checks/tests.mjs`), the source both this stage's own
+  `derive-tests-coverage` post-check and the state site's `tests` column read, excludes a
+  superseded criterion from `covered` and `missing` entirely and reports it under its own
+  `superseded` key instead.
+- This stage's own list of criteria to derive tests for (`resolveCriteriaToDerive` /
+  `acceptedCriteria`, `registry.mjs`) excludes it the same way, and the prompt says so, so an
+  agent that already sees a superseded criterion's replacement in the list is not asked to write a
+  second, contradictory test for the criterion it replaced.
+- `checkTests` (the general-purpose check every stage's tree is judged against, not only this
+  one's) does not fail a spec file that exists anyway for a superseded criterion — one written
+  before the criterion was superseded, say — but warns, naming the replacement, so a reviewer
+  notices it rather than trusting a test that can only be wrong now.
 
 ## Workspace the agent sees
 
@@ -85,33 +113,88 @@ workspace to the application the stage is meant to be blind to.
     `derive-tests: domain <d> has no accepted criteria; run ratify first`.
   - On a `--stale` run, there is at least one criterion to derive — `derive-tests: nothing stale in
     <d>`.
+  - On a `--revise` run, `derive-tests-revise-source` (`registry.mjs`, `checkDeriveTestsRevisionSource`)
+    finds a returned test proposal to revise from — see "Revising after a return" below.
 - **Post-checks**, run against the working tree after the agent session ends:
   - `checkTests` (`src/checks/tests.mjs`), with `SDLC_STAGE=derive-tests` set for the duration of
     the call so a file this run just wrote, still uncommitted, is judged as the blind claim it
     actually is rather than as an unverified hand edit.
   - `checkSeparation` (`src/checks/separation.mjs`): no test touches a locator, a testid, a route
     literal or the page object.
-  - `coverage(projectDir, d)` (`src/checks/tests.mjs`) has no `missing`: every accepted criterion is
-    either tested or named in `not-testable.yaml`.
+  - `coverage(projectDir, d)` (`src/checks/tests.mjs`) has no `missing`: every accepted,
+    non-superseded criterion is either tested or named in `not-testable.yaml`.
   - Every changed path is under `tests/acceptance/<d>/`, `tests/acceptance/not-testable.yaml`, or
     `tests/generated/`. This is judged before the stage clears `redo.yaml`, so the exemption the
     pipeline's own bookkeeping needs is never one the agent can use.
   - Every new or changed spec file's second line contains `provenance: blind` — a derive-tests file
     can never leave its own header claiming `unverified`.
+  - In `--revise` mode only (`derive-tests-revise-drift`): every spec file the returned branch
+    already carried, whose criterion no condition names, is unchanged from that branch's own
+    version — see "Revising after a return" below.
 
 ## Exit criterion
 
 Exits 0 and prints `run derive-tests: ok (opened proposal/derive-tests-<d>)` (or the `-stale-<n>`
-name) once the proposal branch is open. Any pre-check or post-check failure exits 1 and prints the
-failing check's messages; whatever the agent wrote, if anything, stays in the working tree,
-untracked, for inspection.
+or `--revise` name) once the proposal branch is open. Any pre-check or post-check failure exits 1
+and prints the failing check's messages; whatever the agent wrote, if anything, stays in the
+working tree, untracked, for inspection.
 
 ## Re-run behaviour
 
 A full run's proposal name (`derive-tests-<d>`) is fixed, so a second full run is refused, the
 same as `archaeology`'s per-domain proposal, until the open one is ruled. A `--stale` re-run opens
 its own, separately versioned proposal, so a project can keep updating a domain's suite over time
-without a name collision against the original.
+without a name collision against the original. A `--revise` re-run opens its own, separately
+versioned proposal too — see "Revising after a return" below.
+
+## Revising after a return
+
+A G3 ruling can find that a test asserts more than its criterion states, leaks an implementation
+detail, or names a `not-testable` reason that is not real — and return the proposal instead of
+approving it. Neither `sdlc rule` nor `sdlc run derive-tests --domain <d>` on its own does anything
+with that: the ruling's rationale and conditions say what has to change, and `--revise` is what
+acts on them. The model is `archaeology --revise` (`docs/stages/archaeology.md`), applied to G3
+instead of G1.
+
+`derive-tests.preChecks` runs the `--domain` check first; only once it passes does it look for a
+returned ruling — its own side effect (below) never fires as a side channel of a batch that failed
+for some unrelated reason, and a misconfigured run leaves any real returned ruling exactly where it
+was for a corrected re-run to find.
+
+`sdlc run derive-tests --domain <d> --revise` then looks for a returned ruling to revise from:
+among `proposal/derive-tests-<d>` (a full run), every `proposal/derive-tests-<d>-<n>` (an earlier
+revision of it), and every `proposal/derive-tests-<d>-stale-<n>` (a `--stale` re-run), the one whose
+gate file records `verdict: return` and has not already landed on `main`. None found fails the
+pre-check with `derive-tests --revise: no returned ruling for <d> to revise from`.
+
+On a real run, once found, that branch's gate file and proposal page are copied onto `main`,
+committed as `record(G3): <name> returned`, and the branch is **renamed** to `returned/<name>` —
+kept, not deleted, since the tests it carries live nowhere else. This is what makes the return
+visible everywhere a ruling normally is (the state site, and the next `--stale` or `--revise`
+run's own numbering) and what frees the name for a fresh proposal. On `--dry-run`, nothing is
+recorded: the rationale and conditions are found and quoted in the printed prompt, but the branch,
+its gate file and `main` are all left exactly as found — a dry run writes nothing at all, the same
+promise `docs/stages/run.md` makes for every stage.
+
+The workspace this run's agent sees is still `spec-only`, but archived from the returned branch's
+own commit rather than from `HEAD` (`materialise(projectDir, mode, { ref })`, `workspace.mjs`) — the
+agent starts from exactly what was proposed and returned, not from whatever else has landed on
+`main` since. The prompt quotes the ruling's rationale and every condition verbatim, and asks for a
+revision, not a fresh derivation: change only what the conditions name — a spec file, a
+`not-testable` entry, or one assertion inside a file — leave every other spec file byte-for-byte as
+found, re-derive nothing, and never rewrite a header's `derived` date on a file whose content did
+not actually change. `derive-tests-revise-drift` is what enforces the "leave everything else alone"
+half of that: it reads the returned branch's own `tests/acceptance/<d>/` tree, and for every spec
+file there whose criterion id appears in none of the ruling's conditions, requires the working
+tree's version to match byte-for-byte — naming whichever file drifted (changed, or removed) when it
+does not.
+
+The proposal it opens is `derive-tests-<d>-<n>`, `n` being how many rulings this domain's test
+proposal has already been through, the one that returned it included — so the first `--revise`
+after a single return is numbered `-2`, never `-1`: the un-numbered `derive-tests-<d>` was already
+this family's first attempt. Its question is "Do the revised `<d>` tests now follow from their
+criteria and from nothing else?", with a recommendation taken from the journal the same way any
+other derive-tests proposal's is.
 
 ## Failure modes
 
@@ -120,3 +203,20 @@ pre-check commits `run(derive-tests): pre-checks failed` with nothing else touch
 post-check commits `stage(derive-tests): post-checks failed` with a journal entry and the run
 record, leaving whatever the agent wrote untracked for inspection; an open proposal from a
 previous run is refused before a workspace is even materialised.
+
+- `--revise` with nothing returned to revise from fails `derive-tests-revise-source` with
+  `derive-tests --revise: no returned ruling for <d> to revise from` (see "Revising after a return"
+  above).
+- `--revise` whose agent turn changes a spec file no condition named fails `derive-tests-revise-drift`,
+  naming the file — the return is still recorded on `main` and the branch still renamed by that
+  point, since both are pre-check side effects that ran before the agent turn; only the fresh
+  proposal fails to open.
+- `spec-only` is not one of the in-place workspace modes `sdlc resume` can continue
+  (`docs/stages/run.md`), so an agent turn that crashes mid-session on a `--revise` run has to be
+  re-run from `sdlc run derive-tests --domain <d> --revise` again. If the crash happened after the
+  pre-check's own side effect (the return already recorded on `main`, the branch already renamed to
+  `returned/<name>`), that side effect is not repeated — the second invocation finds no
+  `proposal/<name>` left carrying an unrecorded return and fails `derive-tests-revise-source` the
+  same way a domain with nothing returned at all would. Recovering from that state is manual: rename
+  `returned/<name>` back to `proposal/<name>` and revert the `record(G3): <name> returned` commit on
+  `main`, or continue the revision by hand from the `returned/<name>` branch.

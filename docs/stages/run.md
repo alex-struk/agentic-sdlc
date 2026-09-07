@@ -28,10 +28,12 @@ and reaches `ctx.stale` as `true`, defaulting to `false`; `derive-tests` reads i
 tests whose criteria have moved on since".
 
 `--revise` is threaded the same way, as `ctx.revise`, and carried through `.sdlc/run-state.json`
-for `resume` the same way `slice` and `domain` are. Only `archaeology` reads it — `sdlc run
-archaeology --domain <d> --revise` revises the domain from a returned G1 ruling instead of
-recovering it from scratch (`docs/stages/archaeology.md`, "Revising after a return"); every other
-stage ignores it.
+for `resume` the same way `slice` and `domain` are. `archaeology` and `derive-tests` read it: `sdlc
+run archaeology --domain <d> --revise` revises the domain from a returned G1 ruling instead of
+recovering it from scratch (`docs/stages/archaeology.md`, "Revising after a return"), and `sdlc run
+derive-tests --domain <d> --revise` revises the domain's test suite from a returned G3 ruling
+instead of deriving it from scratch (`docs/stages/derive-tests.md`, "Revising after a return");
+every other stage ignores it.
 
 `--dry-run` is threaded onto `ctx.dryRun` before `preChecks` runs, so a pre-check with a side
 effect on a real run — `archaeology`'s `checkRevisionSource` is the one that has one today — can
@@ -194,11 +196,13 @@ In the order they are reached:
 5. **The stage's own `preChecks(projectDir, ctx)` must all pass**, before a workspace is
    materialised or a session started. `probe` declares none; `intent` requires `intent/brief.md`;
    `archaeology` requires `--domain` and `sources.old`, and — on a `--revise` run —
-   `archaeology-revise-source` (`registry.mjs` ~407), which finds the returned ruling to revise
-   from; `ratify` requires `--domain`, an approved and merged `archaeology-<d>` ruling, a
-   `spec/domains/<d>.md` that exists and parses, and `gate-conditions-parse` (~1517), which fails
-   if any ruling it would read carries `unparsed_conditions`; `derive-tests` requires a domain with
-   accepted criteria; `bind-adapter` requires a target that is configured and answering;
+   `archaeology-revise-source` (`registry.mjs`, `checkRevisionSource`), which finds the returned
+   ruling to revise from; `ratify` requires `--domain`, an approved and merged `archaeology-<d>`
+   ruling, a `spec/domains/<d>.md` that exists and parses, and `gate-conditions-parse`
+   (`checkNoUnparsedConditions`), which fails if any ruling it would read carries
+   `unparsed_conditions`; `derive-tests` requires a domain with accepted criteria, and — on a
+   `--revise` run — `derive-tests-revise-source` (`checkDeriveTestsRevisionSource`), which finds the
+   returned ruling to revise from; `bind-adapter` requires a target that is configured and answering;
    `calibrate` requires a target that is either the configured oracle or a `config.targets` entry
    with a `base_url`.
 6. **For a gated stage, the proposal this run would open must not already be open.**
