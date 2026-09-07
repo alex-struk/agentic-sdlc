@@ -10,14 +10,25 @@ import { formatChecks } from "../commands/checks.mjs";
 // otherwise blow the prompt budget for no gain, so it is capped and the cut is marked.
 const DIFF_CAP = 60000;
 
+// G3 rules on a whole acceptance suite or a whole adapter at once — one spec file per
+// criterion, and a domain has tens of them — so the default cap falls inside the very
+// files the ruling is about. The gate's own cap is twice as large; every other gate keeps
+// the default.
+const DIFF_CAP_BY_GATE = { G3: 120000 };
+
+function diffCapFor(gate) {
+  return DIFF_CAP_BY_GATE[gate] ?? DIFF_CAP;
+}
+
 // Paths whose diff is never evidence for a ruling. `site/` is the regenerated state
 // site, `.sdlc/runs/` the run record and `.sdlc/journal/` the stage's own journal entry
 // — all three are derived from the very work being ruled on, all three change on every
 // run, and between them they can be larger than everything the persona actually needs to
-// read. Excluded by pathspec so they never enter the budget at all. `app/` is excluded
-// for a different reason: the personas that hold the spec-side gates rule on the spec,
-// not on an implementation.
-const DIFF_EXCLUDE = [":!app", ":!site", ":!.sdlc/runs", ":!.sdlc/journal"];
+// read. `.sdlc/proposals/` holds the proposal page itself, which is quoted in full higher
+// up in the prompt, so its diff is the same text a second time. Excluded by pathspec so
+// none of them enter the budget at all. `app/` is excluded for a different reason: the
+// personas that hold the spec-side gates rule on the spec, not on an implementation.
+const DIFF_EXCLUDE = [":!app", ":!site", ":!.sdlc/runs", ":!.sdlc/journal", ":!.sdlc/proposals"];
 
 // The stage's own output, first — the whole point of the ruling. Without this the diff
 // is ordered however git lists paths (alphabetically), so a G1 archaeology proposal
@@ -27,6 +38,7 @@ const DIFF_EXCLUDE = [":!app", ":!site", ":!.sdlc/runs", ":!.sdlc/journal"];
 const PRIORITY_PATHS = {
   G0: ["intent/"],
   G1: ["spec/domains/", "spec/"],
+  G3: ["tests/acceptance/", "tests/adapters/", "evidence/"],
 };
 
 // Orders `files` so that anything under one of `prefixes` comes first, in the order the
@@ -54,16 +66,17 @@ function orderedDiff(projectDir, branch, gate) {
   const range = `main...${branch}`;
   const listed = git(["diff", range, "--name-only", "--", ".", ...DIFF_EXCLUDE], projectDir);
   const files = orderDiffPaths(listed ? listed.split("\n").filter(Boolean) : [], PRIORITY_PATHS[gate] ?? []);
+  const cap = diffCapFor(gate);
   const parts = [];
   let used = 0;
   let cut = 0;
   for (const f of files) {
-    if (used >= DIFF_CAP) { cut += 1; continue; }
+    if (used >= cap) { cut += 1; continue; }
     const one = git(["diff", range, "--", f], projectDir);
     if (!one) continue;
-    const room = DIFF_CAP - used;
+    const room = cap - used;
     if (one.length <= room) { parts.push(one); used += one.length; }
-    else { parts.push(`${one.slice(0, room)}\n[truncated]`); used = DIFF_CAP; }
+    else { parts.push(`${one.slice(0, room)}\n[truncated]`); used = cap; }
   }
   if (cut) parts.push(`[${cut} further changed file(s) not shown]`);
   return parts.join("\n");
@@ -119,9 +132,9 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
     "",
     "## Diff of the proposal's own output",
     "",
-    "The stage's own output comes first. `app/`, the generated state site, the run record",
-    "and the journal are left out — they are derived from the work being ruled on, not",
-    "evidence about it.",
+    "The stage's own output comes first. `app/`, the generated state site, the run record,",
+    "the journal and the proposal page are left out — they are derived from the work being",
+    "ruled on, or quoted above already, not evidence about it.",
     "",
     outside || "(no changes to show)",
     "",
