@@ -9,8 +9,8 @@ proposal, depending on whether the stage holds a gate.
 
 ## Inputs
 
-`sdlc run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--dry-run] [--again]`, run
-from inside the project's working tree, on `main`.
+`sdlc run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--dry-run] [--again]
+[--revise]`, run from inside the project's working tree, on `main`.
 
 `<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Implemented today:
 `probe` (which proves the runner itself and is not one of the pipeline's own stages), `intent`,
@@ -26,6 +26,16 @@ ignore all four. `--target` names the running application a stage acts against a
 `calibrate` defaults it to `config.oracle.target` when it is left out. `--stale` is a boolean flag
 and reaches `ctx.stale` as `true`, defaulting to `false`; `derive-tests` reads it as "write only the
 tests whose criteria have moved on since".
+
+`--revise` is threaded the same way, as `ctx.revise`, and carried through `.sdlc/run-state.json`
+for `resume` the same way `slice` and `domain` are. Only `archaeology` reads it — `sdlc run
+archaeology --domain <d> --revise` revises the domain from a returned G1 ruling instead of
+recovering it from scratch (`docs/stages/archaeology.md`, "Revising after a return"); every other
+stage ignores it.
+
+`--dry-run` is threaded onto `ctx.dryRun` before `preChecks` runs, so a pre-check with a side
+effect on a real run — `archaeology`'s `checkRevisionSource` is the one that has one today — can
+tell a dry run apart and skip it.
 
 `--dry-run` writes nothing at all. For an agent stage it prints the prompt the stage would send,
 the path of the scratch file holding its skill text, the resolved workspace mode, `prepare:

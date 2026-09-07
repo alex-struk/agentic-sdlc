@@ -316,6 +316,56 @@ egress: { rules: [E-2] }
   }
 });
 
+test("rulePending: a batch whose last ruling returns still ends on main", async () => {
+  const CONFIG = `
+pipeline: { repo: agentic-sdlc, ref: main }
+profile: greenfield
+stack: openshift-ts
+project: { name: p, domains: [a] }
+policy:
+  gates:
+    G0: { holder: "agent:product-owner", escalate_to: tech-lead }
+    G1: { holder: tech-lead }
+    G-DESIGN: { holder: ux-reviewer }
+    G2: { holder: tech-lead }
+    G3: { holder: tech-lead }
+    G-POL: { holder: tech-lead }
+  default_tier: STANDARD
+skills: { packs: [] }
+egress: { rules: [E-2] }
+`;
+  const dir = microProject(CONFIG);
+  mkdirSync(join(dir, ".sdlc/personas"), { recursive: true });
+  writeFileSync(join(dir, ".sdlc/personas/product-owner.md"), "# Product owner\n\nRules on intent.\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "add persona"], dir);
+  propose(dir, "p1", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-pending-return-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    text: '```json\n{"verdict":"return","rationale":"the evidence for this criterion is wrong","conditions":[]}\n```',
+  }));
+  const prevEgress = process.env.SDLC_EGRESS_NAMES;
+  const emptyList = join(mkdtempSync(join(tmpdir(), "sdlc-egress-pending-return-")), "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const results = await rulePending(dir);
+    assert.equal(results[0].verdict, "return");
+    // `ruleByAgent` itself leaves a `return` checked out on the proposal branch, but the
+    // batch as a whole must hand control back on `main` — the next `sdlc run` requires it.
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    // The ruling is not lost by switching away from its branch: the gate file still
+    // lives there, reachable, exactly where the ruling commit put it.
+    assert.equal(gitOk(["cat-file", "-e", "proposal/p1:.sdlc/gates/p1.yaml"], dir), true);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("rulePending: a dirty tree after a ruling agent's turn stops the batch instead of contaminating main", async () => {
   const CONFIG = `
 pipeline: { repo: agentic-sdlc, ref: main }

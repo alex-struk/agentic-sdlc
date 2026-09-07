@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
-import { changedPaths, git, gitOk } from "../lib/git.mjs";
+import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR } from "../spec/criteria.mjs";
 import { readRedo, removeRedo } from "../spec/redo.mjs";
@@ -250,6 +250,17 @@ function checkDomainFileParses(projectDir, domain, id) {
   return { id, ok: messages.length === 0, messages };
 }
 
+// The `R-` ids a domain file already carried at `HEAD` — before this run's own changes —
+// parsed the same way `parseAll` reads the working tree, so the two sets compare like
+// for like. A file `HEAD` does not have yet (a domain being recovered for the first
+// time) has none, the ordinary case for a fresh archaeology run.
+function mintedIdsAtHead(projectDir, file, domain) {
+  let text;
+  try { text = git(["show", `HEAD:${file}`], projectDir); } catch { return new Set(); }
+  const { criteria } = parseDomainFile(text, domain);
+  return new Set(criteria.filter((c) => c.id.startsWith("R-")).map((c) => c.id));
+}
+
 // An `R-` ID is a permanent one, minted only by `ratify` once a human has ruled on what
 // archaeology recovered — never archaeology's own to assign. The scope check below
 // allows an archaeology run to touch any path under `spec/`, not only
@@ -257,7 +268,12 @@ function checkDomainFileParses(projectDir, domain, id) {
 // happened to change would escape a check scoped to just the target file. Every domain
 // file is parsed (`parseAll`), but only the ones this run actually changed are judged —
 // a domain file `ratify` legitimately minted `R-` IDs into on an earlier run is not this
-// run's business and must not fail it.
+// run's business and must not fail it. Nor is one `--revise` is looking at: a revision
+// starts from a domain file that may already carry `R-` ids from an earlier ratify pass,
+// and the check below is only meant to catch archaeology minting a *new* one — an `R-`
+// id already on the file at `HEAD` (this run's own starting point, in either mode) is not
+// archaeology's doing and does not fail this check; `archaeology-revise-keeps-minted`
+// (below) is what polices a revision's already-minted rows instead.
 function checkArchaeologyNoMintedIds(projectDir) {
   const id = "archaeology-no-minted-ids";
   const changed = new Set(changedPaths(projectDir).filter((p) => p.startsWith("spec/domains/") && p.endsWith(".md")));
@@ -267,9 +283,44 @@ function checkArchaeologyNoMintedIds(projectDir) {
     for (const [domain, criteria] of Object.entries(domains)) {
       const file = `spec/domains/${domain}.md`;
       if (!changed.has(file)) continue;
-      const minted = criteria.filter((c) => c.id.startsWith("R-"));
+      const before = mintedIdsAtHead(projectDir, file, domain);
+      const minted = criteria.filter((c) => c.id.startsWith("R-") && !before.has(c.id));
       if (minted.length) messages.push(`${file} mints a permanent id (${minted.map((c) => c.id).join(", ")}); minting is ratify's job, not archaeology's`);
     }
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+// `archaeology --revise`'s own promise: a return names one criterion's evidence as
+// wrong, never the permanent record of a different one, so every `R-` criterion already
+// in the domain file must come out of a revision exactly as `HEAD` had it. Compared as
+// parsed objects rather than raw text, with each one's own `line` left out of the
+// comparison — a criterion above it gaining or losing a line (an extra `cites`, a
+// reworded statement) shifts where it starts in the file without changing it at all, and
+// that must not read as tampering. Not run outside `--revise`: an ordinary archaeology
+// run has no such promise to keep, and a domain file it is recovering for the first time
+// carries no `R-` ids to compare against anyway.
+function checkArchaeologyRevisionKeepsMinted(projectDir, ctx) {
+  const id = "archaeology-revise-keeps-minted";
+  if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
+  const file = `spec/domains/${ctx.domain}.md`;
+  const full = join(projectDir, file);
+  if (!existsSync(full)) return { id, ok: true, messages: [] };
+  let beforeText;
+  try { beforeText = git(["show", `HEAD:${file}`], projectDir); } catch { return { id, ok: true, messages: [] }; }
+  const { criteria: before } = parseDomainFile(beforeText, ctx.domain);
+  const { criteria: after } = parseDomainFile(readText(full), ctx.domain);
+  const strip = (c) => JSON.stringify({ ...c, line: undefined });
+  const beforeById = new Map(before.filter((c) => c.id.startsWith("R-")).map((c) => [c.id, strip(c)]));
+  const afterIds = new Set(after.filter((c) => c.id.startsWith("R-")).map((c) => c.id));
+  const messages = [];
+  for (const c of after) {
+    if (!c.id.startsWith("R-")) continue;
+    const was = beforeById.get(c.id);
+    if (was !== undefined && was !== strip(c)) messages.push(`${file}: ${c.id} changed; a revision may not alter an already-minted criterion`);
+  }
+  for (const id2 of beforeById.keys()) {
+    if (!afterIds.has(id2)) messages.push(`${file}: ${id2} is missing; a revision may not remove an already-minted criterion`);
   }
   return { id, ok: messages.length === 0, messages };
 }
@@ -283,6 +334,22 @@ function checkArchaeologyScope(projectDir) {
   return { id, ok: true, messages: [] };
 }
 
+// `--revise`'s own, narrower scope: a return names one criterion's evidence as wrong in
+// one domain file, never a reason to touch the contract surface (`spec/contract/*.yaml`)
+// an ordinary recovery writes to, or any domain file but the one being revised. Checked
+// separately from `checkArchaeologyScope` above, which still allows a first recovery to
+// touch any path under `spec/` — a revise run failing this one is named for the path it
+// should not have touched, not lumped in with an ordinary out-of-spec failure that does
+// not apply to it.
+function checkArchaeologyRevisionScope(projectDir, ctx) {
+  const id = "archaeology-revise-scope";
+  if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
+  const allowed = `spec/domains/${ctx.domain}.md`;
+  const outside = changedPaths(projectDir).filter((p) => p !== allowed);
+  if (outside.length) return { id, ok: false, messages: [`archaeology --revise may only change ${allowed}, but also touched: ${outside.join(", ")}`] };
+  return { id, ok: true, messages: [] };
+}
+
 // `archaeology` recovers one business domain's behaviour from the old application,
 // checked out read-only at `sources/old` by the `with-sources` workspace before the
 // agent session starts. It holds gate G1: the recovered domain file is not trusted as
@@ -290,7 +357,10 @@ function checkArchaeologyScope(projectDir) {
 // stage) mints permanent IDs only for what that ruling accepts.
 const archaeology = {
   name: "archaeology",
-  title: "archaeology",
+  title: (ctx) => {
+    if (!ctx?.domain) return "archaeology";
+    return ctx.revise ? `archaeology ${ctx.domain} (revise)` : `archaeology ${ctx.domain}`;
+  },
   skill: skillPath("archaeology"),
   workspace: "with-sources",
   gate: "G1",
@@ -298,6 +368,17 @@ const archaeology = {
   implemented: true,
   prompt(ctx) {
     const d = ctx.domain;
+    if (ctx.revise) {
+      const rationale = ctx.revision?.rationale ?? "";
+      return [
+        `The "${d}" domain was recovered before and partly ratified. A ruling returned it: one criterion's evidence — its citations, or its given/when/then — is wrong in a way no ratification condition can repair. Here is the rationale, verbatim:`,
+        `\`\`\`\n${rationale}\n\`\`\``,
+        `Revise spec/domains/${d}.md so the criteria this rationale names are correct: rewrite their statement, citations, given/when/then, note and confidence from the evidence you find in sources/old — its code, migrations, docs, README, and any OpenAPI/swagger file it has. Never read sources/old/tests, and never read anything outside sources/old except constitution.md, spec/, and intent/.`,
+        `This run changes spec/domains/${d}.md only. Unlike a first recovery, do not touch spec/contract/surface.yaml or spec/contract/personas.yaml, and do not touch any other domain's file — a return names one criterion's evidence as wrong, never a reason to add to the contract surface.`,
+        `Leave every R-<n> criterion in the file byte-for-byte unchanged. Leave every other D-<n> criterion unchanged too, unless this rationale's evidence contradicts it. Never renumber any criterion, minted or provisional.`,
+        `Finish with your journal entry: say which criteria you changed and why, and what the evidence now shows.`,
+      ].join("\n\n");
+    }
     return [
       `Recover what the old application does for the "${d}" domain, reading only sources/old — its code, migrations, docs, README, and any OpenAPI/swagger file it has. Never read sources/old/tests, and never read anything outside sources/old except constitution.md, spec/, and intent/.`,
       `Write spec/domains/${d}.md in the criterion format your skill instructions describe (spec/README.md has the exact grammar): provisional IDs D-${d}-<n>, origin recovered, a confidence graded by the evidence you actually found, at least one cites on every criterion, a reconciliation class, and given/when/then. Mark anything you are not sure of inferred or open, and say in a note why.`,
@@ -309,19 +390,30 @@ const archaeology = {
     const d = ctx.domain;
     return {
       name: `archaeology-${d}`,
-      question: `Is this what the ${d} domain does, and which of it is the contract?`,
+      question: ctx.revise
+        ? `Is the revised ${d} domain right where the return said it was wrong?`
+        : `Is this what the ${d} domain does, and which of it is the contract?`,
       recommendation: recommendationFrom(ctx.agentText),
     };
   },
+  // `checkRevisionSource` has a side effect on a real run (recording the return onto
+  // `main`, deleting the spent branch — see its own comment), so it only runs once the two
+  // cheap checks ahead of it have both passed: a run with a bad `--domain` or an
+  // unconfigured `sources.old` fails on those alone, and the returned ruling — if this
+  // domain even has one — is left exactly where it was for a corrected re-run to find.
   preChecks(projectDir, ctx) {
-    return [checkDomainOption(ctx), checkSourcesConfigured(ctx)];
+    const cheap = [checkDomainOption(ctx), checkSourcesConfigured(ctx)];
+    if (cheap.some((r) => !r.ok)) return cheap;
+    return [...cheap, checkRevisionSource(projectDir, ctx)];
   },
   postChecks(projectDir, ctx) {
     return [
       checkCriteria(projectDir, ctx),
       checkDomainFileParses(projectDir, ctx.domain, "archaeology-domain-file"),
       checkArchaeologyNoMintedIds(projectDir),
+      checkArchaeologyRevisionKeepsMinted(projectDir, ctx),
       checkArchaeologyScope(projectDir),
+      checkArchaeologyRevisionScope(projectDir, ctx),
     ];
   },
 };
@@ -1082,6 +1174,98 @@ function readRulings(projectDir, domain) {
 function followUpRulingsRead(read, domain) {
   const re = new RegExp(`^ratify-${escapeRe(domain)}-\\d+$`);
   return read.filter((n) => re.test(n)).length;
+}
+
+// The one ruling `archaeology --revise` reads and acts on: a `return` verdict on either
+// the archaeology proposal itself or one of its follow-ups, whose gate file has not
+// (yet) landed on `main` — once it has, the return has already been recorded and dealt
+// with, and there is nothing left to revise from under that name. A branch that never
+// existed, or whose gate file `git show` cannot read, is not a candidate rather than an
+// error: most domains have no returned ruling at all, and that is the ordinary case
+// `checkRevisionSource` reports below, not this function's problem to raise.
+function returnedRulingOn(projectDir, name, branch) {
+  const gatePath = join(".sdlc", "gates", `${name}.yaml`);
+  if (existsSync(join(projectDir, gatePath))) return null;
+  let text;
+  try { text = git(["show", `${branch}:${gatePath}`], projectDir); } catch { return null; }
+  const gate = parseYaml(text) ?? {};
+  if (gate.verdict !== "return") return null;
+  // A human ruling's free-text explanation is `note`; an agent's is `rationale`. Either
+  // one is what a revise prompt needs to quote — the field name is an implementation
+  // detail of who ruled, not something the prompt should have to know about.
+  return { rationale: gate.rationale ?? gate.note ?? "" };
+}
+
+// Which returned ruling `--revise` acts on when a domain has more than one candidate:
+// the highest-numbered follow-up if any follow-up was returned, else the archaeology
+// proposal itself. A follow-up's return is always the more recent word on the domain —
+// follow-ups are opened and ruled in order, so a higher number can only exist because an
+// earlier one (or the archaeology ruling before all of them) already resolved.
+function findReturnedRuling(projectDir, domain) {
+  const followUpRefs = gitOk(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir).split("\n").filter(Boolean)
+    : [];
+  const re = new RegExp(`^proposal/ratify-${escapeRe(domain)}-(\\d+)$`);
+  const followUpNumbers = followUpRefs.map((b) => re.exec(b)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
+  for (const n of followUpNumbers) {
+    const name = followUpName(domain, n);
+    const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
+    if (found) return { name, branch: `proposal/${name}`, ...found };
+  }
+  const archName = ratifyGateName(domain);
+  const found = returnedRulingOn(projectDir, archName, `proposal/${archName}`);
+  return found ? { name: archName, branch: `proposal/${archName}`, ...found } : null;
+}
+
+// The side effect `archaeology --revise` performs, on a real run only, once it has found
+// the returned ruling to work from: the gate file and the proposal page that recorded the
+// return are copied from the spent branch onto `main` and committed there, and the branch
+// — never merged, since a return merges nothing — is deleted. This is what makes the
+// return visible to `readRulings`/`followUpState` (a `return` gate file on `main` counts
+// as "ruled" for follow-up numbering, so the next follow-up continues past it rather than
+// reusing its number) and to the state site, and it is what frees the name for the fresh
+// `archaeology-<d>` proposal this run is about to open. Run from `checkRevisionSource`,
+// guarded there to a real run — a dry run only needs the rationale to print, never this
+// commit.
+//
+// The gate file always exists on the branch (`findReturnedRuling` would not have named it
+// otherwise), but the proposal page can be missing — a human ruling made straight from the
+// CLI, with no page ever opened for it. `git show` on that path is guarded rather than
+// left to throw, so a branch in that shape still records the gate file that matters and
+// says, in the commit message, that there was no page to carry over.
+function recordReturnOnMain(projectDir, { name, branch }) {
+  const gateRel = join(".sdlc", "gates", `${name}.yaml`);
+  const proposalRel = join(".sdlc", "proposals", `${name}.md`);
+  writeText(join(projectDir, gateRel), `${git(["show", `${branch}:${gateRel}`], projectDir)}\n`);
+  const staged = [gateRel];
+  let proposalFound = true;
+  try {
+    writeText(join(projectDir, proposalRel), `${git(["show", `${branch}:${proposalRel}`], projectDir)}\n`);
+    staged.push(proposalRel);
+  } catch {
+    proposalFound = false;
+  }
+  stagePaths(projectDir, staged);
+  const subject = proposalFound ? `record(G1): ${name} returned` : `record(G1): ${name} returned (no proposal page found on ${branch})`;
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", subject], projectDir);
+  git(["branch", "-D", branch], projectDir);
+}
+
+// `archaeology --revise`'s own pre-check: is there a returned ruling to revise from at
+// all? Reported here rather than left for the agent turn to discover. Finding the ruling
+// and stashing its rationale on `ctx.revision` happens in every mode, since a dry run's
+// printed prompt needs the same rationale a real run's does; recording it onto `main` and
+// deleting the spent branch (`recordReturnOnMain`) happens only on a real run — `ctx`
+// carries `dryRun` (set by `runStage` before `preChecks` is called) for exactly this,
+// so a dry run leaves the branch and `main` exactly as it found them.
+function checkRevisionSource(projectDir, ctx) {
+  const id = "archaeology-revise-source";
+  if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
+  const found = findReturnedRuling(projectDir, ctx.domain);
+  if (!found) return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
+  ctx.revision = found;
+  if (!ctx.dryRun) recordReturnOnMain(projectDir, found);
+  return { id, ok: true, messages: [] };
 }
 
 // The page of the follow-up proposal: every criterion still short of the contract, with

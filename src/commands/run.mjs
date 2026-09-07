@@ -58,7 +58,7 @@ function followUp(projectDir, stage, ctx, result) {
   return { ...result, proposal: opened };
 }
 
-export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false } = {}) {
+export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false } = {}) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
   assertOnMain(projectDir, "run");
@@ -67,7 +67,11 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
-  const ctx = { slice, domain, target, stale, config };
+  // `revise` and `dryRun` ride on `ctx` (rather than being passed as separate arguments)
+  // so a stage's own pre-checks — `archaeology`'s `checkRevisionSource` in particular —
+  // can tell a dry run from a real one without `runStage` having to special-case any one
+  // stage's side effects itself.
+  const ctx = { slice, domain, target, stale, config, revise, dryRun };
   // `stage.workspace` may be a plain string or a function of `config` — resolved once,
   // here, so every later use (`materialise`, the run-state a crashed session leaves for
   // `resume` to read, the dry-run print below) sees the same resolved mode rather than
@@ -182,7 +186,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
       // Written only once the dry-run return above is behind us: a dry run makes no
       // change of any kind, so nothing should exist for `sdlc resume` to find.
-      const state = { stage: name, ctx: { slice, domain, target, stale }, startedAt: new Date().toISOString(), phase: "agent" };
+      const state = { stage: name, ctx: { slice, domain, target, stale, revise }, startedAt: new Date().toISOString(), phase: "agent" };
       writeRunState(projectDir, state);
 
       const r = await runAgent({
@@ -210,6 +214,7 @@ COMMANDS.run = async ({ pos, flags }) => {
     stale: !!flags.stale,
     dryRun: !!flags["dry-run"],
     again: !!flags.again,
+    revise: !!flags.revise,
   });
   if (r.dryRun) return 0;
   if (!r.ok) { console.error(`run ${pos[0]}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }

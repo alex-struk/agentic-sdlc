@@ -167,6 +167,11 @@ it is. The persona rules it like any other G1 proposal, and the next `sdlc run r
 reads its conditions alongside the archaeology ruling's. Each pass therefore either resolves
 criteria or asks about fewer of them.
 
+A returned follow-up decides nothing — its conditions, if any, are never read, and the loop does
+not continue past it on its own. Its rationale says which criterion's evidence was wrong; run
+`sdlc run archaeology --domain <d> --revise` to act on it (`docs/stages/archaeology.md`, "Revising
+after a return").
+
 At most one follow-up is open at a time: while `ratify-<d>-<n>` is unruled it is the thing the loop
 is waiting on, and a second would ask the same question twice. A criterion marked `obsolete` is a
 decision, not an open question, so it is not asked about again even though it keeps whatever
