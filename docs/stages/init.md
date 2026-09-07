@@ -29,6 +29,8 @@ reconcile the project's `.gitignore`, and seed the machine-local egress name lis
   `tech-lead.md`, `product-owner.md`, `architect.md` and `reviewer.md` — copied from the pipeline's
   own templates the same way: written when missing, rewritten when the pipeline's copy has changed.
   `sdlc rule <name> --by agent:<persona>` reads whichever of these matches the gate's `holder`.
+- The pipeline-owned acceptance harness under `tests/` — see "The acceptance harness" below for
+  which files are refreshed on every run and which are written once.
 - `.github/workflows/sdlc-checkpoint.yml`, generated from the template with the pipeline repo
   filled in and the pipeline pinned to the commit recorded in `.sdlc/lock.json`, not to the
   floating ref.
@@ -66,9 +68,12 @@ Exits 0 and prints `init ok: N skills installed`.
 Idempotent. Running `init` again against the same configuration and the same pack commits detects
 no change, installs nothing further, and leaves the working tree and run record untouched. It
 only writes and commits again when the configuration, the resolved pack commits, the installed
-guardrail files, the ignore file, the tracked state of `.sdlc/run-state.json`, or the generated
-workflow actually differ from what is already on disk. The ignore reconciliation and the
-run-state untracking are both no-ops on a project already in that shape.
+guardrail files, the refreshed part of the acceptance harness, the ignore file, the tracked state
+of `.sdlc/run-state.json`, or the generated workflow actually differ from what is already on
+disk — never when a project's own `not-testable.yaml`, `attestations.yaml` or
+`tests/seed/manifest.yaml` has been hand-edited, since those are only ever written once. The
+ignore reconciliation and the run-state untracking are both no-ops on a project already in that
+shape.
 
 ## Failure modes
 
@@ -106,6 +111,24 @@ with `git rm --cached --ignore-unmatch` and stages that removal, leaving the fil
 case a run is using it right now. And `sdlc run`'s own commit filters `.sdlc/run-state.json` out
 by name regardless of what any ignore file says, so a half-finished run's bookkeeping can never
 land in a stage's record.
+
+## The acceptance harness
+
+`init` installs the pipeline-owned Playwright harness under `tests/`: `package.json`,
+`tsconfig.json`, `playwright.config.ts`, `README.md` and `fixtures/` (the `surface` and `mail`
+fixtures a test imports, which re-export the types `tests/generated/*` provides). These are
+refreshed the same way as every other file above — written when missing, rewritten when the
+pipeline's copy has changed.
+
+`tests/acceptance/not-testable.yaml`, `tests/acceptance/attestations.yaml` and
+`tests/seed/manifest.yaml` are different: each becomes project content the moment a project has
+one — a `derive-tests` note, a hand-written attestation, a named seed handle — so `init` writes a
+starting copy only when the file does not already exist, and never touches it again. A team's own
+entries and edits are never overwritten by a later `init`.
+
+`tests/generated/` (the TypeScript the contract stage generates from `spec/contract/*` and
+`tests/seed/manifest.yaml`) is not installed by `init` at all; it is written by that stage's own
+generator.
 
 ## The implement-guard table
 

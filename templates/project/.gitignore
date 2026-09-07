@@ -4,3 +4,7 @@ node_modules/
 .sdlc/*.local.txt
 .sdlc/run-state.json
 sources/
+tests/node_modules/
+tests/test-results/
+tests/playwright-report/
+.sdlc/oracle-*.local.yaml

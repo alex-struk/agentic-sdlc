@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
-import { materialise, collect } from "../src/runner/workspace.mjs";
+import { materialise, collect, HARNESS } from "../src/runner/workspace.mjs";
 
 function makeOldRepo() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-old-repo-"));
@@ -119,6 +119,54 @@ test("materialise blind-adapter yields spec/contract and tests/adapters, not spe
   assert.ok(existsSync(join(ws.dir, "tests/adapters/a.mjs")));
   assert.ok(!existsSync(join(ws.dir, "spec/spec.md")));
   assert.ok(!existsSync(join(ws.dir, "app")));
+  ws.cleanup();
+});
+
+test("HARNESS lists exactly the pipeline-owned harness paths, in order", () => {
+  assert.deepEqual(HARNESS, [
+    "tests/package.json",
+    "tests/tsconfig.json",
+    "tests/playwright.config.ts",
+    "tests/README.md",
+    "tests/fixtures",
+    "tests/generated",
+  ]);
+});
+
+function makeHarnessProject() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-harness-proj-"));
+  git(["init", "-q", "-b", "main"], d);
+  git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  mkdirSync(join(d, "spec/contract"), { recursive: true });
+  writeFileSync(join(d, "spec/contract/c.md"), "# contract\n");
+  writeFileSync(join(d, "spec/spec.md"), "# spec\n");
+  mkdirSync(join(d, "tests/fixtures"), { recursive: true });
+  writeFileSync(join(d, "tests/fixtures/index.ts"), "export const test = 1;\n");
+  mkdirSync(join(d, "tests/generated"), { recursive: true });
+  writeFileSync(join(d, "tests/generated/seed.ts"), "export const seed = {};\n");
+  mkdirSync(join(d, "tests/adapters/new"), { recursive: true });
+  writeFileSync(join(d, "tests/adapters/new/index.ts"), "export default {};\n");
+  mkdirSync(join(d, "app"), { recursive: true });
+  writeFileSync(join(d, "app/secret.ts"), "export const secret = 1;\n");
+  git(["add", "."], d); git(["commit", "-q", "-m", "init"], d);
+  return d;
+}
+
+test("materialise spec-only carries the harness (tests/fixtures, tests/generated) but not tests/adapters", () => {
+  const d = makeHarnessProject();
+  const ws = materialise(d, "spec-only");
+  assert.ok(existsSync(join(ws.dir, "tests/fixtures/index.ts")));
+  assert.ok(existsSync(join(ws.dir, "tests/generated/seed.ts")));
+  assert.ok(!existsSync(join(ws.dir, "tests/adapters")));
+  ws.cleanup();
+});
+
+test("materialise blind-adapter carries the harness (tests/fixtures) and tests/adapters but not tests/acceptance", () => {
+  const d = makeHarnessProject();
+  const ws = materialise(d, "blind-adapter");
+  assert.ok(existsSync(join(ws.dir, "tests/fixtures/index.ts")));
+  assert.ok(existsSync(join(ws.dir, "tests/adapters/new/index.ts")));
+  assert.ok(!existsSync(join(ws.dir, "tests/acceptance")));
   ws.cleanup();
 });
 
