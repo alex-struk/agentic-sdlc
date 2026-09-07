@@ -226,17 +226,31 @@ export function parseAll(projectDir) {
 // `spec/criteria-index.json`: `{generated_from, criteria}`, one entry per criterion
 // carrying its `domain` and source `file` alongside everything `parseDomainFile`
 // already collected. No timestamp is written anywhere in this file — `generated_from`
-// is the only provenance, and it is the commit the working tree was at, not when the
-// index was built, so regenerating from an unchanged working tree produces byte-for-
-// byte identical output.
+// is the only provenance, and it is the commit the criteria were read at rather than
+// when the index was built.
+//
+// `generated_from` is only rewritten when the criteria themselves changed. Regenerating
+// is cheap and happens on every ratify run, but every ratify run also *commits*, so a
+// `generated_from` refreshed on content that did not change would leave the index dirty
+// after every run, which would be committed, which would move HEAD again: a stage that
+// can never reach a fixed point. Pinning it to the commit the current criteria were
+// actually read at is both stable and the more truthful claim.
 export function writeIndex(projectDir, parsed) {
-  const generatedFrom = gitOk(["rev-parse", "HEAD"], projectDir) ? git(["rev-parse", "HEAD"], projectDir) : "";
   const criteria = [];
   for (const domain of Object.keys(parsed.domains).sort()) {
     for (const c of parsed.domains[domain]) criteria.push({ ...c, domain, file: `spec/domains/${domain}.md` });
   }
   criteria.sort((a, b) => (a.domain === b.domain ? compareIds(a.id, b.id) : a.domain.localeCompare(b.domain)));
   const path = join(projectDir, "spec", "criteria-index.json");
+
+  let existing = null;
+  if (existsSync(path)) { try { existing = JSON.parse(readText(path)); } catch { existing = null; } }
+  // An empty `generated_from` is the "no commit existed yet" placeholder, not a commit
+  // worth preserving, so it is refreshed as soon as there is a real HEAD to name.
+  const keep = existing !== null && existing.generated_from
+    && JSON.stringify(existing.criteria) === JSON.stringify(criteria);
+  const generatedFrom = keep ? existing.generated_from
+    : (gitOk(["rev-parse", "HEAD"], projectDir) ? git(["rev-parse", "HEAD"], projectDir) : "");
   writeText(path, `${JSON.stringify({ generated_from: generatedFrom, criteria }, null, 2)}\n`);
   return path;
 }

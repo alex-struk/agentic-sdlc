@@ -8,6 +8,8 @@ import { checkConstitution } from "../src/checks/constitution.mjs";
 import { checkEgress, defaultNamesPath } from "../src/checks/egress.mjs";
 import { checkLayout } from "../src/checks/layout.mjs";
 import { checkConfig } from "../src/checks/config.mjs";
+import { checkCriteriaIndex } from "../src/checks/criteria.mjs";
+import { parseAll, writeIndex } from "../src/spec/criteria.mjs";
 
 function repo() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-chk-"));
@@ -175,4 +177,37 @@ test("layout: spec/domains is required", () => {
   assert.ok(r.messages.includes("missing: spec/domains"));
   mkdirSync(join(d, "spec/domains"), { recursive: true });
   assert.equal(checkLayout(d, { config: { profile: "rebuild" } }).ok, true);
+});
+
+test("criteria-index check: a stale index fails, naming ratify as the fix", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-idx-"));
+  git(["init", "-q", "-b", "main"], d);
+  git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  mkdirSync(join(d, "spec", "domains"), { recursive: true });
+  writeFileSync(join(d, "spec/domains/permits.md"),
+    "# permits\n\n### D-permits-1 · v1 · confirmed · authored\nA statement.\n- state: proposed\n");
+
+  // No index at all: nothing to be stale.
+  assert.equal(checkCriteriaIndex(d).ok, true);
+
+  const parsed = parseAll(d);
+  writeIndex(d, parsed);
+  assert.equal(checkCriteriaIndex(d).ok, true, "a freshly written index matches");
+
+  // The domain file moves on without the index being regenerated.
+  writeFileSync(join(d, "spec/domains/permits.md"),
+    "# permits\n\n### D-permits-1 · v2 · confirmed · authored\nA restated statement.\n- state: proposed\n");
+  const stale = checkCriteriaIndex(d);
+  assert.equal(stale.ok, false);
+  assert.match(stale.messages[0], /stale/);
+  assert.match(stale.messages[0], /sdlc run ratify/);
+});
+
+test("criteria-index check: an index that does not parse fails", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-idx-bad-"));
+  mkdirSync(join(d, "spec", "domains"), { recursive: true });
+  writeFileSync(join(d, "spec/criteria-index.json"), "{not json");
+  const r = checkCriteriaIndex(d);
+  assert.equal(r.ok, false);
+  assert.match(r.messages[0], /does not parse/);
 });

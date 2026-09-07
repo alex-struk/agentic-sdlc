@@ -6,7 +6,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex } from "../spec/criteria.mjs";
-import { checkCriteria } from "../checks/criteria.mjs";
+import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
 
@@ -444,14 +444,21 @@ const ratify = {
     // still-`inferred` criterion that never gets confirmed) without that meaning a rerun
     // has fresh work to do.
     const domainChanged = serialised !== originalText;
-    if (!domainChanged) {
-      return { text: `ratify ${domain}: nothing to do — already ratified`, changed: [] };
-    }
-    writeText(domainFile, serialised);
+    if (domainChanged) writeText(domainFile, serialised);
 
+    // Regenerated on every run, whether the domain file changed or not. Both are derived
+    // from *every* domain file in the project, so they go stale for reasons this run has
+    // nothing to do with — another domain ratified since, a hand edit, an index that was
+    // never written — and a run that stopped as soon as it found its own domain settled
+    // would leave them that way, with `checkCriteria`'s stale-index failure the next
+    // thing anyone hears about it.
     const parsed = parseAll(projectDir);
     writeIndex(projectDir, parsed);
     renderSpecIndex(projectDir, parsed);
+
+    if (!domainChanged) {
+      return { text: `ratify ${domain}: nothing to do — already ratified`, changed: [] };
+    }
 
     const accepted = minted.filter((c) => c.state === "accepted");
     const stillOpen = minted.filter((c) => c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open"));
@@ -477,7 +484,7 @@ const ratify = {
     return [checkDomainOption(ctx, "ratify"), checkArchaeologyApproved(projectDir, ctx.domain), checkDomainFileParses(projectDir, ctx.domain, "ratify-domain-file")];
   },
   postChecks(projectDir, ctx) {
-    return [checkCriteria(projectDir, ctx), checkSpecArtifacts(projectDir)];
+    return [checkCriteria(projectDir, ctx), checkCriteriaIndex(projectDir), checkSpecArtifacts(projectDir)];
   },
 };
 

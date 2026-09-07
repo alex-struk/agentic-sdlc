@@ -17,8 +17,8 @@ instead of the formatted text.
 
 ## Outputs
 
-To stdout: one line per check id (`config`, `layout`, `constitution`, `criteria`, `egress`, or just
-`egress` under `--self`) marked `ok` or `FAIL`, with any messages and warnings indented beneath —
+To stdout: one line per check id (`config`, `layout`, `constitution`, `egress`, `criteria`,
+`criteria-index`, or just `egress` under `--self`) marked `ok` or `FAIL`, with any messages and warnings indented beneath —
 or the same data as a JSON array under `--json`. Nothing is written to disk.
 
 ## Workspace the agent sees
@@ -45,6 +45,16 @@ No agent.
   instead, when `sources/old` is not present to check against); a criterion whose `state` is
   `accepted` while its `confidence` is still `inferred` or `open`; and a `defect` reconciliation
   with neither a `replaces` nor a note. See `docs/spec-format.md` for the format itself.
+- **criteria-index** — runs alongside `criteria`, whenever `spec/domains` exists. Fails when
+  `spec/criteria-index.json` is present but no longer matches the domain files it was generated
+  from, comparing each criterion's id, domain, version, confidence, state and statement — the
+  fields a later stage actually reads. The index is what every stage after ratify reads *instead
+  of* the domain files, so one that has drifted is worse than none at all: a stage builds against
+  criteria the spec no longer holds and nothing says so. The fix is to run `sdlc run ratify
+  --domain <d>`, which regenerates it. A project with no index yet passes. This is deliberately
+  not part of `criteria` itself: `archaeology` legitimately leaves the index behind, since
+  recovering a domain is exactly the act of adding criteria the index does not have yet, and
+  ratify is the stage that catches it up.
 - **egress** — every tracked, text-typed file (skipping `.sdlc/packs/`, and any path git still
   tracks but that is gone from disk) is scanned line by line for ticket-number patterns,
   private-notes-folder paths, references to a private notes location or a meeting or transcript,

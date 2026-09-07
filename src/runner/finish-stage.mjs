@@ -73,6 +73,46 @@ function commitPostCheckFailure(projectDir, stage, agentResult, messages) {
   return { ok: false, journal, messages };
 }
 
+// The finish path for a deterministic stage (`agent: false`) that found its own work
+// already done. Post-checks still run — they judge the working tree, and this stage
+// regenerated derived artifacts before returning even though it wrote no work of its own
+// — and whatever regenerating left dirty is committed with the run record.
+//
+// What is deliberately absent is a journal entry. A journal entry is the account of a
+// turn, and no turn happened: manufacturing one on every re-run would fill the journal
+// with entries saying nothing happened. So the run record carries the line, the commit
+// carries the regenerated files, and a run that regenerated nothing at all commits
+// nothing and returns having written nothing.
+export function finishDeterministicNoOp(projectDir, stage, ctx, text) {
+  const post = stage.postChecks(projectDir, ctx);
+  const postFail = post.filter((r) => !r.ok);
+  if (postFail.length) {
+    return commitPostCheckFailure(projectDir, stage, { text }, postFail.flatMap((r) => r.messages));
+  }
+
+  // Built first to find out whether there is anything to commit at all: the site is
+  // derived from the same artifacts this stage regenerates, so it is part of the answer
+  // rather than something added afterwards. A run that finds nothing dirty here writes no
+  // run record either — appending one would itself make the tree dirty and turn every
+  // no-op into a commit.
+  buildSite(projectDir);
+  const changed = changedPaths(projectDir).filter((p) => p !== ".sdlc/run-state.json");
+  if (changed.length === 0) return { ok: true, changed: [], text };
+
+  // The run record goes in before the second build, so the run log page the site carries
+  // includes this run's own line rather than going stale the moment it is committed.
+  appendRun(projectDir, `run ${stage.name}: regenerated ${changed.join(", ")}`);
+  buildSite(projectDir);
+  const stagedBySite = stageSite(projectDir);
+  const batch = changedPaths(projectDir)
+    .filter((p) => p !== ".sdlc/run-state.json")
+    .filter((p) => !stagedBySite.includes(p) && !(stagedBySite.includes("site") && p.startsWith("site/")));
+  stageAll(projectDir, batch);
+  const title = typeof stage.title === "function" ? stage.title(ctx) : stage.title ?? stage.name;
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${title} (regenerated)`], projectDir);
+  return { ok: true, changed, text };
+}
+
 // Post-checks through the final commit and site build — steps 9-12 of `sdlc run`.
 // Both `runStage` (right after a real agent turn) and `resume` (after a crash, with a
 // stand-in agent result) land here, so a stage has exactly one place deciding whether

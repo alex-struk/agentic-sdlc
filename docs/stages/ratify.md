@@ -54,7 +54,12 @@ conditions apply to.
   appends a replacement only when no criterion already carries `replaces` naming that target with
   that exact corrected text.
 - `spec/criteria-index.json` and `spec/spec.md`, regenerated from every domain file in the project
-  (`writeIndex`, `renderSpecIndex`), not only the one this run touched.
+  (`writeIndex`, `renderSpecIndex`), not only the one this run touched — and regenerated on every
+  run, including one that finds this domain already ratified, since both are derived from files
+  this run does not otherwise look at and go stale for reasons it had nothing to do with.
+  `generated_from` in the index is the commit its criteria were read at and is rewritten only when
+  those criteria change: refreshing it on unchanged content would leave the index dirty after
+  every run, which would be committed, which would move `HEAD` again.
 - A journal entry and a run-record line, as every stage produces. The journal states how many
   criteria were accepted, how many are still open (naming each one and, where a note explains it,
   why), how many were made obsolete, how many replacements a `defect` condition added, and lists
@@ -91,6 +96,10 @@ before handing it to the same `finishStage` every agent-run stage finishes throu
     every domain file parses, IDs are unique across domains, and no criterion is `accepted` while
     its confidence is still `inferred` or `open`. This is `ratify`'s own promise that it never
     mints an id for something it should not have.
+  - `criteria-index` — `spec/criteria-index.json` matches `spec/domains/*.md` on every
+    criterion's id, domain, version, confidence, state and statement. This is ratify's promise
+    that the index it just regenerated is the one a later stage can build against; a project with
+    no index yet passes, having nothing to be stale.
   - `spec/criteria-index.json` exists and parses as JSON; `spec/spec.md` exists.
 
 ## Exit criterion
@@ -101,12 +110,16 @@ behaviour"). Any pre-check or post-check failure exits 1 and prints the failing 
 
 ## Re-run behaviour
 
-Running `ratify --domain <d>` again is a true no-op whenever it would leave the domain file
-byte-identical to what is already on disk: `execute` re-derives the file from the same gate-file
-conditions and compares the result to what is there before writing anything, and if the two match,
-returns `{ changed: [] }`, which `runStage` reads as "nothing happened" and returns without writing
-a journal entry, appending a run record, or committing anything (it still prints `execute`'s text,
-so a re-run is not silent — see "Outputs"). This covers two cases: the domain has nothing
+Running `ratify --domain <d>` again writes no journal entry whenever it would leave the domain
+file byte-identical to what is already on disk: `execute` re-derives the file from the same
+gate-file conditions and compares the result to what is there before writing anything, and if the
+two match it returns `{ changed: [] }`. A journal entry is the account of a turn, and no turn
+happened, so `runStage` finishes through `finishDeterministicNoOp` instead — which still runs the
+post-checks, and still commits whatever regenerating the index, the spec page and the state site
+left dirty, under `stage(ratify): ratify <d> (regenerated)` with a run-record line and no journal
+entry. When regenerating changed nothing either, the run commits nothing at all and the working
+tree is left exactly as it was (it still prints `execute`'s text, so a re-run is not silent — see
+"Outputs"). This covers two cases: the domain has nothing
 provisional left in it (every `D-<d>-<n>` id has already been minted to an `R-` id), and — just as
 common — some criterion is still `D-` on purpose (a `spike`d or still-`inferred` row the ruling
 never confirmed) and stays that way indefinitely, with every condition that already touched it a

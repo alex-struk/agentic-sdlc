@@ -23,7 +23,8 @@ allows 22 or later.
 - `sdlc init [dir]` — pin the lockfile, install the configured skill packs, and generate the CI
   caller workflow for an existing project.
 - `sdlc checks [dir] [--self] [--json]` — run the structural checks (config, layout, constitution,
-  egress); `--self` checks this pipeline repository itself.
+  egress, plus criteria and criteria-index once `spec/domains` exists); `--self` checks this
+  pipeline repository itself.
 - `sdlc doctor [dir]` — check that required and optional tools, the agent deny list, the egress
   name list, and the project configuration are all in place.
 - `sdlc propose <name> --gate G<n> --question "..." --recommendation "..." [--tier HIGH]` — open a

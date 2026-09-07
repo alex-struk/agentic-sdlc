@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, cpSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -456,6 +456,48 @@ test("sdlc run ratify: a malformed criterion block fails the pre-checks and noth
       r.messages.join("\n"));
     // Nothing was rewritten: the malformed block is still there, byte for byte.
     assert.equal(readFileSync(domainPath, "utf8"), broken);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run ratify: a no-op run regenerates a stale index and commits it, with no journal entry", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-stale-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  try {
+    const first = await ratifyApplications(dir);
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    const journalsAfterFirst = readdirSync(join(dir, ".sdlc/journal")).length;
+    const idxPath = join(dir, "spec/criteria-index.json");
+
+    // The index drifts from the domain files — a hand edit, a checkout of one file, a
+    // half-finished merge. Nothing about this domain's own criteria has changed, so the
+    // run has no work of its own to do; the index is still wrong and has to be fixed.
+    const index = JSON.parse(readFileSync(idxPath, "utf8"));
+    index.criteria = index.criteria.slice(1);
+    writeFileSync(idxPath, JSON.stringify(index, null, 2) + "\n");
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "a stale index"], dir);
+
+    const r = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.match(r.text, /already ratified/);
+    assert.deepEqual(r.changed, ["spec/criteria-index.json"]);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.match(git(["log", "-1", "--format=%s"], dir), /stage\(ratify\): ratify applications \(regenerated\)/);
+    // No turn ran, so there is no turn to journal.
+    assert.equal(readdirSync(join(dir, ".sdlc/journal")).length, journalsAfterFirst);
+    // And the index is back in step with the domain files.
+    assert.equal(JSON.parse(readFileSync(idxPath, "utf8")).criteria.length, index.criteria.length + 1);
+
+    // A second no-op run now has genuinely nothing to do: no commit, nothing dirty.
+    const head = git(["rev-parse", "HEAD"], dir);
+    const r2 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(r2.ok, true);
+    assert.deepEqual(r2.changed, []);
+    assert.equal(git(["rev-parse", "HEAD"], dir), head);
     assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;

@@ -10,7 +10,7 @@ import { materialise, collect } from "../runner/workspace.mjs";
 import { runAgent } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
-import { finishStage, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
+import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 // `config.policy.budgets[<stage>]` is documented as a token count, but `runAgent`'s
@@ -94,10 +94,12 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
   // resume` to pick up and `.sdlc/run-state.json` is never written for this path.
   // `finishStage` is still the one place that decides whether a run's output is worth a
   // journal entry and a commit — reached here with a synthesised agent result standing in
-  // for a real one — except when `execute` reports nothing changed: unlike an agent turn,
-  // running `execute` twice against unchanged input is expected to be a no-op, and
-  // `finishStage` has no way to skip its own always-fresh journal entry, so that case is
-  // short-circuited here instead of manufacturing an empty commit.
+  // for a real one. When `execute` reports it had no work of its own to do, the run
+  // finishes through `finishDeterministicNoOp` instead: unlike an agent turn, running
+  // `execute` twice against unchanged input is expected to change nothing, so there is no
+  // turn to journal — but the post-checks still run and whatever `execute` regenerated on
+  // its way past (the criteria index and the spec page, derived from every domain file in
+  // the project rather than just this run's own) is still committed.
   if (stage.agent === false) {
     if (dryRun) {
       console.log(`stage ${name}: agent: false — runs stage.execute(projectDir, ctx) directly, no agent session`);
@@ -105,10 +107,9 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
     }
     const { text, changed } = stage.execute(projectDir, ctx);
     // `text` is carried on the no-op return too — there is no journal entry for this
-    // path (nothing changed, so `finishStage` is never called), so this is the only
-    // place `execute`'s account of "already ratified" reaches anyone; `COMMANDS.run`
-    // prints it below.
-    if (!changed || changed.length === 0) return { ok: true, changed: [], text };
+    // path, so this is the only place `execute`'s account of "already ratified" reaches
+    // anyone; `COMMANDS.run` prints it below.
+    if (!changed || changed.length === 0) return finishDeterministicNoOp(projectDir, stage, ctx, text);
     return await finishStage(projectDir, stage, ctx, { text, cost: 0, turns: 0, sessionId: "deterministic" });
   }
 

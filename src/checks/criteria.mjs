@@ -1,6 +1,20 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { readText } from "../lib/fsx.mjs";
 import { parseAll } from "../spec/criteria.mjs";
+
+// `spec/criteria-index.json` is what every stage after ratify reads instead of the
+// domain files, so an index that has drifted from them is worse than no index: a stage
+// builds against criteria the spec no longer holds, and nothing says so. Compared on the
+// identity of each criterion rather than on the whole record — id, domain, version,
+// confidence, state and statement — which is what a later stage actually consumes and
+// what a hand edit to a domain file changes.
+function indexSignature(criteria) {
+  return criteria
+    .map((c) => [c.domain, c.id, c.version, c.confidence, c.state, c.statement].join("\u0000"))
+    .sort()
+    .join("\n");
+}
 
 // `checkCriteria` reads the old application at `<projectDir>/sources/old` only to
 // resolve `cites` paths against it. That checkout is materialised on demand (see
@@ -56,4 +70,36 @@ export function checkCriteria(projectDir, ctx = {}) {
   }
 
   return { id, ok: messages.length === 0, messages, warnings };
+}
+
+// The generated index against the domain files it was generated from. Its own check
+// rather than part of `checkCriteria` above, because the two are asked at different
+// moments: every stage that touches `spec/domains` runs `checkCriteria` on its own
+// output, and `archaeology` legitimately leaves the index behind — recovering a domain
+// is exactly the act of adding criteria the index does not have yet, and ratify is the
+// stage that catches it up. So this runs where a stale index is a real fault: `sdlc
+// checks` (and therefore the checks a ruling persona is shown), and `ratify`'s own
+// post-checks, which are its promise that the index it just regenerated matches.
+//
+// A missing index is not a failure: a project that has not ratified anything yet has
+// nothing to be stale.
+export function checkCriteriaIndex(projectDir) {
+  const id = "criteria-index";
+  const path = join(projectDir, "spec", "criteria-index.json");
+  if (!existsSync(path)) return { id, ok: true, messages: [], warnings: [] };
+
+  let indexed;
+  try { indexed = JSON.parse(readText(path)).criteria; } catch (e) {
+    return { id, ok: false, messages: [`spec/criteria-index.json does not parse: ${e.message}`], warnings: [] };
+  }
+  if (!Array.isArray(indexed)) return { id, ok: false, messages: ["spec/criteria-index.json has no criteria array"], warnings: [] };
+
+  const parsed = parseAll(projectDir);
+  const all = [];
+  for (const [domain, criteria] of Object.entries(parsed.domains)) for (const c of criteria) all.push({ ...c, domain });
+  if (indexSignature(indexed) === indexSignature(all)) return { id, ok: true, messages: [], warnings: [] };
+  return {
+    id, ok: false, warnings: [],
+    messages: [`spec/criteria-index.json is stale: it holds ${indexed.length} criteria and spec/domains/*.md holds ${all.length}, or their ids, versions, confidences, states or statements differ. Run 'sdlc run ratify --domain <d>' to regenerate it.`],
+  };
 }

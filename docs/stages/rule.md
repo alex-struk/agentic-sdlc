@@ -80,7 +80,7 @@ When `--by agent:<persona>` names the gate's own `holder`, `sdlc rule` builds a 
   that order, so what falls off the end is the least important file rather than whichever one
   sorts last. When the cap does cut, the diff ends with `[<n> further changed file(s) not
   shown]`;
-- the four structural checks, run on the proposal branch's current checkout.
+- the structural checks, run on the proposal branch's current checkout.
 
 The agent turn runs with `maxTurns: 12` and a tool list of `Read`, `Grep`, `Glob`, `Bash(git
 diff*)`, `Bash(git log*)` and `Bash(git status*)` — enough to look further into the branch than
