@@ -211,18 +211,25 @@ test("sdlc run ratify --domain applications: three consecutive runs with edit an
 
     const first = await runStage(dir, "ratify", { domain: "applications" });
     assert.equal(first.ok, true, JSON.stringify(first.messages));
-    const headAfterFirst = git(["rev-parse", "HEAD"], dir);
     const domainAfterFirst = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
     assert.match(domainAfterFirst, /### R-1\.1 · v2 · confirmed · recovered/, "edited exactly once, and minted since it was already confirmed");
     assert.match(domainAfterFirst, /### D-applications-2 · v1 · open · recovered/, "the spiked row stays provisional");
     const spikeNoteCount = [...domainAfterFirst.matchAll(/does this hold for renewals too\?/g)].length;
     assert.equal(spikeNoteCount, 1, "the spike note appears exactly once after the first run");
+    // D-applications-2 is still open, so the closing loop opened a follow-up proposal —
+    // which leaves the checkout on its branch, the same as any other opened proposal.
+    assert.equal(first.proposal.name, "ratify-applications-1");
+    git(["checkout", "-q", "main"], dir);
+    const headAfterFirst = git(["rev-parse", "HEAD"], dir);
 
     for (let i = 1; i <= 2; i++) {
       const r = await runStage(dir, "ratify", { domain: "applications" });
       assert.equal(r.ok, true, JSON.stringify(r.messages));
       assert.deepEqual(r.changed, [], `rerun ${i} is a true no-op`);
       assert.equal(git(["rev-parse", "HEAD"], dir), headAfterFirst, `rerun ${i} made no new commit`);
+      // The follow-up is still unruled, so no second one is opened alongside it.
+      assert.equal(r.proposal ?? null, null, `rerun ${i} opened no second follow-up`);
+      assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     }
 
     const domainFinal = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
@@ -501,6 +508,112 @@ test("sdlc run ratify: a no-op run regenerates a stale index and commits it, wit
     assert.deepEqual(r2.changed, []);
     assert.equal(git(["rev-parse", "HEAD"], dir), head);
     assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("the closing loop: ratify opens a follow-up over what it could not mint, and one pass resolves both", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-loop-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    const archaeologyRun = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(archaeologyRun.ok, true, JSON.stringify(archaeologyRun.messages));
+
+    // The ruling spikes one criterion and says nothing about the other, which is
+    // `inferred` as recovered. Neither can mint, so ratify comes out of its first pass
+    // with two criteria short of the contract and nothing that would ever ask again.
+    const first = mkdtempSync(join(tmpdir(), "sdlc-mock-owner-loop1-"));
+    writeFileSync(join(first, "rule.json"), JSON.stringify({
+      text: '```json\n' + JSON.stringify({
+        verdict: "approve",
+        rationale: "the age minimum needs a decision on renewals; the fee basis is still only implied by the code",
+        conditions: ["spike D-applications-1: does the age minimum hold for renewals too?"],
+      }) + '\n```',
+    }));
+    process.env.SDLC_MOCK_DIR = first;
+    assert.equal((await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" })).verdict, "approve");
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    const pass1 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(pass1.ok, true, JSON.stringify(pass1.messages));
+    assert.equal(pass1.proposal.name, "ratify-applications-1");
+    assert.equal(pass1.proposal.gate, "G1");
+    assert.equal(pass1.proposal.unresolved, 2);
+
+    // The page carries what the persona needs to rule without opening the domain file,
+    // says which criterion has already been spiked, and restates the grammar.
+    const page = readFileSync(join(dir, ".sdlc/proposals/ratify-applications-1.md"), "utf8");
+    assert.match(page, /### D-applications-1 · v1 · open · recovered/);
+    assert.match(page, /### D-applications-2 · v1 · inferred · recovered/);
+    assert.match(page, /already been spiked once/);
+    assert.match(page, /does the age minimum hold for renewals too\?/);
+    assert.match(page, /- `confirm <ID>`/);
+    assert.match(page, /- `obsolete <ID>: <why>`/);
+
+    // The persona closes both out: one confirmed, one dropped.
+    process.env.SDLC_EXECUTOR = "mock";
+    const second = mkdtempSync(join(tmpdir(), "sdlc-mock-owner-loop2-"));
+    writeFileSync(join(second, "rule.json"), JSON.stringify({
+      text: '```json\n' + JSON.stringify({
+        verdict: "approve",
+        rationale: "renewals are out of scope for this domain, and the intake flow pins the fee basis down",
+        conditions: [
+          "confirm D-applications-2",
+          "obsolete D-applications-1: renewals are handled by a separate service, so this rule is not carried forward",
+        ],
+      }) + '\n```',
+    }));
+    process.env.SDLC_MOCK_DIR = second;
+    assert.equal((await ruleByAgent(dir, "ratify-applications-1", { persona: "product-owner" })).verdict, "approve");
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+
+    // The next pass reads both approved rulings, in order, and applies the second's
+    // conditions on top of the first's.
+    const pass2 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(pass2.ok, true, JSON.stringify(pass2.messages));
+    const domainText = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    assert.match(domainText, /### R-1\.1 · v1 · confirmed · recovered/, "the confirmed criterion minted");
+    assert.match(domainText, /### D-applications-1 · v1 · open · recovered/, "the dropped criterion keeps its provisional id");
+    assert.match(domainText, /- state: obsolete/);
+    assert.match(domainText, /renewals are handled by a separate service/);
+
+    // Nothing is left short of the contract, so the loop closes: no second follow-up.
+    assert.equal(pass2.proposal ?? null, null);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.ok(!existsSync(join(dir, ".sdlc/proposals/ratify-applications-2.md")));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run ratify: a ruling carrying unparsed_conditions fails the run, naming the lines", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-unparsed-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  try {
+    const r = await ratifyApplications(dir);
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    git(["checkout", "-q", "main"], dir);
+
+    // A ruling the persona could not restate in the grammar even after being asked
+    // again. Nothing would be applied for these lines, so a run that proceeded would be
+    // executing a ruling it had only partly read.
+    const gatePath = join(dir, ".sdlc/gates/archaeology-applications.yaml");
+    writeFileSync(gatePath, readFileSync(gatePath, "utf8")
+      + 'unparsed_conditions:\n  - "please just drop the fee one"\n');
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "a ruling with unreadable lines"], dir);
+
+    const failed = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(failed.ok, false);
+    assert.ok(failed.messages.some((m) => /do not match the ratification grammar/.test(m)), failed.messages.join("\n"));
+    assert.ok(failed.messages.some((m) => /archaeology-applications\.yaml: please just drop the fee one/.test(m)), failed.messages.join("\n"));
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

@@ -133,15 +133,37 @@ committed — so the ruling is part of the same commit the gate file is, not a f
 ### Ratification conditions
 
 `conditions` is free-form for most personas, but `product-owner`'s own brief
-(`.sdlc/personas/product-owner.md`) gives it a closed vocabulary for approving an archaeology
-proposal — one line per criterion ID, using `contract`, `confirm`, `edit`, `defect`, `spike`,
-`obsolete` or `drop` — that `sdlc run ratify` (`docs/stages/ratify.md`) reads back out of this
-same gate file and applies mechanically. A `return` verdict carries no conditions at all; its
-rationale paragraph says what archaeology has to go back and change instead. `rule` itself does
-not interpret a single condition line — it only carries the array from the persona's verdict block
-into the gate file — so a condition naming an ID that turns out not to exist in the domain, or a
-line neither `rule` nor `ratify` recognises, is not caught here; `ratify` reports it later, against
-the domain file it actually has in hand.
+(`.sdlc/personas/product-owner.md`) gives it a closed vocabulary at G1 — one line per criterion ID,
+using `contract`, `confirm`, `edit`, `defect`, `spike`, `obsolete` or `drop` — that `sdlc run
+ratify` (`docs/stages/ratify.md`) reads back out of this same gate file and applies mechanically.
+
+Two of those are easy to read as each other's synonym and are not. `contract <ID>` changes nothing:
+the row's confidence, state and wording are untouched, and it is recorded only so the journal can
+say the ID was looked at. It does not promote anything — a criterion still `inferred` or `open`
+stays that way and is not minted a permanent id. `confirm <ID>` is the one that promotes, and the
+persona is required to say in its rationale what evidence tipped it. A criterion nobody mentions at
+all is treated exactly as `contract`, so approving a proposal without a line per ID is normal.
+
+An archaeology proposal legitimately carries criteria marked `inferred` or `open` — that is
+archaeology reporting what the evidence supports, and approving such a proposal is the ordinary
+outcome. Those criteria are not the contract yet, and `ratify`'s closing loop
+(`docs/stages/ratify.md`) is what asks about them again.
+
+Because a condition is an instruction `ratify` will execute rather than commentary, a line the
+grammar cannot read is a silently dropped ruling on a criterion. At G1, on an `approve` or a
+`return`, every condition is parsed with that grammar before the ruling is written. If any line
+fails, the persona is asked once more — the same prompt with its own unreadable lines quoted back
+and the grammar restated — which is the whole fix in the ordinary case, since these are formatting
+slips (`confirm <ID>: <text>`, where `confirm` takes no text) rather than disagreements. Whatever is
+still unreadable after that is written to the gate file under `unparsed_conditions` and the ruling
+proceeds: the verdict was reached and the reasoning is worth keeping. `ratify` then refuses to act
+on that gate file at all until a person rewrites the lines in place.
+
+What is still *not* checked here is whether a condition's ID exists in the domain: this command has
+no domain file in hand. `ratify` reports an unknown ID later, against the file it actually has.
+
+At G1 a `return` also carries no conditions in practice: its rationale paragraph says what
+archaeology has to go back and change instead.
 
 ## Mandatory escalation
 

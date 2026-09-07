@@ -36,10 +36,23 @@ export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemP
   return { args, env: { ...process.env, ...env, CLAUDE_CONFIG_DIR: configHome, SDLC_STAGE: stage } };
 }
 
+// How many times each canned file has been consumed in this process, so a `sequence`
+// below can hand back a different reply per call. Keyed by path, since two stages (or two
+// tests) have their own files and their own counts.
+const mockCalls = new Map();
+
 function runMock({ cwd, stage }) {
   const p = join(process.env.SDLC_MOCK_DIR ?? "", `${stage}.json`);
   if (!existsSync(p)) throw new Error(`mock executor: no canned response at ${p}`);
-  const m = JSON.parse(readFileSync(p, "utf8"));
+  const file = JSON.parse(readFileSync(p, "utf8"));
+  // A canned response may be a `sequence` of replies rather than one, consumed a step per
+  // call, so a test can stand in for a turn that is legitimately asked more than once
+  // inside a single command — the ratification-grammar re-prompt, or the automatic retry
+  // of a failed ruling. The last entry is reused once the list runs out, so a sequence
+  // never becomes the reason a test fails.
+  const n = mockCalls.get(p) ?? 0;
+  mockCalls.set(p, n + 1);
+  const m = Array.isArray(file.sequence) ? file.sequence[Math.min(n, file.sequence.length - 1)] : file;
   for (const [rel, content] of Object.entries(m.files ?? {})) writeText(join(cwd, rel), content);
   // A canned response can also delete a tracked file, so tests can exercise how a stage
   // stages and commits a deletion without a real agent turn actually removing anything.

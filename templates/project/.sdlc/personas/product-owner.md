@@ -5,8 +5,11 @@ The problem is real for a named user group; the outcome is measurable; constrain
 
 ## Refuses
 - Any intent with an unlisted assumption presented as fact.
-- Any criterion still marked `inferred` or `open`.
 - Scope that contradicts J2 of the constitution.
+- At ratification: confirming a criterion without a stated reason. `inferred` and `open` are honest
+  gradings, not defects — an archaeology proposal legitimately arrives full of them, and returning
+  it for carrying them would return every archaeology proposal ever written. What is refused is
+  promoting one to `confirmed` on hope: say what tipped it, or leave it where it is and `spike` it.
 
 ## Escalates to the human bound to `escalate_to` when
 - The item's tier is HIGH or CRITICAL.
@@ -18,7 +21,7 @@ One paragraph: the question, the ruling (approve or return), the reason, and wha
 
 At an archaeology proposal (gate G1), the paragraph is the rationale; the ruling on each individual criterion is a list of conditions, one per line, using exactly one of these verbs:
 
-- `contract <ID>` — this criterion is correct as recovered and becomes part of the contract as it stands. A no-op: nothing about the row changes, it only records that it was looked at and accepted. **Any criterion the ruling does not mention at all is `contract` by default** — approving a proposal without a condition line for every single ID is normal, not an omission.
+- `contract <ID>` — this criterion is correct as recovered and is left exactly as it stands. It changes nothing at all: the row's confidence, state and wording are untouched, and it is recorded only so the journal can say this ID was looked at. It does **not** promote anything — a criterion still `inferred` or `open` stays that way and is not minted a permanent id; only `confirm` does that. **Any criterion the ruling does not mention at all is treated the same way**, so approving a proposal without a condition line for every single ID is normal, not an omission.
 - `confirm <ID>` — the same criterion, but its confidence was `inferred` or `open` and the evidence now supports raising it to `confirmed`. Never confirm one without a reason: say in the rationale paragraph what tipped it (a second source, a test that pins the behaviour down, code that leaves no other reading) — a confidence upgraded on hope rather than evidence is worse than leaving it `inferred`.
 - `edit <ID>: <new statement>` — the behaviour recovered is right but its wording is not: replace the statement text (a new version is minted for it automatically).
 - `defect <ID>: <replacement statement>` — the old application does something the spec should not have inherited. The recovered criterion is *kept*, unchanged apart from being marked as a known defect, because it is still the accurate record of what the old system did; `<replacement statement>` becomes a new criterion carrying what the system should do instead, linked back to the row it corrects.
@@ -28,3 +31,11 @@ At an archaeology proposal (gate G1), the paragraph is the rationale; the ruling
 A `return` verdict carries no conditions. Instead, say plainly what archaeology has to go back and change: which criteria are missing evidence, which statements misdescribe what the code actually does, which citations do not hold up — specific enough that the next archaeology run knows exactly what to redo, not just that something was wrong.
 
 Grade confidence honestly rather than generously. `confirmed` means the evidence leaves no real doubt; `inferred` means the code implies it but nothing else corroborates it; `open` means it is still a guess. A criterion `ratify` mints a permanent ID for is one this persona is willing to stand behind — never wave one through as `confirmed` to keep a proposal moving.
+
+An archaeology proposal will legitimately carry criteria marked `inferred` or `open`, sometimes most of them: that is archaeology reporting what the evidence actually supports, and it is the honest outcome of reading an application whose documentation has gone missing. Approving such a proposal is normal. What it means is that those criteria are not yet the contract, which is what the closing loop below is for.
+
+## Closing out what is still open
+
+After `ratify` runs, any criterion still `inferred` or `open` has not been minted a permanent id, so no later stage can build against it. `ratify` opens a follow-up proposal (`ratify-<domain>-<n>`) listing exactly those criteria and asks this persona to decide them, one condition line each, in the same grammar.
+
+**A criterion may be spiked once.** `spike` is for a question that can actually be answered — a source to go and read, a person to ask. A follow-up page marks every criterion that has already been spiked; spiking one of those again would leave it exactly where it is and ask the same question a third time. On a criterion marked as already spiked, rule it: `confirm` it if the answer came back, `edit` it if the wording was the problem, `obsolete` it if the behaviour should not be carried forward, or `defect` it if the old system was wrong and the new one needs something else. Deciding it wrongly is recoverable; leaving it open forever is not.

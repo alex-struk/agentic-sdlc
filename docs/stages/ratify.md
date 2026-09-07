@@ -18,9 +18,12 @@ judgement call.
 `sdlc run ratify --domain <d>`, run from inside the project's working tree, once
 `proposal/archaeology-<d>` has been ruled `approve` and merged into `main`. `<d>` is one of the
 names in `.sdlc/config.yaml`'s `project.domains` — the same domain archaeology just recovered.
-`ratify` reads `.sdlc/gates/archaeology-<d>.yaml` for the `conditions` the ruling attached (see
+`ratify` reads every approved ruling on the domain for the `conditions` it attached (see
 `docs/stages/rule.md`, "Ratification conditions") and `spec/domains/<d>.md` for the criteria those
-conditions apply to.
+conditions apply to. That is `.sdlc/gates/archaeology-<d>.yaml` plus every follow-up the closing
+loop opened and the persona approved — `ratify-<d>-1.yaml`, `ratify-<d>-2.yaml`, and so on — read in
+that order, so a later ruling's condition on a criterion is applied after (and therefore over) an
+earlier one's. A follow-up that was returned or escalated decided nothing and is skipped.
 
 ## Outputs
 
@@ -64,9 +67,10 @@ conditions apply to.
   criteria were accepted, how many are still open (naming each one and, where a note explains it,
   why), how many were made obsolete, how many replacements a `defect` condition added, and lists
   any condition whose ID this domain file does not actually have.
-- No proposal and no gate: `ratify` holds no gate of its own (the ruling it acts on already
-  happened, at G1, on the archaeology proposal), so a successful run commits directly to `main` as
-  `stage(ratify): ratify <d>`.
+- No gate of its own: the ruling `ratify` acts on already happened, at G1, so a successful run
+  commits directly to `main` as `stage(ratify): ratify <d>`.
+- A follow-up proposal, `proposal/ratify-<d>-<n>`, when anything is still short of the contract —
+  see "The closing loop" below.
 
 ## Workspace the agent sees
 
@@ -92,6 +96,11 @@ before handing it to the same `finishStage` every agent-run stage finishes throu
     be dropped on the way back out; failing first, naming the file and line of every parse error,
     is what keeps a malformed block from being deleted instead of reported.
 - **Post-checks**, run against the working tree after `execute` returns:
+  - `gate-conditions-parse` — no ruling this run reads carries `unparsed_conditions`. Those are
+    condition lines the ratification grammar could not read even after the persona was asked to
+    restate them (`docs/stages/rule.md`), so acting on that gate file would mean executing a ruling
+    only partly read. The run fails naming each line and the gate file it is on, for a person to
+    rewrite in place.
   - `checkCriteria` — the same structural check every stage that touches `spec/domains` runs:
     every domain file parses, IDs are unique across domains, and no criterion is `accepted` while
     its confidence is still `inferred` or `open`. This is `ratify`'s own promise that it never
@@ -135,6 +144,29 @@ recovered criteria, is ordinary: each pass mints only what that pass's own condi
 confirmations cover, continuing the domain's `R-<k>.<n>` numbering from wherever the last pass left
 it.
 
+## The closing loop
+
+`ratify` mints only what the ruling actually confirmed, so a domain routinely comes out of a pass
+with criteria still `inferred` or `open`. Those have no permanent id, which means no later stage can
+build against them — and nothing used to ask about them again: they sat in the domain file
+indefinitely and closing them out depended on somebody noticing.
+
+So once the ratify commit has landed on `main`, `ratify` opens a G1 proposal named
+`ratify-<d>-<n>` (`n` = 1, 2, …, continuing past any follow-up already ruled) whenever the domain
+still holds a criterion that is `inferred` or `open` and not `obsolete`. Its page lists exactly
+those criteria — id, version, confidence, origin, statement, reconciliation, given/when/then,
+citations and notes — restates the ratification grammar the answer has to be written in, and marks
+every criterion an earlier ruling already spiked, since spiking one of those again would leave it
+exactly where it is. The persona rules it like any other G1 proposal, and the next `sdlc run ratify
+--domain <d>` reads its conditions alongside the archaeology ruling's. Each pass therefore either
+resolves criteria or asks about fewer of them.
+
+At most one follow-up is open at a time: while `ratify-<d>-<n>` is unruled it is the thing the loop
+is waiting on, and a second would ask the same question twice. A criterion marked `obsolete` is a
+decision, not an open question, so it is not asked about again even though it keeps whatever
+confidence it was recovered with. When nothing is left, no proposal is opened and the loop is
+closed.
+
 ## Failure modes
 
 - `--domain` is missing, or names a domain not in `project.domains`: the pre-check fails before
@@ -144,10 +176,12 @@ it.
   naming which of the three is missing.
 - `spec/domains/<d>.md` does not exist, does not parse, or holds no criteria: the pre-check
   fails, naming each parse error by line, and nothing is written.
-- A condition names an ID this domain's criteria do not actually have, or is not one of the seven
-  recognised verbs: `applyConditions` reports it in `unknown` rather than throwing, and `execute`'s
-  journal text lists it — the run still succeeds, since one bad condition line should not block
-  every other one that parsed fine.
+- A condition names an ID this domain's criteria do not actually have: `applyConditions` reports it
+  in `unknown` rather than throwing, and `execute`'s journal text lists it — the run still succeeds,
+  since one bad condition line should not block every other one that parsed fine.
+- A ruling carries `unparsed_conditions`: the `gate-conditions-parse` post-check fails, naming each
+  line and its gate file. Unlike an unknown ID, this is a ruling that was never fully read, so the
+  run does not proceed on the rest of it.
 - The rewritten domain file, or the regenerated index or spec page, fails `checkCriteria` or the
   artifacts check: `finishStage` commits `stage(ratify): post-checks failed` with only the journal
   and run record staged, and the domain file `execute` actually wrote is left in the working tree,

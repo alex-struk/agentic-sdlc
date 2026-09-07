@@ -66,6 +66,19 @@ function agentTurnFailed(projectDir, stage, r) {
   return { ok: false, journal, messages: [reason] };
 }
 
+// A stage may have one more thing to do once its own work is committed: `ratify`'s
+// closing loop opens a G1 proposal over whatever it could not mint (see its `followUp` in
+// `src/stages/registry.mjs`). Run after the commit has landed on `main` so the proposal
+// branches off a `main` that already holds this run's work, and only on success — there
+// is nothing to follow up on a run that failed. A stage that declares no `followUp`, and
+// a `followUp` that decides there is nothing to ask, both leave the result untouched.
+function followUp(projectDir, stage, ctx, result) {
+  if (!stage.followUp) return result;
+  const opened = stage.followUp(projectDir, ctx);
+  if (!opened) return result;
+  return { ...result, proposal: opened };
+}
+
 export async function runStage(projectDir, name, { slice, domain, dryRun = false, again = false } = {}) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
@@ -118,8 +131,10 @@ export async function runStage(projectDir, name, { slice, domain, dryRun = false
     // `text` is carried on the no-op return too — there is no journal entry for this
     // path, so this is the only place `execute`'s account of "already ratified" reaches
     // anyone; `COMMANDS.run` prints it below.
-    if (!changed || changed.length === 0) return finishDeterministicNoOp(projectDir, stage, ctx, text);
-    return await finishStage(projectDir, stage, ctx, { text, cost: 0, turns: 0, sessionId: "deterministic" });
+    const finished = (!changed || changed.length === 0)
+      ? finishDeterministicNoOp(projectDir, stage, ctx, text)
+      : await finishStage(projectDir, stage, ctx, { text, cost: 0, turns: 0, sessionId: "deterministic" });
+    return finished.ok ? followUp(projectDir, stage, ctx, finished) : finished;
   }
 
   const ws = materialise(projectDir, stage.workspace);

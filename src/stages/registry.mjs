@@ -1,12 +1,13 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
-import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR } from "../spec/criteria.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
+import { propose } from "../commands/propose.mjs";
 
 const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
 
@@ -330,6 +331,125 @@ function ratifyGatePath(projectDir, domain) {
   return join(projectDir, ".sdlc", "gates", `${ratifyGateName(domain)}.yaml`);
 }
 
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// The name of the nth follow-up proposal for a domain — the closing loop's own gate,
+// asked once per pass over whatever is still `inferred` or `open`.
+function followUpName(domain, n) {
+  return `ratify-${domain}-${n}`;
+}
+
+// Every ruling this domain's ratification is built from, in the order it was made: the
+// archaeology proposal first, then each follow-up (`ratify-<d>-1`, `-2`, …) by number.
+// Only approved rulings contribute — a returned or escalated follow-up has decided
+// nothing — and the conditions are concatenated in that order, so a later ruling's
+// verdict on a criterion is applied after (and therefore over) an earlier one's.
+//
+// `spiked` is every id an earlier ruling asked a question about rather than deciding.
+// A criterion may be spiked once; the follow-up page says which ones already were, so
+// the persona knows it is being asked to close one out rather than to reconsider it
+// fresh.
+function readRulings(projectDir, domain) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  const names = [ratifyGateName(domain)];
+  if (existsSync(dir)) {
+    const re = new RegExp(`^ratify-${escapeRe(domain)}-(\\d+)\\.yaml$`);
+    const follow = readdirSync(dir)
+      .map((f) => [f, re.exec(f)])
+      .filter(([, m]) => m)
+      .sort((a, b) => Number(a[1][1]) - Number(b[1][1]))
+      .map(([f]) => f.replace(/\.yaml$/, ""));
+    names.push(...follow);
+  }
+  const conditions = [];
+  const unparsed = [];
+  const spiked = new Set();
+  const read = [];
+  for (const name of names) {
+    const p = join(dir, `${name}.yaml`);
+    if (!existsSync(p)) continue;
+    const gate = parseYaml(readText(p)) ?? {};
+    if (gate.verdict !== "approve") continue;
+    read.push(name);
+    for (const c of gate.conditions ?? []) {
+      conditions.push(c);
+      const m = /^\s*spike\s+(\S+):/.exec(c);
+      if (m) spiked.add(m[1]);
+    }
+    for (const u of gate.unparsed_conditions ?? []) unparsed.push(`.sdlc/gates/${name}.yaml: ${u}`);
+  }
+  return { read, conditions, unparsed, spiked };
+}
+
+// A follow-up proposal already open — its branch exists with no gate file on it yet — is
+// the one this loop is waiting on, so no second one is opened alongside it. Returns the
+// highest follow-up number seen either way, so the next one continues the sequence rather
+// than reusing a number a ruled proposal already holds.
+function followUpState(projectDir, domain) {
+  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir).split("\n").filter(Boolean)
+    : [];
+  const re = new RegExp(`^proposal/ratify-${escapeRe(domain)}-(\\d+)$`);
+  let highest = 0;
+  let open = null;
+  for (const branch of refs) {
+    const m = re.exec(branch);
+    if (!m) continue;
+    highest = Math.max(highest, Number(m[1]));
+    const name = branch.slice("proposal/".length);
+    const ruledOnBranch = gitOk(["cat-file", "-e", `${branch}:.sdlc/gates/${name}.yaml`], projectDir);
+    const ruledOnMain = existsSync(join(projectDir, ".sdlc", "gates", `${name}.yaml`));
+    if (!ruledOnBranch && !ruledOnMain) open = name;
+  }
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (existsSync(dir)) {
+    const gre = new RegExp(`^ratify-${escapeRe(domain)}-(\\d+)\\.yaml$`);
+    for (const f of readdirSync(dir)) {
+      const m = gre.exec(f);
+      if (m) highest = Math.max(highest, Number(m[1]));
+    }
+  }
+  return { open, highest };
+}
+
+// The page of the follow-up proposal: every criterion still short of the contract, with
+// everything the persona needs to rule on it without opening the domain file, and the
+// grammar its answer has to be written in.
+function followUpPage(domain, unresolved, spiked, unparsed) {
+  const lines = [
+    `${unresolved.length} criterion(s) in the **${domain}** domain are still \`inferred\` or \`open\`, so`,
+    "`ratify` has not minted a permanent id for them and no later stage can build against them.",
+    "Rule on each one below.",
+    "",
+  ];
+  if (unparsed.length) {
+    lines.push("An earlier ruling on this domain carries condition lines the ratification grammar cannot",
+      "read. They are listed here so they can be restated in the grammar below; until they are, `ratify`",
+      "refuses to act on that ruling at all.",
+      "");
+    for (const u of unparsed) lines.push(`- ${u}`);
+    lines.push("");
+  }
+  for (const c of unresolved) {
+    lines.push(`### ${c.id} · v${c.version} · ${c.confidence} · ${c.origin}`, "", c.statement, "");
+    if (c.reconciliation) lines.push(`- reconciliation: ${c.reconciliation}`);
+    if (c.given) lines.push(`- given: ${c.given}`);
+    if (c.when) lines.push(`- when: ${c.when}`);
+    if (c.then) lines.push(`- then: ${c.then}`);
+    for (const cite of c.cites ?? []) lines.push(`- cites: ${cite.line !== undefined ? `${cite.path}:${cite.line}` : cite.path}`);
+    for (const note of c.notes ?? []) lines.push(`- note: ${note}`);
+    if (spiked.has(c.id)) {
+      lines.push("", "**This criterion has already been spiked once.** Spiking it again would leave it exactly",
+        "where it is; decide it now — `confirm`, `edit`, `obsolete` or `defect`.");
+    }
+    lines.push("");
+  }
+  lines.push("## Ratification conditions", "", CONDITION_GRAMMAR, "");
+  return lines.join("\n");
+}
+
 // `ratify` mints permanent IDs only for a domain a human (or the persona bound to G1)
 // has actually approved, and only once that approval has landed on `main` — a `return`
 // or an `escalate` gate file exists too, and neither is safe to ratify from. Checked two
@@ -353,6 +473,26 @@ function checkArchaeologyApproved(projectDir, domain) {
   const reachable = gitOk(["cat-file", "-e", `HEAD:.sdlc/gates/${name}.yaml`], projectDir);
   if (!merged && !reachable) return { id, ok: false, messages: [`${branch} is approved but not merged into main yet`] };
   return { id, ok: true, messages: [] };
+}
+
+// A ruling ratify is about to execute must be one it can read in full. A condition line
+// the grammar could not parse — kept on the gate file under `unparsed_conditions` after
+// the persona was already asked to restate it once — is a ruling on some criterion that
+// would silently do nothing, so the run fails naming the lines and the gate file they are
+// on, for a person to correct in place.
+function checkNoUnparsedConditions(projectDir, domain) {
+  const id = "gate-conditions-parse";
+  if (!domain) return { id, ok: true, messages: [] };
+  const { unparsed } = readRulings(projectDir, domain);
+  if (!unparsed.length) return { id, ok: true, messages: [] };
+  return {
+    id,
+    ok: false,
+    messages: [
+      `${unparsed.length} condition line(s) on the ruling(s) for "${domain}" do not match the ratification grammar and were not applied. Rewrite them in the gate file(s) (see docs/stages/rule.md, "Ratification conditions") and run ratify again:`,
+      ...unparsed.map((u) => `  ${u}`),
+    ],
+  };
 }
 
 // `spec/criteria-index.json` and `spec/spec.md` are ratify's own generated artifacts
@@ -414,8 +554,11 @@ const ratify = {
   execute(projectDir, ctx) {
     const domain = ctx.domain;
 
-    const gate = parseYaml(readText(ratifyGatePath(projectDir, domain))) ?? {};
-    const conditions = gate.conditions ?? [];
+    // Every approved ruling on this domain, in order: the archaeology proposal, then each
+    // follow-up the closing loop opened and the persona ruled. A later ruling's condition
+    // on the same criterion is applied after an earlier one's, so closing a criterion out
+    // is exactly a matter of ruling on it again.
+    const { conditions } = readRulings(projectDir, domain);
 
     const domainFile = join(projectDir, "spec", "domains", `${domain}.md`);
     const originalText = readText(domainFile);
@@ -461,7 +604,7 @@ const ratify = {
     }
 
     const accepted = minted.filter((c) => c.state === "accepted");
-    const stillOpen = minted.filter((c) => c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open"));
+    const stillOpen = minted.filter((c) => c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete");
     const obsolete = minted.filter((c) => c.state === "obsolete");
     const replacementsAdded = applied.filter((a) => a.verb === "defect").length;
 
@@ -484,7 +627,49 @@ const ratify = {
     return [checkDomainOption(ctx, "ratify"), checkArchaeologyApproved(projectDir, ctx.domain), checkDomainFileParses(projectDir, ctx.domain, "ratify-domain-file")];
   },
   postChecks(projectDir, ctx) {
-    return [checkCriteria(projectDir, ctx), checkCriteriaIndex(projectDir), checkSpecArtifacts(projectDir)];
+    return [checkNoUnparsedConditions(projectDir, ctx.domain), checkCriteria(projectDir, ctx), checkCriteriaIndex(projectDir), checkSpecArtifacts(projectDir)];
+  },
+  // The closing loop. `ratify` mints only what the ruling actually confirmed, so a
+  // domain routinely comes out of it with criteria still `inferred` or `open` — and
+  // nothing, before this, ever asked about them again: they sat in the domain file
+  // indefinitely, invisible to every later stage, and closing them out depended on
+  // somebody noticing.
+  //
+  // Run after the ratify commit has landed on `main`, so the proposal it opens branches
+  // off a `main` that already holds this pass's work. It asks the G1 persona one question
+  // — which of these become the contract — and its answer arrives as another approved
+  // gate file, which the next `sdlc run ratify --domain <d>` reads alongside the
+  // archaeology ruling. Each pass therefore either resolves criteria or asks again about
+  // fewer of them.
+  //
+  // At most one follow-up is open at a time: while `ratify-<d>-<n>` is unruled it is the
+  // thing being waited on, and opening a second one alongside it would ask the same
+  // question twice.
+  followUp(projectDir, ctx) {
+    const domain = ctx.domain;
+    if (!domain) return null;
+    const file = join(projectDir, "spec", "domains", `${domain}.md`);
+    if (!existsSync(file)) return null;
+
+    const { criteria } = parseDomainFile(readText(file), domain);
+    // `obsolete` is a decision, not an open question: a row the ruling deliberately did
+    // not carry forward keeps whatever confidence it was recovered with, and asking about
+    // it again every pass would make the loop never close.
+    const unresolved = criteria.filter((c) => (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete");
+    const { spiked, unparsed } = readRulings(projectDir, domain);
+    if (unresolved.length === 0 && unparsed.length === 0) return null;
+
+    const { open, highest } = followUpState(projectDir, domain);
+    if (open) return null;
+
+    const name = followUpName(domain, highest + 1);
+    const { branch } = propose(projectDir, name, {
+      gate: "G1",
+      question: `Which of the ${domain} criteria that are still inferred or open become the contract?`,
+      recommendation: `${unresolved.length} criterion(s) in ${domain} are still short of the contract; rule on each with a ratification condition so the next ratify pass can mint them.`,
+      page: followUpPage(domain, unresolved, spiked, unparsed),
+    });
+    return { name, gate: "G1", branch, unresolved: unresolved.length };
   },
 };
 

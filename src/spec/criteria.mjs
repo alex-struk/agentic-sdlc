@@ -332,6 +332,36 @@ function collapseWhitespace(s) {
   return s.replace(/\s+/g, " ").trim();
 }
 
+// The grammar itself, in words, for the two places that have to restate it to an agent:
+// a persona whose first reply carried a line this could not parse, and the follow-up
+// proposal page that asks it to close out the criteria still left open. Kept next to
+// `parseCondition` so the two cannot drift apart.
+export const CONDITION_GRAMMAR = [
+  "One condition per line, and exactly one of these forms:",
+  "",
+  "- `contract <ID>` — correct as recovered; becomes the contract unchanged. No text after the ID.",
+  "- `confirm <ID>` — the evidence now supports raising its confidence to `confirmed`. No text after the ID.",
+  "- `edit <ID>: <new statement>` — the behaviour is right, the wording is not.",
+  "- `defect <ID>: <replacement statement>` — the old system does this and the new one should not; the row is kept as the record and the replacement is filed against it.",
+  "- `spike <ID>: <question>` — not yet decided; confidence drops to `open` and the question is recorded.",
+  "- `obsolete <ID>: <why>` or `drop <ID>: <why>` — not to be carried forward at all.",
+  "",
+  "The ID is the criterion's own id exactly as the domain file spells it. `contract` and `confirm`",
+  "take no text; every other verb requires a colon and text on the same line. A condition may not",
+  "span more than one line.",
+].join("\n");
+
+// True when `line` is a condition this grammar accepts. Used before a ruling is written,
+// so a line the persona meant as a condition is caught while it can still be corrected
+// rather than surfacing as an "unknown condition" in a ratify journal weeks later.
+export function conditionParses(line) {
+  return parseCondition(line) !== null;
+}
+
+export function unparsedConditions(lines) {
+  return (lines ?? []).filter((l) => !conditionParses(l));
+}
+
 function parseCondition(line) {
   const t = line.trim();
   let m;
