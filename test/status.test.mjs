@@ -382,3 +382,27 @@ test("a zero-criteria project still renders the configured domains at zero", () 
   // No criterion in the index names either domain, so no criteria page is written.
   assert.ok(!pages.some((p) => p.startsWith("site/criteria/")));
 });
+
+test("a latest.json whose rows are not a list is read as no rows rather than taking the site build down", () => {
+  const d = testsAndCalibrationFixture();
+  // The shape a half-written or hand-edited file can have on disk: valid JSON, but
+  // `rows` is not the list every reader of it expects.
+  writeFileSync(join(d, "tests/results/old/latest.json"),
+    JSON.stringify({ target: "old", base_url: "http://old.example", rows: null }, null, 2) + "\n");
+  const { pages } = buildSite(d);
+  assert.ok(pages.includes("site/index.md"));
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  // The target's column is still there, reporting zero of everything rather than a crash.
+  assert.match(index, /\| a \|.*\| 0 pass · 0 fail · 0 unbound · 0 stale \|/);
+  const page = readFileSync(join(d, "site/criteria/a.md"), "utf8");
+  assert.match(page, /\| R-1\.1 \| acceptance\/a\/R-1\.1\.spec\.ts \|\s*\|/);
+});
+
+test("a latest.json that is not valid JSON at all leaves the target's columns blank", () => {
+  const d = testsAndCalibrationFixture();
+  writeFileSync(join(d, "tests/results/old/latest.json"), "{ this is not json\n");
+  const { pages } = buildSite(d);
+  assert.ok(pages.includes("site/index.md"));
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  assert.match(index, /\| Domain \|.*\| old \|/);
+});

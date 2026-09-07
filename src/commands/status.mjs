@@ -98,6 +98,14 @@ function testsColumn(projectDir, domain) {
   return `${covered.length}/${accepted}${nt}`;
 }
 
+// A results file's rows, or an empty list when it has none the site can read. `latest.json`
+// is written by `calibrate` but read here from disk, where it can be anything — truncated
+// by an interrupted write, hand-edited, or an older shape entirely — and a `rows` that is
+// not an array would otherwise take the whole site build down with it.
+function resultRows(latest) {
+  return Array.isArray(latest?.rows) ? latest.rows : [];
+}
+
 // `<n> pass · <n> fail · <n> unbound · <n> stale` across this domain's rows in one
 // target's `latest.json` — `not-testable` rows are left out, since a not-testable
 // criterion is already accounted for in the `tests` column and counting it again here
@@ -106,7 +114,7 @@ function testsColumn(projectDir, domain) {
 // for this domain still prints zeros, honestly reporting "ran, found nothing here").
 function resultCountsColumn(latest, domain) {
   if (!latest) return "";
-  const rows = (latest.rows ?? []).filter((r) => r.domain === domain);
+  const rows = resultRows(latest).filter((r) => r?.domain === domain);
   return ["pass", "fail", "unbound", "stale"].map((k) => `${rows.filter((r) => r.result === k).length} ${k}`).join(" · ");
 }
 
@@ -128,7 +136,7 @@ function testCell(cov, notTestableEntries, domain, id) {
 // results carry no row for this criterion at all (never run against it, or a domain
 // nobody has derived tests for yet).
 function targetCell(latest, id) {
-  const row = (latest?.rows ?? []).find((r) => r.id === id);
+  const row = resultRows(latest).find((r) => r?.id === id);
   if (!row) return "";
   return row.ruled ? `${row.result} (ruled: ${row.ruled})` : row.result;
 }
