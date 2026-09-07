@@ -136,7 +136,9 @@ export function checkTests(projectDir, ctx = {}) {
           if (statSync(fabs).isDirectory()) continue;
           specFiles.push({ relPath: `tests/acceptance/${entry}/${filename}`, filename, abs: fabs });
         }
-      } else if (!ACCEPTANCE_FILES.has(entry)) {
+      } else if (!ACCEPTANCE_FILES.has(entry) && !entry.startsWith(".")) {
+        // A dotfile (`.gitkeep`, left by the project template before any test exists) is
+        // not a test and is not asked to live anywhere in particular.
         // A test file sitting directly under tests/acceptance/, with no domain folder
         // above it, has nowhere for `coverage` to attribute it to.
         messages.push(`tests/acceptance/${entry}: tests live under a domain folder`);

@@ -208,6 +208,15 @@ test("checkTests: a project that is not a git repository degrades a blind claim 
 
 // ---- tests must live under a domain folder ----
 
+test("checkTests: a .gitkeep directly under tests/acceptance/ is not a test and passes", () => {
+  const d = project();
+  writeIndex(d, [R11]);
+  write(d, "tests/acceptance/.gitkeep", "");
+  const r = checkTests(d, { config: CONFIG_STANDARD });
+  assert.ok(!r.messages.some((m) => m.includes(".gitkeep")), r.messages.join("\n"));
+});
+
+
 test("checkTests: a spec file directly under tests/acceptance/, with no domain folder, fails", () => {
   const d = project();
   writeIndex(d, [R11]);
