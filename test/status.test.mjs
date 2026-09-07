@@ -4,6 +4,9 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSite } from "../src/commands/status.mjs";
+import { git } from "../src/lib/git.mjs";
+
+const COMMIT = ["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m"];
 
 test("site pages summarise criteria, gates and runs", () => {
   const d = mkdtempSync(join(tmpdir(), "sdlc-site-"));
@@ -13,10 +16,10 @@ test("site pages summarise criteria, gates and runs", () => {
   writeFileSync(join(d, ".sdlc/gates/x.yaml"), "gate: G1\nverdict: approve\nby: agent:product-owner\nheld_by: agent\nnote: \"\"\nat: 2026-01-01T00:00:00Z\n");
   writeFileSync(join(d, ".sdlc/runs/2026-01-01.md"), "# Run record 2026-01-01\n\n- 10:00:00 init\n");
   const { pages } = buildSite(d);
-  // index, gates, runs, journal, and one criteria page (domain "a", the only domain
-  // present in the index) — no .sdlc/journal or .sdlc/proposals directory here, so the
-  // journal page is still written (empty) and there are no proposal pages.
-  assert.equal(pages.length, 5);
+  // index, gates, runs, results, journal, and one criteria page (domain "a", the only
+  // domain present in the index) — no .sdlc/journal or .sdlc/proposals directory here, so
+  // the journal page is still written (empty) and there are no proposal pages.
+  assert.equal(pages.length, 6);
   const index = readFileSync(join(d, "site/index.md"), "utf8");
   assert.match(index, /\| a \| 1 \| 1 \| 0 \| 0 \| 0 \| 0 \| 0 \| 2 \|/);
   assert.match(index, /\[a\]\(criteria\/a\.md\)/);
@@ -231,6 +234,138 @@ test("criteria pages carry citations, given/when/then, reconciliation and notes"
   // Every criterion in the domain gets a section, not only the one with citations.
   assert.match(billing, /### D-billing-1 · v1 · inferred · proposed/);
   assert.match(billing, /### R-1\.1 · v1 · confirmed · accepted/);
+});
+
+// Two accepted criteria in domain "a": R-1.1 backed by a spec file with a valid
+// provenance header, R-1.2 recorded not-testable. One results file for target "old"
+// (both `latest.json` and the dated file it was written alongside carry the same rows,
+// the way `calibrate` itself writes them).
+function testsAndCalibrationFixture() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-site-tests-"));
+  mkdirSync(join(d, "spec"), { recursive: true });
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  mkdirSync(join(d, "tests", "acceptance", "a"), { recursive: true });
+  mkdirSync(join(d, "tests", "results", "old"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), "profile: rebuild\nproject: { name: p, domains: [a] }\n");
+  writeFileSync(join(d, "spec/criteria-index.json"), JSON.stringify({
+    criteria: [
+      { id: "R-1.1", domain: "a", version: 1, state: "accepted", confidence: "confirmed", origin: "authored", statement: "s1", cites: [] },
+      { id: "R-1.2", domain: "a", version: 1, state: "accepted", confidence: "confirmed", origin: "authored", statement: "s2", cites: [] },
+    ],
+  }));
+  writeFileSync(join(d, "tests/acceptance/a/R-1.1.spec.ts"),
+    "// criterion: @R-1.1 v1\n// provenance: blind, spec@abc1234, derived 2026-01-01\n");
+  writeFileSync(join(d, "tests/acceptance/not-testable.yaml"),
+    "criteria:\n  - { id: R-1.2, version: 1, reason: \"no observable surface\" }\n");
+  const results = {
+    target: "old", base_url: "http://old.example", spec: "sha1", at: "2026-01-02T00:00:00.000Z",
+    rows: [
+      { id: "R-1.1", version: 1, domain: "a", file: "tests/acceptance/a/R-1.1.spec.ts", result: "pass", tests: [] },
+      { id: "R-1.2", version: 1, domain: "a", file: null, result: "not-testable", tests: [] },
+    ],
+  };
+  const text = `${JSON.stringify(results, null, 2)}\n`;
+  writeFileSync(join(d, "tests/results/old/latest.json"), text);
+  writeFileSync(join(d, "tests/results/old/2026-01-02.json"), text);
+  return d;
+}
+
+test("coverage board gains a tests column and one result column per target", () => {
+  const d = testsAndCalibrationFixture();
+  buildSite(d);
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  assert.match(index, /\| Domain \| proposed \| accepted \| implemented \| verified \| monitored \| obsolete \| open questions \| total \| tests \| old \|/);
+  assert.match(index, /\| a \| 0 \| 2 \| 0 \| 0 \| 0 \| 0 \| 0 \| 2 \| 1\/2 \(n\/t 1\) \| 1 pass · 0 fail · 0 unbound · 0 stale \|/);
+  // The totals row has nothing to sum for a per-domain test count or result mix.
+  assert.match(index, /\*\*Totals\*\* \| 0 \| 2 \| 0 \| 0 \| 0 \| 0 \| 0 \| 2 \|\s*\|\s*\|/);
+  assert.match(index, /\[Results\]\(results\.md\)/);
+});
+
+test("criteria page lists each criterion's test file or not-testable reason, and its result per target", () => {
+  const d = testsAndCalibrationFixture();
+  buildSite(d);
+  const page = readFileSync(join(d, "site/criteria/a.md"), "utf8");
+  assert.match(page, /\| id \| test \| old \|/);
+  assert.match(page, /\| R-1\.1 \| acceptance\/a\/R-1\.1\.spec\.ts \| pass \|/);
+  assert.match(page, /\| R-1\.2 \| not testable: no observable surface \| not-testable \|/);
+  // The per-criterion sections below the table are untouched by this task.
+  assert.match(page, /### R-1\.1 · v1 · confirmed · accepted/);
+});
+
+test("criteria page marks a target result ruled when the row carries a ruling verb", () => {
+  const d = testsAndCalibrationFixture();
+  const latest = JSON.parse(readFileSync(join(d, "tests/results/old/latest.json"), "utf8"));
+  latest.rows[0].ruled = "defect-in-old";
+  const text = `${JSON.stringify(latest, null, 2)}\n`;
+  writeFileSync(join(d, "tests/results/old/latest.json"), text);
+  buildSite(d);
+  const page = readFileSync(join(d, "site/criteria/a.md"), "utf8");
+  assert.match(page, /\| R-1\.1 \| acceptance\/a\/R-1\.1\.spec\.ts \| pass \(ruled: defect-in-old\) \|/);
+});
+
+test("results.md lists every results file by date, newest first, with counts and calibration status", () => {
+  const d = testsAndCalibrationFixture();
+  // A second, earlier dated file so newest-first ordering is actually exercised.
+  const earlier = {
+    target: "old", base_url: "http://old.example", spec: "sha0", at: "2026-01-01T00:00:00.000Z",
+    rows: [{ id: "R-1.1", version: 1, domain: "a", file: "tests/acceptance/a/R-1.1.spec.ts", result: "fail", tests: [], error: "boom" }],
+  };
+  writeFileSync(join(d, "tests/results/old/2026-01-01.json"), `${JSON.stringify(earlier, null, 2)}\n`);
+  buildSite(d);
+  const results = readFileSync(join(d, "site/results.md"), "utf8");
+  assert.match(results, /^## old$/m);
+  assert.match(results, /\| file \| at \| pass \| fail \| unbound \| stale \| not-testable \|/);
+  const laterAt = results.indexOf("2026-01-02.json");
+  const earlierAt = results.indexOf("2026-01-01.json");
+  assert.ok(laterAt >= 0 && earlierAt >= 0);
+  assert.ok(laterAt < earlierAt, "the newer results file is listed first");
+  assert.match(results, /\| 2026-01-02\.json \| 2026-01-02T00:00:00\.000Z \| 1 \| 0 \| 0 \| 0 \| 1 \|/);
+  assert.match(results, /\| 2026-01-01\.json \| 2026-01-01T00:00:00\.000Z \| 0 \| 1 \| 0 \| 0 \| 0 \|/);
+  assert.match(results, /no calibration ruling open/);
+});
+
+test("results.md names the open calibration proposal for a target when one is waiting on a ruling", () => {
+  const d = testsAndCalibrationFixture();
+  git(["init", "-q", "-b", "main"], d);
+  writeFileSync(join(d, "README.md"), "x\n");
+  git(["add", "-A"], d);
+  git([...COMMIT, "init"], d);
+  git(["checkout", "-q", "-b", "proposal/calibrate-old-1"], d);
+  git(["checkout", "-q", "main"], d);
+  buildSite(d);
+  const results = readFileSync(join(d, "site/results.md"), "utf8");
+  assert.match(results, /calibrate-old-1/);
+  assert.doesNotMatch(results, /no calibration ruling open/);
+});
+
+test("without tests/acceptance, not-testable entries or tests/results, the new columns and the results page are blank", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-site-no-tests-"));
+  mkdirSync(join(d, "spec"), { recursive: true });
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), "profile: rebuild\nproject: { name: p, domains: [a] }\n");
+  writeFileSync(join(d, "spec/criteria-index.json"), JSON.stringify({
+    criteria: [{ id: "R-1.1", domain: "a", version: 1, state: "accepted", confidence: "confirmed", origin: "authored", statement: "s1", cites: [] }],
+  }));
+  buildSite(d);
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  // No target directory under tests/results/, so there is no per-target column at all —
+  // the row ends right after the blank `tests` cell.
+  assert.match(index, /\| Domain \| proposed \| accepted \| implemented \| verified \| monitored \| obsolete \| open questions \| total \| tests \|$/m);
+  assert.match(index, /\| a \| 0 \| 1 \| 0 \| 0 \| 0 \| 0 \| 0 \| 1 \|\s*\|$/m);
+  const page = readFileSync(join(d, "site/criteria/a.md"), "utf8");
+  assert.match(page, /\| id \| test \|$/m);
+  assert.match(page, /\| R-1\.1 \| — \|$/m);
+  const results = readFileSync(join(d, "site/results.md"), "utf8");
+  assert.match(results, /no results yet/);
+});
+
+test("two consecutive builds of a project with tests and calibration results produce identical pages", () => {
+  const d = testsAndCalibrationFixture();
+  const { pages } = buildSite(d);
+  const first = pages.map((p) => readFileSync(join(d, p), "utf8"));
+  buildSite(d);
+  const second = pages.map((p) => readFileSync(join(d, p), "utf8"));
+  assert.deepEqual(second, first);
 });
 
 test("a zero-criteria project still renders the configured domains at zero", () => {

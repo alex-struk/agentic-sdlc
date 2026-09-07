@@ -39,8 +39,8 @@ test("fixture project: create, fill constitution, checks green, propose, approve
     propose(dir, "harness-ready", { gate: "G1", question: "Is the harness ready?", recommendation: "Yes: all structural checks pass on an empty proposal." });
     rule(dir, "harness-ready", "approve", { by: "tech-lead", note: "phase 0 exit" });
     const { pages } = buildSite(dir);
-    // index, gates, runs, journal, and one proposal page (harness-ready).
-    assert.equal(pages.length, 5);
+    // index, gates, runs, results, journal, and one proposal page (harness-ready).
+    assert.equal(pages.length, 6);
     assert.ok(existsSync(join(dir, "site/gates.md")));
     assert.ok(existsSync(join(dir, "site/proposals/harness-ready.md")));
     // The ruling above already folded a rebuilt site into its own commit, and the site
