@@ -11,7 +11,7 @@ import { git, SDLC_AUTHOR, stagePaths } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { freePort, readLocal, removeLocal, writeLocal } from "../oracle/ports.mjs";
 import { compose, composeVersion, loadSeed, seedFiles, waitForDb, waitForHttp } from "../oracle/compose.mjs";
-import { oracleOverridePath } from "../stages/registry.mjs";
+import { oracleOverridePath } from "../oracle/paths.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 // `docker compose ps --format json` answers either one JSON array or one JSON object per
