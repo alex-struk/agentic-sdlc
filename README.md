@@ -45,6 +45,8 @@ allows 22 or later.
   whatever the agent session left behind against the stage's post-checks.
 - `sdlc status [dir]` — regenerate the generated state site (`site/index.md`, `site/gates.md`,
   `site/runs.md`, `site/journal.md`, `site/proposals/*.md`).
+- `sdlc oracle up|down|status [--target <t>]` — start, stop or report on the old application
+  through Docker Compose, on ports chosen for this machine (`docs/stages/oracle.md`).
 
 Run `sdlc help` (or any unrecognised command) to print this list from the CLI itself.
 

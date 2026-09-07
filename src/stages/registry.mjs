@@ -330,8 +330,10 @@ const archaeology = {
 // The default path for the compose override `contract` writes when a project configures
 // an oracle at all — `.sdlc/oracle/compose.yml`, applied here in code rather than in the
 // schema, so a project that never sets `oracle.compose_override` still gets a fixed,
-// predictable path for `sdlc oracle` (and this stage's own post-check) to find.
-function oracleOverridePath(config) {
+// predictable path for `sdlc oracle` (and this stage's own post-check) to find. Exported
+// so `sdlc oracle` (src/commands/oracle.mjs) resolves the same path this stage writes to,
+// rather than the two drifting apart.
+export function oracleOverridePath(config) {
   return config?.oracle?.compose_override ?? ".sdlc/oracle/compose.yml";
 }
 

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkConfig } from "../checks/config.mjs";
 import { defaultNamesPath } from "../checks/egress.mjs";
+import { composeVersion } from "../oracle/compose.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 const VERSION_ARGS = { node: ["--version"], git: ["--version"], gh: ["--version"], claude: ["--version"], docker: ["--version"] };
@@ -31,6 +32,12 @@ COMMANDS.doctor = async ({ pos }) => {
     const status = t.found ? "ok  " : (OPTIONAL_TOOLS.has(t.name) ? "warn" : "FAIL");
     console.log(`${status} ${t.name} ${t.version ?? "(not found)"}`);
   }
+  // `docker compose` is a separate binary check from plain `docker` above (a machine can
+  // have one without the other — an old standalone `docker-compose` plugin, say) and
+  // `sdlc oracle up` needs it specifically, so it gets its own report line rather than
+  // being folded into the `docker --version` row.
+  const dc = composeVersion();
+  console.log(`${dc.found ? "ok  " : "warn"} docker compose ${dc.version ?? "(not found)"}`);
   const deny = denyListPresent(dir);
   console.log(`${deny ? "ok  " : "warn"} agent deny list ${deny ? "present in .claude/settings.json" : "missing: re-run sdlc init"}`);
   const nl = nameListState();
