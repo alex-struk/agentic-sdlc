@@ -36,6 +36,18 @@ test("buildArgs passes an allowed tool list as one flag followed by each tool", 
   assert.deepEqual(args.slice(at + 1, at + 1 + tools.length), tools);
 });
 
+test("buildArgs places --mcp-config right after --strict-mcp-config when the stage set one", () => {
+  const { args } = buildArgs({ prompt: "hi", stage: "bind-adapter", mcpConfig: "/tmp/skill/mcp.json" }, "/cfg");
+  const strict = args.indexOf("--strict-mcp-config");
+  assert.equal(args[strict + 1], "--mcp-config");
+  assert.equal(args[strict + 2], "/tmp/skill/mcp.json");
+});
+
+test("buildArgs omits --mcp-config entirely when the stage set none", () => {
+  const { args } = buildArgs({ prompt: "hi", stage: "build" }, "/cfg");
+  assert.ok(!args.includes("--mcp-config"));
+});
+
 test("the mock executor reports a failed agent turn when the canned response says ok: false", async () => {
   const mock = mkdtempSync(join(tmpdir(), "sdlc-mock-notok-")); const cwd = mkdtempSync(join(tmpdir(), "sdlc-cwd-notok-"));
   writeFileSync(join(mock, "probe.json"), JSON.stringify({ ok: false, text: "hit the turn limit" }));

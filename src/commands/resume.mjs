@@ -15,6 +15,14 @@ export async function resume(projectDir, { again = false } = {}) {
   if (!state) { console.log("nothing to resume"); return 0; }
 
   const stage = stageFor(state.stage);
+
+  const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+  if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
+  // `stage.workspace` may be a function of `config` — resolved here the same way
+  // `runStage` resolves it, so a resumed run and a fresh one agree on which mode a stage
+  // actually used.
+  const wsMode = typeof stage.workspace === "function" ? stage.workspace(config) : stage.workspace;
+
   // `spec-only` and `blind-adapter` build a temporary workspace that the interrupted
   // run's own `finally` already removed, so there is nothing left of what their agent
   // produced: judging the project directory instead would run the stage's post-checks
@@ -27,8 +35,8 @@ export async function resume(projectDir, { again = false } = {}) {
   // wrote is still on disk and is exactly what post-checks should judge. The only thing
   // `with-sources` adds is the read-only checkout at `sources/old`, which `ensureSources`
   // materialises and nothing here removes.
-  if (!RESUMABLE_WORKSPACES.has(stage.workspace)) {
-    console.log(`resume cannot continue a ${stage.workspace} stage; run it again`);
+  if (!RESUMABLE_WORKSPACES.has(wsMode)) {
+    console.log(`resume cannot continue a ${wsMode} stage; run it again`);
     return 1;
   }
 
@@ -37,8 +45,6 @@ export async function resume(projectDir, { again = false } = {}) {
     return 1;
   }
 
-  const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
-  if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
   const ctx = { ...state.ctx, config };
 
   // `resume` has no agent turn of its own to run, but it still lands on `finishStage`,

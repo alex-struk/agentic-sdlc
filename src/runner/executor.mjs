@@ -47,9 +47,15 @@ export function endedBecause(raw) {
   return `ended with ${reason}`;
 }
 
-export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {} }, configHome) {
+export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {}, mcpConfig }, configHome) {
   const args = ["-p", prompt, "--output-format", "json", "--permission-mode", "acceptEdits",
-    "--strict-mcp-config", "--no-session-persistence", "--max-turns", String(maxTurns)];
+    "--strict-mcp-config"];
+  // `--mcp-config` sits right after `--strict-mcp-config`: strict mode refuses any
+  // server not named in a config passed this way, so the two flags are read together —
+  // this is the one and only source of servers for the session. Omitted when the stage
+  // declares no `mcp`, the common case.
+  if (mcpConfig) args.push("--mcp-config", mcpConfig);
+  args.push("--no-session-persistence", "--max-turns", String(maxTurns));
   // `--allowedTools` takes a space-separated list, so each entry is its own argument.
   // Omitted entirely when the caller names none: the flag with an empty list would read
   // as "allow nothing" to the session rather than "the caller did not narrow this".

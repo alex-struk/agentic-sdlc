@@ -9,22 +9,31 @@ proposal, depending on whether the stage holds a gate.
 
 ## Inputs
 
-`sdlc run <stage> [--slice N] [--domain X] [--dry-run] [--again]`, run from inside the project's
-working tree, on `main`.
+`sdlc run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--dry-run] [--again]`, run
+from inside the project's working tree, on `main`.
 
 `<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Four are implemented:
 `probe` (which proves the runner itself and is not one of the pipeline's own stages), `intent`,
 `archaeology` and `ratify`. Every other pipeline stage (`design`, `build`, …) is a named stub that
 throws `stage <name> is not implemented yet` before touching the working tree.
 
-`--slice` and `--domain` are threaded into the stage's context as `ctx.slice` and `ctx.domain`.
-`archaeology` and `ratify` both require `--domain <d>`, and `<d>` must be one of
-`config.project.domains`; `probe` and `intent` ignore both flags.
+`--slice`, `--domain`, `--target` and `--stale` are threaded into the stage's context as
+`ctx.slice`, `ctx.domain`, `ctx.target` and `ctx.stale`. `archaeology` and `ratify` both require
+`--domain <d>`, and `<d>` must be one of `config.project.domains`; `probe` and `intent` ignore all
+four. `--target` takes `old` or `new` and reaches `ctx.target` as that string, or `undefined` when
+omitted; `--stale` is a boolean flag and reaches `ctx.stale` as `true`, defaulting to `false`. No
+implemented stage reads either yet — both exist for stages this runner will host next, which
+compare the old and new applications and decide whether existing output is stale rather than
+current.
 
-`--dry-run` writes nothing at all. For an agent stage it prints the prompt the stage would send
-and the path of the scratch file holding its skill text; for a stage with no agent turn it prints
-one line saying so. `--again` is accepted for symmetry with `sdlc resume --again` and does nothing
-here — `resume` is the only place a re-run decision is made.
+`--dry-run` writes nothing at all. For an agent stage it prints the prompt the stage would send,
+the path of the scratch file holding its skill text, the resolved workspace mode, `prepare:
+skipped on dry run` when the stage has a `prepare` hook, `mcp: <server names>` when the stage's
+`mcp` returns servers, and `env: <variable names>` when its `env` returns any — names only, never
+values, since a dry run's output is meant to be shared freely and `env` exists precisely to carry
+things like API keys into the session. For a stage with no agent turn it prints one line saying
+so. `--again` is accepted for symmetry with `sdlc resume --again` and does nothing here — `resume`
+is the only place a re-run decision is made.
 
 ## Outputs
 
@@ -50,6 +59,14 @@ here — `resume` is the only place a re-run decision is made.
   proposal is about. Regenerating it is the ruling's job, on `main` (`docs/stages/rule.md`).
 
 ## Workspace the agent sees
+
+A stage names its workspace mode as `stage.workspace`, either a plain string or a function of
+`config`, `(config) => mode`. `runStage` resolves it exactly once, right after `config` loads and
+before `materialise` is called, so a function is never evaluated twice and never leaks into
+`materialise` itself (which only knows the four mode strings below). Every later use of the mode —
+the run-state a crashed session leaves for `sdlc resume` to read, the dry run's `workspace: <mode>`
+line — reads this same resolved value. `resume` resolves it the same way, against the config it
+loads itself, so a resumed run and a fresh one always agree on which mode a stage used.
 
 `src/runner/workspace.mjs` materialises one of four modes, named by the stage:
 
@@ -79,6 +96,44 @@ configuration — see `docs/decisions/0004-isolated-stage-sessions.md` for what 
 The project's own `.claude/settings.json` deny list and the `implement-guard` `PreToolUse` hook
 (`docs/stages/init.md`) still apply, scoped by the `SDLC_STAGE` environment variable the executor
 sets.
+
+## The `prepare` hook
+
+A stage may declare `stage.prepare(wsDir, ctx, config)`, run after `materialise` and before the
+agent turn, in the workspace directory (`wsDir` — the project directory itself for `project` and
+`with-sources` modes, a temporary directory for `spec-only` and `blind-adapter`). It exists for a
+stage that needs something generated and already sitting in the workspace before the agent can
+start — `derive-tests` and `bind-adapter` both do. Whatever it writes is collected back into the
+project exactly the way the agent's own output is: through the stage's `collect` list, for the two
+temporary modes, or because it is already in the project directory, for `project`/`with-sources`.
+
+`prepare` never runs on a dry run — a dry run writes nothing at all — and the dry run's only
+account of it is the line `prepare: skipped on dry run`, printed after the prompt, for a stage
+that has one.
+
+If `prepare` throws, the run fails immediately, the same way a failing pre-check does: a run-record
+line (`run <stage>: prepare failed`) and a commit (`run(<stage>): prepare failed`) with just that
+line staged, and `{ ok: false, messages: [<the error's message>] }` returned. There is no agent
+turn to have run and so no journal entry — a journal entry is the account of a turn, and none
+happened.
+
+## MCP servers, tools and environment
+
+A stage may declare `stage.mcp(ctx, config)`, returning an object of MCP servers (the value that
+would sit under an `mcpServers` key) or `null`. When it returns non-null, `runStage` writes `{
+"mcpServers": <that object> }` to `mcp.json` in the same scratch directory the run's skill file
+lives in (removed afterward in the existing `finally`, along with the skill file itself), and the
+agent turn runs with `--mcp-config <that path>` — placed right after `--strict-mcp-config`, which
+is always passed, so this file is the only source of MCP servers the session can reach. A stage
+that declares no `mcp` passes no `--mcp-config` at all. `bind-adapter`, which drives a browser
+against the running application, is the first stage to use this. The mock executor
+(`SDLC_EXECUTOR=mock`) ignores `mcp` entirely — it never spawns a real session to pass it to.
+
+A stage may also declare `stage.allowedTools` (an array) and `stage.env(ctx, config)` (an object of
+environment variables), both passed straight through to the agent turn. `allowedTools` narrows
+`--allowedTools` the same way any caller of `runAgent` can; `env` is merged into the child
+process's environment alongside `CLAUDE_CONFIG_DIR` and `SDLC_STAGE`. Neither is printed by a dry
+run except by name — `env`'s keys, via the `env: <names>` line described above, and never a value.
 
 ## Stages with no agent turn
 
@@ -191,6 +246,10 @@ the second, post-run check exists to catch.
   proposal still open` to the run record and returns `{ ok: false, messages: ["proposal <name> is
   still open; rule it (or delete the branch) before running <stage> again"] }`, without
   materialising a workspace or starting a session.
+- **A stage's `prepare` hook throws**: the workspace has already been materialised, but no agent
+  turn has run. `run` commits `run(<stage>): prepare failed` to the run record with just that line
+  staged and returns `{ ok: false, messages: [<the error's message>] }` — the same shape a failing
+  pre-check returns, and for the same reason: there is nothing agent-shaped to journal.
 - **The same collision, discoverable only after the agent has run** — the pre-flight had only
   `intent`'s brief-derived guess, and the agent titled its document differently: `finishStage`
   commits `stage(<stage>): post-checks failed` with a journal entry (the agent's own text plus the
