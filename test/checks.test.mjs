@@ -42,7 +42,8 @@ test("constitution: placeholders and missing sources fail", () => {
 });
 
 // Fixture strings are assembled from pieces so this file does not trip the very
-// patterns it is testing: the self-check scans every tracked text file, tests included.
+// patterns it is testing: the self-check scans every text file in the repository, tests
+// included.
 const TICKET = "AB" + "-1234";
 const OTHER_TICKET = "AB" + "-9999";
 const NOTES_PATH = "!Pri" + "vate/notes";
@@ -50,12 +51,14 @@ const MEETING = "Teams " + "call";
 const LISTED_NAME = "Jane " + "Example";
 const HOME_PATH = "/ho" + "me/someone/notes.txt";
 
-test("egress: ticket numbers, notes paths and listed names are caught in tracked files only", () => {
+test("egress: ticket numbers, notes paths and listed names are caught in tracked and untracked files alike", () => {
   const d = repo();
   mkdirSync(join(d, ".sdlc"), { recursive: true });
   writeFileSync(join(d, "a.md"), `See ticket ${TICKET} and the folder ${NOTES_PATH}\n`);
   writeFileSync(join(d, "b.md"), `${LISTED_NAME} agreed on the ${MEETING}\n`);
   writeFileSync(join(d, ".sdlc/egress.local.txt"), `${LISTED_NAME}\n`);
+  // Never committed and never added — a stage's own output at the moment its post-checks
+  // run looks exactly like this, so it is scanned too.
   writeFileSync(join(d, "untracked.md"), `${OTHER_TICKET}\n`);
   git(["add", "a.md", "b.md"], d);
   const r = checkEgress(d, {});
@@ -64,7 +67,26 @@ test("egress: ticket numbers, notes paths and listed names are caught in tracked
   assert.ok(r.messages.some((m) => m.includes("a.md") && m.includes("private notes")));
   assert.ok(r.messages.some((m) => m.includes("b.md") && m.includes("name")));
   assert.ok(r.messages.some((m) => m.includes("b.md") && m.includes("meeting")));
-  assert.ok(!r.messages.some((m) => m.includes("untracked.md")));
+  assert.ok(r.messages.some((m) => m.includes("untracked.md") && m.includes("ticket")));
+});
+
+test("egress: an ignored file is not scanned, tracked or not", () => {
+  const d = repo();
+  writeFileSync(join(d, ".gitignore"), "vendor/\n");
+  mkdirSync(join(d, "vendor"), { recursive: true });
+  writeFileSync(join(d, "vendor", "thirdparty.md"), `${OTHER_TICKET}\n`);
+  git(["add", ".gitignore"], d);
+  const r = checkEgress(d, {});
+  assert.equal(r.ok, true, r.messages.join(" | "));
+});
+
+test("egress: a .sql seed file is scanned", () => {
+  const d = repo();
+  mkdirSync(join(d, "tests", "seed"), { recursive: true });
+  writeFileSync(join(d, "tests", "seed", "001-users.sql"), `-- exported from ${HOME_PATH}\n`);
+  const r = checkEgress(d, {});
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.startsWith("tests/seed/001-users.sql:") && m.includes("local home path")), r.messages.join(" | "));
 });
 
 test("egress: a local home path is a finding", () => {

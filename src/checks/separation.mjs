@@ -29,35 +29,41 @@ function relPath(projectDir, absPath) {
   return relative(projectDir, absPath).split(sep).join("/");
 }
 
-// Finds an `import ... from "path"` or `require("path")` clause on a line and returns the
-// path, or null. Only the first match on a line is used — a line legitimately carries at
-// most one import.
+// Finds a module specifier on a line and returns it, or null. All four ways a file can
+// name another one are matched, because all four defeat the separation rules equally: a
+// static `import ... from "path"`, a re-export (`export { x } from "path"`, `export *
+// from "path"`), a dynamic `import("path")`, and `require("path")`. Only the first match
+// on a line is used — a line legitimately carries at most one of them.
 function importPath(line) {
-  const m = /\bimport\b[^;]*\bfrom\s+["'`]([^"'`]+)["'`]/.exec(line) || /\brequire\(\s*["'`]([^"'`]+)["'`]/.exec(line);
+  const m = /\b(?:import|export)\b[^;]*\bfrom\s+["'`]([^"'`]+)["'`]/.exec(line)
+    || /\bimport\s*\(\s*["'`]([^"'`]+)["'`]/.exec(line)
+    || /\brequire\(\s*["'`]([^"'`]+)["'`]/.exec(line);
   return m ? m[1] : null;
 }
 
-// True when "app" appears as its own path segment (`app/x`, `./app/x`, `../../app/x`) —
-// not as a fragment of a longer segment such as `webapp/utils`, which is a real project
-// directory that has nothing to do with the application source the separation rules
-// exist to keep out of adapters and tests.
+// True when "app" is a path segment of its own — whether the path continues past it
+// (`app/x`, `./app/x`, `../../app/x`) or ends there (`app`, `../../app`, an index import
+// of the application's own directory). Never a fragment of a longer segment such as
+// `webapp/utils`, which is a real project directory that has nothing to do with the
+// application source the separation rules exist to keep out of adapters and tests.
 function isAppSegment(path) {
-  return /(^|\/)app\//.test(path);
+  return /(^|\/)app(\/|$)/.test(path);
 }
 
-// `importPath` only ever matches a single physical line, so a multi-line import —
-// `import {\n  x,\n} from "../../adapters/old/x";` — is invisible to it: "import" and
-// `from "..."` never share a line. This walks the file once, and for any line starting
-// an `import` statement, joins forward (skipping the lines it consumes for the per-line
-// scan below) until `importPath` resolves against the joined text or the statement
-// plainly ends (a trailing `;` or a trailing quoted path with no semicolon). A
-// `require(...)` call is always single-line in practice and needs no joining. Reported
-// against the statement's first line, 1-based, matching every other message in this file.
+// `importPath` only ever matches a single physical line, so a multi-line import or
+// re-export — `import {\n  x,\n} from "../../adapters/old/x";` — is invisible to it:
+// "import" and `from "..."` never share a line. This walks the file once, and for any
+// line starting an `import` or `export` statement, joins forward (skipping the lines it
+// consumes for the per-line scan below) until `importPath` resolves against the joined
+// text or the statement plainly ends (a trailing `;` or a trailing quoted path with no
+// semicolon). A dynamic `import(...)` and a `require(...)` call are always single-line in
+// practice and need no joining. Reported against the statement's first line, 1-based,
+// matching every other message in this file.
 function collectImports(lines) {
   const found = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (!/^\s*import\b/.test(line)) {
+    if (!/^\s*(?:import|export)\b/.test(line)) {
       const p = importPath(line);
       if (p) found.push({ line: i + 1, path: p });
       continue;
@@ -135,7 +141,7 @@ const ADAPTER_RULES = [
 const ACCEPTANCE_RULES = [
   {
     isImportRule: true,
-    test: (p) => (p.includes("/adapters/") || isAppSegment(p) || p.includes("../../app") ? p : null),
+    test: (p) => (p.includes("/adapters/") || isAppSegment(p) ? p : null),
     message: (p) => `tests must not import from tests/adapters or app/: ${p}`,
   },
   {

@@ -9,7 +9,7 @@ request.
 ## Inputs
 
 `sdlc checks [dir] [--self] [--json]`. `dir` defaults to the current directory. `--self` runs only
-the egress check, over every tracked text file in the pipeline repository except
+the egress check, over every text file in the pipeline repository except
 `node_modules/`, `package-lock.json`, `.superpowers/` and `docs/superpowers/`. The scope is an
 exclude list rather than a list of directories to include, so a file added somewhere new is
 scanned by default instead of being silently skipped. `--json` prints the raw results array
@@ -97,15 +97,19 @@ No agent.
   `coverage(projectDir, domain)` (exported, not a check of its own) reports a domain's accepted
   criteria split into `covered`, `missing` and `notTestable` — `derive-tests`' post-check calls it
   for the domain it just worked, and `status` renders it as the coverage board.
-- **egress** — every tracked, text-typed file (skipping `.sdlc/packs/`, and any path git still
-  tracks but that is gone from disk) is scanned line by line for ticket-number patterns,
-  private-notes-folder paths, references to a private notes location or a meeting or transcript,
-  local home paths (`/home/<name>`, `/Users/<name>`, `C:\Users\<name>`), and any name in the
-  egress name list. A missing or empty name list is a warning, not a failure. The name list is
+- **egress** — every text-typed file git tracks, plus every one it neither tracks nor ignores
+  (skipping `.sdlc/packs/`, and any path git still tracks but that is gone from disk), is scanned
+  line by line for ticket-number patterns, private-notes-folder paths, references to a private
+  notes location or a meeting or transcript, local home paths (`/home/<name>`, `/Users/<name>`,
+  `C:\Users\<name>`), and any name in the egress name list. The untracked half is what makes this
+  a check a stage can run on itself: a stage's own output is uncommitted at the moment its
+  post-checks run, so a leak in the seed file `contract` has just written would be invisible to a
+  tracked-only scan and would reach the commit unexamined. Ignored files stay out, so
+  `node_modules`, `sources/` and the acceptance harness's own results are never read. A missing or empty name list is a warning, not a failure. The name list is
   read from `SDLC_EGRESS_NAMES`, then `<project>/.sdlc/egress.local.txt`, then
   `$XDG_CONFIG_HOME/agentic-sdlc/egress-names.txt` (defaulting to `~/.config`).
 
-  Under `--self` one further pattern applies, case-insensitively, to every tracked file
+  Under `--self` one further pattern applies, case-insensitively, to every scanned file
   except those under `docs/specs/` and `docs/poster/`: the name of the application this
   pipeline was first built against. The pipeline is generic, and its code, tests, fixtures
   and stage documentation must not carry the name of one engagement; the design spec that
@@ -126,8 +130,8 @@ effects.
   profile's requirements since it cannot read the real profile.
 - Malformed YAML or a schema violation: surfaces as one message per problem, so several issues in
   one file are all visible in a single run.
-- A tracked file matching more than one egress pattern, or containing more than one listed name,
-  reports one message per line per match.
+- A file matching more than one egress pattern, or containing more than one listed name, reports
+  one message per line per match.
 - The ticket-number pattern (two to five capitals, a hyphen, two to five digits) also matches
   standards tokens written the same shape: an ISO date standard, an RFC number or a WCAG level
   written with a hyphen between the body's initials and its number all look exactly like a work

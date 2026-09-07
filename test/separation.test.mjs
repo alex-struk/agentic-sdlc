@@ -325,3 +325,64 @@ test("separation: not-testable.yaml and attestations.yaml are never scanned", ()
   const r = checkSeparation(d);
   assert.equal(r.ok, true, r.messages.join("\n"));
 });
+
+// ---- imports that are not a plain `import ... from` ----
+
+test("separation: a test re-exporting from the adapter tree fails", () => {
+  const d = project();
+  write(d, "tests/acceptance/applications/R-1.1.spec.ts", 'export { create } from "../../adapters/old/index";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m === 'tests/acceptance/applications/R-1.1.spec.ts:1: tests must not import from tests/adapters or app/: ../../adapters/old/index'), r.messages.join(" | "));
+});
+
+test("separation: a test re-exporting everything from app/ fails", () => {
+  const d = project();
+  write(d, "tests/acceptance/applications/R-1.2.spec.ts", 'export * from "../../app/domain/fees";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("tests must not import from tests/adapters or app/") && m.includes("../../app/domain/fees")), r.messages.join(" | "));
+});
+
+test("separation: a test reaching the adapter through a dynamic import fails", () => {
+  const d = project();
+  write(d, "tests/acceptance/applications/R-1.3.spec.ts", 'const mod = await import("../../adapters/old/index");\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("tests must not import from tests/adapters or app/") && m.includes("../../adapters/old/index")), r.messages.join(" | "));
+});
+
+test("separation: an adapter importing the application directory itself fails", () => {
+  const d = project();
+  write(d, "tests/adapters/old/index.ts", 'import { db } from "../../app";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m === 'tests/adapters/old/index.ts:1: adapters must not import from tests/acceptance or app/: ../../app'), r.messages.join(" | "));
+});
+
+test("separation: a test importing the application directory itself fails", () => {
+  const d = project();
+  write(d, "tests/acceptance/applications/R-1.4.spec.ts", 'import { db } from "../../app";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("tests must not import from tests/adapters or app/") && m.includes("../../app")), r.messages.join(" | "));
+});
+
+test("separation: a path whose last segment merely ends in app is still allowed", () => {
+  const d = project();
+  write(d, "tests/adapters/old/index.ts", 'import { helper } from "../../webapp";\nexport { helper };\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, true, r.messages.join(" | "));
+});
+
+test("separation: the harness fixture's own dynamic adapter import is not under either scanned tree", () => {
+  const d = project();
+  // The pipeline-owned `tests/fixtures/index.ts` loads the target's adapter by a dynamic
+  // import — that is how a test reaches a surface without naming an adapter. It sits
+  // outside `tests/acceptance/` and `tests/adapters/`, so the widened import matching
+  // never judges it.
+  write(d, "tests/fixtures/index.ts", 'const mod = await import(`../adapters/${target}/index.ts`);\n');
+  write(d, "tests/acceptance/applications/R-1.5.spec.ts", 'import { test, expect } from "../../fixtures";\n');
+  const r = checkSeparation(d);
+  assert.equal(r.ok, true, r.messages.join(" | "));
+});
