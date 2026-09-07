@@ -41,8 +41,16 @@ What it reads:
 
 - **`tests/results/<t>/<YYYY-MM-DD>.json`** and **`tests/results/<t>/latest.json`**, the same content
   written twice: the dated file is the record of a particular run, `latest.json` is what everything
-  that only wants the current state reads. Each is `{ target, base_url, spec, at, rows }`, where
-  `spec` is the criteria index's `generated_from` commit and `rows` is one entry per criterion:
+  that only wants the current state reads. A second run on a day that already has a record writes
+  `<YYYY-MM-DD>-2.json`, a third `-3.json`, and so on — each run against a live target is its own
+  evidence of what that target did, not a correction of the last one, so no dated file is ever
+  rewritten. `latest.json` is the one that is meant to be overwritten, and it is, every run.
+
+  Each file is `{ target, base_url, spec, at, rows }`, where `base_url` is the target's **configured**
+  URL (`config.oracle.base_url` for `old`, `config.targets.<t>.base_url` otherwise) rather than the
+  one this run actually pointed at — `oracle up` binds whatever port was free on the machine it ran
+  on, and a committed file recording that would be one laptop's accident in shared history. `spec` is
+  the criteria index's `generated_from` commit, and `rows` is one entry per criterion:
 
   | field | meaning |
   | --- | --- |
@@ -68,6 +76,15 @@ What it reads:
   when a ruling changed something in it: `defect-in-old` appends a note, `spec-wrong` replaces the
   statement and bumps the version. Confidence is untouched by every verb — a failing test says
   nothing about the strength of the evidence a criterion was recovered from.
+
+  Two kinds of domain file are never written at all. One no condition named is left exactly as it is,
+  byte for byte: serialising rewrites a file into the canonical format, and a domain still in the
+  shape an agent wrote it — recovered, awaiting ratification — would be silently reformatted by a
+  pass it had nothing to do with. One that **does not parse** is also left alone, and this matters
+  more: the parser returns the criteria it could read and reports the rest as errors, so writing that
+  back would delete the blocks it could not read. The run reports `spec/domains/<d>.md does not parse;
+  <n> condition(s) not applied` instead, and does not record the ruling those conditions came from as
+  applied, so the next run — once the file is fixed — reads it again.
 
 - **`tests/acceptance/redo.yaml`** — `{ redo: [{ id, why }] }`, appended by `test-wrong`. It is the
   list `derive-tests --stale` reads to know a criterion needs its test written again even though the
@@ -121,8 +138,9 @@ the runner's own process, never through a tool call.
    browser are installed if missing, Playwright runs with `SDLC_TARGET`, `SDLC_TARGET_URL` and
    `SDLC_MAIL_API` set, and its JSON report is mapped onto rows. `SDLC_TEST_RUNNER=mock` reads canned
    rows from `<SDLC_MOCK_DIR>/calibrate.json` instead, for a caller with no browser in reach.
-5. **Write the result set**, marking each row `ruled` where an applied ruling covers that id at its
-   current version.
+5. **Write the result set** — this run's own dated file (`<date>.json`, or `<date>-<n>.json` when the
+   day already has one) and `latest.json` — marking each row `ruled` where an applied ruling covers
+   that id at its current version.
 6. **Return the summary and every path written.**
 
 ## Checks that block
@@ -183,6 +201,11 @@ At most one calibration proposal is open per target at a time: while `calibrate-
 it is the question the stage is waiting on, and a second would ask it twice. A run that finds
 failures while one is open says so in its own summary rather than opening nothing silently.
 
+A proposal the persona **escalated** is unruled: escalation hands the question to `escalate_to` and
+answers nothing, so the gate file it leaves on the branch does not close the proposal. The stage
+keeps waiting on it rather than opening `-2` and `-3` on every run while a person still owes the
+answer.
+
 ## Re-run behaviour
 
 Re-running is safe and is the ordinary way the stage is used: rule the proposal, run again, and the
@@ -199,7 +222,8 @@ answers are applied. Two things make that safe.
 Unlike `ratify`, `calibrate` never reports itself as a no-op: every run writes a result set, and the
 dated file plus `latest.json` are a fresh record of a fresh run even when the rows are identical to
 last time's. That is the point of the file — it is evidence of what the target did today, not a
-derived artifact that should be stable.
+derived artifact that should be stable. Two runs on the same day therefore leave two dated files,
+not one.
 
 ## Failure modes
 
@@ -213,8 +237,12 @@ derived artifact that should be stable.
   it could write one. Any ruling this run had already applied is left in the working tree, so the
   tree needs committing or resetting before the next `sdlc run` (which requires a clean one).
 - **A condition names an id the project does not have**: reported in the run's own summary as a
-  condition naming nothing this project has, and the ruling is still recorded as applied. One dead
-  line must not block every other line in the same ruling.
+  condition that was not applied, and the ruling is still recorded as applied. One dead line must not
+  block every other line in the same ruling.
+- **A domain file does not parse**: that file is not written, the conditions naming criteria in it
+  are reported unapplied, and the ruling carrying them is not recorded as applied — so fixing the
+  file and running again applies them. Conditions in the same ruling aimed at other domains still
+  land.
 - **A ruling carries `unparsed_conditions`**: those lines are reported the same way, since the
   persona was already asked to restate them once and the ruling's verdict still stands.
 - **A criterion fails and nothing rules on it**: the run succeeds, the proposal opens, and the same

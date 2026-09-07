@@ -430,6 +430,14 @@ export function unparsedCalibrateConditions(lines) {
   return (lines ?? []).filter((l) => !calibrateConditionParses(l));
 }
 
+// The criterion each readable condition line names, without applying anything. `calibrate`
+// uses it to say which conditions a domain file it refused to rewrite was holding up —
+// the ids are known from the line itself, while the criteria behind them are exactly what
+// a file that does not parse cannot supply.
+export function calibrateConditionIds(lines) {
+  return (lines ?? []).map((line) => ({ line, id: parseCalibrateCondition(line)?.id ?? null })).filter((e) => e.id);
+}
+
 // Applies one calibration ruling's conditions to a domain's parsed criteria, for the
 // `today` the run is happening on. A condition naming an id this domain does not hold is
 // simply not this domain's business — `calibrate` applies the same condition list to

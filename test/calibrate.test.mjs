@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { git } from "../src/lib/git.mjs";
+import { readJournal } from "../src/runner/journal.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule, ruleByAgent } from "../src/commands/rule.mjs";
@@ -84,13 +85,16 @@ oracle:
 `;
 
 // `readLocal`/`writeLocal` round-trip exactly this shape (`src/oracle/ports.mjs`) —
-// standing in for what a real `sdlc oracle up` would have written.
+// standing in for what a real `sdlc oracle up` would have written. The ports are
+// deliberately not the ones `ORACLE_BLOCK` configures: `oracle up` takes whatever was
+// free on the machine it ran on, so the live URL and the configured URL genuinely differ,
+// and a result set that recorded the live one would be committing one laptop's accident.
 function writeOldOracleLocal(dir) {
   writeLocal(dir, "old", {
     target: "old",
-    base_url: "http://localhost:3100",
-    mail_api: "http://localhost:8025",
-    ports: { app: 3100, db: 5500, mail_api: 8025 },
+    base_url: "http://localhost:3187",
+    mail_api: "http://localhost:8031",
+    ports: { app: 3187, db: 5507, mail_api: 8031 },
     compose_project: "sdlc-permit-intake-old",
   });
 }
@@ -216,6 +220,7 @@ test("sdlc run calibrate --target old: writes a dated result set and latest.json
 
     const results = latest(dir);
     assert.equal(results.target, "old");
+    // The target's configured base URL, not the port `oracle up` happened to land on.
     assert.equal(results.base_url, "http://localhost:3100");
     assert.equal(rowFor(results, "R-1.1").result, "pass");
     assert.equal(rowFor(results, "R-1.2").result, "fail");
@@ -427,6 +432,180 @@ test("sdlc run calibrate: a target that is neither the oracle nor in config.targ
     assert.ok(r.messages.some((m) => /staging/.test(m)), r.messages.join(" | "));
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.ok(!existsSync(join(dir, "tests/results/staging")));
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+// The last thing a calibrate run said about itself. `runStage` returns the run's outcome
+// rather than its text, and the text is what the journal entry carries — so anything the
+// stage reports in words (a domain file it refused to rewrite, a proposal it left alone)
+// is read back from there.
+function lastCalibrateText(dir) {
+  const entries = readJournal(dir).filter((e) => e.stage === "calibrate");
+  return entries.length ? entries[entries.length - 1].body : "";
+}
+
+// Rules the open calibration proposal as the product-owner persona, which is the only way
+// a ruling carries conditions. Leaves the repository wherever the ruling left it: an
+// approve merges to `main`, an escalation stays on the proposal branch.
+async function ruleCalibration(dir, name, { verdict = "approve", rationale, conditions = [] }) {
+  const mock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-ruling-"));
+  writeFileSync(join(mock, "rule.json"), JSON.stringify({
+    text: '```json\n' + JSON.stringify({ verdict, rationale, conditions }) + '\n```',
+  }));
+  const prevMockDir = process.env.SDLC_MOCK_DIR;
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mock;
+  try {
+    return await ruleByAgent(dir, name, { persona: "product-owner" });
+  } finally {
+    delete process.env.SDLC_EXECUTOR;
+    if (prevMockDir === undefined) delete process.env.SDLC_MOCK_DIR;
+    else process.env.SDLC_MOCK_DIR = prevMockDir;
+  }
+}
+
+// A second domain in the shape an agent writes one before anybody has ratified it: the
+// bullets are not in the canonical order and no block declares its `state`, so a pass
+// that read this file and wrote it back through the serialiser would visibly reformat it.
+const FEES_RAW = `# fees
+
+Recovered from the old application's fee tables. Nothing here is ratified yet.
+
+### D-fees-1 · v1 · inferred · recovered
+The system shall charge a flat intake fee of $50 on every submitted application.
+- given: an application being submitted
+- cites: src/fees.js:8
+- then: a $50 intake fee is recorded against it
+`;
+
+function writeSecondDomain(dir, text) {
+  writeFileSync(join(dir, "spec", "domains", "fees.md"), text);
+  git(["add", "-A"], dir);
+  git([...COMMIT, "recover the fees domain (test)"], dir);
+}
+
+test("calibrate leaves a domain file no ruling names exactly as it found it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-untouched-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  writeSecondDomain(dir, FEES_RAW);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    await ruleCalibration(dir, "calibrate-old-1", {
+      rationale: "the old system really does leave the status alone",
+      conditions: ["defect-in-old R-1.2"],
+    });
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+
+    // The ruling did land where it was aimed …
+    assert.match(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), /the old target fails this/);
+    // … and nowhere else. A domain awaiting ratification is not this stage's to reformat.
+    assert.equal(readFileSync(join(dir, "spec/domains/fees.md"), "utf8"), FEES_RAW);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("calibrate refuses to rewrite a domain file that does not parse, and reports the conditions it was holding", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-unparseable-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  // A second block whose heading is missing its separators: the parser reports it and
+  // recovers nothing from it, so serialising what it did understand would delete it.
+  const feesBroken = `${FEES_RAW}
+### D-fees-2 v1 confirmed recovered
+The system shall waive the intake fee for a renewal.
+- cites: src/fees.js:22
+`;
+  writeSecondDomain(dir, feesBroken);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    await ruleCalibration(dir, "calibrate-old-1", {
+      rationale: "the old system leaves the status alone, and charges the flat fee it says it does",
+      conditions: ["defect-in-old R-1.2", "defect-in-old D-fees-1"],
+    });
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+
+    assert.equal(readFileSync(join(dir, "spec/domains/fees.md"), "utf8"), feesBroken, "nothing was written over the malformed file");
+    assert.match(lastCalibrateText(dir), /spec\/domains\/fees\.md does not parse; 1 condition\(s\) not applied/);
+    // The condition aimed at the other domain still landed: one unreadable file does not
+    // block the rest of the same ruling.
+    assert.match(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), /the old target fails this/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a second calibrate run on the same day writes a second dated result set rather than overwriting the first", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-dated-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    git(["checkout", "-q", "main"], dir);
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+
+    const today = new Date().toISOString().slice(0, 10);
+    assert.ok(existsSync(join(dir, `tests/results/old/${today}.json`)), "the first run's record");
+    assert.ok(existsSync(join(dir, `tests/results/old/${today}-2.json`)), "the second run's record");
+    assert.ok(existsSync(join(dir, "tests/results/old/latest.json")), "latest.json is still overwritten");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a calibration proposal still open stops a second one being opened, and the run says so", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-open-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.proposal.name, "calibrate-old-1");
+    // `propose` leaves the caller on the proposal branch; a run starts from main.
+    git(["checkout", "-q", "main"], dir);
+
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+    assert.ok(!second.proposal, "the unanswered question is not asked a second time");
+    assert.ok(!existsSync(join(dir, ".sdlc/proposals/calibrate-old-2.md")));
+    // The results are still written: the run is a record of what the target does today,
+    // whether or not anybody has answered yesterday's question about it.
+    assert.equal(rowFor(latest(dir), "R-1.2").result, "fail");
+    assert.match(lastCalibrateText(dir), /proposal\/calibrate-old-1 is still open/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("an escalated calibration ruling leaves the question open rather than counting as an answer", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-escalated-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    const ruled = await ruleCalibration(dir, "calibrate-old-1", {
+      verdict: "escalate",
+      rationale: "whether the old status wording is a defect is the tech lead's call, not mine",
+    });
+    assert.equal(ruled.escalated, true);
+    // An escalation is committed on the proposal branch and nowhere else.
+    git(["checkout", "-q", "main"], dir);
+
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+    assert.ok(!second.proposal, "a question waiting on a person is not re-asked as calibrate-old-2");
+    assert.ok(!existsSync(join(dir, ".sdlc/proposals/calibrate-old-2.md")));
+    assert.match(lastCalibrateText(dir), /proposal\/calibrate-old-1 is still open/);
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);

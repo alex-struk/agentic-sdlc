@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
-import { parseDomainFile, parseAll, applyCalibrateRulings, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR } from "../spec/criteria.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp } from "../commands/oracle.mjs";
@@ -46,15 +46,26 @@ function calibrateIndex(projectDir) {
 // against a target already up and the way it gets started when it is not. Under
 // `SDLC_ORACLE=mock` nothing is started at all, so a project that has never run `oracle
 // up` has no local file to read the URLs out of; the mock test runner never calls either
-// URL. The results file still records where the run pointed.
+// URL.
+//
+// Two URLs come back, and they are not interchangeable. `baseUrl` is where this machine's
+// suite actually points — for the oracle, a port chosen at `oracle up` time out of
+// whatever was free, which means nothing on anybody else's machine. `configured` is what
+// the project's own config names for the target, and that is the one the committed
+// results file records, so a result set says which target it ran against rather than
+// which port one laptop happened to get.
 async function calibrateEndpoint(projectDir, ctx, target) {
   if (target !== "old") {
-    const configured = ctx.config?.targets?.[target] ?? {};
-    return { baseUrl: configured.base_url ?? "", mailApi: "" };
+    const configured = ctx.config?.targets?.[target]?.base_url ?? "";
+    return { baseUrl: configured, mailApi: "", configured };
   }
   if (process.env.SDLC_ORACLE !== "mock") await oracleUp(projectDir, { target });
   const local = readLocal(projectDir, target);
-  return { baseUrl: local?.base_url ?? "http://mock", mailApi: local?.mail_api ?? "" };
+  return {
+    baseUrl: local?.base_url ?? "http://mock",
+    mailApi: local?.mail_api ?? "",
+    configured: ctx.config?.oracle?.base_url ?? "",
+  };
 }
 
 // What this target's rulings have already done to the spec, and which gate files did it.
@@ -113,10 +124,19 @@ function writeCalibrateRedo(projectDir, entries) {
 
 // Applies every approved calibration ruling for this target that has not been applied
 // before, across every domain file — a ruling names criteria by id, and an id belongs to
-// exactly one domain, so each domain file is read once, offered the whole condition list,
-// and written back only if something in it actually changed. Domain files go back through
-// the same serialiser `ratify` uses, preamble and all, so the prose above the first
-// criterion block survives a calibration pass the same way it survives a ratification one.
+// exactly one domain, so each domain file is read once and offered the whole condition
+// list.
+//
+// A domain file is rewritten only when a condition actually changed something in it. Two
+// files are therefore never touched at all: one no ruling named, and one that does not
+// parse. The first matters because rewriting is lossy in a way reading is not — a domain
+// still in the shape an agent wrote it, awaiting ratification, comes back out of the
+// serialiser in the canonical shape, so a pass that rewrote every file would reformat
+// work nobody had ruled on yet. The second matters more: the parser reports what it could
+// not read in `errors` and returns the criteria it could, so serialising that would
+// delete the malformed blocks outright. Instead the file is left exactly as it is, the
+// conditions it was holding are reported unapplied, and the ruling that carried them is
+// left unrecorded so the next run — after somebody fixes the file — reads it again.
 function applyCalibrateGates(projectDir, target, today) {
   const state = readCalibrateApplied(projectDir, target);
   const gates = [];
@@ -130,7 +150,7 @@ function applyCalibrateGates(projectDir, target, today) {
     gates.push({ name, conditions: (gate.conditions ?? []).map(String), unparsed: (gate.unparsed_conditions ?? []).map(String) });
   }
 
-  const result = { changed: [], applied: [], unknown: [], gateNames: gates.map((g) => g.name), specChanged: false };
+  const result = { changed: [], applied: [], unknown: [], gateNames: [], specChanged: false };
   if (gates.length === 0) return result;
 
   // Which ruling a condition line came from, for the record `applied.yaml` keeps. First
@@ -139,16 +159,38 @@ function applyCalibrateGates(projectDir, target, today) {
   const owner = new Map();
   for (const g of gates) for (const line of g.conditions) if (!owner.has(line)) owner.set(line, g.name);
   const conditions = gates.flatMap((g) => g.conditions);
+  const named = calibrateConditionIds(conditions);
+  const { byId } = calibrateIndex(projectDir);
 
   const domainsDir = join(projectDir, "spec", "domains");
   const files = existsSync(domainsDir) ? readdirSync(domainsDir).filter((f) => f.endsWith(".md")).sort() : [];
   const redo = [];
+  // Rulings that named a criterion in a file this pass would not rewrite, so they are not
+  // recorded as applied and are read again next run.
+  const held = new Set();
   for (const f of files) {
     const domain = f.replace(/\.md$/, "");
     const abs = join(domainsDir, f);
     const original = readText(abs);
-    const { criteria, preamble } = parseDomainFile(original, domain);
+    const { criteria, errors, preamble } = parseDomainFile(original, domain);
+    if (errors.length) {
+      // Which conditions this file was holding, from the two sources that can still say
+      // so once the parser has given up on part of it: the criteria the parser did
+      // recover from this file, and the index, which is the project's own record of
+      // which domain owns an id and still answers for a criterion in the block that
+      // failed.
+      const recovered = new Set(criteria.map((c) => c.id));
+      const blocked = named.filter(({ id }) => recovered.has(id) || byId.get(id)?.domain === domain);
+      result.unknown.push(`spec/domains/${domain}.md does not parse; ${blocked.length} condition(s) not applied`);
+      for (const { line } of blocked) held.add(owner.get(line));
+      continue;
+    }
     const { criteria: next, applied, redo: domainRedo } = applyCalibrateRulings(criteria, conditions, today);
+    // No condition named a criterion in this file, so this pass has no business writing
+    // it — not even to the byte-identical text the serialiser would produce for a file
+    // already in canonical shape, and certainly not to the reformatted text it would
+    // produce for one still in the shape it was written in.
+    if (applied.length === 0) continue;
     for (const a of applied) result.applied.push({ ...a, gate: owner.get(a.line) ?? null });
     redo.push(...domainRedo);
     const serialised = serialiseDomainFile(next, domain, preamble);
@@ -163,18 +205,25 @@ function applyCalibrateGates(projectDir, target, today) {
   if (redoPath) result.changed.push(redoPath);
 
   // A condition no domain claimed names an id the project does not have — a typo, or an
-  // id from before a domain was renamed. Reported in the run's own text rather than
-  // thrown, the same way `ratify` reports an unknown ratification condition: one bad line
-  // must not block every other line in the same ruling. A line the grammar could not read
-  // at all is already recorded on the gate file itself and is carried through here too,
-  // so both kinds of dead condition are named in one place.
+  // id from before a domain was renamed — or belongs to a file this pass refused to
+  // rewrite. Reported in the run's own text rather than thrown, the same way `ratify`
+  // reports an unknown ratification condition: one bad line must not block every other
+  // line in the same ruling. A line the grammar could not read at all is already recorded
+  // on the gate file itself and is carried through here too, so every kind of dead
+  // condition is named in one place.
   const appliedLines = new Set(result.applied.map((a) => a.line));
   for (const g of gates) {
     for (const line of g.conditions) if (!appliedLines.has(line)) result.unknown.push(`${g.name}: ${line}`);
     for (const line of g.unparsed) result.unknown.push(`${g.name}: ${line} (does not match the calibration grammar)`);
   }
 
-  const rulings = [...state.rulings, ...result.applied.map((a) => ({ id: a.id, version: a.version, verb: a.verb, gate: a.gate }))];
+  result.gateNames = gates.map((g) => g.name).filter((n) => !held.has(n));
+  // Every verb is idempotent against a row it has already changed, so a held ruling's
+  // other conditions being applied again next run changes nothing; the record of them is
+  // de-duplicated here so `applied.yaml` does not grow a copy per run.
+  const seen = new Set();
+  const rulings = [...state.rulings, ...result.applied.map((a) => ({ id: a.id, version: a.version, verb: a.verb, gate: a.gate }))]
+    .filter((r) => { const k = JSON.stringify(r); if (seen.has(k)) return false; seen.add(k); return true; });
   const rel = `tests/results/${target}/applied.yaml`;
   writeText(join(projectDir, rel), stringifyYaml({ applied: [...state.applied, ...result.gateNames], rulings }));
   result.changed.push(rel);
@@ -214,6 +263,19 @@ function readLatestResults(projectDir, target) {
   if (!existsSync(p)) return { error: `tests/results/${target}/latest.json is missing` };
   try { return { results: JSON.parse(readText(p)) }; }
   catch (e) { return { error: `tests/results/${target}/latest.json does not parse: ${e.message}` }; }
+}
+
+// The name of the dated result set this run writes: `<date>.json`, or `<date>-2.json`,
+// `-3.json` and so on when that day already has one. A dated file is the record of a
+// particular run against a particular target, so a second run on the same day is a second
+// record and not a correction of the first — overwriting it would quietly lose the
+// morning's evidence the moment somebody re-ran after lunch. `latest.json` is the file
+// that *is* meant to be overwritten, and it is written every time.
+function nextDatedResultsName(dir, today) {
+  if (!existsSync(join(dir, `${today}.json`))) return `${today}.json`;
+  let n = 2;
+  while (existsSync(join(dir, `${today}-${n}.json`))) n++;
+  return `${today}-${n}.json`;
 }
 
 function checkCalibrateResults(projectDir, target) {
@@ -320,7 +382,7 @@ export const calibrate = {
     const changed = [];
 
     // 1. Where to point, and — for the oracle — that it is actually running.
-    const { baseUrl, mailApi } = await calibrateEndpoint(projectDir, ctx, target);
+    const { baseUrl, mailApi, configured } = await calibrateEndpoint(projectDir, ctx, target);
 
     // 2. Every ruling that came back since the last run, applied to the spec.
     const rulings = applyCalibrateGates(projectDir, target, today);
@@ -342,17 +404,21 @@ export const calibrate = {
     // 3. The suite itself, against the target.
     const { rows } = runSuite({ projectDir, target, baseUrl, mailApi });
 
-    // 4. The result set: one dated file that is never rewritten, and `latest.json` beside
-    // it for everything that just wants the current state.
+    // 4. The result set: a dated file per run, and `latest.json` beside it for everything
+    // that just wants the current state. `base_url` is the target's configured URL, not
+    // the one this run pointed at: for the oracle those differ, since `oracle up` picks
+    // whatever port was free on this machine, and a committed file recording that would
+    // be a local accident in shared history.
     const { generatedFrom, byId } = calibrateIndex(projectDir);
     const applied = readCalibrateApplied(projectDir, target);
     const ruledRows = rows.map((row) => {
       const verb = row.id ? calibrateRuledVerb(applied.rulings, row.id, byId.get(row.id)?.version) : null;
       return verb ? { ...row, ruled: verb } : row;
     });
-    const results = { target, base_url: baseUrl, spec: generatedFrom, at: new Date().toISOString(), rows: ruledRows };
+    const results = { target, base_url: configured, spec: generatedFrom, at: new Date().toISOString(), rows: ruledRows };
     const text = `${JSON.stringify(results, null, 2)}\n`;
-    for (const name of [`${today}.json`, "latest.json"]) {
+    const dir = calibrateResultsDir(projectDir, target);
+    for (const name of [nextDatedResultsName(dir, today), "latest.json"]) {
       const rel = `tests/results/${target}/${name}`;
       writeText(join(projectDir, rel), text);
       changed.push(rel);
@@ -369,11 +435,11 @@ export const calibrate = {
     const ruled = ruledRows.filter((r) => r.ruled);
     if (ruled.length) lines.push(`Ruled: ${ruled.map((r) => `${r.id} ${r.ruled}`).join(", ")}`);
     if (rulings.applied.length) {
-      lines.push(`Applied ${rulings.applied.length} condition(s) from ${rulings.gateNames.join(", ")}:`);
+      lines.push(`Applied ${rulings.applied.length} condition(s) from ${rulings.gateNames.join(", ") || "an earlier ruling"}:`);
       for (const a of rulings.applied) lines.push(`- ${a.verb} ${a.id}`);
     }
     if (rulings.unknown.length) {
-      lines.push("Conditions naming nothing this project has (reported, not applied):");
+      lines.push("Conditions not applied (reported, not acted on):");
       for (const u of rulings.unknown) lines.push(`- ${u}`);
     }
     // Said here rather than left to `followUp`'s silence: a run that finds failures and
