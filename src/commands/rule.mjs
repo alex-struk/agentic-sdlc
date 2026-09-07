@@ -1,6 +1,6 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { git, gitOk, assertCleanTree, stagePaths, stageSite } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, stagePaths, stageSite, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -8,8 +8,6 @@ import { buildPersonaPrompt, parseVerdict, readPersonaBrief } from "../runner/pe
 import { runAgent } from "../runner/executor.mjs";
 import { buildSite } from "./status.mjs";
 import { COMMANDS } from "../cli.mjs";
-
-const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
 
 function mergeApproved(projectDir, branch, message) {
   git(["checkout", "-q", "main"], projectDir);

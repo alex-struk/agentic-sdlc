@@ -1,7 +1,7 @@
 import { join, relative, resolve } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { git, assertCleanTree, stageAll } from "../lib/git.mjs";
+import { git, assertCleanTree, stageAll, SDLC_AUTHOR } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -12,8 +12,6 @@ import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { COMMANDS } from "../cli.mjs";
-
-const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
 
 // `config.policy.budgets[<stage>]` is documented as a token count, but `runAgent`'s
 // `maxTurns` wants a turn count and there is no token-to-turn conversion yet (that is

@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { git } from "../lib/git.mjs";
+import { git, SDLC_AUTHOR } from "../lib/git.mjs";
 import { copyTree, ensureDir, readText, writeText } from "../lib/fsx.mjs";
 import { parseConfig } from "../config/load.mjs";
 import { init } from "./init.mjs";
@@ -30,7 +30,7 @@ export async function newProject({ dir, from, interactive = false, answers = nul
   fill(join(dir, "plan", "tasks.md"), { PROJECT_NAME: config.project.name });
 
   git(["add", "-A"], dir);
-  git(["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost", "commit", "-q", "-m", `chore: create ${config.project.name} from agentic-sdlc templates`], dir);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `chore: create ${config.project.name} from agentic-sdlc templates`], dir);
   await init(dir);
   return { dir };
 }

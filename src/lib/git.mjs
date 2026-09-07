@@ -19,6 +19,20 @@ export function gitRaw(args, cwd) {
   }
 }
 
+// The identity every commit this pipeline makes on the caller's behalf is authored with.
+// Passed as `-c` overrides rather than written into the repository's own config, so a
+// person's `user.name`/`user.email` is left alone and a pipeline commit is still
+// distinguishable from theirs in `git log`.
+//
+// `commit.gpgsign=false` and `tag.gpgsign=false` are part of the identity, not an extra:
+// a machine identity has no key, so on a machine (or a repository) where signing is
+// turned on globally every commit here would fail with `gpg failed to sign the data` —
+// a pipeline that cannot record a ruling on a developer's own laptop because of a
+// setting that has nothing to do with the pipeline. The overrides are scoped to these
+// commands alone and change nothing a person's own `git commit` does.
+export const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost",
+  "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"];
+
 export function git(args, cwd) {
   return gitRaw(args, cwd).trim();
 }

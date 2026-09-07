@@ -1,13 +1,11 @@
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
-import { git, gitOk, changedPaths, stageAll, stageSite } from "../lib/git.mjs";
+import { git, gitOk, changedPaths, stageAll, stageSite, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { writeJournal } from "./journal.mjs";
 import { propose } from "../commands/propose.mjs";
 import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
-
-const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
 
 // A stage that opened a proposal on a previous run and has not been ruled yet is not
 // safe to run again under the same name: `propose`'s own `git checkout -q -b` refuses

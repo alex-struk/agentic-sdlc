@@ -1,11 +1,9 @@
 import { join, relative, resolve } from "node:path";
-import { git, assertCleanTree, stageAll, changedPaths } from "../lib/git.mjs";
+import { git, assertCleanTree, stageAll, changedPaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { COMMANDS } from "../cli.mjs";
-
-const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost"];
 
 export function propose(projectDir, name, { gate, question, recommendation, page = "", paths = null, tier = null }) {
   projectDir = resolve(projectDir);

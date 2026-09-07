@@ -1,6 +1,6 @@
 import { existsSync, chmodSync, rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { git, gitOk, stagePaths, stageSite, reconcileGitignore } from "../lib/git.mjs";
+import { git, gitOk, stagePaths, stageSite, reconcileGitignore, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
@@ -140,7 +140,7 @@ export async function init(projectDir = process.cwd()) {
       ...(gitignoreChanged ? [".gitignore"] : []),
     ]);
     if (git(["diff", "--cached", "--name-only"], projectDir)) {
-      git(["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost", "commit", "-q", "-m", "chore(sdlc): init"], projectDir);
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", "chore(sdlc): init"], projectDir);
     }
   }
   return { lock, ...r, changed };
