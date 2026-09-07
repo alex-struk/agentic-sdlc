@@ -5,19 +5,29 @@ import { stageFor } from "../stages/registry.mjs";
 import { finishStage, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { COMMANDS } from "../cli.mjs";
 
+// Workspace modes whose agent worked in the project directory, so its output survived
+// the interruption and can be judged where it lies.
+const RESUMABLE_WORKSPACES = new Set(["project", "with-sources"]);
+
 export async function resume(projectDir, { again = false } = {}) {
   projectDir = resolve(projectDir);
   const state = readRunState(projectDir);
   if (!state) { console.log("nothing to resume"); return 0; }
 
   const stage = stageFor(state.stage);
-  // Only a `project`-mode stage works in the project directory itself. Every other mode
-  // works in a temporary workspace that the interrupted run's own `finally` already
-  // removed, so there is nothing left of what its agent produced: judging the project
-  // directory instead would run the stage's post-checks against files that stage never
-  // touched, and either pass or fail for reasons that have nothing to do with the
-  // interrupted run. Re-running the stage is the only honest way to continue.
-  if (stage.workspace !== "project") {
+  // `spec-only` and `blind-adapter` build a temporary workspace that the interrupted
+  // run's own `finally` already removed, so there is nothing left of what their agent
+  // produced: judging the project directory instead would run the stage's post-checks
+  // against files that stage never touched, and either pass or fail for reasons that
+  // have nothing to do with the interrupted run. Re-running the stage is the only honest
+  // way to continue those.
+  //
+  // `project` and `with-sources` both work in the project directory itself
+  // (`materialise` returns `projectDir` for each), so whatever the interrupted agent
+  // wrote is still on disk and is exactly what post-checks should judge. The only thing
+  // `with-sources` adds is the read-only checkout at `sources/old`, which `ensureSources`
+  // materialises and nothing here removes.
+  if (!RESUMABLE_WORKSPACES.has(stage.workspace)) {
     console.log(`resume cannot continue a ${stage.workspace} stage; run it again`);
     return 1;
   }

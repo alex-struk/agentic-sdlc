@@ -397,6 +397,45 @@ test("resume refuses a stage whose workspace was a temporary directory", async (
   }
 });
 
+test("resume continues a with-sources stage: its agent worked in the project directory", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-sources-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  // A gate-less stage in `with-sources` mode, so this exercises the workspace decision
+  // alone: `materialise` returns the project directory for this mode exactly as it does
+  // for `project`, so whatever the interrupted agent wrote is still there to judge.
+  registerStage({
+    name: "with-sources-stage",
+    title: "with sources stage",
+    skill: PROBE_SKILL,
+    workspace: "with-sources",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  writeFileSync(join(dir, "recovered.md"), "what the interrupted agent left behind\n");
+  writeFileSync(join(dir, ".sdlc", "run-state.json"),
+    JSON.stringify({ stage: "with-sources-stage", ctx: {}, phase: "post-checks" }) + "\n");
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const code = await resume(dir, { again: true });
+    assert.equal(code, 0);
+    assert.ok(!logs.some((l) => /resume cannot continue/.test(l)), logs.join(" | "));
+    // The interrupted agent's file was judged and committed, and the run-state cleared.
+    assert.match(git(["log", "-1", "--name-only"], dir), /recovered\.md/);
+    assert.ok(existsSync(join(dir, ".sdlc/journal/001-with-sources-stage.md")));
+    assert.ok(!existsSync(join(dir, ".sdlc/run-state.json")));
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("sdlc resume: refuses to continue a stage whose proposal is still open, without ever calling finishStage's post-checks", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-openproposal-"));
   const { dir, prevEgress } = await makeProject(tmp);
