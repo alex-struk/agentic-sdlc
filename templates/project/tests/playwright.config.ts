@@ -15,5 +15,6 @@ export default defineConfig({
   retries: 0,
   timeout: 30000,
   reporter: [["json", { outputFile: "test-results/results.json" }], ["list"]],
-  projects: [{ name: target, use: { baseURL: process.env.SDLC_TARGET_URL } }],
+  use: { baseURL: process.env.SDLC_TARGET_URL },
+  projects: [{ name: target }],
 });
