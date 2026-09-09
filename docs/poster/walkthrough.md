@@ -2,12 +2,17 @@
 
 A reading guide to `pipeline-poster.svg`. Each section says what that panel
 shows, why it is there, and what is softer than it looks. The full design is
-`docs/specs/2026-09-05-marketplace-rebuild-pipeline-design.md`; section numbers
+`docs/specs/2026-09-05-rebuild-pipeline-design.md`; section numbers
 here match the poster, not the spec.
 
 **Context.** One visual giving easy insight into what is being built and how
 it works, covering every aspect of the draft spec. The
 poster is a reference to return to; this document carries the caveats.
+
+To regenerate this documentation artifact, set `POSTER_KIT_DIR` to an explicit
+checkout of the research-poster kit's scripts and run `python docs/poster/build_poster.py`.
+The kit is optional documentation-authoring tooling, not an `sdlc` runtime dependency;
+the builder does not discover a personal skill installation.
 
 **A note on colour.** Green means deterministic, it blocks or enforces. Gold
 means human judgement, a gate. Navy means agent work, a proposal. Red means
@@ -17,12 +22,12 @@ forbidden or never automated. The same meaning holds in every section.
 
 ## §01 — What is being built, and why this project
 
-**What the panel shows.** Four cards: the pipeline as product, the marketplace
+**What the panel shows.** Four cards: the pipeline as product, the service
 rebuild as evidence, why a rebuild beats pure greenfield, and what is
 deliberately not built. A navy band states the claim the run exists to test.
 
 **The argument.** Two goals are combined on purpose. Building the pipeline on a
-toy would prove nothing; rebuilding the marketplace without a pipeline would
+toy would prove nothing; rebuilding the service without a pipeline would
 produce one more app. The rebuild gives the pipeline a real oracle, so accuracy
 is measurable, and the pipeline gives the rebuild a repeatable method, so it
 can be done again when the pipeline improves.
@@ -183,7 +188,7 @@ is not, the metrics, the six phases as two flows, open questions, how the
 pipeline tests itself, and the first-pass slice order.
 
 **The argument.** One opinionated stack, chosen because the org maintains it,
-it runs on the platform the marketplace uses today, and it already references
+it runs on the platform the service uses today, and it already references
 central workflows by version. Every external piece is pinned and registered
 with a reason, and a weekly job diffs upstream. The metrics are chosen to
 isolate agent quality from reviewer availability, which is why time-to-close

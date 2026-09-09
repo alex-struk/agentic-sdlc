@@ -1,11 +1,11 @@
-# Agentic SDLC pipeline, proven by rebuilding the Digital Marketplace
+# Agentic SDLC pipeline, proven by rebuilding a legacy service
 
 **Design specification · 2026-09-05 · draft for review**
 
 This document describes two things that are built together: a reusable agentic
-software-delivery pipeline, and the first project it runs on, a rebuild of the
-BC Digital Marketplace on a modern stack. The pipeline is the product. The
-marketplace rebuild is the evidence that it works, and the first opinionated
+software-delivery pipeline, and a project it runs on, a rebuild of a legacy
+service on a modern stack. The pipeline is the product. The
+service rebuild is the evidence that it works, and the first opinionated
 stack it encodes.
 
 Terms are defined the first time they are used. A glossary at the end collects
@@ -30,7 +30,7 @@ without forking it.
 ### 1.2 What the first run is
 
 An experiment on a new repository, with no business owner. The existing
-`bcgov/digital_marketplace` is a read-only input. Nothing ships to the live
+application's repository is a read-only input. Nothing ships to the live
 product. The outputs are a working rebuild in a sandbox, a measured record of
 how the pipeline behaved, and the pipeline itself, improved by that record.
 The system will be rebuilt more than once as the pipeline improves. Two kinds
@@ -45,7 +45,7 @@ assets and the oracle for later replays.
 ### 1.3 Goals
 
 1. A pipeline another team can install, run end to end, and upgrade unaided.
-2. A rebuilt marketplace that passes the same spec-derived test suite the old
+2. A rebuilt service that passes the same spec-derived test suite the old
    application passes, on the BC Gov OpenShift platform, using the BC Design
    System, with the existing Postgres schema.
 3. Gates that are easy to digest: one page per decision, and a generated site
@@ -57,7 +57,7 @@ assets and the oracle for later replays.
 
 ### 1.4 Non-goals
 
-- Shipping to `marketplace.digital.gov.bc.ca`, or any change to the live
+- Shipping to production endpoints, or any change to the live
   application or its operations.
 - A decisions database, an approval UI, a policy editor, user accounts, or an
   agent framework. Git, pull requests and static pages hold all of it.
@@ -101,7 +101,7 @@ pipeline. A project may tighten them, never loosen them.
 | Repository | Holds | Visibility |
 |---|---|---|
 | Pipeline repo (`agentic-sdlc`) | Skills, scripts, reusable workflows, templates, config schema, runner CLI, docs, dependency register | bcgov, public |
-| Project repo (marketplace rebuild) | Constitution, config, intent, spec, contract, tests, adapters, design catalogue, plan, application code, evidence, generated state site | bcgov, public |
+| Project repo (service rebuild) | Constitution, config, intent, spec, contract, tests, adapters, design catalogue, plan, application code, evidence, generated state site | bcgov, public |
 
 Both are local git repositories until something requires a remote, and
 nothing is pushed without the tech lead's explicit permission at that moment. The first
@@ -172,7 +172,7 @@ design: it asks about profile, sources, stack, gate holders and oracle, and
 proposes a config), writes `.sdlc/config.yaml` and the constitution from
 templates, and then runs `sdlc init`. `sdlc new --from <config.yaml>` skips the
 interview and reproduces a project from a saved config, which is how the
-marketplace is rebuilt a second time.
+service is rebuilt a second time.
 
 `sdlc init` reads `.sdlc/config.yaml`, writes `lock.json`, generates the caller
 workflows, copies templates that do not yet exist, and installs the listed skill
@@ -180,9 +180,9 @@ packs at their pinned versions into the agent's skill location.
 
 The pipeline repository is edited by hand. The project repository is only ever
 produced and changed by the pipeline. Nothing in the pipeline repository, its
-schema, skills or scripts may name the marketplace; the fixture project in the
+schema, skills, scripts or documentation may name the application under rebuild; the fixture project in the
 pipeline's own CI (section 14) is a second, unrelated application, and it is
-the guard against building a marketplace-specific pipeline. `sdlc upgrade`
+the guard against building a project-specific pipeline. `sdlc upgrade`
 bumps the pipeline version in the lockfile, regenerates callers, and opens a
 pull request. Nothing in the pipeline repo is copied into the project except
 templates the project is expected to fill in.
@@ -408,8 +408,8 @@ agent could not determine. Checks: every criterion has at least one citation;
 no criterion is marked `confirmed` by the agent (only a human can); IDs are
 provisional (`D-` prefix) until ratified. Exit: all domain PRs open.
 
-Domains for the marketplace: opportunities (Code With Us, Sprint With Us, Team
-With Us), proposals, organisations and affiliations, users and authentication,
+Example domains, supplied by a project's configuration: opportunities,
+proposals, organisations and affiliations, users and authentication,
 evaluation and scoring, notifications, content and administration, files.
 
 ### 5.4 `ratify` (gate G1)
@@ -583,7 +583,7 @@ simulated checkpoints. Rules that make this safe rather than a rubber stamp:
   be), and the sample is listed on the state site for review.
 - Switching a gate from agent to human, or back, is a G-POL change.
 
-For the marketplace run: phase 1 ratify and phase 3 design are human-held from
+An example rebuild policy: phase 1 ratify and phase 3 design are human-held from
 the start, because those rulings are the experiment's evidence. G0, G2 and G3
 begin agent-held with a weekly human sample, and the tech lead can take any
 gate back at any time by editing the config.
@@ -706,12 +706,12 @@ pipeline: bcgov/agentic-sdlc@v0.3.0
 profile: rebuild                   # greenfield | rebuild | remediation | feature
 stack: openshift-ts                # a stack profile in the pipeline repo
 project:
-  name: digital-marketplace-next
+  name: service-next
   domains: [opportunities, proposals, organizations, users, evaluation, notifications, content, files]
 sources:
   old:
-    repo: https://github.com/bcgov/digital_marketplace
-    commit: b0f0c99c
+    repo: https://github.com/example/legacy-service
+    commit: <pinned-commit-sha>
     docs: [README.md, docs/]
     exclude: [cypress/, tests/]     # the old tests never reach the spec
 oracle:
@@ -793,7 +793,7 @@ opens a PR with the changes and a summary. The full register is
 | bcgov/design-system | React components, tokens, BC Sans, and the packages' own agent instructions | npm dependencies of the project | The design system, and it ships instructions for agents |
 | bcgov/agent-skills | github-actions hardening, openshift-deployment | Installed via `npx skills add`, pinned | Org-maintained; the Actions hardening rules are specific and correct |
 | bcgov/agent-guardrails | Shell wrappers blocking merge, hook bypass, live cluster access | Installed on every machine that runs the pipeline | Cheap enforcement of "agents propose, never merge" |
-| bcgov/quickstart-openshift and -helpers | The `openshift-ts` stack profile's scaffold and deploy workflows | Referenced by version | Org-maintained, current, deploys to the platform the marketplace runs on, already uses central workflows |
+| bcgov/quickstart-openshift and -helpers | The `openshift-ts` stack profile's scaffold and deploy workflows | Referenced by version | Org-maintained, current, deploys to the target platform, already uses central workflows |
 | DietrichGebert/ponytail | Scope brake during build | Optional pack, disabled by default | Honest benchmarks; may hurt with reasoning models, so measured before kept |
 | Playwright, Vitest, Storybook | Acceptance tests, unit tests, catalogue | Project dev dependencies | Standard; Storybook is what the UX practice already uses |
 | microsoft/AI-Engineering-Coach | Session-log review to find repeated prompts worth turning into skills | Phase 5 retrospective tool only | Not part of the pipeline |
@@ -807,13 +807,13 @@ raven and rook (later, for Jira and monitoring), spec-kit's CLI.
 
 ## 12. Stack profile `openshift-ts` and standards
 
-The first stack profile, and the one the marketplace uses.
+The first stack profile, used by the example rebuild.
 
 - **Scaffold**: `bcgov/quickstart-openshift`. React, Vite, TanStack Router,
   BC Design System React components on the front end. NestJS with Prisma on
   the back end. Postgres. Playwright and Vitest. ESLint and Prettier as
   configured there.
-- **Database**: the existing marketplace schema is kept. Prisma introspects
+- **Database**: the existing service schema is kept. Prisma introspects
   it. Schema changes, if any, are proposed in the plan with a migration and a
   ratified criterion behind each.
 - **Authentication**: Keycloak OpenID Connect as today, plus the test identity
@@ -828,7 +828,7 @@ The first stack profile, and the one the marketplace uses.
   quickstart helpers. No route to any production namespace exists in the
   project's workflows.
 
-Why this stack: the org maintains it, it runs on the platform the marketplace
+Why this stack: the org maintains it, it runs on the platform the legacy service
 runs on today, it already references central workflows by version, it is
 TypeScript end to end like the current application so shared domain types can
 be carried over, and it has the design system built in.
@@ -867,11 +867,11 @@ availability.
 - **Fixture project**: a two-screen application with a known old version and a
   planted defect. The pipeline's CI runs the rebuild profile on it end to end
   with a mock executor. A pipeline change that breaks a stage breaks this.
-- **The marketplace run**: the real test. Its run record is the evidence.
+- **The service rebuild**: the real test. Its run record is the evidence.
 
 ---
 
-## 15. The marketplace run, phase by phase
+## 15. A rebuild run, phase by phase
 
 | Phase | Stages | Exit criterion | Gate holder role |
 |---|---|---|---|
@@ -883,9 +883,9 @@ availability.
 | 5 Rails | `operate` metrics, one feature through the full chain, one trivial change through the short circuit, harness improvements from the run record | The pipeline version bumps; rebuild two starts from the same config | Tech lead |
 
 Slice order for phase 4, first pass: public opportunity listing and detail;
-sign-in and organisation management; vendor proposal submission for Code With
-Us; government opportunity creation and publishing; evaluation and award;
-Sprint With Us and Team With Us variants; notifications; administration and
+sign-in and organisation management; vendor proposal submission for a standard
+program; government opportunity creation and publishing; evaluation and award;
+specialist program variants; notifications; administration and
 content.
 
 ---

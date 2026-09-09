@@ -4,8 +4,8 @@
     python3 build_poster.py
     python3 "$POSTER_KIT_DIR"/check_svg.py pipeline-poster.svg --margin 20
 
-POSTER_KIT_DIR points at the research-poster kit and defaults to
-~/.claude/skills/research-poster/scripts.
+POSTER_KIT_DIR must point at an explicit checkout of the research-poster kit's
+scripts. No personal skill installation is discovered automatically.
 
 Colour axis, held across the whole poster:
   green = deterministic, blocks or enforces     gold = human judgement, a gate
@@ -13,7 +13,9 @@ Colour axis, held across the whole poster:
 """
 
 import os, sys
-POSTER_KIT_DIR = os.environ.get("POSTER_KIT_DIR", os.path.expanduser("~/.claude/skills/research-poster/scripts"))
+POSTER_KIT_DIR = os.environ.get("POSTER_KIT_DIR")
+if not POSTER_KIT_DIR:
+    raise SystemExit("Set POSTER_KIT_DIR to the research-poster kit's scripts directory.")
 sys.path.insert(0, POSTER_KIT_DIR)
 from poster_kit import Poster, BCGOV
 
@@ -22,7 +24,7 @@ p = Poster(theme=BCGOV)
 
 p.header(
     title="Agentic SDLC pipeline",
-    subtitle="Proven by rebuilding the Digital Marketplace on a modern stack",
+    subtitle="Proven by rebuilding a legacy service on a modern stack",
     eyebrow="Design spec on one page",
     meta_left="Executor: local Claude Code   |   Gates: pull requests or local branches   |   State: git, no database",
     right_lines=["2026-09-05 · draft",
@@ -34,7 +36,7 @@ p.header(
 # 01 ---------------------------------------------------------------------------
 p.section("01", "What is being built, and why this project",
           blurb="Two products built together. The pipeline is the deliverable other teams "
-                "install. The marketplace rebuild is the evidence it works, and the first "
+                "install. The service rebuild is the evidence it works, and the first "
                 "opinionated stack it encodes. It is an experiment on a new repository with "
                 "no business owner: nothing ships to the live product.")
 
@@ -45,7 +47,7 @@ p.cards([
      "items": ["Installs into any project by reference, upgrades by bumping a version.",
                "Profiles: greenfield, rebuild, remediation, feature.",
                "Configurable opinions, fixed primitives."]},
-    {"title": "The marketplace rebuild", "acc": "navy",
+    {"title": "The service rebuild", "acc": "navy",
      "badge": ("The evidence", "tint"),
      "lead": "Same behaviour, modern stack, existing Postgres schema kept, deployed only to non-production environments.",
      "items": ["Old repo is a read-only input named in config.",
@@ -62,7 +64,7 @@ p.cards([
      "items": ["No decisions database, approval UI, policy editor or accounts.",
                "No agent framework: skills are configuration.",
                "No cloud agent as primary executor in this run.",
-               "No change to the live marketplace or its operations."]},
+               "No change to the live service or its operations."]},
 ])
 
 p.band("The claim the run exists to test",
@@ -126,7 +128,7 @@ p.cards([
                "bin/sdlc: the runner CLI.",
                "evals/ and fixture-project/: tests of the pipeline itself.",
                "docs/: stage contracts, config, dependency register, run records."]},
-    {"title": "Project repo: the marketplace rebuild", "acc": "navy",
+    {"title": "Project repo: the service rebuild", "acc": "navy",
      "lead": "Everything about one application, all of it files.",
      "items": [".sdlc/config.yaml, lock.json, personas/<role>.md.",
                "constitution.md, intent/, spec/ with features and contract.",
@@ -237,7 +239,7 @@ p.chain([
 
 p.band("Profiles select stages",
        "greenfield skips archaeology and calibrate · rebuild runs everything · remediation "
-       "skips intent and design · feature runs the short chain. The marketplace is the "
+       "skips intent and design · feature runs the short chain. The service is the "
        "rebuild profile. A trivial change takes the short circuit regardless of profile.",
        tone="tint", acc="navy")
 
@@ -369,7 +371,7 @@ p.cards([
     {"title": "Stack profile openshift-ts", "acc": "navy",
      "lead": "Scaffold from bcgov/quickstart-openshift.",
      "items": ["React, Vite, TanStack Router, BC Design System components.",
-               "NestJS, Prisma over the existing marketplace schema, Postgres.",
+               "NestJS, Prisma over the existing service schema, Postgres.",
                "Keycloak OIDC; tests sign in through a sandbox identity provider.",
                "Standards skill: layout, naming, errors, logging, API-first, tests, accessibility, plain language.",
                "Why: org-maintained, same platform as today, central workflows by version, TypeScript end to end."]},
@@ -421,30 +423,30 @@ p.cards([
      "items": ["Harness evals: prompt-and-check tasks asserting the agent follows a rule.",
                "Structural checks on artifact shape, every proposal, both repos.",
                "Fixture project with a planted defect, run end to end in the pipeline's own CI.",
-               "The marketplace run record is the real test."]},
+               "The service run record is the real test."]},
     {"title": "Slice order, first pass", "acc": "navy",
      "items": ["Public opportunity listing and detail.",
                "Sign-in and organisation management.",
-               "Vendor proposal for Code With Us; government create and publish.",
-               "Evaluation and award; Sprint With Us and Team With Us variants.",
+               "Vendor proposal submission; government create and publish.",
+               "Evaluation and award; specialist program variants.",
                "Notifications; administration and content."]},
 ], item_size=12.6)
 
 p.sources([
-    ["Design spec — docs/specs/2026-09-05-marketplace-rebuild-pipeline-design.md",
+    ["Design spec — docs/specs/2026-09-05-rebuild-pipeline-design.md",
      "Companion walkthrough — docs/poster/walkthrough.md",
      "tier2-v3 pack as installed — github.com/bcgov/bcparks-ar-admin-agentic"],
     ["github.com/github/spec-kit", "github.com/mattpocock/skills", "github.com/bcgov/crow",
      "github.com/bcgov/agent-skills", "github.com/bcgov/agent-guardrails"],
     ["github.com/bcgov/quickstart-openshift", "github.com/bcgov/design-system",
-     "github.com/bcgov/digital_marketplace", "github.com/DietrichGebert/ponytail"],
+     "Legacy source from project config", "github.com/DietrichGebert/ponytail"],
 ])
 
 p.footnote("Draft for review, 2026-09-05. Describes the design as specified, not as "
            "built. Nothing has been pushed to any remote.")
 
 info = p.write(os.path.join(HERE, "pipeline-poster.svg"),
-               title="Agentic SDLC pipeline, proven by rebuilding the Digital Marketplace",
+               title="Agentic SDLC pipeline, proven by rebuilding a legacy service",
                desc="A nine-section reference poster covering what is being built and why, the "
                     "criterion gold thread and six principles, the two repositories and "
                     "configuration, the artifacts, the fifteen stages, the six gates and "

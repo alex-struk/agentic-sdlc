@@ -110,10 +110,10 @@ No agent.
   `$XDG_CONFIG_HOME/agentic-sdlc/egress-names.txt` (defaulting to `~/.config`).
 
   Under `--self` one further pattern applies, case-insensitively, to every scanned file
-  except those under `docs/specs/` and `docs/poster/`: the name of the application this
-  pipeline was first built against. The pipeline is generic, and its code, tests, fixtures
-  and stage documentation must not carry the name of one engagement; the design spec that
-  records that engagement and the poster drawn from it are the two places it belongs.
+  and its filename: the name of the application this pipeline was first built against.
+  The pipeline is generic, so its code, tests, fixtures and all shipped documentation
+  must not carry the name of one engagement. Design specifications and generated posters
+  are checked by the same rule, with no documentation exception.
 
 ## Exit criterion
 

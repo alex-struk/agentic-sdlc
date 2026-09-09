@@ -234,7 +234,7 @@ test("criteria-index check: an index that does not parse fails", () => {
   assert.match(r.messages[0], /does not parse/);
 });
 
-test("egress --self flags the application name this pipeline must not carry, except in the two places it belongs", () => {
+test("egress --self flags project-specific names in code, all documentation and filenames", () => {
   const d = repo();
   const emptyNames = join(d, "names.txt");
   writeFileSync(emptyNames, "");
@@ -248,6 +248,7 @@ test("egress --self flags the application name this pipeline must not carry, exc
     mkdirSync(join(d, "docs", "poster"), { recursive: true });
     writeFileSync(join(d, "docs/specs/design.md"), `the ${word} rebuild\n`);
     writeFileSync(join(d, "docs/poster/walkthrough.md"), `the ${word} rebuild\n`);
+    writeFileSync(join(d, "docs", "specs", `${word}-reference.md`), "Generic content.\n");
     writeFileSync(join(d, "docs/other.md"), `the ${word} rebuild\n`);
     writeFileSync(join(d, "src.mjs"), `// A ${word.toUpperCase()} reference in code\n`);
     git(["add", "-A"], d);
@@ -257,9 +258,9 @@ test("egress --self flags the application name this pipeline must not carry, exc
     assert.ok(self.messages.some((m) => m.startsWith("docs/other.md:1:")), self.messages.join("\n"));
     // Case-insensitive.
     assert.ok(self.messages.some((m) => m.startsWith("src.mjs:1:")), self.messages.join("\n"));
-    // The design spec and the poster legitimately name it.
-    assert.ok(!self.messages.some((m) => m.startsWith("docs/specs/")), self.messages.join("\n"));
-    assert.ok(!self.messages.some((m) => m.startsWith("docs/poster/")), self.messages.join("\n"));
+    assert.ok(self.messages.some((m) => m.startsWith("docs/specs/design.md:1:")), self.messages.join("\n"));
+    assert.ok(self.messages.some((m) => m.startsWith("docs/poster/walkthrough.md:1:")), self.messages.join("\n"));
+    assert.ok(self.messages.some((m) => m.startsWith(`docs/specs/${word}-reference.md: filename`)), self.messages.join("\n"));
 
     // A project being checked is not this repository: the pattern is self-mode only.
     assert.equal(checkEgress(d, {}).ok, true);

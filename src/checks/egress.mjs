@@ -18,15 +18,11 @@ const PATTERNS = [
 ];
 const TEXT_EXT = /\.(md|mjs|js|ts|tsx|json|ya?ml|txt|sh|sql|feature|svg|py|html|css)$/i;
 
-// Patterns that apply only when this repository checks itself, each with the paths it
-// does not apply to. The pipeline is generic and its documentation, code, tests and
-// fixtures must not name the one application it was first built against; the two places
-// that legitimately do are the design spec that records that engagement and the poster
-// drawn from it. Assembled from pieces for the same reason as the patterns above: this
-// file is scanned too.
+// Self-only patterns apply to all shipped documentation as well as code and fixtures,
+// including design specifications and generated posters. Assembled from pieces for
+// the same reason as the patterns above: this file is scanned too.
 const SELF_PATTERNS = [
-  [new RegExp("market" + "place", "i"), "names the application this pipeline was first built against (rule E-2)",
-    ["docs/specs/", "docs/poster/"]],
+  [new RegExp("market" + "place", "i"), "names the application this pipeline was first built against (rule E-2)"],
 ];
 
 // In self mode every text file the scan lists is read. An allow list of directories is
@@ -77,7 +73,8 @@ export function checkEgress(projectDir, ctx = {}) {
     // A path git still tracks but that is gone from disk (deleted, not yet committed)
     // has no content to scan.
     if (!existsSync(join(projectDir, f))) continue;
-    const extra = ctx.self ? SELF_PATTERNS.filter(([, , exempt]) => !exempt.some((x) => f.startsWith(x))) : [];
+    const extra = ctx.self ? SELF_PATTERNS : [];
+    for (const [re, why] of extra) if (re.test(f)) messages.push(`${f}: filename ${why}`);
     const lines = readText(join(projectDir, f)).split("\n");
     lines.forEach((line, i) => {
       for (const [re, why] of PATTERNS) if (re.test(line)) messages.push(`${f}:${i + 1}: ${why}`);
