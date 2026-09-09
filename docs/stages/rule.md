@@ -93,7 +93,18 @@ When `--by agent:<persona>` names the gate's own `holder`, `sdlc rule` builds a 
   that order, so what falls off the end is the least important file rather than whichever one
   sorts last. When the cap does cut, the diff ends with `[<n> further changed file(s) not
   shown]`;
-- the structural checks, run on the proposal branch's current checkout.
+- the structural checks, run on the proposal branch's current checkout;
+- for G3 test and adapter proposals, a runner-owned TypeScript check tied to that checkout's
+  commit. The runner invokes the already-installed harness compiler directly, with no emit,
+  incremental output disabled and no shell or package lifecycle hooks. It supports the harness's
+  `tsc --noEmit` script; missing dependencies, missing configuration or a different script are
+  reported as unavailable, never as passed. It installs nothing. Diagnostics and the exit status
+  are supplied to the persona and recorded in the proposal page with its approve/return ruling.
+
+The blind test author has neither a shell nor installed dependencies in its scratch workspace.
+Dependencies visible to the reviewer in the project checkout do not prove that the author could
+run a typecheck. The runner owns compiler execution; the author can correct compiler errors
+reported in a return without receiving wider permissions.
 
 The agent turn runs with a tool list of `Read`, `Grep`, `Glob`, `Bash(git diff*)`, `Bash(git
 log*)` and `Bash(git status*)` — enough to look further into the branch than the diff in the

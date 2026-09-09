@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
@@ -11,7 +12,7 @@ import { propose } from "../src/commands/propose.mjs";
 import { ruleByAgent, rulePending, rulingTurns } from "../src/commands/rule.mjs";
 import { buildSite } from "../src/commands/status.mjs";
 
-const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
+const FROM = fileURLToPath(new URL("../fixture-project/fixture.config.yaml", import.meta.url));
 
 // A minimal hand-built project, the same shape test/gates.test.mjs uses: fast to set up
 // and free of the pack/egress machinery `newProject` brings along, for tests that only

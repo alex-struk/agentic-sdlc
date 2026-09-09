@@ -1553,10 +1553,13 @@ function followUpRulingsRead(read, domain) {
 // --revise` (G3) — neither cares which gate it is being asked about, only whether the
 // named proposal's own gate file, on its own branch, says `return`.
 function returnedRulingOn(projectDir, name, branch) {
-  const gatePath = join(".sdlc", "gates", `${name}.yaml`);
-  if (existsSync(join(projectDir, gatePath))) return null;
+  const gatePath = `.sdlc/gates/${name}.yaml`;
   let text;
   try { text = git(["show", `${branch}:${gatePath}`], projectDir); } catch { return null; }
+  // A full rerun can reuse a proposal name. Only the same recorded ruling is spent,
+  // not a newer return whose path happens to exist on main already.
+  if (gitOk(["cat-file", "-e", `main:${gatePath}`], projectDir)
+    && git(["show", `main:${gatePath}`], projectDir) === text) return null;
   const gate = parseYaml(text) ?? {};
   if (gate.verdict !== "return") return null;
   // A human ruling's free-text explanation is `note`; an agent's is `rationale`. Either
@@ -1614,8 +1617,8 @@ function findReturnedRuling(projectDir, domain) {
 // a fresh run needs clear. `keepBranch` picks between the two; `gate` only shapes the
 // commit subject (`record(G1): …` vs `record(G3): …`).
 function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", keepBranch = false } = {}) {
-  const gateRel = join(".sdlc", "gates", `${name}.yaml`);
-  const proposalRel = join(".sdlc", "proposals", `${name}.md`);
+  const gateRel = `.sdlc/gates/${name}.yaml`;
+  const proposalRel = `.sdlc/proposals/${name}.md`;
   writeText(join(projectDir, gateRel), `${git(["show", `${branch}:${gateRel}`], projectDir)}\n`);
   const staged = [gateRel];
   let proposalFound = true;

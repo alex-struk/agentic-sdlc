@@ -6,6 +6,7 @@ import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief } from "../runner/persona.mjs";
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
+import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { buildSite } from "./status.mjs";
 import { CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, unparsedCalibrateConditions, unparsedConditions } from "../spec/criteria.mjs";
 import { COMMANDS } from "../cli.mjs";
@@ -139,9 +140,10 @@ function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, me
   regenerateSiteOnMain(projectDir, `${name} escalated`);
 }
 
-function appendRulingSection(text, { verdict, by, rationale, conditions = [] }) {
+function appendRulingSection(text, { verdict, by, rationale, conditions = [], typecheck = null }) {
   const cond = conditions.length ? conditions.map((c) => `- ${c}`).join("\n") : "none";
-  return `${text}\n## Ruling\n\n**Verdict:** ${verdict}\n**By:** ${by}\n\n${rationale}\n\n**Conditions:**\n${cond}\n`;
+  const evidence = typecheck ? `\n### Runner-owned typecheck evidence\n\n${formatTypecheckEvidence(typecheck)}\n` : "";
+  return `${text}\n## Ruling\n\n**Verdict:** ${verdict}\n**By:** ${by}\n\n${rationale}\n\n**Conditions:**\n${cond}\n${evidence}`;
 }
 
 function openGate(projectDir, name) {
@@ -244,7 +246,11 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     return { verdict: "escalate", rationale, escalated: true };
   }
 
-  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate });
+  const typecheck = await acceptanceTypecheck(projectDir, {
+    name, gate, revision: git(["rev-parse", "HEAD"], projectDir),
+  });
+  assertCleanTree(projectDir, "rule: typecheck modified the working tree");
+  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate, typecheck });
   // A ruling reads and answers; it never writes. The tool list says so up front rather
   // than relying on the clean-tree check below to catch a turn that wrote anyway: the
   // read-only git commands are there because a persona legitimately wants to look
@@ -318,7 +324,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
 
   // The ruling has to land in the proposal page's own commit, not a follow-up one, so
   // it is appended and written before `commitRuling` stages and commits.
-  writeText(proposalPath, appendRulingSection(proposalText, { verdict, by, rationale, conditions }));
+  writeText(proposalPath, appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }));
   commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true });
   return { verdict, rationale, unparsed, escalated: false, ...metrics };
 }

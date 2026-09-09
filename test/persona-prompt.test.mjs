@@ -185,3 +185,27 @@ test("a G1 prompt keeps the 60 KB cap: a diff past it is cut and the cut is mark
   assert.match(prompt, /further changed file\(s\) not shown|\[truncated\]/);
   assert.match(prompt, /A statement\./, "the domain file is still first, so it survives the cut");
 });
+
+test("a G3 prompt distinguishes runner compiler evidence from the blind author's capabilities", async () => {
+  const dir = microProject();
+  const name = "derive-tests-applications";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, `.sdlc/proposals/${name}.md`, "---\ngate: G3\n---\n\n# Review these tests\n");
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "proposal"], dir);
+  const revision = git(["rev-parse", "HEAD"], dir);
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", {
+    tier: "STANDARD",
+    gate: "G3",
+    typecheck: {
+      revision, command: "node node_modules/typescript/bin/tsc --noEmit",
+      directory: "tests", status: "failed", exitCode: 2, output: "R-1.1.spec.ts: error TS2339",
+    },
+  });
+  assert.ok(prompt.includes(revision));
+  assert.match(prompt, /Typecheck: \*\*failed\*\*/);
+  assert.match(prompt, /error TS2339/);
+  assert.match(prompt, /gives its agent no shell/);
+  assert.match(prompt, /failed or unavailable check is not a pass/);
+  assert.match(prompt, /runner owns executing the check/);
+});

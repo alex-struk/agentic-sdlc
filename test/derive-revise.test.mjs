@@ -5,9 +5,10 @@
 // setup so a change to one never has to reckon with what another file's helpers assume.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
@@ -15,8 +16,8 @@ import { runStage } from "../src/commands/run.mjs";
 import { rule, ruleByAgent } from "../src/commands/rule.mjs";
 import { loadContract, generateTypes } from "../src/spec/surface.mjs";
 
-const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
-const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
+const FROM = fileURLToPath(new URL("../fixture-project/fixture.config.yaml", import.meta.url));
+const MOCK_DIR = fileURLToPath(new URL("../fixture-project/mock", import.meta.url));
 
 async function makeProject(tmp) {
   const prevEgress = process.env.SDLC_EGRESS_NAMES;
@@ -200,6 +201,57 @@ test("derive-tests --revise: with no returned ruling, fails the pre-check up fro
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.equal(git(["status", "--porcelain"], dir), "");
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(derive-tests\): pre-checks failed/);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("derive-tests --revise: an older ruling with the same name on main does not hide a new return", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-reused-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    const bin = join(dir, "tests", "node_modules", "typescript", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "tsc"), "");
+    await buildReturnedDeriveTests(dir);
+    const page = git(["show", "proposal/derive-tests-applications:.sdlc/proposals/derive-tests-applications.md"], dir);
+    assert.match(page, /Runner-owned typecheck evidence/);
+    assert.match(page, /Typecheck: \*\*passed\*\*/);
+    assert.ok(page.includes(git(["rev-parse", "proposal/derive-tests-applications^"], dir)));
+
+    writeFileSync(join(dir, ".sdlc", "gates", "derive-tests-applications.yaml"),
+      "gate: G3\nverdict: return\nby: agent:reviewer\nrationale: an older return\nconditions: []\n");
+    git(["add", ".sdlc/gates/derive-tests-applications.yaml"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "record older return"], dir);
+
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = standardReviseMockDir();
+    const result = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+    assert.equal(result.ok, true, JSON.stringify(result.messages));
+    assert.equal(result.proposal.name, "derive-tests-applications-2");
+    const recorded = parseYaml(git(["show", "main:.sdlc/gates/derive-tests-applications.yaml"], dir));
+    assert.deepEqual(recorded.conditions, RETURN_CONDITIONS);
+    assert.equal(gitOk(["rev-parse", "--verify", "returned/derive-tests-applications"], dir), true);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("derive-tests --revise: an identical ruling already on main stays spent", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-recorded-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    await buildReturnedDeriveTests(dir);
+    const gate = git(["show", "proposal/derive-tests-applications:.sdlc/gates/derive-tests-applications.yaml"], dir);
+    writeFileSync(join(dir, ".sdlc", "gates", "derive-tests-applications.yaml"), `${gate}\n`);
+    git(["add", ".sdlc/gates/derive-tests-applications.yaml"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "record current return"], dir);
+    const result = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.messages, ["derive-tests --revise: no returned ruling for applications to revise from"]);
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/derive-tests-applications"], dir), true);
+    assert.equal(gitOk(["rev-parse", "--verify", "returned/derive-tests-applications"], dir), false);
   } finally {
     restoreEgress(prevEgress);
   }

@@ -3,15 +3,16 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule } from "../src/commands/rule.mjs";
 
-const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
-const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
-const OLD_DIR = new URL("../fixture-project/old", import.meta.url).pathname;
+const FROM = fileURLToPath(new URL("../fixture-project/fixture.config.yaml", import.meta.url));
+const MOCK_DIR = fileURLToPath(new URL("../fixture-project/mock", import.meta.url));
+const OLD_DIR = fileURLToPath(new URL("../fixture-project/old", import.meta.url));
 
 // Same fixture-project setup `test/spec-stages.test.mjs` builds for archaeology: a
 // project whose config carries `sources.old`, pointing at a local git repo built from

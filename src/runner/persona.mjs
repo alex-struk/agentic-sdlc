@@ -4,6 +4,7 @@ import { readText } from "../lib/fsx.mjs";
 import { git } from "../lib/git.mjs";
 import { runChecks } from "../checks/index.mjs";
 import { formatChecks } from "../commands/checks.mjs";
+import { formatTypecheckEvidence } from "./typecheck.mjs";
 
 // The diff of files outside app/ is the reviewer's evidence, not a transcript to
 // reproduce in full: a proposal that touches a lot of generated or vendored text would
@@ -88,7 +89,7 @@ export function readPersonaBrief(projectDir, persona) {
   return readText(p);
 }
 
-export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null }) {
+export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null }) {
   const brief = readPersonaBrief(projectDir, persona);
   const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
   const proposal = readText(proposalPath);
@@ -142,6 +143,19 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
     "",
     checksText,
     "",
+    ...(typecheck ? [
+      "## Runner-owned typecheck evidence",
+      "",
+      formatTypecheckEvidence(typecheck),
+      "",
+      "This report was collected by the runner on the proposal checkout, not by the authoring agent.",
+      "The blind derive-tests workspace has no installed node_modules and gives its agent no shell.",
+      "Dependencies present in this review checkout were not necessarily present in that scratch workspace.",
+      "Use the report as compiler evidence; a failed or unavailable check is not a pass.",
+      "Do not send a requirement to execute the compiler back to a blind writer that cannot run it.",
+      "The writer can fix reported TypeScript errors; the runner owns executing the check.",
+      "",
+    ] : []),
     `Finish with one fenced \`\`\`json block: {"verdict": "approve"|"return"|"escalate", "rationale": "...", "conditions": [...]}. Nothing after the block.`,
   ].join("\n");
 }

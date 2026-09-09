@@ -170,7 +170,8 @@ a human decision about the domain, to find.
 `sdlc run derive-tests --domain <d> --revise` then looks for a returned ruling to revise from:
 among `proposal/derive-tests-<d>` (a full run), every `proposal/derive-tests-<d>-<n>` (an earlier
 revision of it), and every `proposal/derive-tests-<d>-stale-<n>` (a `--stale` re-run), the one whose
-gate file records `verdict: return` and has not already landed on `main`. None found fails the
+gate file records `verdict: return` and has not already landed on `main`. An older ruling at the
+same path does not count as recording a newer return from a full rerun. None found fails the
 pre-check with `derive-tests --revise: no returned ruling for <d> to revise from`.
 
 On a real run, once found, that branch's gate file and proposal page are copied onto `main`,
