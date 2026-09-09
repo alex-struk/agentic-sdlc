@@ -227,6 +227,27 @@ this family's first attempt. Its question is "Do the revised `<d>` tests now fol
 criteria and from nothing else?", with a recommendation taken from the journal the same way any
 other derive-tests proposal's is.
 
+## Feedback owned by another stage
+
+A G3 return can ask for a criterion to change rather than for its test to change. Sending that
+condition through `derive-tests --revise` cannot satisfy it: `spec/` is outside the stage's writeback
+scope. A receipt claiming a spec edit is not evidence that the edit reached the project.
+
+Route that decision through the existing G1 proposal path instead, without widening the test
+stage's permissions. Open `ratify-<d>-<n>` with `sdlc propose`, using the next unused follow-up
+number, `--gate G1`, and a page that quotes the originating G3 feedback and identifies the
+criteria to decide. Ask the G1 holder for conditions in the ratification grammar
+(`docs/stages/ratify.md`), not prose instructions for the test author. An approved follow-up is
+then applied by `sdlc run ratify --domain <d>`, which updates the domain file and both generated
+spec artifacts. A returned or escalated follow-up authorizes no spec change.
+
+Keep the original `proposal/<name>` branch carrying the G3 return until the G1 decision has
+been applied, then start `--revise` so its normal recording and overlay path has the returned
+payload. This is an explicit coordinator handoff, not an automatic G3 dispatcher. If that
+branch's payload is unavailable, a receipt cannot reconstruct it: recover the branch or
+deliberately start a fresh full derivation, without claiming to have preserved or revised tests
+that were not available.
+
 ## Failure modes
 
 Follows the same shapes every gated stage's failures do (`docs/stages/run.md`): a failing
