@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadContract, generateTypes, writeGenerated } from "../src/spec/surface.mjs";
+import { loadContract, generateTypes, writeGenerated, routeParams } from "../src/spec/surface.mjs";
 
 function project() {
   return mkdtempSync(join(tmpdir(), "sdlc-surface-"));
@@ -205,14 +205,14 @@ export interface Surface {
 }
 
 export interface OpportunityPage {
-  open(params?: Record<string, string>): Promise<void>;
+  open(params: { id: string }): Promise<void>;
   publish(input?: unknown): Promise<void>;
   closeEarly(input?: unknown): Promise<void>;
   status(): Promise<string>;
 }
 
 export interface VendorDashboardPage {
-  open(params?: Record<string, string>): Promise<void>;
+  open(): Promise<void>;
   opportunityCount(): Promise<string>;
 }
 `;
@@ -404,4 +404,17 @@ test("generateTypes: a name already in camel case keeps its capitals; a multi-wo
   // lowercased, and no adapter member would ever have matched it.
   assert.match(surface, /viewStatus\(input\?: unknown\): Promise<void>;/);
   assert.match(surface, /amountDue\(\): Promise<string>;/);
+});
+
+// `open` used to take `Record<string, string>`, which accepted any key at all. A contract
+// declaring `:userId` and a test calling `open({ user: … })` both compiled, and the two
+// halves of a blind suite only found out they disagreed at run time — seventy failures in
+// one calibration. Nothing here knows a parameter name: they come from the route itself.
+test("open is typed from the page's own route, whatever the route says", () => {
+  assert.deepEqual(routeParams("/users/:userId"), ["userId"]);
+  assert.deepEqual(routeParams("/opportunities/:program/:opportunityId"), ["program", "opportunityId"]);
+  assert.deepEqual(routeParams("/about"), []);
+  assert.deepEqual(routeParams(undefined), []);
+  // A query string is not a path parameter and must not become one.
+  assert.deepEqual(routeParams("/opportunities/:id?tab=addenda"), ["id"]);
 });

@@ -143,9 +143,28 @@ function capitalize(s) {
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
+// The named parameters of a route, in the order the route declares them: `/users/:userId`
+// gives `["userId"]`, `/opportunities/:program/:id` gives `["program", "id"]`. A route with
+// none gives an empty list.
+//
+// This is the whole of what makes `open` typed, and it is why nothing here knows the name
+// of any particular parameter: the contract's own route string is the only source, so the
+// same code serves any project.
+export function routeParams(route) {
+  return [...String(route ?? "").matchAll(/:([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+}
+
 // `surface.d.ts`: a `Surface` interface with the two fixed sign-in/out methods plus one
 // property per page, and one `<Pascal>Page` interface per page with `open` plus one
 // method per action (returns `Promise<void>`) and observation (returns `Promise<string>`).
+//
+// `open` is typed from the page's own route. A route carrying no parameters takes no
+// argument at all; one carrying `:userId` requires exactly `{ userId: string }`. It used to
+// take `Record<string, string>`, which accepted any key whatsoever — so a contract
+// declaring `:userId` and a test passing `{ user: … }` both compiled, and the mismatch
+// surfaced only as a run-time failure, seventy of them in one calibration. A generated type
+// that accepts anything is not a contract between the two halves of a blind suite; it is
+// the absence of one.
 // Pages, actions and observations are emitted in the order the YAML lists them — not
 // sorted — so the generated file reads the way the contract does.
 function generateSurfaceDts(contract) {
@@ -159,7 +178,10 @@ function generateSurfaceDts(contract) {
   lines.push("}");
   for (const page of pages) {
     lines.push("", `export interface ${toPascal(page.id)}Page {`);
-    lines.push("  open(params?: Record<string, string>): Promise<void>;");
+    const params = routeParams(page.route);
+    lines.push(params.length
+      ? `  open(params: { ${params.map((n) => `${n}: string`).join("; ")} }): Promise<void>;`
+      : "  open(): Promise<void>;");
     for (const action of Object.keys(page.actions || {})) {
       lines.push(`  ${toCamel(action)}(input?: unknown): Promise<void>;`);
     }
