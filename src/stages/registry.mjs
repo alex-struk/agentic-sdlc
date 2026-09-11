@@ -649,8 +649,18 @@ const contract = {
       oracle
         ? `6. ${oracleOverridePath(config)}: a Compose override for ${oracle.compose} that publishes the app on \${SDLC_APP_PORT}, the database on \${SDLC_DB_PORT}, adds a "mailpit" service (axllent/mailpit:v1.28.0) publishing its API on \${SDLC_MAIL_API_PORT}, points the app's own mail settings at that mailpit service, sets whatever environment the app needs to run outside production with its test sign-in routes enabled (use "!override" for any env_file the base compose file declares, so this override's own environment actually wins), and defines the migration one-off service the config names (${oracle.migrate_service ?? "none configured"}), if any.`
         : "6. This project configures no oracle, so there is nothing to write under .sdlc/oracle/.",
-      "Finish with your journal entry: say which pages exist, which sign-in method each persona uses, what the seed contains, and what could not be recovered.",
-    ];
+      oracle
+        ? [
+          "7. Then prove the override actually works, because nothing you can read tells you whether the application will start.",
+          "Run `sdlc oracle up`. Done is not \"a page was served\": done is that the migration ran, the seed loaded, and a record from tests/seed/manifest.yaml is visible through the application itself. An application that starts with a broken database connection also serves a page.",
+          "If it does not come up, read the container logs, change this override, and try again. Three attempts, not more. Each attempt rebuilds the image and takes minutes, and a failure you cannot fix in three is a failure a person needs to see.",
+          "You may change this override's environment, paths, ports and service definitions. You may not make the application easier to start by weakening it: do not skip or disable the migration, do not relax authentication or authorisation, do not stub out a service the application really uses, and do not set a flag that changes what the application does rather than where it runs. This target is the definition of correct behaviour for everything built against it, and an oracle that starts because it was weakened is worse than one that does not start at all.",
+          "Run `sdlc oracle down` before you finish, whatever the outcome. A container left running collides with the next run.",
+          "If it still will not start, that is a result and not a failure. Leave the override as your best honest attempt, and say in your journal exactly what happens, what you tried, and what you think is needed. A contract whose surface is complete and whose oracle does not start is a reasonable thing to put in front of a gate.",
+        ].join("\n\n")
+        : "",
+      "Finish with your journal entry: say which pages exist, which sign-in method each persona uses, what the seed contains, what could not be recovered, and — when this project has an oracle — whether the application started and what you had to change to get it there.",
+    ].filter(Boolean);
     return lines.join("\n\n");
   },
   proposal(ctx) {

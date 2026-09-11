@@ -61,6 +61,39 @@ names a criterion id from whichever domain it belongs to; `ratify --domain <d>` 
 ratify.md`, "Inputs") applies every condition whose id belongs to `<d>`, on the next run for that
 domain, the same way it applies its own archaeology and follow-up rulings.
 
+## Starting the oracle, when the project has one
+
+Writing the Compose override is not the same as knowing it works, and nothing the agent can read
+tells it whether the application will start. A file-storage path the image cannot create, an
+environment variable the application validates, a migration that needs a service that is not up:
+none of those are visible in source, and all of them are visible in an exit code. So the agent
+runs `sdlc oracle up` itself and iterates on its own override until the application serves.
+
+Three things bound that loop, and each exists for a reason.
+
+**Done is not "a page was served".** An application that starts against a broken database serves
+a page too. The bar is that the migration ran, the seed loaded, and a record named in
+`tests/seed/manifest.yaml` is visible through the application. That is the first point at which
+the target is behaving like the system the criteria describe.
+
+**Three attempts, not "until it works".** Each attempt rebuilds the image and costs minutes.
+A failure the agent cannot resolve in three is one a person needs to see, and an unbounded loop
+spends the stage's whole budget discovering that — leaving no contract at all, which is the worse
+of the two outcomes.
+
+**The target may not be weakened to make it start.** The agent may change the override's
+environment, paths, ports and service definitions. It may not skip or disable the migration,
+relax authentication or authorisation, stub out a service the application really uses, or set a
+flag that changes what the application does rather than where it runs. This target is the
+definition of correct behaviour for everything built against it: an oracle that starts because it
+was weakened is worse than one that does not start, because the weakening is invisible in every
+result that follows.
+
+An oracle that still will not start is a result rather than a failure. The agent leaves its best
+honest attempt in place and says in its journal what happens, what it tried and what it thinks is
+needed. A contract whose surface is complete and whose oracle does not start is a reasonable thing
+to put in front of a gate — the reviewer can weigh it, and a person can act on a named cause.
+
 ## Workspace the agent sees
 
 `stage.workspace` is a function of `config`: `with-sources` when `config.sources.old` is set,
