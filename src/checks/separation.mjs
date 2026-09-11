@@ -115,9 +115,19 @@ function findRouteLiteral(line) {
 // never assert (that is the test's job), never reach into the acceptance suite or the
 // application source it is meant to isolate the test from, and never define its own
 // `test(...)` block, which would make it a second, unblind copy of the suite.
+// Both call rules below exclude a preceding `.`, `?.` or identifier character, so they
+// match a bare call and not a method on something else. `\b` is not enough and was not:
+// it matches between the dot and the name, so `LOOKS_LIKE_A_VALUE.test(line)` — an
+// ordinary regular-expression test, which any adapter that reads text will contain — read
+// as a test definition. A 2,635-line adapter that had bound 658 of 680 members was
+// refused over nine of those, after ninety minutes of driving a real browser.
+const BARE_CALL = (name) => new RegExp(String.raw`(?<![.?\w$])${name}\s*\(`);
+const EXPECT_CALL = BARE_CALL("expect");
+const TEST_CALL = BARE_CALL("test");
+
 const ADAPTER_RULES = [
   {
-    test: (l) => (l.includes("expect(") ? "expect(" : null),
+    test: (l) => (EXPECT_CALL.test(l) ? "expect(" : null),
     message: () => "adapters must not assert: contains expect(",
   },
   {
@@ -126,7 +136,7 @@ const ADAPTER_RULES = [
     message: (p) => `adapters must not import from tests/acceptance or app/: ${p}`,
   },
   {
-    test: (l) => (/\btest\(/.test(l) ? "test(" : null),
+    test: (l) => (TEST_CALL.test(l) ? "test(" : null),
     message: () => "adapters must not define a test(): contains test(",
   },
 ];

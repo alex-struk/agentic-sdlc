@@ -386,3 +386,35 @@ test("separation: the harness fixture's own dynamic adapter import is not under 
   const r = checkSeparation(d);
   assert.equal(r.ok, true, r.messages.join(" | "));
 });
+
+// `\btest(` matched between the dot and the name, so an ordinary regular-expression test
+// read as a test definition. Any adapter that reads text from a page contains several.
+// One real adapter was refused over nine of them after ninety minutes of work, with 658
+// of its 680 members already bound. The same shape applies to `expect(`.
+test("adapter rules match a bare call, not a method on something else", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-sep-call-"));
+  mkdirSync(join(d, "tests/adapters/old"), { recursive: true });
+  const write = (body) => writeFileSync(join(d, "tests/adapters/old/index.ts"), body);
+
+  write([
+    "const LOOKS_LIKE_A_VALUE = /\\S/;",
+    "export function read(lines: string[]) {",
+    "  if (LOOKS_LIKE_A_VALUE.test(lines[0])) return lines[0];",
+    "  return /attachment/i.test(lines[1]) ? \"attachment\" : \"\";",
+    "}",
+    "export const latest = (x: string) => x;",
+  ].join("\n"));
+  const clean = checkSeparation(d);
+  assert.equal(clean.ok, true, `regex .test() and a name ending in "test" are not definitions: ${clean.messages.join("; ")}`);
+
+  write("test(\"nope\", async () => {});\n");
+  const defined = checkSeparation(d);
+  assert.equal(defined.ok, false);
+  assert.match(defined.messages.join("\n"), /must not define a test/);
+
+  write("export const x = page.expect(1);\n");
+  assert.equal(checkSeparation(d).ok, true, "a method called expect on something else is not an assertion");
+
+  write("expect(1).toBe(1);\n");
+  assert.equal(checkSeparation(d).ok, false, "a bare expect( still fails");
+});
