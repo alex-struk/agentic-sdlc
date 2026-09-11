@@ -1368,7 +1368,14 @@ const bindAdapter = {
     writeGenerated(wsDir);
   },
   mcp() {
-    return { playwright: { command: "npx", args: ["-y", "@playwright/mcp@0.0.80", "--headless", "--isolated"] } };
+    // `--browser chromium` is load-bearing: the server otherwise defaults to the Google
+    // Chrome *channel* and looks for an installed Chrome, which a CI image or a developer
+    // machine that only ever installed Playwright does not have. The failure is silent
+    // from the agent's side — every navigation fails before a page exists — and an
+    // adapter session that cannot open a page can only report everything unbound, which
+    // is a whole stage's budget spent to learn that a browser was missing. Chromium is
+    // the build `runSuite` already installs, so this asks for the one that is there.
+    return { playwright: { command: "npx", args: ["-y", "@playwright/mcp@0.0.80", "--headless", "--isolated", "--browser", "chromium"] } };
   },
   // No Bash: an adapter session drives the browser and edits files, and has no
   // business reaching a shell.
