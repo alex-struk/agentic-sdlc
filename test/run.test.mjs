@@ -518,9 +518,13 @@ test("runStage cleans up the temp workspace and skill dir when the agent turn th
   }
 });
 
-test("turnsFor: a budget under 1000 reads as a turn count, clamped to 400", () => {
+test("turnsFor: a budget under 1000 reads as a turn count, honoured up to the ceiling", () => {
   assert.equal(turnsFor({ policy: { budgets: { design: 12 } } }, "design"), 12);
-  assert.equal(turnsFor({ policy: { budgets: { design: 500 } } }, "design"), 400);
+  // Above the old 400 clamp and below the ceiling: honoured as written, because a budget a
+  // gate approved is not the runner's to quietly reduce. `checkConfig` refuses anything
+  // above the ceiling outright, so this path never has to silently cut one down.
+  assert.equal(turnsFor({ policy: { budgets: { design: 500 } } }, "design"), 500);
+  assert.equal(turnsFor({ policy: { budgets: { design: 999 } } }, "design"), 999);
 });
 
 test("turnsFor: a budget at or above 1000 is a token count, unconverted, so it falls back to 40", () => {

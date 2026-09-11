@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig, loadConfig } from "../src/config/load.mjs";
+import { checkConfig } from "../src/checks/config.mjs";
 
 const GOOD = `
 pipeline: { repo: agentic-sdlc, ref: v0.1.0 }
@@ -28,7 +29,7 @@ policy:
   default_tier: STANDARD
   rungs: {}
   triage: { direct_max_files: 3, direct_allowed_paths: [app/] }
-  budgets: { archaeology: 4000000, build: 3000000 }
+  budgets: { archaeology: 120, build: 400 }
 skills:
   packs:
     - { repo: mattpocock/skills, ref: 0123456789abcdef0123456789abcdef01234567, skills: [grilling, tdd] }
@@ -74,4 +75,28 @@ test("loadConfig reads a file and reports the same way parseConfig does", () => 
   const r = loadConfig(bad);
   assert.equal(r.config, null);
   assert.match(r.errors[0], /not valid YAML/);
+});
+
+// A budget the runner would ignore or reduce is worse than no budget: it reads as a cap a
+// gate approved and a run honoured, and it is neither. A real run lost a whole gate cycle
+// to this — a policy proposal raised a stage's budget to 1200, a persona approved it, and
+// the stage then ran with the 40-turn default, because 1200 reads as a token budget. The
+// refusal belongs in front of whoever proposes the number, not an hour into the stage it
+// was meant to size.
+test("checkConfig refuses a turn budget the runner would ignore or reduce", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-budget-"));
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  const write = (budgets) => writeFileSync(join(d, ".sdlc/config.yaml"),
+    GOOD.replace("budgets: { archaeology: 120, build: 400 }", `budgets: ${budgets}`));
+
+  write("{ design: 1200 }");
+  const tokenSized = checkConfig(d);
+  assert.equal(tokenSized.ok, false);
+  assert.match(tokenSized.messages.join("\n"), /policy\.budgets\.design is 1200[\s\S]*token budget[\s\S]*below 1000/);
+
+  write("{ design: 999 }");
+  assert.equal(checkConfig(d).ok, true, "the largest readable turn count passes");
+
+  write("{ design: 400 }");
+  assert.equal(checkConfig(d).ok, true, "a turn count inside the ceiling passes");
 });

@@ -22,6 +22,17 @@ export function writeMcpConfig(dir, mcpServers) {
 // The turn ceiling a session runs with when nothing else sets one.
 export const DEFAULT_MAX_TURNS = 40;
 
+// A budget at or above this reads as a leftover token budget rather than a turn count,
+// and is ignored. Below it, the value is a turn count and is honoured up to the ceiling.
+export const TOKEN_BUDGET_FLOOR = 1000;
+
+// The highest turn count any stage may be given: one below the token-budget floor, since
+// a larger number stops being readable as a turn count at all. It is a ceiling rather than
+// a clamp — `checkConfig` refuses a budget above it outright rather than letting this
+// quietly reduce one, because a budget a gate approved is not the runner's to halve in
+// silence. A stage that genuinely needs more turns than this needs splitting.
+export const MAX_TURNS_CEILING = TOKEN_BUDGET_FLOOR - 1;
+
 // `config.policy.budgets[<name>]` is documented as a token count, but `runAgent`'s
 // `maxTurns` wants a turn count and there is no token-to-turn conversion yet (that is
 // its own later task). A configured value under 1000 is small enough to read as a turn
@@ -38,7 +49,7 @@ const warnedBudgets = new Set();
 
 export function turnsFor(config, name, fallback = DEFAULT_MAX_TURNS) {
   const budget = config.policy?.budgets?.[name];
-  if (budget && budget < 1000) return Math.min(budget, 400);
+  if (budget && budget < TOKEN_BUDGET_FLOOR) return Math.min(budget, MAX_TURNS_CEILING);
   // A token-sized budget is configured, understood, and then ignored. Saying so out
   // loud is the difference between "this stage is capped where I set it" and the truth,
   // which is that it is capped at the default.
