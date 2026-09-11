@@ -1,7 +1,14 @@
 import { existsSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+
+// The runner's own entry point. A stage that lets its agent drive part of the pipeline has
+// to tell it how, because `sdlc` is not on anyone's PATH: the project invokes this file by
+// path, and so must the agent. Resolved here rather than imported from `new.mjs`, which
+// sits in an import cycle with `init.mjs`.
+const SDLC_BIN = resolve(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs");
 import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
@@ -653,16 +660,31 @@ const contract = {
       oracle
         ? [
           "7. Then prove the override actually works, because nothing you can read tells you whether the application will start.",
-          "Run `sdlc oracle up`. Done is not \"a page was served\": done is that the migration ran, the seed loaded, and a record from tests/seed/manifest.yaml is visible through the application itself. An application that starts with a broken database connection also serves a page.",
+          "Run `node $SDLC_BIN oracle up` — the CLI is not on PATH, so use that variable. Done is not \"a page was served\": done is that the migration ran, the seed loaded, and a record from tests/seed/manifest.yaml is visible through the application itself. An application that starts with a broken database connection also serves a page.",
           "If it does not come up, read the container logs, change this override, and try again. Three attempts, not more. Each attempt rebuilds the image and takes minutes, and a failure you cannot fix in three is a failure a person needs to see.",
           "You may change this override's environment, paths, ports and service definitions. You may not make the application easier to start by weakening it: do not skip or disable the migration, do not relax authentication or authorisation, do not stub out a service the application really uses, and do not set a flag that changes what the application does rather than where it runs. This target is the definition of correct behaviour for everything built against it, and an oracle that starts because it was weakened is worse than one that does not start at all.",
-          "Run `sdlc oracle down` before you finish, whatever the outcome. A container left running collides with the next run.",
+          "Run `node $SDLC_BIN oracle down` before you finish, whatever the outcome. A container left running collides with the next run.",
           "If it still will not start, that is a result and not a failure. Leave the override as your best honest attempt, and say in your journal exactly what happens, what you tried, and what you think is needed. A contract whose surface is complete and whose oracle does not start is a reasonable thing to put in front of a gate.",
         ].join("\n\n")
         : "",
       "Finish with your journal entry: say which pages exist, which sign-in method each persona uses, what the seed contains, what could not be recovered, and — when this project has an oracle — whether the application started and what you had to change to get it there.",
     ].filter(Boolean);
     return lines.join("\n\n");
+  },
+  // A shell, narrowed to the oracle's lifecycle and to reading back what it did. This stage
+  // writes the file that says how the target runs, and the only way to know whether that
+  // file works is to run it, so it is the one authoring stage with any shell at all. The
+  // patterns are the whole grant: it can bring the target up and down, read a container's
+  // logs, and ask the application for a page. It cannot install, build, publish or deploy.
+  allowedTools: [
+    "Read", "Write", "Edit", "Glob", "Grep",
+    "Bash(node *sdlc.mjs oracle*)",
+    "Bash(docker logs*)",
+    "Bash(curl -s*)",
+  ],
+  env() {
+    // `sdlc` is on nobody's PATH: the CLI is invoked by path, so the agent needs the path.
+    return { SDLC_BIN };
   },
   proposal(ctx) {
     const n = ctx.contractVersion ?? nextContractVersion(ctx.projectDir);

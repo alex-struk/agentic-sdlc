@@ -88,6 +88,13 @@ environment variable the application validates, a migration that needs a service
 none of those are visible in source, and all of them are visible in an exit code. So the agent
 runs `sdlc oracle up` itself and iterates on its own override until the application serves.
 
+This is the only authoring stage with a shell, and the grant is deliberately four patterns
+wide: bring the target up and down through the runner, read a container's logs, and ask the
+application for a page. It cannot install, build, publish or deploy. Agent sessions otherwise
+run in a mode that refuses a shell outright, which is why the first version of this step did
+nothing at all — the agent was refused on every attempt and correctly reported that it had made
+none. The CLI is on nobody's PATH, so the runner passes its own entry point as `$SDLC_BIN`.
+
 Three things bound that loop, and each exists for a reason.
 
 **Done is not "a page was served".** An application that starts against a broken database serves
