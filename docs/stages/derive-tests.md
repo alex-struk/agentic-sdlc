@@ -65,6 +65,28 @@ never sees the running application; a redo id is derived the same blind way a fr
   revising, "Do the revised <d> tests now follow from their criteria and from nothing else?") and a
   recommendation taken from the agent's own journal text.
 
+## Two kinds of untestable
+
+A criterion the surface cannot reach goes into `tests/acceptance/not-testable.yaml` rather than
+getting a file. Those entries used to be one undifferentiated pile, which is how a real project
+reached eighty-six of them with no way to tell, without reading all eighty-six, which were work
+and which were facts.
+
+They are now two, and the reason says which.
+
+**`blocked:`** — the contract could reach this and does not. An observation nobody wrote, a page
+never declared, a starting state the seed could have created. The reason names what would unblock
+it. These are work for the contract stage, and a run of them in one area is usually one missing
+thing rather than many: on the project above, twenty-three excused criteria in one domain all
+traced to a single state no screen could produce, which one seeded record would have provided.
+
+**`unobservable:`** — nothing this system does could show it, whatever the contract said. A claim
+about the inside of a job nobody can trigger, or a fact the service never puts on a page. These
+are permanent, and somebody accepts the risk rather than planning a fix.
+
+An agent that cannot tell writes `blocked:` and says what it would need to decide, because the
+cost of wrongly calling something permanent is that nobody ever looks at it again.
+
 ## Superseded criteria
 
 A criterion carrying `superseded-by` (`docs/spec-format.md`) has been replaced by another — a

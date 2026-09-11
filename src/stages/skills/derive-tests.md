@@ -40,6 +40,21 @@ you there — do not write a file for it. Add an entry to `tests/acceptance/not-
 instead: `{ id: <ID>, version: <n>, reason: "<why>" }`. A reason has to be real: name what is
 missing, not that the criterion is "hard" or "out of scope".
 
+Then say which of two things it is, because they are not the same and the difference is what
+someone does about it next.
+
+**Blocked**: the contract could reach this and does not. An observation nobody wrote, a page the
+surface never declared, a starting state the seed could create. Begin the reason with
+`blocked:` and name what would unblock it. These are work for the contract stage, and a run of
+them in one area usually means one missing thing rather than many.
+
+**Unobservable**: nothing this system does could show it, whatever the contract said. A claim
+about what happens inside a scheduled job nobody can trigger, or about a fact the service never
+puts on a page. Begin the reason with `unobservable:` and say why no addition would help. These
+are permanent, and somebody has to accept the risk rather than plan to fix it.
+
+If you cannot tell which, it is `blocked:` — say what you would need to decide.
+
 ## The journal
 
 Your final message is read by whoever rules this proposal and by whoever writes the contract
