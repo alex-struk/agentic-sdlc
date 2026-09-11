@@ -61,6 +61,25 @@ names a criterion id from whichever domain it belongs to; `ratify --domain <d>` 
 ratify.md`, "Inputs") applies every condition whose id belongs to `<d>`, on the next run for that
 domain, the same way it applies its own archaeology and follow-up rulings.
 
+## Route parameters a test can actually obtain
+
+A page's route may carry a parameter, and a test can only open that page if it can get a value
+for it. Two shapes make that impossible, and both went undetected on a real project until the
+generated types were tightened, at which point they accounted for 145 of 315 compile errors.
+
+The first is a record the test creates and then cannot address. A test drafts something, and the
+only handle it holds is the title it typed; the route wants an identifier, and nothing in the
+surface returns one. So the agent is told: if an action creates something the criteria later
+refer to, the page it lands on needs an observation returning that record's identifier.
+
+The second is a page that is also the signed-in person's own — their profile, their settings,
+their dashboard. Declared with a required parameter, a test acting as itself has no id to pass.
+That page needs its own parameterless entry as well.
+
+The rule the agent applies to every page it writes: a route parameter must be either a handle in
+`tests/seed/manifest.yaml` or the return of some observation. Anything else makes every criterion
+on that page untestable, and says so only much later, in a calibration run.
+
 ## Starting the oracle, when the project has one
 
 Writing the Compose override is not the same as knowing it works, and nothing the agent can read
