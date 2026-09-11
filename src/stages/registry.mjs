@@ -397,7 +397,11 @@ const archaeology = {
   proposal(ctx) {
     const d = ctx.domain;
     return {
-      name: `archaeology-${d}`,
+      // A revision deliberately reuses the name: `recordReturnOnMain` has already written
+      // the returned ruling onto `main`, and the re-run's own ruling replaces it, so the
+      // pair reads as one decision rather than two. Only a fresh run numbers, because that
+      // is the case where an earlier verdict is already recorded and settled.
+      name: ctx.revise ? `archaeology-${d}` : nextProposalName(ctx.projectDir, `archaeology-${d}`),
       question: ctx.revise
         ? `Is the revised ${d} domain right where the return said it was wrong?`
         : `Is this what the ${d} domain does, and which of it is the contract?`,
@@ -811,6 +815,20 @@ function nextDeriveTestsStaleVersion(projectDir, domain) {
 // as every earlier one. The regex requires a bare number after the domain, so it never
 // matches a `-stale-<n>` gate file, which counts toward `nextDeriveTestsStaleVersion`
 // instead — the two sequences are independent.
+// `<stem>` the first time, `<stem>-2` after that, counting the rulings already recorded
+// under that stem. A stage whose proposal name is a fixed string can only ever be run once
+// per project: the second run opens a proposal whose gate file already carries a verdict,
+// so `rule --pending` does not see it as open and the work sits on a branch nobody can
+// rule. That is not a hypothetical — three re-derivations worth $38 landed exactly there,
+// finished and unrulable, before this existed.
+export function nextProposalName(projectDir, stem) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return stem;
+  const re = new RegExp(`^${escapeRe(stem)}(-\\d+)?\\.yaml$`);
+  const n = readdirSync(dir).filter((f) => re.test(f)).length;
+  return n === 0 ? stem : `${stem}-${n + 1}`;
+}
+
 function nextDeriveTestsRevisionVersion(projectDir, domain) {
   const dir = join(projectDir, ".sdlc", "gates");
   if (!existsSync(dir)) return 1;
@@ -1155,7 +1173,7 @@ const deriveTests = {
     }
     const name = ctx.stale
       ? `derive-tests-${d}-stale-${ctx.deriveTestsStaleN ?? nextDeriveTestsStaleVersion(ctx.projectDir, d)}`
-      : `derive-tests-${d}`;
+      : nextProposalName(ctx.projectDir, `derive-tests-${d}`);
     return {
       name,
       question: `Do these tests follow from the ${d} criteria and from nothing else?`,
@@ -1290,11 +1308,7 @@ function checkBindAdapterTargetUp(ctx) {
 // Unlike `contract`, the un-numbered name is the one a fresh target gets; a number only
 // appears once a first ruling already exists to count.
 function nextBindAdapterName(projectDir, target) {
-  const dir = join(projectDir, ".sdlc", "gates");
-  if (!existsSync(dir)) return `bind-adapter-${target}`;
-  const re = new RegExp(`^bind-adapter-${escapeRe(target)}(-\\d+)?\\.yaml$`);
-  const n = readdirSync(dir).filter((f) => re.test(f)).length;
-  return n === 0 ? `bind-adapter-${target}` : `bind-adapter-${target}-${n + 1}`;
+  return nextProposalName(projectDir, `bind-adapter-${target}`);
 }
 
 // `bindings.yaml` names every action and observation the surface declares, on every

@@ -317,7 +317,12 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     // (the same object, so a stage's own `ctx.intentFile`-style side effect above still
     // reaches `proposal` through the spread) rather than passed as a separate argument,
     // so a `proposal(ctx)` written before this existed keeps working unchanged.
-    const p = stage.proposal({ ...ctx, agentText: result.text });
+    //
+    // `projectDir` is passed explicitly because it was missing here and present on the
+    // dry-run path above, which is why every stage that needs it to choose a name
+    // precomputes that name in `preChecks` and treats the call here as a fallback that
+    // never fires. A `proposal(ctx)` may rely on it.
+    const p = stage.proposal({ ...ctx, projectDir, agentText: result.text });
     const { branch } = propose(projectDir, p.name, {
       gate: stage.gate, question: p.question, recommendation: p.recommendation, page: result.text, paths: changed,
     });

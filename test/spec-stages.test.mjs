@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, cpSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, cpSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
@@ -348,9 +348,13 @@ test("sdlc run archaeology --domain applications: a second run while the proposa
     assert.equal(ruled.verdict, "approve");
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
+    // The fresh run after that ruling opens a NUMBERED proposal, not the same name again.
+    // Reusing it would produce a proposal whose gate file already carries a verdict, so
+    // `rule --pending` would not see it as open and the run's whole output would sit on a
+    // branch nobody could rule. Three re-derivations were lost that way before this.
     const third = await runStage(dir, "archaeology", { domain: "applications" });
     assert.equal(third.ok, true, JSON.stringify(third.messages));
-    assert.equal(third.proposal.branch, "proposal/archaeology-applications");
+    assert.equal(third.proposal.branch, "proposal/archaeology-applications-2");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -473,4 +477,29 @@ test("sdlc run archaeology: a mock that also writes app/x fails scope check", as
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }
+});
+
+// A stage whose proposal name is a fixed string can only ever run once per project. The
+// second run opens a proposal whose gate file already carries a verdict, so `rule
+// --pending` finds nothing open, prints nothing, exits zero, and the run's entire output
+// sits on a branch nobody can rule. Three re-derivations worth $38 landed there before
+// this test existed, finished and unrulable, and the symptom was silence.
+test("nextProposalName numbers a stem whose ruling is already recorded", async () => {
+  const { nextProposalName } = await import("../src/stages/registry.mjs")
+    .then((m) => ({ nextProposalName: m.nextProposalName }));
+  const d = mkdtempSync(join(tmpdir(), "sdlc-name-"));
+  mkdirSync(join(d, ".sdlc/gates"), { recursive: true });
+  const stem = "derive-tests-billing";
+
+  assert.equal(nextProposalName(d, stem), stem, "first run takes the bare stem");
+
+  writeFileSync(join(d, `.sdlc/gates/${stem}.yaml`), "verdict: approve\n");
+  assert.equal(nextProposalName(d, stem), `${stem}-2`, "a recorded verdict pushes the next run along");
+
+  writeFileSync(join(d, `.sdlc/gates/${stem}-2.yaml`), "verdict: return\n");
+  assert.equal(nextProposalName(d, stem), `${stem}-3`);
+
+  // A different domain sharing a prefix must not be counted.
+  writeFileSync(join(d, ".sdlc/gates/derive-tests-billing-reports.yaml"), "verdict: approve\n");
+  assert.equal(nextProposalName(d, stem), `${stem}-3`, "a longer stem is a different proposal");
 });
