@@ -3,9 +3,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { STAGES, PROFILES, stagesFor } from "../src/profiles.mjs";
 
-test("sixteen stages in spec order", () => {
-  assert.deepEqual(STAGES, ["init","intent","archaeology","ratify","contract","derive-tests","bind-adapter",
+// `bind-adapter` precedes `derive-tests`: an adapter is derived from the contract alone,
+// and until one exists nothing can execute, so a contract defect stays invisible through
+// every derivation that follows it (docs/decisions/0007-calibrate-before-mass-derivation.md).
+test("sixteen stages, binding before derivation", () => {
+  assert.deepEqual(STAGES, ["init","intent","archaeology","ratify","contract","bind-adapter","derive-tests",
     "calibrate","design","plan","build","verify","review-and-ship","deploy","operate","status"]);
+  assert.ok(STAGES.indexOf("bind-adapter") < STAGES.indexOf("derive-tests"));
+  assert.ok(STAGES.indexOf("derive-tests") < STAGES.indexOf("calibrate"));
 });
 
 test("profiles select stages as the spec says", () => {
