@@ -59,22 +59,31 @@ you did not find: "signed in as an administrator, opened the seeded closed oppor
 the consensus tab, no control labelled X" is a finding somebody can act on. "No control labelled
 X" on its own cannot be told apart from never having looked.
 
-## An empty answer means the page was empty
+## Empty or unbound: what decides it is whether you got there
 
-An observation returns what the page says. When it cannot find the thing at all, it throws
-`unbound:` — it never returns `""`, `null`, `0` or an empty list to mean "I could not read
-it". Those are answers, and a test will believe them.
+Every observation ends one of two ways, and the question that picks between them is whether
+you reached the place the contract describes.
 
-The cost of getting this wrong is not a wrong answer where you made the mistake; it is a
-confusing failure somewhere else. An observation that returns the empty string instead of a
-record's identifier hands that empty string to the next page's `open()`, which then reports
-that it was given no identifier — on a different page, in a different test, naming a problem
-the caller does not have. One such observation put nineteen tests onto a message that pointed
-at the wrong thing.
+**You could not reach it: throw `unbound:`.** The route would not open, the step before it
+could not be taken, the control the contract names is nowhere on the page. Say what you did to
+try.
 
-So: reading nothing is `unbound`, and empty is a value only when the page genuinely shows
-nothing. This is the same rule as never filtering a refusal before returning it. Either way
-the adapter's job is to report what is there and let the test decide what it means.
+**You reached it and it shows nothing: return empty.** The page loaded, you are where the
+contract says, and there is simply nothing there — a refused upload that stored no file, a
+panel with no evaluators on it, a label this program's page does not carry, a list with no
+rows. That emptiness is the answer, and tests assert it: many criteria are about something
+*not* being shown to somebody, and a reader that throws on a correctly empty page decides the
+test's outcome for it, which is the one thing an adapter may never do.
+
+Neither rule is a licence for the other. An empty string returned because you never found the
+page is a lie a test will believe: a record's identifier read as empty because the create step
+never landed on the record's screen gets handed to the next page's `open()`, which then reports
+a missing identifier in a different test, pointing at the wrong thing. And an `unbound:` thrown
+on a page that loaded and is legitimately empty fails a test whose whole point was that
+emptiness.
+
+So before you write either, ask one thing: did I get to the place? If not, `unbound:`. If yes,
+report exactly what is there, including nothing.
 
 ## When an action takes a file
 
