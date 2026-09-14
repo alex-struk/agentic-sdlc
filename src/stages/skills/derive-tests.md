@@ -63,8 +63,14 @@ somebody sees of their *own* record is usually answered by a page that asks for 
 nothing as unreachable until you have looked for that sibling and it is not there.
 
 And never do both. A criterion gets a test file or a `not-testable.yaml` entry, never one of
-each: an entry beside a test is a contradiction a check will refuse, and it means you stopped
-half way rather than deciding.
+each: an entry beside a test is a contradiction a check will refuse. Note that the workspace
+starts from the last approved derivation, so a criterion you decide is unreachable may already
+have a test file somebody else wrote. Deciding it is unreachable means deleting that file.
+
+One more thing to check before you give up on reaching a record: the seed's handles carry
+identifiers. `seed.users.<handle>.id` and its siblings are exactly what a page whose `open()`
+asks for one is asking for, so "I have no way to name this record" is almost never true of a
+record the seed defines.
 
 ## The journal
 

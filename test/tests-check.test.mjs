@@ -284,7 +284,11 @@ test("checkTests: a not-testable entry naming a criterion that also has a test f
   commit(d, "stage(derive-tests): R-1.1");
   const r = checkTests(d, { config: CONFIG_STANDARD });
   assert.equal(r.ok, false);
-  assert.ok(r.messages.some((m) => m.includes("R-1.1 also has a test")));
+  const m = r.messages.find((x) => x.includes("R-1.1 also has"));
+  assert.ok(m, r.messages.join(" | "));
+  // The message has to carry its remedy: the contradicting file is usually left over from
+  // an earlier derivation, not written by the run being told about it.
+  assert.match(m, /delete it, or delete the not-testable entry/);
 });
 
 test("checkTests: a malformed not-testable.yaml fails the check, naming the file, instead of reading back as empty", () => {

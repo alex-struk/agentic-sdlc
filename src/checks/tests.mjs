@@ -202,8 +202,15 @@ export function checkTests(projectDir, ctx = {}) {
       messages.push(`tests/acceptance/not-testable.yaml: ${entry?.id} is not an accepted criterion`);
     if (!entry?.reason || !String(entry.reason).trim())
       messages.push(`tests/acceptance/not-testable.yaml: ${entry?.id} has no reason`);
+    // Named with its remedy, because the file is usually not one this run wrote: a
+    // derivation starts from whatever the last approved one left behind, so deciding a
+    // criterion is unreachable leaves that earlier test sitting there contradicting the
+    // entry. A run told only that the two disagree has twice failed to work out that
+    // deleting the file is one of the two ways out.
     if (testedIds.includes(entry?.id))
-      messages.push(`tests/acceptance/not-testable.yaml: ${entry?.id} also has a test`);
+      messages.push(`tests/acceptance/not-testable.yaml: ${entry?.id} also has tests/acceptance/<domain>/${entry?.id}.spec.ts. `
+        + `A criterion is one or the other, never both. The file may be left over from an earlier derivation rather than written by this run: `
+        + `either delete it, or delete the not-testable entry and make the test work.`);
   }
 
   return { id, ok: messages.length === 0, messages, warnings, stale };
