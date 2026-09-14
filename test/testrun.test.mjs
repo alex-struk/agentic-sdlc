@@ -372,3 +372,29 @@ test("runSuite: SDLC_TEST_RUNNER=mock reads calibrate.json and still applies not
     if (prevMockDir === undefined) delete process.env.SDLC_MOCK_DIR; else process.env.SDLC_MOCK_DIR = prevMockDir;
   }
 });
+
+// A test that deactivates an account or grants administrator rights leaves it changed for
+// every test after it. The runner tells the harness how to put the data back; how a target
+// is reset is the runner's business, and a suite run by hand against a developer's own
+// sandbox is given no command and resets nothing.
+test("runSuite: the reset command reaches the harness in the environment, and only when there is one", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  writeReport(d, [fileSuite("opportunities", "R-1.1.spec.ts", "views a listing", "passed")]);
+
+  const withReset = [];
+  withBrowsersPath(true, () => runSuite({
+    projectDir: d, target: "old", baseUrl: "http://x", mailApi: "",
+    resetCommand: "node sdlc.mjs oracle reseed --target old",
+    exec: recordingExec(withReset),
+  }));
+  const run = withReset.find((c) => c.args.includes("test"));
+  assert.equal(run.env.SDLC_RESET_COMMAND, "node sdlc.mjs oracle reseed --target old");
+
+  const without = [];
+  withBrowsersPath(true, () => runSuite({
+    projectDir: d, target: "old", baseUrl: "http://x", mailApi: "", exec: recordingExec(without),
+  }));
+  assert.equal(without.find((c) => c.args.includes("test")).env.SDLC_RESET_COMMAND, undefined);
+});

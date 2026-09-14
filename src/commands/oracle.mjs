@@ -184,6 +184,58 @@ async function startOracle(projectDir, config, target) {
   return 0;
 }
 
+// The tables a reset leaves alone: a migration tool's own bookkeeping. Emptying those
+// would tell the application its schema had never been built, and the next thing to read
+// them would try to migrate an already-migrated database. The four names below are what
+// the common tools use; a project whose tool uses another name reseeds that table too and
+// has to say so, which is a change worth making when a project actually hits it rather
+// than a config key nobody sets.
+const MIGRATION_TABLES = ["knex_migrations", "knex_migrations_lock", "schema_migrations", "migrations"];
+
+// Empties every other table in one statement, worked out in the database rather than
+// listed here, so a schema that gains a table is covered without anybody remembering to
+// add it. `CASCADE` because the tables reference each other and no order would satisfy
+// them all; `RESTART IDENTITY` so a sequence does not carry numbers over from the run
+// before and make a generated id depend on how many tests ran first.
+export function truncateAllSql(keep = MIGRATION_TABLES) {
+  const list = keep.map((t) => `'${t}'`).join(", ");
+  return `DO $$
+DECLARE stmt text;
+BEGIN
+  SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+    INTO stmt
+    FROM pg_tables
+   WHERE schemaname = 'public' AND tablename NOT IN (${list});
+  IF stmt IS NOT NULL THEN
+    EXECUTE 'TRUNCATE TABLE ' || stmt || ' RESTART IDENTITY CASCADE';
+  END IF;
+END $$;`;
+}
+
+// `sdlc oracle reseed` — put the database back to what the seed describes, without
+// restarting anything. The acceptance suite runs it between tests: a test that deactivates
+// an account or grants somebody administrator rights leaves that account changed for every
+// test after it, and those tests then fail for a reason that has nothing to do with what
+// they are checking. One calibration lost seven criteria to exactly that, and the product
+// owner's answer was to make each test check its own accounts first, which is the symptom
+// rather than the cause.
+//
+// It reuses the seed the oracle was started with, so there is one description of the
+// starting state rather than a second one that could drift from it.
+function oracleReseed(projectDir, config, target) {
+  const local = readLocal(projectDir, target);
+  if (!local) { console.error(`oracle reseed: ${target} is not up; run sdlc oracle up first`); return 1; }
+  const db = config.oracle.db;
+  if (!db) { console.error("oracle reseed: config.oracle.db is not configured, so there is nowhere to load the seed into"); return 1; }
+  const opts = { cwd: projectDir, env: composeEnv(config, local.ports) };
+  const base = baseArgs(config, local.compose_project);
+  compose([...base, "exec", "-T", db.service, "psql", "-v", "ON_ERROR_STOP=1", "-U", db.user, "-d", db.database,
+    "-c", truncateAllSql()], opts);
+  const files = loadSeed(projectDir, config, base, opts);
+  console.log(`oracle reseed: ${target} (${files.length} seed file(s))`);
+  return 0;
+}
+
 function oracleDown(projectDir, config, target) {
   const local = readLocal(projectDir, target);
   const composeProject = local?.compose_project ?? `sdlc-${config.project.name}-${target}`;
@@ -214,8 +266,8 @@ function oracleStatus(projectDir, config, target) {
 // with an explicit `projectDir` rather than having to `process.chdir()` into a fixture
 // the way the real CLI's `process.cwd()` would require.
 export async function runOracle(projectDir, sub, { target: wantedTarget } = {}) {
-  if (!["up", "down", "status"].includes(sub)) {
-    console.error(`unknown oracle subcommand: ${sub ?? "(none)"}\nusage: sdlc oracle up|down|status [--target <t>]`);
+  if (!["up", "down", "status", "reseed"].includes(sub)) {
+    console.error(`unknown oracle subcommand: ${sub ?? "(none)"}\nusage: sdlc oracle up|down|status|reseed [--target <t>]`);
     return 2;
   }
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
@@ -227,6 +279,7 @@ export async function runOracle(projectDir, sub, { target: wantedTarget } = {}) 
     return 1;
   }
   if (sub === "up") return startOracle(projectDir, config, target);
+  if (sub === "reseed") return oracleReseed(projectDir, config, target);
   if (sub === "down") return oracleDown(projectDir, config, target);
   return oracleStatus(projectDir, config, target);
 }

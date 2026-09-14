@@ -7,6 +7,8 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { fileURLToPath } from "node:url";
+import { resolve as resolvePath } from "node:path";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
@@ -18,6 +20,16 @@ import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp } from "../commands/oracle.mjs";
 import { runSuite, sortRows } from "../testrun/playwright.mjs";
 import { propose } from "../commands/propose.mjs";
+
+// How the suite puts the target's data back between tests. Only the oracle has one: it is
+// the target this pipeline knows how to rebuild, through the same seed it started from. A
+// target with no configured database has nothing to reset and gets no command, so its suite
+// runs as it always did.
+function resetCommandFor(config, target) {
+  if (target !== config?.oracle?.target || !config?.oracle?.db) return undefined;
+  const bin = resolvePath(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs");
+  return `node ${JSON.stringify(bin)} oracle reseed --target ${target}`;
+}
 
 function calibrateResultsDir(projectDir, target) {
   return join(projectDir, "tests", "results", target);
@@ -603,7 +615,10 @@ export const calibrate = {
     if (ctx.skipSuite) {
       rows = previous?.rows ?? [];
     } else {
-      const { rows: fresh } = runSuite({ projectDir, target, baseUrl, mailApi, domain: ctx.domain });
+      const { rows: fresh } = runSuite({
+        projectDir, target, baseUrl, mailApi, domain: ctx.domain,
+        resetCommand: resetCommandFor(ctx.config, target),
+      });
       rows = ctx.domain === undefined ? fresh : mergeRows(projectDir, target, fresh);
     }
 

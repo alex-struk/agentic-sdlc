@@ -433,3 +433,17 @@ test("oracle up: oracle.seed points the loader at the directory it names, and de
     assert.match(piped[0].input, /db\/fixtures\/010-widgets\.sql$/);
   });
 });
+
+// The statement is worked out in the database rather than listed here, so a schema that
+// gains a table is covered without anybody remembering to add it — but a migration tool's
+// own bookkeeping is left alone, or the next thing to read it would try to migrate an
+// already-migrated database.
+test("oracle reseed empties every table but the migration tool's own", async () => {
+  const { truncateAllSql } = await import("../src/commands/oracle.mjs");
+  const sql = truncateAllSql();
+  assert.match(sql, /TRUNCATE TABLE ' \|\| stmt \|\| ' RESTART IDENTITY CASCADE/);
+  assert.match(sql, /schemaname = 'public'/);
+  for (const t of ["knex_migrations", "knex_migrations_lock", "schema_migrations", "migrations"]) {
+    assert.ok(sql.includes(`'${t}'`), t);
+  }
+});

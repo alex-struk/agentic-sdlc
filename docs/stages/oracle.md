@@ -112,3 +112,20 @@ and start again from nothing.
 - A seed file fails to load (a SQL error, a constraint violation): `up` exits 1 at that point, the
   database and any services already started are left running, and the failing file's own error is
   in the message — no later seed file is attempted.
+
+## `sdlc oracle reseed [--target <t>]`
+
+Puts the database back to what `tests/seed/*.sql` describes, without restarting anything: every
+table but the migration tool's own bookkeeping is emptied, then the same seed files `oracle up`
+loaded are applied again. The table list is worked out in the database rather than written down,
+so a schema that gains a table is covered; the four names left alone are the ones the common
+migration tools use.
+
+The acceptance suite runs it before every test, through `SDLC_RESET_COMMAND`, which `calibrate`
+sets for the oracle. A test that deactivates an account or grants somebody administrator rights
+otherwise leaves that account changed for every test after it, and those tests fail for reasons
+that have nothing to do with what they are checking — one calibration lost seven criteria that
+way. A target with no configured database has nothing to reset and is given no command, so a
+suite run by hand against a developer's own sandbox behaves as it always did.
+
+A reset that fails stops the test rather than letting it run against whatever was left behind.

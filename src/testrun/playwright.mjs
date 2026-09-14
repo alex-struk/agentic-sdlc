@@ -206,7 +206,11 @@ export function runSuite(opts) {
   // project, which makes checking one fix a whole afternoon; scoped, it is minutes. The
   // caller is responsible for merging the rows it gets back over the rows it already had —
   // a scoped run reports on its domain and says nothing about any other.
-  const { projectDir, target, baseUrl, mailApi, domain, env = {}, exec = defaultExec } = opts;
+  // `resetCommand` is what the harness runs before each test to put the target's data back
+  // to the seed. Passed as an environment variable rather than written into the harness,
+  // because how a target is reset is the runner's business and a suite run by hand against
+  // a developer's own sandbox has no reset at all.
+  const { projectDir, target, baseUrl, mailApi, domain, resetCommand, env = {}, exec = defaultExec } = opts;
 
   // The stale set and the not-testable rows both come from the project's real files
   // regardless of whether the suite itself actually ran — under mock there is no run to
@@ -228,6 +232,7 @@ export function runSuite(opts) {
     SDLC_TARGET: target,
     SDLC_TARGET_URL: baseUrl,
     SDLC_MAIL_API: mailApi,
+    ...(resetCommand ? { SDLC_RESET_COMMAND: resetCommand } : {}),
     ...env,
     // An absolute path, so where the report lands never depends on which directory
     // Playwright resolves a relative name against — and it is the same path
