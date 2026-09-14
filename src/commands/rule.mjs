@@ -8,7 +8,7 @@ import { buildPersonaPrompt, parseVerdict, readPersonaBrief } from "../runner/pe
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { buildSite } from "./status.mjs";
-import { CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, unparsedCalibrateConditions, unparsedConditions } from "../spec/criteria.mjs";
+import { CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, TRIAGE_GRAMMAR, unparsedCalibrateConditions, unparsedConditions, unparsedTriageConditions } from "../spec/criteria.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 function mergeApproved(projectDir, branch, message) {
@@ -192,8 +192,10 @@ function rulingFailure(result) {
 // persona wants to check does not fit in twelve turns — the ruling then fails at the
 // cap having written nothing. It runs with the stage default instead. Either ceiling is
 // overridden by `policy.budgets.rule`, read the same way a stage's budget is.
-export function rulingTurns(config, gate) {
-  return turnsFor(config, "rule", gate === "G1" ? DEFAULT_MAX_TURNS : 12);
+// A triage proposal is ruled at G3 but reads like a G1 one: a page of failures, each needing
+// its own verdict and evidence read against the adapter, so it gets the same budget.
+export function rulingTurns(config, gate, name = "") {
+  return turnsFor(config, "rule", gate === "G1" || name.startsWith("calibrate-triage-") ? DEFAULT_MAX_TURNS : 12);
 }
 
 // Which grammar a G1 ruling's conditions are read in. Two proposals reach G1 carrying
@@ -203,10 +205,16 @@ export function rulingTurns(config, gate) {
 // calibration grammar). The proposal's own name is what tells them apart — every
 // calibration proposal is `calibrate-<target>-<n>` — because a condition read in the
 // wrong grammar is not a parse error, it is a ruling that would be dropped in silence.
-function conditionGrammarFor(name) {
+//
+// A third family, `calibrate-triage-<target>-<n>`, is checked first because its name also
+// starts `calibrate-`: the reviewer's sorting of a calibration's failures, read in its own
+// two-verb grammar at G3, before any failure reaches the product owner.
+export function conditionGrammarFor(name) {
+  if (name.startsWith("calibrate-triage-"))
+    return { label: "triage", text: TRIAGE_GRAMMAR, unparsed: unparsedTriageConditions, checked: true };
   return name.startsWith("calibrate-")
-    ? { label: "calibration", text: CALIBRATE_GRAMMAR, unparsed: unparsedCalibrateConditions }
-    : { label: "ratification", text: CONDITION_GRAMMAR, unparsed: unparsedConditions };
+    ? { label: "calibration", text: CALIBRATE_GRAMMAR, unparsed: unparsedCalibrateConditions, checked: false }
+    : { label: "ratification", text: CONDITION_GRAMMAR, unparsed: unparsedConditions, checked: false };
 }
 
 // The agent path: no human types --by approve|return. A persona brief is handed to a
@@ -261,7 +269,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // whole ruling is abandoned. Only one: a turn that fails twice is failing for a reason
   // retrying will not fix, and `rule --pending` running a batch must not turn one broken
   // proposal into an unbounded loop.
-  const runRuling = (text) => runAgent({ cwd: projectDir, prompt: text, stage: "rule", maxTurns: rulingTurns(config, gate),
+  const runRuling = (text) => runAgent({ cwd: projectDir, prompt: text, stage: "rule", maxTurns: rulingTurns(config, gate, name),
     allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
 
   // One turn, its failure retried once, and the verdict read out of whatever came back.
@@ -295,7 +303,10 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // and the ruling proceeds: the verdict was reached and the reasoning is worth keeping,
   // and `ratify` refuses to act on that gate file until a person fixes the lines.
   const grammar = conditionGrammarFor(name);
-  let unparsed = gate === "G1" && verdict !== "escalate" ? grammar.unparsed(conditions) : [];
+  // Read as instructions at G1, and at G3 only for a triage proposal: every other G3 ruling's
+  // conditions are free-text notes to a writer, not something a stage executes.
+  const executable = gate === "G1" || grammar.checked;
+  let unparsed = executable && verdict !== "escalate" ? grammar.unparsed(conditions) : [];
   if (unparsed.length) {
     const again = [
       prompt,

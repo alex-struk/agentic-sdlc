@@ -58,7 +58,7 @@ function followUp(projectDir, stage, ctx, result) {
   return { ...result, proposal: opened };
 }
 
-export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false } = {}) {
+export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false, skipSuite = false } = {}) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
   assertOnMain(projectDir, "run");
@@ -71,7 +71,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // so a stage's own pre-checks — `archaeology`'s `checkRevisionSource` in particular —
   // can tell a dry run from a real one without `runStage` having to special-case any one
   // stage's side effects itself.
-  const ctx = { slice, domain, target, stale, config, revise, dryRun };
+  const ctx = { slice, domain, target, stale, config, revise, dryRun, skipSuite };
   // `stage.workspace` may be a plain string or a function of `config` — resolved once,
   // here, so every later use (`materialise`, the run-state a crashed session leaves for
   // `resume` to read, the dry-run print below) sees the same resolved mode rather than
@@ -249,6 +249,7 @@ COMMANDS.run = async ({ pos, flags }) => {
     dryRun: !!flags["dry-run"],
     again: !!flags.again,
     revise: !!flags.revise,
+    skipSuite: !!flags["skip-suite"],
   });
   if (r.dryRun) return 0;
   if (!r.ok) { console.error(`run ${pos[0]}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }

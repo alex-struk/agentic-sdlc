@@ -430,19 +430,34 @@ export const CALIBRATE_GRAMMAR = [
   "- `test-wrong <ID>: <why>` — the criterion is right and the test is not. The id goes to",
   "  `tests/acceptance/redo.yaml` for `derive-tests` to redo, still blind, and `<why>` records what",
   "  the test got wrong without describing how the application is built.",
-  "- `adapter-wrong <ID>: <why>` — the criterion and the test are both right, and this target's",
-  "  adapter is what failed: it read the wrong thing off the page, reported a control missing that",
-  "  the application does render, or answered empty where it could not read. Nothing about the",
-  "  criterion changes; the id goes to `tests/adapters/rebind.yaml` for `bind-adapter` to correct.",
   "",
   "The ID is the criterion's own id exactly as `spec/criteria-index.json` spells it. `defect-in-old`",
-  "takes no text; the other three require a colon and text on the same line. A condition may not",
-  "span more than one line.",
+  "takes no text; the other two require a colon and text on the same line. A condition may not span",
+  "more than one line.",
+].join("\n");
+
+// The reviewer's grammar for sorting a calibration's failures before any reach the product
+// owner. Whether the harness bound a page correctly is a technical question with a right
+// answer in the adapter's code, and the product owner is the wrong role to ask it: a real
+// product owner would never be asked whether a test's browser driver read the right element,
+// and a simulated one should not be either. So every failing row is looked at first by the
+// persona that already rules on adapters, and only the ones it passes on are put to the
+// product owner at all (`docs/decisions/0008-adapter-wrong.md`).
+export const TRIAGE_GRAMMAR = [
+  "One condition per line, one for every failing criterion the page lists, in exactly one of these forms:",
   "",
-  "Use `adapter-wrong` whenever the evidence points at the binding rather than at the product. The",
-  "other verbs fit badly and do harm: `defect-in-old` would make an adapter's bug an obligation on",
-  "the rebuild, and `test-wrong` would send a sound test back for a blind rewrite that hits the very",
-  "same binding again.",
+  "- `adapter-wrong <ID>: <why>` — the criterion and the test are both fine, and this target's adapter",
+  "  is what failed: it read the wrong thing off the page, reported a control missing that the page",
+  "  does render, or answered empty where it never reached the page. `<why>` names what the adapter",
+  "  did wrong, specifically enough for the next binding run to fix it. The criterion is not touched.",
+  "- `product-question <ID>` — nothing in the evidence points at the adapter. The failure goes to the",
+  "  product owner, who decides whether the application, the criterion or the test is wrong. No text",
+  "  after the ID.",
+  "",
+  "The ID is the criterion's own id exactly as `spec/criteria-index.json` spells it. A condition may",
+  "not span more than one line. When the evidence is genuinely unclear, it is a `product-question`:",
+  "a failure wrongly sent to the product owner is answered there, while one wrongly blamed on the",
+  "adapter comes back from the next binding run unchanged and costs a run to find out.",
 ].join("\n");
 
 // The note `defect-in-old` leaves on the criterion, without its date. Matched as a
@@ -459,8 +474,29 @@ function parseCalibrateCondition(line) {
   if ((m = /^defect-in-old\s+(\S+)\s*$/.exec(t))) return { verb: "defect-in-old", id: m[1] };
   if ((m = /^spec-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "spec-wrong", id: m[1], text: collapseWhitespace(m[2]) };
   if ((m = /^test-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "test-wrong", id: m[1], text: collapseWhitespace(m[2]) };
-  if ((m = /^adapter-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "adapter-wrong", id: m[1], text: collapseWhitespace(m[2]) };
   return null;
+}
+
+// The reviewer's two triage verbs, read on their own so a triage line can never be taken for
+// a product ruling or the other way round: each proposal family is read in its own grammar.
+function parseTriageCondition(line) {
+  const t = line.trim();
+  let m;
+  if ((m = /^adapter-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "adapter-wrong", id: m[1], text: collapseWhitespace(m[2]) };
+  if ((m = /^product-question\s+(\S+)\s*$/.exec(t))) return { verb: "product-question", id: m[1] };
+  return null;
+}
+
+export function triageConditionParses(line) {
+  return parseTriageCondition(line) !== null;
+}
+
+export function unparsedTriageConditions(lines) {
+  return (lines ?? []).filter((l) => !triageConditionParses(l));
+}
+
+export function parseTriageConditions(lines) {
+  return (lines ?? []).map((line) => ({ line, ...(parseTriageCondition(line) ?? {}) })).filter((c) => c.verb);
 }
 
 export function calibrateConditionParses(line) {
@@ -502,7 +538,6 @@ export function applyCalibrateRulings(criteria, conditions, today) {
   const byId = new Map(out.map((c) => [c.id, c]));
   const applied = [];
   const redo = [];
-  const rebind = [];
 
   for (const line of conditions) {
     const parsed = parseCalibrateCondition(line);
@@ -526,20 +561,13 @@ export function applyCalibrateRulings(criteria, conditions, today) {
         // both know which statement the test was judged wrong against.
         redo.push({ id, version: target.version, why: text });
         break;
-      case "adapter-wrong":
-        // Nothing about the criterion moves: this verb says the spec and the test were
-        // both right and the binding was not, so bumping a version or noting a defect
-        // would record a finding against the wrong artefact. The target is filled in by
-        // the caller, which is the only place that knows which one was calibrated.
-        rebind.push({ id, why: text });
-        break;
     }
     // The version recorded is the one the criterion carries *after* the ruling, so a row
     // is read as ruled only while the criterion is still the one that was ruled on.
     applied.push({ line, id, verb, version: target.version });
   }
 
-  return { criteria: out, applied, redo, rebind };
+  return { criteria: out, applied, redo };
 }
 
 // Applies `ratify`'s gate-file conditions to a domain's parsed criteria. Every condition

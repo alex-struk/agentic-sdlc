@@ -82,7 +82,10 @@ export function dropTestWrongRulings(projectDir, ids) {
     let doc;
     try { doc = parseYaml(readText(abs)) ?? {}; } catch { continue; }
     const rulings = Array.isArray(doc.rulings) ? doc.rulings : [];
-    const kept = rulings.filter((r) => !(r?.verb === "test-wrong" && wanted.has(r?.id)));
+    // The reviewer's `product-question` sorting of the same criterion goes too: it was a
+    // verdict about the test that has just been replaced, and a test written again can fail
+    // for a reason the adapter owns, so it is sorted afresh rather than sent straight on.
+    const kept = rulings.filter((r) => !((r?.verb === "test-wrong" || r?.verb === "product-question") && wanted.has(r?.id)));
     if (kept.length === rulings.length) continue;
     writeText(abs, stringifyYaml({ ...doc, rulings: kept }));
     changed.push(rel);

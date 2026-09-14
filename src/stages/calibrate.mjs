@@ -10,9 +10,9 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
-import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR, TRIAGE_GRAMMAR, parseTriageConditions } from "../spec/criteria.mjs";
 import { addRedo } from "../spec/redo.mjs";
-import { addRebind } from "../spec/rebind.mjs";
+import { addRebind, removeRebind } from "../spec/rebind.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp } from "../commands/oracle.mjs";
@@ -144,7 +144,6 @@ function applyCalibrateGates(projectDir, target, today) {
   const domainsDir = join(projectDir, "spec", "domains");
   const files = existsSync(domainsDir) ? readdirSync(domainsDir).filter((f) => f.endsWith(".md")).sort() : [];
   const redo = [];
-  const rebind = [];
   // Rulings that named a criterion in a file this pass would not rewrite, so they are not
   // recorded as applied and are read again next run.
   const held = new Set();
@@ -165,7 +164,7 @@ function applyCalibrateGates(projectDir, target, today) {
       for (const { line } of blocked) held.add(owner.get(line));
       continue;
     }
-    const { criteria: next, applied, redo: domainRedo, rebind: domainRebind } = applyCalibrateRulings(criteria, conditions, today);
+    const { criteria: next, applied, redo: domainRedo } = applyCalibrateRulings(criteria, conditions, today);
     // No condition named a criterion in this file, so this pass has no business writing
     // it — not even to the byte-identical text the serialiser would produce for a file
     // already in canonical shape, and certainly not to the reformatted text it would
@@ -173,7 +172,6 @@ function applyCalibrateGates(projectDir, target, today) {
     if (applied.length === 0) continue;
     for (const a of applied) result.applied.push({ ...a, gate: owner.get(a.line) ?? null });
     redo.push(...domainRedo);
-    rebind.push(...domainRebind);
     const serialised = serialiseDomainFile(next, domain, preamble);
     if (serialised !== original) {
       writeText(abs, serialised);
@@ -185,11 +183,6 @@ function applyCalibrateGates(projectDir, target, today) {
   const redoPath = addRedo(projectDir, redo);
   if (redoPath) result.changed.push(redoPath);
 
-  // The target is stamped on here, not in `applyCalibrateRulings`: which target a
-  // calibration ran against is this stage's business, and a finding about one adapter says
-  // nothing about another's.
-  const rebindPath = addRebind(projectDir, rebind.map((e) => ({ ...e, target })));
-  if (rebindPath) result.changed.push(rebindPath);
 
   // A condition no domain claimed names an id the project does not have — a typo, or an
   // id from before a domain was renamed — or belongs to a file this pass refused to
@@ -227,6 +220,84 @@ function applyCalibrateGates(projectDir, target, today) {
   return result;
 }
 
+// The tree the adapter for this target has at `HEAD`, as git names it. An `adapter-wrong`
+// verdict is a finding about one version of the adapter, so it is recorded against this and
+// lapses once the adapter has changed — see `expireAdapterVerdicts`.
+function adapterTree(projectDir, target) {
+  const ref = `HEAD:tests/adapters/${target}`;
+  return gitOk(["rev-parse", ref], projectDir) ? git(["rev-parse", ref], projectDir) : "";
+}
+
+function writeApplied(projectDir, target, applied, rulings) {
+  const rel = `tests/results/${target}/applied.yaml`;
+  const abs = join(projectDir, rel);
+  const seen = new Set();
+  const unique = rulings.filter((r) => { const k = JSON.stringify(r); if (seen.has(k)) return false; seen.add(k); return true; });
+  const text = stringifyYaml({ applied, rulings: unique });
+  const existing = existsSync(abs) ? readText(abs) : undefined;
+  if (existing === text) return null;
+  writeText(abs, text);
+  return rel;
+}
+
+// Every approved triage ruling for this target not applied before. The reviewer sorts a
+// calibration's failures before any reaches the product owner: `adapter-wrong` puts the
+// criterion on the rebind list and takes its row out of both queues, and `product-question`
+// marks the row as sorted so the product owner is asked about it. Neither touches the spec,
+// because both say the spec is not where the trouble is — or not yet known to be.
+export function applyTriageGates(projectDir, target) {
+  const result = { changed: [], applied: [], gateNames: [] };
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return result;
+  const re = new RegExp(`^calibrate-triage-${escapeRe(target)}-(\\d+)\\.yaml$`);
+  const names = readdirSync(dir)
+    .map((f) => [f, re.exec(f)]).filter(([, m]) => m)
+    .sort((a, b) => Number(a[1][1]) - Number(b[1][1]))
+    .map(([f]) => f.replace(/\.yaml$/, ""));
+  const state = readCalibrateApplied(projectDir, target);
+  const { byId } = calibrateIndex(projectDir);
+  const tree = adapterTree(projectDir, target);
+  const rebind = [];
+  for (const name of names) {
+    if (state.applied.includes(name)) continue;
+    let gate;
+    try { gate = parseYaml(readText(join(dir, `${name}.yaml`))) ?? {}; } catch { continue; }
+    if (gate.verdict !== "approve") continue;
+    for (const c of parseTriageConditions((gate.conditions ?? []).map(String))) {
+      const version = byId.get(c.id)?.version;
+      if (version === undefined) continue;
+      result.applied.push({ id: c.id, version, verb: c.verb, gate: name, ...(c.verb === "adapter-wrong" ? { adapter: tree } : {}) });
+      if (c.verb === "adapter-wrong") rebind.push({ id: c.id, target, why: c.text });
+    }
+    result.gateNames.push(name);
+  }
+  if (result.gateNames.length === 0) return result;
+  const rel = writeApplied(projectDir, target, [...state.applied, ...result.gateNames], [...state.rulings, ...result.applied]);
+  if (rel) result.changed.push(rel);
+  const rebindPath = addRebind(projectDir, rebind);
+  if (rebindPath) result.changed.push(rebindPath);
+  return result;
+}
+
+// An `adapter-wrong` verdict lapses once the adapter it was about has changed. Kept for ever,
+// it would hold a criterion out of both queues after the binding run meant to fix it had
+// already landed — so a fix that did not work would never be noticed, because nothing would
+// ask about the row again. Dropped here, the row is a question again on this run: if it now
+// passes, nothing more happens, and if it still fails, the reviewer sees it afresh. Its entry
+// on the rebind list goes too, since a new adapter has been written since it was added.
+export function expireAdapterVerdicts(projectDir, target) {
+  const state = readCalibrateApplied(projectDir, target);
+  const tree = adapterTree(projectDir, target);
+  const lapsed = state.rulings.filter((r) => r?.verb === "adapter-wrong" && r.adapter !== tree);
+  if (lapsed.length === 0) return [];
+  const changed = [];
+  const rel = writeApplied(projectDir, target, state.applied, state.rulings.filter((r) => !lapsed.includes(r)));
+  if (rel) changed.push(rel);
+  const rebindPath = removeRebind(projectDir, target, lapsed.map((r) => r.id));
+  if (rebindPath) changed.push(rebindPath);
+  return changed;
+}
+
 // The rulings this run applied, committed on their own before the suite runs. Applying a
 // ruling rewrites tracked spec files and the criteria index; running a suite afterwards
 // can throw for reasons that have nothing to do with those edits (no browser, no npm
@@ -256,8 +327,16 @@ function commitAppliedRulings(projectDir, rulings, paths) {
 // produced, so a criterion later moved on again by archaeology or another calibration
 // pass comes back unruled and is asked about afresh.
 function calibrateRuledVerb(rulings, id, version) {
-  const matches = rulings.filter((r) => r?.id === id && r?.version === version);
+  // `product-question` is not a ruling: it says a failure is the product owner's to rule
+  // on, and until they have, the row is still an open question.
+  const matches = rulings.filter((r) => r?.id === id && r?.version === version && r?.verb !== "product-question");
   return matches.length ? matches[matches.length - 1].verb : null;
+}
+
+// Whether the reviewer has sorted this row and passed it on, on the same version-bound
+// reading as a ruling: a criterion that has moved on since is sorted afresh.
+function calibrateTriagedForProduct(rulings, id, version) {
+  return rulings.some((r) => r?.id === id && r?.version === version && r?.verb === "product-question");
 }
 
 // Rows this target's results file must account for: every accepted criterion of every
@@ -320,6 +399,17 @@ function mergeRows(projectDir, target, fresh) {
 // project has, and there has to be a full result set already: a scoped run lays its rows
 // over the ones on file, and with nothing to lay them over the result would be a results
 // file that accounts for one domain and silently omits the other seven.
+// `--skip-suite` works over the rows already on file, so there must be some, and they must be
+// a full set: combined with `--domain` it would have nothing to narrow, since no suite runs.
+function checkCalibrateSkipSuite(projectDir, ctx) {
+  const id = "calibrate-skip-suite";
+  if (!ctx.skipSuite) return { id, ok: true, messages: [] };
+  if (ctx.domain !== undefined) return { id, ok: false, messages: ["calibrate: --skip-suite runs no tests, so --domain has nothing to narrow"] };
+  if (!existsSync(join(calibrateResultsDir(projectDir, ctx.target), "latest.json")))
+    return { id, ok: false, messages: [`calibrate --skip-suite: no results on file for ${ctx.target}; run calibrate first`] };
+  return { id, ok: true, messages: [] };
+}
+
 function checkCalibrateDomain(projectDir, ctx) {
   const id = "calibrate-domain";
   if (ctx.domain === undefined) return { id, ok: true, messages: [] };
@@ -391,22 +481,28 @@ function trimFailure(text, limit = 20) {
 // back on the next run's proposal, once these have been answered.
 const CALIBRATE_PAGE_CAP = 40;
 
-function calibratePage(target, baseUrl, rows, byId) {
+// The reviewer's page: the same evidence the product owner's carries, framed as the one
+// technical question that has to be settled before theirs can be asked. Where the adapter
+// lives is named, because the adapter is where the answer is visible.
+function triagePage(target, baseUrl, rows, byId) {
   const shown = rows.slice(0, CALIBRATE_PAGE_CAP);
   const lines = [
-    `${rows.length} criterion(s) failed against the **${target}** target at ${baseUrl}, with no ruling yet.`,
-    "The tests are blind: they were written from the criteria alone, by an agent that never saw the",
-    "application. So a failure means one of exactly three things, and only you can say which:",
-    "the application is wrong, the criterion is wrong, or the test is wrong.",
-    "",
-    "Rule on each one below. Until every failure carries a ruling, this question is asked again on",
-    "every calibration run.",
+    `${rows.length} criterion(s) failed against the **${target}** target at ${baseUrl}, and nobody has sorted them yet.`,
+    `Before any reaches the product owner, say which of them this project's own adapter caused. The adapter is`,
+    `under \`tests/adapters/${target}/\`; read each failure against it and against the test.`,
     "",
   ];
   if (shown.length < rows.length) {
-    lines.push(`The ${shown.length} below are the ones to rule on now; the remaining ${rows.length - shown.length} come back on the next calibration run.`, "");
+    lines.push(`The ${shown.length} below are the ones to sort now; the remaining ${rows.length - shown.length} come back on the next run.`, "");
   }
-  for (const row of shown) {
+  lines.push(...failureSections(shown, byId));
+  lines.push("## Triage conditions", "", TRIAGE_GRAMMAR, "");
+  return lines.join("\n");
+}
+
+function failureSections(rows, byId) {
+  const lines = [];
+  for (const row of rows) {
     const c = byId.get(row.id);
     lines.push(`### ${row.id} · v${c?.version ?? row.version}`, "");
     if (c?.statement) lines.push(c.statement, "");
@@ -422,14 +518,34 @@ function calibratePage(target, baseUrl, rows, byId) {
       lines.push("```", trimFailure(t.error ?? row.error ?? "(no failure message recorded)"), "```", "");
     }
   }
+  return lines;
+}
+
+function calibratePage(target, baseUrl, rows, byId) {
+  const shown = rows.slice(0, CALIBRATE_PAGE_CAP);
+  const lines = [
+    `${rows.length} criterion(s) failed against the **${target}** target at ${baseUrl}, with no ruling yet.`,
+    "The tests are blind: they were written from the criteria alone, by an agent that never saw the",
+    "application. So a failure means one of exactly three things, and only you can say which:",
+    "the application is wrong, the criterion is wrong, or the test is wrong.",
+    "",
+    "Rule on each one below. Until every failure carries a ruling, this question is asked again on",
+    "every calibration run.",
+    "",
+  ];
+  if (shown.length < rows.length) {
+    lines.push(`The ${shown.length} below are the ones to rule on now; the remaining ${rows.length - shown.length} come back on the next calibration run.`, "");
+  }
+  lines.push(...failureSections(shown, byId));
   lines.push("## Calibration conditions", "", CALIBRATE_GRAMMAR, "");
   return lines.join("\n");
 }
 
 // `calibrate` holds no gate and spawns no agent (`agent: false`, like `ratify`): running
-// a suite and mapping its report onto criteria is mechanical, and the one judgement in
-// the stage — what a failure means — is the product owner's, asked at G1 through the
-// proposal `followUp` opens rather than by an agent turn here.
+// a suite and mapping its report onto criteria is mechanical. The judgement in the stage —
+// what a failure means — is asked of two personas in turn, through the proposals `followUp`
+// opens: the reviewer first sorts out the failures the project's own adapter caused, at G3,
+// and only what it passes on goes to the product owner at G1.
 export const calibrate = {
   name: "calibrate",
   title: (ctx) => (ctx?.target ? `calibrate against ${ctx.target}` : "calibrate"),
@@ -444,12 +560,22 @@ export const calibrate = {
     const today = new Date().toISOString().slice(0, 10);
     const changed = [];
 
+    // `--skip-suite` applies whatever rulings came back and asks the next question, over the
+    // rows already on file, without running anything. Sorting a calibration's failures and
+    // then ruling on what is left are two rulings in a row with no change to the application
+    // between them, and re-running a suite that takes hours to learn nothing new between the
+    // two would make every calibration cost a morning more than it has to.
+    const previous = ctx.skipSuite ? readLatestResults(projectDir, target).results : null;
+
     // 1. Where to point, and — for the oracle — that it is actually running.
-    const { baseUrl, mailApi, configured } = await calibrateEndpoint(projectDir, ctx, target);
+    const { baseUrl, mailApi, configured } = ctx.skipSuite
+      ? { baseUrl: "", mailApi: "", configured: previous?.base_url ?? "" }
+      : await calibrateEndpoint(projectDir, ctx, target);
 
     // 2. Every ruling that came back since the last run, applied to the spec.
     const rulings = applyCalibrateGates(projectDir, target, today);
-    const rulingPaths = [...rulings.changed];
+    const triage = applyTriageGates(projectDir, target);
+    const rulingPaths = [...new Set([...rulings.changed, ...triage.changed, ...expireAdapterVerdicts(projectDir, target)])];
 
     // The index and the spec page are regenerated here, before the suite runs, rather
     // than after it: a `spec-wrong` ruling bumps a criterion's version, and staleness is
@@ -466,14 +592,20 @@ export const calibrate = {
     // Committed here, before anything that can throw. `changed` still names these paths
     // when the commit did not happen, so the ordinary path — nothing to apply, nothing
     // committed — is unchanged.
-    if (!commitAppliedRulings(projectDir, rulings, rulingPaths)) changed.push(...rulingPaths);
+    const allRulings = { ...rulings, gateNames: [...rulings.gateNames, ...triage.gateNames] };
+    if (!commitAppliedRulings(projectDir, allRulings, rulingPaths)) changed.push(...rulingPaths);
 
     // 3. The suite itself, against the target. `--domain` narrows it to one domain, which
     // turns an afternoon into minutes when what is being checked is one fix; the rows it
     // returns are merged over the ones already on file, so `latest.json` stays a complete
     // account of every criterion rather than becoming a partial one.
-    const { rows: fresh } = runSuite({ projectDir, target, baseUrl, mailApi, domain: ctx.domain });
-    const rows = ctx.domain === undefined ? fresh : mergeRows(projectDir, target, fresh);
+    let rows;
+    if (ctx.skipSuite) {
+      rows = previous?.rows ?? [];
+    } else {
+      const { rows: fresh } = runSuite({ projectDir, target, baseUrl, mailApi, domain: ctx.domain });
+      rows = ctx.domain === undefined ? fresh : mergeRows(projectDir, target, fresh);
+    }
 
     // 4. The result set: a dated file per run, and `latest.json` beside it for everything
     // that just wants the current state. `base_url` is the target's configured URL, not
@@ -482,14 +614,20 @@ export const calibrate = {
     // be a local accident in shared history.
     const { generatedFrom, byId } = calibrateIndex(projectDir);
     const applied = readCalibrateApplied(projectDir, target);
-    const ruledRows = rows.map((row) => {
-      const verb = row.id ? calibrateRuledVerb(applied.rulings, row.id, byId.get(row.id)?.version) : null;
-      return verb ? { ...row, ruled: verb } : row;
+    // Rows read back from a file already carry the marks of the run that wrote them, so they
+    // are cleared first and worked out again from the rulings as they stand now.
+    const ruledRows = rows.map(({ ruled: _r, triage: _t, ...row }) => {
+      const version = row.id ? byId.get(row.id)?.version : undefined;
+      const verb = row.id ? calibrateRuledVerb(applied.rulings, row.id, version) : null;
+      const sorted = row.id && !verb && calibrateTriagedForProduct(applied.rulings, row.id, version);
+      return { ...row, ...(verb ? { ruled: verb } : {}), ...(sorted ? { triage: "product-question" } : {}) };
     });
     const results = { target, base_url: configured, spec: generatedFrom, at: new Date().toISOString(), rows: ruledRows };
     const text = `${JSON.stringify(results, null, 2)}\n`;
     const dir = calibrateResultsDir(projectDir, target);
-    for (const name of [nextDatedResultsName(dir, today), "latest.json"]) {
+    // A run that ran nothing writes no dated file: that file is the record of a suite having
+    // run, and a second one for the same results would read as a second run.
+    for (const name of ctx.skipSuite ? ["latest.json"] : [nextDatedResultsName(dir, today), "latest.json"]) {
       const rel = `tests/results/${target}/${name}`;
       writeText(join(projectDir, rel), text);
       changed.push(rel);
@@ -516,8 +654,9 @@ export const calibrate = {
     // Said here rather than left to `followUp`'s silence: a run that finds failures and
     // opens nothing because the previous question is still unanswered has to say so, or
     // it reads as a run that decided the failures did not matter.
-    const { open } = followUpState(projectDir, `calibrate-${target}`);
-    if (open && unruled.length) lines.push(`proposal/${open} is still open, so no second question is asked; rule it and run calibrate again.`);
+    if (triage.applied.length) lines.push(`Sorted ${triage.applied.length} failure(s) from ${triage.gateNames.join(", ")}: ${triage.applied.map((a) => `${a.id} ${a.verb}`).join(", ")}`);
+    const open = followUpState(projectDir, `calibrate-triage-${target}`).open ?? followUpState(projectDir, `calibrate-${target}`).open;
+    if (open && unruled.length) lines.push(`proposal/${open} is still open, so no second question is asked; rule it and run calibrate --skip-suite.`);
 
     return { text: lines.join("\n"), changed };
   },
@@ -536,6 +675,7 @@ export const calibrate = {
       }),
       checkSandboxPassword("calibrate", ctx, "calibrating"),
       checkCalibrateDomain(projectDir, ctx),
+      checkCalibrateSkipSuite(projectDir, ctx),
     ];
   },
   postChecks(projectDir, ctx) {
@@ -555,12 +695,28 @@ export const calibrate = {
     if (!results) return null;
     const unruled = calibrateUnruledFailures(results);
     if (unruled.length === 0) return null;
+    const { byId } = calibrateIndex(projectDir);
+
+    // Sorted first. A failure nobody has sorted may be the adapter's, and the product owner
+    // is never the one asked that; while any are unsorted, or a sorting is still waiting on
+    // its ruling, nothing goes to the product owner at all.
+    const unsorted = unruled.filter((r) => r.triage !== "product-question");
+    const triageState = followUpState(projectDir, `calibrate-triage-${target}`);
+    if (triageState.open) return null;
+    if (unsorted.length) {
+      const name = `calibrate-triage-${target}-${triageState.highest + 1}`;
+      const { branch } = propose(projectDir, name, {
+        gate: "G3",
+        question: `${unsorted.length} criterion(s) fail against ${target}: which of them did this project's own adapter cause?`,
+        recommendation: `Sort ${unsorted.slice(0, CALIBRATE_PAGE_CAP).map((r) => r.id).join(", ")} with a triage condition each, so the adapter's failures are fixed there and only product questions reach the product owner.`,
+        page: triagePage(target, results.base_url ?? "", unsorted, byId),
+      });
+      return { name, gate: "G3", branch, failing: unsorted.length };
+    }
 
     const { open, highest } = followUpState(projectDir, `calibrate-${target}`);
     if (open) return null;
-
     const name = `calibrate-${target}-${highest + 1}`;
-    const { byId } = calibrateIndex(projectDir);
     const { branch } = propose(projectDir, name, {
       gate: "G1",
       question: `${unruled.length} criterion(s) fail against ${target}: which of them is the application's fault, which the spec's, and which the test's?`,

@@ -143,7 +143,10 @@ export function collect(projectDir) {
       return { file: f, at: data.at ?? "", counts: RESULT_VALUES.map((k) => rows.filter((r) => r.result === k).length) };
     }).sort((a, b) => String(b.at).localeCompare(String(a.at)))];
   }));
-  const openCalibration = new Map(targets.map((t) => [t, followUpState(projectDir, `calibrate-${t}`).open ?? null]));
+  // The reviewer's sorting is asked before the product owner's ruling, so an open sorting is
+  // the question a calibration is waiting on whenever there is one.
+  const openCalibration = new Map(targets.map((t) => [t,
+    followUpState(projectDir, `calibrate-triage-${t}`).open ?? followUpState(projectDir, `calibrate-${t}`).open ?? null]));
 
   const gatesDir = join(projectDir, ".sdlc", "gates");
   const gates = existsSync(gatesDir)

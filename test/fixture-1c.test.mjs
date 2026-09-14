@@ -240,12 +240,13 @@ test("fixture project: archaeology through calibrate on the mock executor, oracl
     assert.equal(rowFor("R-1.2").result, "fail");
     assert.equal(rowFor("R-1.3").result, "not-testable");
 
-    // 2. The failing row, and only it, becomes a product-owner ruling.
+    // 2. The failing row, and only it, is put to the reviewer first: whether the project's
+    // own adapter caused it is a technical question, settled before any product ruling.
     assert.ok(calibrated.proposal, "a failing row with no ruling opens a proposal");
-    assert.equal(calibrated.proposal.name, "calibrate-old-1");
-    assert.equal(calibrated.proposal.gate, "G1");
-    assert.equal(calibrated.proposal.branch, "proposal/calibrate-old-1");
-    const proposalPage = readFileSync(join(dir, ".sdlc/proposals/calibrate-old-1.md"), "utf8");
+    assert.equal(calibrated.proposal.name, "calibrate-triage-old-1");
+    assert.equal(calibrated.proposal.gate, "G3");
+    assert.equal(calibrated.proposal.branch, "proposal/calibrate-triage-old-1");
+    const proposalPage = readFileSync(join(dir, ".sdlc/proposals/calibrate-triage-old-1.md"), "utf8");
     assert.match(proposalPage, /R-1\.2/);
     assert.ok(!proposalPage.includes("R-1.1"), "a passing criterion is not asked about");
     assert.match(proposalPage, /Received: "submitted"/);
@@ -260,11 +261,11 @@ test("fixture project: archaeology through calibrate on the mock executor, oracl
     assert.match(resultsMd, /^## old$/m);
     // The columns are pass · fail · unbound · stale · not-testable, in that fixed order.
     assert.match(resultsMd, new RegExp(`^\\| ${today}\\.json \\| [^|]+ \\| 1 \\| 1 \\| 0 \\| 0 \\| 1 \\|$`, "m"));
-    assert.match(resultsMd, /^Open calibration proposal: calibrate-old-1\.$/m);
+    assert.match(resultsMd, /^Open calibration proposal: calibrate-triage-old-1\.$/m);
 
     const domainPage = readFileSync(join(dir, "site/criteria/applications.md"), "utf8");
     assert.match(domainPage, /^\| R-1\.2 \| .* \| fail \|$/m);
-    assert.match(readFileSync(join(dir, "site/proposals/calibrate-old-1.md"), "utf8"), /R-1\.2/);
+    assert.match(readFileSync(join(dir, "site/proposals/calibrate-triage-old-1.md"), "utf8"), /R-1\.2/);
   } finally {
     delete process.env.SDLC_ORACLE;
     delete process.env.SDLC_TEST_RUNNER;

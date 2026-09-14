@@ -216,7 +216,7 @@ test("calibrate sits in STAGES after bind-adapter, and in the rebuild profile bu
   assert.ok(!PROFILES.greenfield.includes("calibrate"));
 });
 
-test("sdlc run calibrate --target old: writes a dated result set and latest.json, and opens calibrate-old-1 over the failing criterion", async () => {
+test("sdlc run calibrate --target old: writes a dated result set and latest.json, has the reviewer sort the failure, then opens calibrate-old-1 over it", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-first-"));
   const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
   calibrateEnv(MOCK_DIR);
@@ -238,8 +238,22 @@ test("sdlc run calibrate --target old: writes a dated result set and latest.json
     assert.ok(existsSync(join(dir, `tests/results/old/${today}.json`)), "the dated result set");
 
     assert.ok(r.proposal, "a failing row with no ruling opens a proposal");
-    assert.equal(r.proposal.name, "calibrate-old-1");
-    assert.equal(r.proposal.gate, "G1");
+    // Sorted first. Whether the project's own adapter caused a failure is a technical
+    // question for the reviewer, and the product owner is not asked it.
+    assert.equal(r.proposal.name, "calibrate-triage-old-1");
+    assert.equal(r.proposal.gate, "G3");
+    const triagePage = readFileSync(join(dir, ".sdlc/proposals/calibrate-triage-old-1.md"), "utf8");
+    assert.match(triagePage, /R-1\.2/);
+    assert.ok(!triagePage.includes("R-1.1"), "a passing criterion is not asked about");
+    assert.match(triagePage, /Received: "submitted"/);
+    assert.match(triagePage, /adapter-wrong <ID>/);
+    assert.match(triagePage, /product-question <ID>/);
+    assert.ok(!triagePage.includes("defect-in-old <ID>"), "the reviewer is not asked a product question");
+
+    const sorted = await passToProductOwner(dir, ["R-1.2"]);
+    assert.equal(sorted.proposal.name, "calibrate-old-1");
+    assert.equal(sorted.proposal.gate, "G1");
+    assert.ok(!existsSync(join(dir, `tests/results/old/${today}-2.json`)), "applying a ruling runs no suite, so it writes no second dated record");
     const page = readFileSync(join(dir, ".sdlc/proposals/calibrate-old-1.md"), "utf8");
     assert.match(page, /R-1\.2/);
     assert.ok(!page.includes("R-1.1"), "a passing criterion is not asked about");
@@ -247,6 +261,7 @@ test("sdlc run calibrate --target old: writes a dated result set and latest.json
     assert.match(page, /defect-in-old <ID>/);
     assert.match(page, /spec-wrong <ID>/);
     assert.match(page, /test-wrong <ID>/);
+    assert.ok(!page.includes("adapter-wrong"), "the product owner is not asked about the adapter");
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);
@@ -260,6 +275,7 @@ test("sdlc run calibrate --target old: the second run applies the ruling — a n
   try {
     const first = await runStage(dir, "calibrate", { target: "old" });
     assert.equal(first.ok, true, JSON.stringify(first.messages));
+    await passToProductOwner(dir, ["R-1.2"]);
 
     // The product-owner persona rules the calibration proposal, one condition per verb.
     const rulingMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-ruling-"));
@@ -304,7 +320,7 @@ test("sdlc run calibrate --target old: the second run applies the ruling — a n
     assert.equal(rowFor(results, "R-1.2").ruled, "defect-in-old");
 
     const applied = parseYaml(readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8"));
-    assert.deepEqual(applied.applied, ["calibrate-old-1"]);
+    assert.deepEqual(applied.applied, ["calibrate-triage-old-1", "calibrate-old-1"]);
 
     assert.ok(!second.proposal, "no failing row is left unruled, so nothing is asked");
   } finally {
@@ -319,6 +335,7 @@ test("sdlc run calibrate --target old: a third run applies nothing twice — the
   calibrateEnv(MOCK_DIR);
   try {
     await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
 
     const rulingMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-ruling-twice-"));
     writeFileSync(join(rulingMock, "rule.json"), JSON.stringify({
@@ -343,7 +360,7 @@ test("sdlc run calibrate --target old: a third run applies nothing twice — the
     assert.equal(domainText.match(/the old target fails this/g).length, 1, "the note is appended once");
     assert.match(domainText, /### R-1\.1 · v2 · /, "the version is bumped once");
     const applied = parseYaml(readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8"));
-    assert.deepEqual(applied.applied, ["calibrate-old-1"]);
+    assert.deepEqual(applied.applied, ["calibrate-triage-old-1", "calibrate-old-1"]);
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);
@@ -377,6 +394,7 @@ test("a calibration proposal ruled with a ratification verb is re-prompted once,
   try {
     const first = await runStage(dir, "calibrate", { target: "old" });
     assert.equal(first.ok, true, JSON.stringify(first.messages));
+    await passToProductOwner(dir, ["R-1.2"]);
 
     const rulingMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-grammar-mock-"));
     const reply = (conditions) => ({
@@ -410,6 +428,7 @@ test("a calibration proposal ruled in the calibration grammar needs no re-prompt
   calibrateEnv(MOCK_DIR);
   try {
     await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
     const rulingMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-grammar-ok-mock-"));
     writeFileSync(join(rulingMock, "rule.json"), JSON.stringify({
       text: '```json\n' + JSON.stringify({
@@ -473,6 +492,35 @@ async function ruleCalibration(dir, name, { verdict = "approve", rationale, cond
   }
 }
 
+// Sorts the open triage proposal as the reviewer persona, passing every named failure on to
+// the product owner, then applies that sorting with `--skip-suite`, which is what opens the
+// product owner's own proposal. Leaves the repository on `main`.
+async function passToProductOwner(dir, ids, { triage = "calibrate-triage-old-1" } = {}) {
+  const mock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-triage-"));
+  writeFileSync(join(mock, "rule.json"), JSON.stringify({
+    text: '```json\n' + JSON.stringify({
+      verdict: "approve",
+      rationale: "nothing in the evidence points at the adapter",
+      conditions: ids.map((id) => `product-question ${id}`),
+    }) + '\n```',
+  }));
+  const prevMockDir = process.env.SDLC_MOCK_DIR;
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mock;
+  try {
+    const ruled = await ruleByAgent(dir, triage, { persona: "reviewer" });
+    if (ruled.verdict !== "approve") throw new Error(`triage was not approved: ${JSON.stringify(ruled)}`);
+  } finally {
+    delete process.env.SDLC_EXECUTOR;
+    if (prevMockDir === undefined) delete process.env.SDLC_MOCK_DIR;
+    else process.env.SDLC_MOCK_DIR = prevMockDir;
+  }
+  git(["checkout", "-q", "main"], dir);
+  const sorted = await runStage(dir, "calibrate", { target: "old", skipSuite: true });
+  if (!sorted.ok) throw new Error(`calibrate --skip-suite failed: ${JSON.stringify(sorted.messages)}`);
+  return sorted;
+}
+
 // A second domain in the shape an agent writes one before anybody has ratified it: the
 // bullets are not in the canonical order and no block declares its `state`, so a pass
 // that read this file and wrote it back through the serialiser would visibly reformat it.
@@ -500,6 +548,7 @@ test("calibrate leaves a domain file no ruling names exactly as it found it", as
   calibrateEnv(MOCK_DIR);
   try {
     await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
     await ruleCalibration(dir, "calibrate-old-1", {
       rationale: "the old system really does leave the status alone",
       conditions: ["defect-in-old R-1.2"],
@@ -531,6 +580,7 @@ The system shall waive the intake fee for a renewal.
   calibrateEnv(MOCK_DIR);
   try {
     await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
     await ruleCalibration(dir, "calibrate-old-1", {
       rationale: "the old system leaves the status alone, and charges the flat fee it says it does",
       conditions: ["defect-in-old R-1.2", "defect-in-old D-fees-1"],
@@ -568,6 +618,7 @@ The system shall notify the applicant when a permit is issued.
   calibrateEnv(MOCK_DIR);
   try {
     await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
     // One condition per gate, and each names a different criterion, so the two gates
     // never share a condition line verbatim — `applyCalibrateGates` credits a held
     // condition's *first* owner when two gates carry the identical text, which a test
@@ -603,11 +654,12 @@ The system shall notify the applicant when a permit is issued.
     assert.equal(third.ok, true, JSON.stringify(third.messages));
     assert.match(lastCalibrateText(dir), /spec\/domains\/applications\.md does not parse; 2 condition\(s\) not applied/);
 
-    // Nothing was ever actually applied, so nothing on `main` claims it was.
+    // No product ruling was ever actually applied, so nothing on `main` claims one was. The
+    // reviewer's sorting touches no domain file, so it is the one thing recorded.
     assert.equal(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), applicationsBroken, "the malformed file was never rewritten");
     const applied = parseYaml(readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8"));
-    assert.deepEqual(applied.applied, []);
-    assert.deepEqual(applied.rulings, []);
+    assert.deepEqual(applied.applied, ["calibrate-triage-old-1"]);
+    assert.deepEqual(applied.rulings.map((x) => `${x.id} ${x.verb}`), ["R-1.2 product-question"]);
     const subjects = git(["log", "--pretty=%s"], dir).split("\n");
     assert.ok(subjects.every((s) => !/apply rulings calibrate-old-[12]\b/.test(s)), `a commit claimed rulings were applied: ${JSON.stringify(subjects)}`);
   } finally {
@@ -642,18 +694,18 @@ test("a calibration proposal still open stops a second one being opened, and the
   calibrateEnv(MOCK_DIR);
   try {
     const first = await runStage(dir, "calibrate", { target: "old" });
-    assert.equal(first.proposal.name, "calibrate-old-1");
+    assert.equal(first.proposal.name, "calibrate-triage-old-1");
     // `propose` leaves the caller on the proposal branch; a run starts from main.
     git(["checkout", "-q", "main"], dir);
 
     const second = await runStage(dir, "calibrate", { target: "old" });
     assert.equal(second.ok, true, JSON.stringify(second.messages));
     assert.ok(!second.proposal, "the unanswered question is not asked a second time");
-    assert.ok(!existsSync(join(dir, ".sdlc/proposals/calibrate-old-2.md")));
+    assert.ok(!existsSync(join(dir, ".sdlc/proposals/calibrate-triage-old-2.md")));
     // The results are still written: the run is a record of what the target does today,
     // whether or not anybody has answered yesterday's question about it.
     assert.equal(rowFor(latest(dir), "R-1.2").result, "fail");
-    assert.match(lastCalibrateText(dir), /proposal\/calibrate-old-1 is still open/);
+    assert.match(lastCalibrateText(dir), /proposal\/calibrate-triage-old-1 is still open/);
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);
@@ -666,6 +718,7 @@ test("an escalated calibration ruling leaves the question open rather than count
   calibrateEnv(MOCK_DIR);
   try {
     await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
     const ruled = await ruleCalibration(dir, "calibrate-old-1", {
       verdict: "escalate",
       rationale: "whether the old status wording is a defect is the tech lead's call, not mine",
@@ -691,6 +744,7 @@ test("derive-tests --stale takes the ids it has just derived off redo.yaml", asy
   calibrateEnv(MOCK_DIR);
   try {
     await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
     await ruleCalibration(dir, "calibrate-old-1", {
       rationale: "the status wording is the old system's own defect; the fee criterion's test asserts the wrong thing",
       conditions: [
@@ -765,6 +819,7 @@ test("sdlc run calibrate: a suite that throws after a ruling was applied leaves 
     const first = await runStage(dir, "calibrate", { target: "old" });
     assert.equal(first.ok, true, JSON.stringify(first.messages));
 
+    await passToProductOwner(dir, ["R-1.2"]);
     const rulingMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-throw-ruling-"));
     writeFileSync(join(rulingMock, "rule.json"), JSON.stringify({
       text: '```json\n' + JSON.stringify({
@@ -825,10 +880,10 @@ test("sdlc run calibrate: a page of failures is capped at 40, and says how many 
   try {
     const r = await runStage(dir, "calibrate", { target: "old" });
     assert.equal(r.ok, true, JSON.stringify(r.messages));
-    assert.equal(r.proposal.name, "calibrate-old-1");
-    const page = readFileSync(join(dir, ".sdlc/proposals/calibrate-old-1.md"), "utf8");
-    assert.match(page, /^45 criterion\(s\) failed against the \*\*old\*\* target/m);
-    assert.match(page, /^The 40 below are the ones to rule on now; the remaining 5 come back on the next calibration run\.$/m);
+    assert.equal(r.proposal.name, "calibrate-triage-old-1");
+    const page = readFileSync(join(dir, ".sdlc/proposals/calibrate-triage-old-1.md"), "utf8");
+    assert.match(page, /^45 criterion\(s\) failed against the \*\*old\*\* target at .*, and nobody has sorted them yet\.$/m);
+    assert.match(page, /^The 40 below are the ones to sort now; the remaining 5 come back on the next run\.$/m);
     assert.equal((page.match(/^### /gm) ?? []).length, 40, "exactly 40 criteria are laid out");
   } finally {
     clearCalibrateEnv();
@@ -845,7 +900,8 @@ test("after derive-tests --stale answers a test-wrong ruling, the same failure o
   try {
     const first = await runStage(dir, "calibrate", { target: "old" });
     assert.equal(first.ok, true, JSON.stringify(first.messages));
-    assert.equal(first.proposal.name, "calibrate-old-1");
+    assert.equal(first.proposal.name, "calibrate-triage-old-1");
+    await passToProductOwner(dir, ["R-1.2"]);
 
     // The product owner says the criterion is right and the test is not.
     const rulingMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-testwrong-ruling-"));
@@ -878,18 +934,20 @@ test("after derive-tests --stale answers a test-wrong ruling, the same failure o
 
     const applied = parseYaml(readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8"));
     // The gate stays recorded, so the ruling is never applied to the spec twice…
-    assert.deepEqual(applied.applied, ["calibrate-old-1"]);
+    assert.deepEqual(applied.applied, ["calibrate-triage-old-1", "calibrate-old-1"]);
     // …but the per-criterion record is gone, so the row can be asked about again.
     assert.deepEqual(applied.rulings.filter((x) => x.id === "R-1.2"), []);
     assert.deepEqual(parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8")).redo, []);
 
     // The freshly written test still fails against the old target, and that is a new
-    // question rather than one already answered.
+    // question rather than one already answered. It is sorted afresh, not sent straight to
+    // the product owner: a test written again can fail for a reason the adapter owns.
     const third = await runStage(dir, "calibrate", { target: "old" });
     assert.equal(third.ok, true, JSON.stringify(third.messages));
     assert.equal(rowFor(latest(dir), "R-1.2").ruled, undefined);
+    assert.equal(rowFor(latest(dir), "R-1.2").triage, undefined);
     assert.ok(third.proposal, "the same failure is asked about again");
-    assert.equal(third.proposal.name, "calibrate-old-2");
+    assert.equal(third.proposal.name, "calibrate-triage-old-2");
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);
@@ -956,4 +1014,70 @@ test("the suite filter names one domain's directory, anchored so a prefix cannot
   }
   const testArgs = calls.find((a) => a.includes("test")) ?? [];
   assert.ok(testArgs.includes("acceptance/users/"), JSON.stringify(testArgs));
+});
+
+// --- a failure the adapter caused never reaches the product owner ---
+
+test("a failure the reviewer blames on the adapter never reaches the product owner, and is sorted afresh once the adapter changes", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-adapter-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.proposal.name, "calibrate-triage-old-1");
+
+    const mock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-adapter-ruling-"));
+    writeFileSync(join(mock, "rule.json"), JSON.stringify({
+      text: '```json\n' + JSON.stringify({
+        verdict: "approve",
+        rationale: "the adapter reads the status off the page title",
+        conditions: ["adapter-wrong R-1.2: reads the status from the page title rather than the status field"],
+      }) + '\n```',
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mock;
+    await ruleByAgent(dir, "calibrate-triage-old-1", { persona: "reviewer" });
+    delete process.env.SDLC_EXECUTOR;
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    git(["checkout", "-q", "main"], dir);
+
+    const sorted = await runStage(dir, "calibrate", { target: "old", skipSuite: true });
+    assert.equal(sorted.ok, true, JSON.stringify(sorted.messages));
+    assert.ok(!sorted.proposal, "nothing is put to the product owner");
+    assert.ok(!existsSync(join(dir, ".sdlc/proposals/calibrate-old-1.md")));
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, "adapter-wrong");
+    const rebind = parseYaml(readFileSync(join(dir, "tests/adapters/rebind.yaml"), "utf8")).rebind;
+    assert.deepEqual(rebind.map((e) => `${e.target} ${e.id}`), ["old R-1.2"]);
+
+    // The binding is rewritten. A verdict about the old adapter says nothing about the new
+    // one, so the row is a question again and the rebind entry goes.
+    const adapterPath = join(dir, "tests/adapters/old/index.ts");
+    writeFileSync(adapterPath, `${readFileSync(adapterPath, "utf8")}\n// rebound\n`);
+    git(["add", "-A"], dir);
+    git([...COMMIT, "rebind the old adapter (test)"], dir);
+
+    const again = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(again.ok, true, JSON.stringify(again.messages));
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, undefined, "the verdict lapsed with the adapter it was about");
+    assert.equal(again.proposal?.name, "calibrate-triage-old-2", "the same failure is sorted afresh");
+    assert.deepEqual(parseYaml(readFileSync(join(dir, "tests/adapters/rebind.yaml"), "utf8")).rebind, []);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("calibrate --skip-suite refuses to run before there are results to rule over", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-skip-none-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old", skipSuite: true });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /no results on file/.test(m)), r.messages.join(" | "));
+    assert.ok(!existsSync(join(dir, "tests/results/old/latest.json")));
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
 });

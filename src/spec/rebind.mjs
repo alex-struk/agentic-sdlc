@@ -1,20 +1,17 @@
-// `tests/adapters/rebind.yaml` — `{ rebind: [{ id, target, why }] }`, the list `calibrate`
-// writes when the product owner rules `adapter-wrong <ID>`, and `bind-adapter` reads to
-// know which bindings a calibration found wanting.
+// `tests/adapters/rebind.yaml` — `{ rebind: [{ id, target, why }] }`, the list of bindings a
+// calibration found wanting. `calibrate` writes it from the reviewer's `adapter-wrong`
+// verdicts when it sorts a calibration's failures, and `bind-adapter` reads the entries for
+// its own target into its prompt.
 //
-// It exists because the three verbs the calibration grammar started with could not say
-// what the first full calibration of a real project mostly found. A failing row is meant
-// to be one of three things — the old application really fails this, the criterion
-// misdescribes it, or the test is wrong — and a fourth was in front of the product owner
-// forty times over: the adapter reads the browser tab's title where the criterion means
-// the page's heading, reports a control missing that the application plainly renders,
-// returns an empty identifier instead of saying it could not find one. None of those is
-// the product, the criterion or the test.
+// The sorting exists so that the product owner is only ever asked about the product. A
+// failing test can be the application's fault, the criterion's, the test's — or the harness
+// that drives the page. The last is a technical question with a right answer in the
+// adapter's code, and it belongs to the persona that already rules on adapters
+// (`docs/decisions/0008-adapter-wrong.md`).
 //
-// Ruling one of them with a verb that fits badly is worse than having no verb at all:
-// `defect-in-old` would make an adapter's bug an obligation on the rebuild, and
-// `test-wrong` would send a sound test back for a blind rewrite that hits the very same
-// binding again.
+// Entries are cleared by `calibrate`, not by `bind-adapter`: a returned binding has fixed
+// nothing and a revise of it still needs them, so they lapse only once a calibration has run
+// against an adapter that changed after they were written.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";

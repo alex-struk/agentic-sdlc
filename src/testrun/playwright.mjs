@@ -18,10 +18,16 @@ import { compareIds } from "../spec/criteria.mjs";
 
 // A failing test's error message is how an unbound adapter member is told apart from a
 // real defect: `bind-adapter` throws `Error("unbound: <page>.<member> — <reason>")` from
-// the member itself (`src/stages/registry.mjs`), so that string opens the first line of
-// the failure. `m` (multiline) because Playwright's own error message sometimes carries a
-// stack trace after the thrown message's first line.
-const UNBOUND_RE = /^unbound: /m;
+// the member itself (`src/stages/registry.mjs`). `m` (multiline) because Playwright's own
+// error message sometimes carries a stack trace after the thrown message's first line.
+//
+// The `Error: ` prefix is not optional decoration: Playwright reports a thrown Error with
+// its class name in front, so the thrown text never starts the line. Anchored without it,
+// this matched nothing at all, and every unbound member was recorded as a failed criterion
+// and put in front of the product owner as though the application were at fault — 76 of
+// them in one run. Both spellings are accepted, since a member may also reject with a bare
+// string.
+const UNBOUND_RE = /^(?:Error: )?unbound: /m;
 
 // The default `exec`: a real subprocess, run synchronously and never throwing — a
 // non-zero exit is exactly as valid a result as zero for every step here (a `npm ci`

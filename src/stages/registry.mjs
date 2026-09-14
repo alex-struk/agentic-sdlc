@@ -15,7 +15,7 @@ import { STAGES } from "../profiles.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignCatalogue, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
-import { readRebindFor, removeRebind } from "../spec/rebind.mjs";
+import { readRebindFor } from "../spec/rebind.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId } from "../spec/criteria.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
@@ -1467,8 +1467,9 @@ function bindAdapterRevisionInstructions(ctx) {
   ].filter(Boolean).join("\n\n");
 }
 
-// What a calibration found wanting in this target's adapter — the `adapter-wrong` rulings
-// the product owner made, carried into the next binding run. These are the findings a
+// What a calibration found wanting in this target's adapter — the `adapter-wrong` verdicts
+// the reviewer gave when it sorted a calibration's failures, carried into the next binding
+// run. These are the findings a
 // reviewer reading the diff cannot supply and the agent cannot discover: a control it
 // reported missing that the application does render, a value it read off the wrong part of
 // the page. Each names the criterion whose test failed, so the agent can see what the
@@ -1478,7 +1479,7 @@ function bindAdapterCalibrationFindings(ctx) {
   if (!entries.length) return null;
   const lines = entries.map((e) => `- ${e.id}: ${e.why}`).join("\n");
   return [
-    `A calibration run found these bindings wanting. The product owner ruled that the criterion and the test were both right in each case, and that this adapter was what failed:`,
+    `A calibration run found these bindings wanting. Sorting its failures, the reviewer found the criterion and the test sound in each case, and this adapter to be what failed:`,
     lines,
     `Correct each one. Where a finding says a control exists that you reported unbound, look again for it — under a different label, behind a step, on a page reached another way — before reporting it unbound a second time, and say in the reason what you did to look.`,
   ].join("\n\n");
@@ -1560,9 +1561,10 @@ const bindAdapter = {
   preChecks(projectDir, ctx) {
     if (ctx.target) resolveBindAdapterTarget(projectDir, ctx);
     // Stashed here, the one hook that sees the project directory before `prompt(ctx)` runs
-    // with nothing but `ctx` — the same place this stage resolves its target's URL.
-    // Cleared in `postChecks`, once the run that was told about them has produced
-    // something: an entry left behind would be handed to every later run for ever.
+    // with nothing but `ctx` — the same place this stage resolves its target's URL. Not
+    // cleared by this stage: a proposal that is returned has fixed nothing, and a revise of
+    // it still needs the findings. `calibrate` clears them once it has run against an
+    // adapter that changed since they were written.
     ctx.bindAdapterRebind = ctx.target ? readRebindFor(projectDir, ctx.target) : [];
     return [
       checkTargetOption("bind-adapter", ctx),
@@ -1583,8 +1585,6 @@ const bindAdapter = {
       checkBindAdapterScope(projectDir, ctx.target),
       typecheckPostCheck(projectDir, ctx.bindAdapterName),
     ];
-    const acted = (ctx.bindAdapterRebind ?? []).map((e) => e.id);
-    if (acted.length && checks.every((c) => c.ok)) removeRebind(projectDir, ctx.target, acted);
     return checks;
   },
 };

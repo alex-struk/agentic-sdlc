@@ -102,6 +102,23 @@ test("runSuite: maps a pass, a fail and an unbound spec file to rows", () => {
   assert.deepEqual(result.rows.map((r) => r.id), ["R-1.1", "R-1.2", "R-1.3"]);
 });
 
+// Playwright reports a thrown Error with its class name in front, so the adapter's own
+// text never starts the line. Anchored without that prefix, the match failed for every real
+// run: 76 unbound members in one calibration were recorded as failed criteria and put in
+// front of the product owner as though the application were at fault.
+test("runSuite: an unbound member is recognised through Playwright's Error prefix", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.4")]);
+  write(d, "tests/acceptance/opportunities/R-1.4.spec.ts", specHeader("R-1.4", 1));
+  writeReport(d, [
+    fileSuite("opportunities", "R-1.4.spec.ts", "opens the panel", "failed",
+      'Error: unbound: evaluation-panel-swu.add_panel_member — no control labelled "Add"'),
+  ]);
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "", exec: recordingExec([]) }));
+  assert.equal(result.rows.find((r) => r.id === "R-1.4").result, "unbound");
+});
+
 test("runSuite: the playwright test call runs from projectDir with --prefix tests exactly once and the target env", () => {
   const d = project();
   writeIndex(d, []);

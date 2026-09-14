@@ -31,7 +31,7 @@ What it reads:
 - `.sdlc/gates/calibrate-<t>-<n>.yaml` — every approved calibration ruling for this target, oldest
   first, so a later ruling's condition on a criterion is applied after (and therefore over) an
   earlier one's. A ruling already recorded in `tests/results/<t>/applied.yaml` is skipped.
-- `spec/domains/*.md` — the criteria the rulings name, and where two of the four verbs write.
+- `spec/domains/*.md` — the criteria the rulings name, and where two of the three verbs write.
 - `spec/criteria-index.json` — the accepted criteria, their current versions and their
   `generated_from` commit, which the results file records as the spec it ran against.
 - `tests/acceptance/` — the suite itself, and `not-testable.yaml`, whose entries become rows with no
@@ -94,9 +94,10 @@ dated file beside it records when that was.
   <n> condition(s) not applied` instead, and does not record the ruling those conditions came from as
   applied, so the next run — once the file is fixed — reads it again.
 
-- **`tests/adapters/rebind.yaml`** — `{ rebind: [{ id, target, why }] }`, appended by
-  `adapter-wrong` (`src/spec/rebind.mjs`). The next `bind-adapter` run for that target reads its own
-  entries into its prompt and clears them once its checks pass. Keyed by target as well as by
+- **`tests/adapters/rebind.yaml`** — `{ rebind: [{ id, target, why }] }`, appended by the reviewer's
+  `adapter-wrong` triage verdicts (`src/spec/rebind.mjs`). The next `bind-adapter` run for that target
+  reads its own entries into its prompt. `calibrate` removes them once it runs against an adapter that
+  has changed since they were written. Keyed by target as well as by
   criterion, because an adapter exists per target and a finding about one says nothing about
   another's.
 
@@ -225,12 +226,35 @@ answer may use:
 - `test-wrong <ID>: <why>` — the criterion is right and the test is not. The id goes to
   `redo.yaml` for `derive-tests` to redo, still blind, so `<why>` has to say what the test got wrong
   without describing how the application is built.
-- `adapter-wrong <ID>: <why>` — the criterion and the test are both right, and this target's adapter
-  is what failed. Nothing about the criterion moves; the id goes to `tests/adapters/rebind.yaml` for
-  `bind-adapter` to correct. Reach for this whenever the evidence points at the binding: the other
-  verbs fit badly and do harm, since `defect-in-old` would make an adapter's bug an obligation on
-  the rebuild and `test-wrong` would send a sound test back for a blind rewrite that meets the very
-  same binding again (`docs/decisions/0008-adapter-wrong.md`).
+
+Every failure on the product owner's page has already been sorted by the reviewer — see "Sorting
+the failures first" below — so these three verbs are only ever asked of a question about the product.
+
+## Sorting the failures first
+
+A failing test can be the application's fault, the criterion's, the test's, or the project's own
+adapter's. The last is a technical question with a right answer in the adapter's code, and it is not
+the product owner's to answer (`docs/decisions/0008-adapter-wrong.md`). So the failures go to two
+personas in turn:
+
+1. A failure whose every failing test ended in the adapter's own `unbound:` error is recorded as
+   `unbound`, not `fail`, and reaches neither.
+2. Every other failure is first put to the reviewer at G3, as `calibrate-triage-<target>-<n>`, in
+   the triage grammar: `adapter-wrong <ID>: <why>` or `product-question <ID>`. Nothing goes to the
+   product owner while any failure is unsorted or a sorting is still waiting on its ruling.
+3. Once every failure is sorted, the ones passed on as `product-question` go to the product owner at
+   G1, as `calibrate-<target>-<n>`, in the three verbs above.
+
+An `adapter-wrong` verdict changes no criterion. It takes its row out of both queues, puts the
+criterion on `tests/adapters/rebind.yaml` for the next `bind-adapter` run, and records which version
+of the adapter it was about. It lapses — row back to an open question, rebind entry removed — once a
+calibration runs against an adapter that has changed since.
+
+`--skip-suite` applies whatever rulings have come back and asks the next question over the rows
+already on file, without running anything. Sorting and ruling are two rulings in a row with no change
+to the application between them, so the usual sequence is: `calibrate`, rule the triage proposal,
+`calibrate --skip-suite`, rule the product owner's proposal. It writes `latest.json` only, never a
+dated file, because a dated file is the record of a suite having run.
 
 `sdlc rule` reads these in the calibration grammar rather than the ratification one, selected by the
 proposal's name (`docs/stages/rule.md`, "Calibration conditions"), and re-prompts the persona once
