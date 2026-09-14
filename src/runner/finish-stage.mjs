@@ -139,12 +139,15 @@ function fixTurnPrompt(taskPrompt, messages) {
   return `The task you were given:\n${taskPrompt}\n\nYour output failed these checks:\n${messages.join("\n")}\n\nFix exactly what they name — change nothing else, and do not start the task over. Finish with a one-paragraph journal addition saying what you changed.`;
 }
 
-// Runs the stage's agent once more, in the project directory, with the same skill file
-// and MCP servers as the first turn and a prompt naming exactly what failed. Capped at
+// Runs the stage's agent once more, with the same skill file and MCP servers as the first
+// turn and a prompt naming exactly what failed. `cwd` is the project directory for a stage
+// that worked there, and the stage's own workspace for one that did not — never the
+// project directory in that second case, because a blind stage repaired in the project
+// would be handed the application source its whole workspace exists to keep from it. Capped at
 // 40 turns (a repair is smaller than the original task) and at the stage's own ceiling,
 // whichever is lower — a stage configured with a tighter budget than 40 keeps that
 // budget for its fix turn too.
-async function runFixTurn(projectDir, stage, ctx, messages) {
+async function runFixTurn(cwd, stage, ctx, messages) {
   const skillDir = mkdtempSync(join(tmpdir(), `sdlc-fix-${stage.name}-`));
   try {
     const skillPath = join(skillDir, "SKILL.md");
@@ -155,7 +158,7 @@ async function runFixTurn(projectDir, stage, ctx, messages) {
     // alongside the skill file below.
     const mcpConfig = writeMcpConfig(skillDir, stage.mcp?.(ctx, ctx.config));
     return await runAgent({
-      cwd: projectDir,
+      cwd,
       prompt: fixTurnPrompt(stage.prompt(ctx), messages),
       systemPromptFile: skillPath,
       stage: stage.name,
@@ -216,7 +219,7 @@ export function finishDeterministicNoOp(projectDir, stage, ctx, text) {
 // already made sure `.sdlc/run-state.json` exists (`runStage` wrote it before the
 // agent ran; `resume` read it to find `stage`/`ctx` before calling here), so it is
 // re-read rather than threaded through, and rewritten at each phase change.
-export async function finishStage(projectDir, stage, ctx, agentResult) {
+export async function finishStage(projectDir, stage, ctx, agentResult, { workspaceDir, recollect } = {}) {
   const state = readRunState(projectDir) ?? { stage: stage.name, ctx, startedAt: new Date().toISOString() };
   state.phase = "post-checks";
   writeRunState(projectDir, state);
@@ -243,7 +246,14 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     // (`skillText` would throw trying to read one), and `calibrate` drives a deterministic
     // test suite rather than free-form work, so handing either one an unrestricted agent
     // turn is never right, whatever the workspace mode says.
-    const eligible = IN_PLACE_MODES.has(wsMode) && stage.agent !== false && !ctx.dryRun && !state.fixTurnUsed;
+    // A stage that worked in the project directory is repaired there. One that worked in
+    // its own workspace is repaired in that workspace, which is still on disk at this
+    // point (`runStage`'s `finally` removes it only once this function returns) and is
+    // exactly as blind as it was for the first turn; whatever the repair writes is then
+    // collected back into the project the same way the first turn's output was, so the
+    // post-checks below judge the same tree they judged the first time.
+    const repairDir = IN_PLACE_MODES.has(wsMode) ? projectDir : workspaceDir;
+    const eligible = Boolean(repairDir) && stage.agent !== false && !ctx.dryRun && !state.fixTurnUsed;
     if (!eligible) {
       // Only the journal and the run record are staged: the agent's other files stay in
       // the working tree, untracked, so a person can see exactly what it produced.
@@ -257,7 +267,8 @@ export async function finishStage(projectDir, stage, ctx, agentResult) {
     state.fixTurnUsed = true;
     writeRunState(projectDir, state);
 
-    const fix = await runFixTurn(projectDir, stage, ctx, firstMessages);
+    const fix = await runFixTurn(repairDir, stage, ctx, firstMessages);
+    if (repairDir !== projectDir) recollect?.();
     result = {
       text: `${agentResult.text}\n\n## Fix turn\n\n${fix.text}`,
       cost: (agentResult.cost ?? 0) + (fix.cost ?? 0),

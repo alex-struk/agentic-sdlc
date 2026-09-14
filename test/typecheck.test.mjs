@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acceptanceTypecheck, formatTypecheckEvidence, ownedDirectory, splitDiagnostics } from "../src/runner/typecheck.mjs";
+import { acceptanceTypecheck, formatTypecheckEvidence, ownedDirectory, splitDiagnostics, typecheckPostCheck } from "../src/runner/typecheck.mjs";
 
 const CONTEXT = { name: "derive-tests-applications", gate: "G3", revision: "abc123" };
 
@@ -109,4 +109,32 @@ test("a proposal that owns no directory keeps the whole diagnostic list", () => 
   const { mine, elsewhere } = splitDiagnostics(output, null);
   assert.deepEqual(mine, [output]);
   assert.equal(elsewhere.size, 0);
+});
+
+// The defect: derivations were handed a surface declaring `open({ opportunityId })`,
+// wrote `open({ opportunity })` from the criterion's own wording, and nothing contradicted
+// them until a reviewer read a compiler report. A stage with no shell cannot find this out
+// for itself, so the post-check finds it out on the stage's behalf.
+test("the typecheck post-check fails a stage on diagnostics in the directory it wrote", (t) => {
+  const dir = fixture(t, {
+    compiler: `console.log("acceptance/users/R-4.8.spec.ts(17,42): error TS2353: unknown property 'user'."); process.exitCode = 2;`,
+  });
+  const result = typecheckPostCheck(dir, "derive-tests-users");
+  assert.equal(result.ok, false);
+  assert.equal(result.id, "typecheck");
+  assert.match(result.messages.join("\n"), /R-4\.8\.spec\.ts\(17,42\)/);
+});
+
+test("the typecheck post-check ignores diagnostics another stage is answerable for", (t) => {
+  const dir = fixture(t, {
+    compiler: `console.log("acceptance/users/R-4.8.spec.ts(17,42): error TS2353: unknown property."); process.exitCode = 2;`,
+  });
+  assert.equal(typecheckPostCheck(dir, "derive-tests-files").ok, true);
+  assert.equal(typecheckPostCheck(dir, "bind-adapter-old").ok, true);
+});
+
+// A missing dev dependency is the harness's problem to report, not a reason every stage
+// of every project fails.
+test("the typecheck post-check passes when no compiler is installed", (t) => {
+  assert.equal(typecheckPostCheck(fixture(t), "derive-tests-users").ok, true);
 });

@@ -12,6 +12,7 @@ const SDLC_BIN = resolve(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs"
 import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
+import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId } from "../spec/criteria.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
@@ -1232,6 +1233,7 @@ const deriveTests = {
       checkDeriveTestsScope(projectDir, ctx.domain),
       checkDeriveTestsBlindHeader(projectDir, ctx.domain),
       checkDeriveTestsRevisionDrift(projectDir, ctx),
+      typecheckPostCheck(projectDir, `derive-tests-${ctx.domain}`),
     ];
     if (checks.every((c) => c.ok)) clearDeriveTestsRedo(projectDir, ctx);
     return checks;
@@ -1536,6 +1538,7 @@ const bindAdapter = {
       checkBindAdapterBindings(projectDir, ctx.target),
       checkBindAdapterIndex(projectDir, ctx.target),
       checkBindAdapterScope(projectDir, ctx.target),
+      typecheckPostCheck(projectDir, ctx.bindAdapterName),
     ];
   },
 };

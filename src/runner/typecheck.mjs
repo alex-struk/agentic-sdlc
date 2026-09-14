@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readText } from "../lib/fsx.mjs";
@@ -99,4 +99,46 @@ export function formatTypecheckEvidence(result) {
     ...shown.split("\n").map((line) => `    ${line}`),
     ...(others.length ? ["", "Diagnostics elsewhere in the suite, which this proposal does not answer for:", "", ...others] : []),
   ].join("\n");
+}
+
+// The same compiler run as `acceptanceTypecheck`, made a post-check rather than evidence
+// for a reviewer. A stage that writes TypeScript against a generated declaration file and
+// has no shell cannot discover that it guessed a parameter name wrong: the surface says
+// `open({ opportunityId })`, the criterion says "the opportunity", and a whole domain's
+// tests can be written to the second without anything contradicting them until a reviewer
+// reads a compiler report hours later. Run here, the contradiction arrives while the
+// workspace is still open and a fix turn can act on it.
+//
+// A compiler is not a test runner, which is what keeps this inside the blindness rule
+// (`docs/decisions/0007-calibrate-before-mass-derivation.md`): it reports that the code is
+// ill-typed, never whether an assertion holds. Only diagnostics under the directory the
+// stage answers for fail it — another domain's errors are not this run's to repair, and a
+// stage that could be failed by them would be unable to finish at all.
+export function typecheckPostCheck(projectDir, name) {
+  const id = "typecheck";
+  const cwd = join(projectDir, "tests");
+  const tsc = join(cwd, "node_modules", "typescript", "bin", "tsc");
+  // No compiler installed is not this stage's failure to report: `acceptanceTypecheck`
+  // already tells the reviewer the typecheck was unavailable, and failing every run of
+  // every stage on a missing dev dependency would be a worse answer than saying nothing.
+  if (!existsSync(tsc)) return { id, ok: true, messages: [] };
+  const owned = ownedDirectory(name);
+  if (!owned) return { id, ok: true, messages: [] };
+  let output = "";
+  try {
+    execFileSync(process.execPath, [tsc, "--noEmit", "--incremental", "false", "--pretty", "false"],
+      { cwd, encoding: "utf8", timeout: 180000, maxBuffer: 1024 * 1024 * 8, stdio: ["ignore", "pipe", "pipe"] });
+    return { id, ok: true, messages: [] };
+  } catch (e) {
+    if (e.code === "ETIMEDOUT" || e.signal) return { id, ok: true, messages: [] };
+    output = [e.stdout, e.stderr].filter(Boolean).join("\n");
+  }
+  const { mine } = splitDiagnostics(output, owned);
+  const errors = mine.filter((l) => l.includes("error TS"));
+  if (!errors.length) return { id, ok: true, messages: [] };
+  return {
+    id,
+    ok: false,
+    messages: [`the acceptance suite does not compile; every diagnostic below is in ${owned}, which this run wrote:`, ...errors],
+  };
 }

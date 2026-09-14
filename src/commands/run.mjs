@@ -222,9 +222,16 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       // the shared bookkeeping files back out of the workspace, even before
       // `derive-tests-scope` gets a chance to judge the tree.
       const collectPaths = typeof stage.collect === "function" ? stage.collect(ctx) : stage.collect;
-      if (ws.mode !== "project") collect(projectDir, ws.dir, collectPaths);
+      const recollect = () => collect(projectDir, ws.dir, collectPaths);
+      if (ws.mode !== "project") recollect();
 
-      return await finishStage(projectDir, stage, ctx, r);
+      // `workspaceDir` and `recollect` are what let a post-check failure in a workspace
+      // stage earn the same one repair turn an in-place stage gets: the turn runs in the
+      // workspace, and its output is collected back before the post-checks are judged
+      // again. A stage that worked in the project directory passes neither and repairs
+      // there, as it always has.
+      return await finishStage(projectDir, stage, ctx, r,
+        ws.mode === "project" ? {} : { workspaceDir: ws.dir, recollect });
     } finally {
       rmSync(skillDir, { recursive: true, force: true });
     }

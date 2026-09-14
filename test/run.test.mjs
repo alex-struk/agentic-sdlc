@@ -196,7 +196,11 @@ test("a project-mode stage whose first turn and fix turn both fail a post-check 
   }
 });
 
-test("a spec-only stage never gets a fix turn: one turn, no ## Fix turn section, on a failing post-check", async () => {
+// A stage that writes TypeScript against a generated declaration file cannot compile it —
+// it has no shell — so a wrong parameter name survives a whole domain's derivation. The
+// repair has to happen in the workspace: the project directory holds the application
+// source a blind stage exists to be kept away from.
+test("a workspace stage gets its fix turn in the workspace, and what it writes is collected back", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-fixturn-speconly-"));
   const { dir, prevEgress } = await makeProject(tmp);
   registerStage({
@@ -205,24 +209,33 @@ test("a spec-only stage never gets a fix turn: one turn, no ## Fix turn section,
     skill: PROBE_SKILL,
     workspace: "spec-only",
     gate: null,
-    collect: [],
+    collect: ["tests/acceptance"],
     implemented: true,
     prompt: () => "unused",
     proposal: () => null,
     preChecks: () => [],
-    postChecks: () => [{ id: "always-fail", ok: false, messages: ["always fails"] }],
+    // Passes only once the repaired file has been collected back into the project, so a
+    // fix turn that ran somewhere its output never reached cannot satisfy it.
+    postChecks: (projectDir) => [existsSync(join(projectDir, "tests/acceptance/fixed.txt"))
+      ? { id: "needs-fix", ok: true, messages: [] }
+      : { id: "needs-fix", ok: false, messages: ["tests/acceptance/fixed.txt is missing"] }],
   });
   const mockDir = mkdtempSync(join(tmpdir(), "sdlc-fixturn-speconly-mock-"));
-  writeFileSync(join(mockDir, "spec-only-fixable.json"), JSON.stringify({ text: "did nothing" }));
+  writeFileSync(join(mockDir, "spec-only-fixable.json"), JSON.stringify({
+    sequence: [
+      { text: "wrote nothing the check wants" },
+      { text: "added the file the check names", files: { "tests/acceptance/fixed.txt": "fixed\n" } },
+    ],
+  }));
   process.env.SDLC_EXECUTOR = "mock";
   process.env.SDLC_MOCK_DIR = mockDir;
   try {
     const r = await runStage(dir, "spec-only-fixable");
-    assert.equal(r.ok, false);
-    assert.deepEqual(r.messages, ["always fails"]);
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(existsSync(join(dir, "tests/acceptance/fixed.txt")));
     const journal = readFileSync(join(dir, ".sdlc/journal/001-spec-only-fixable.md"), "utf8");
-    assert.ok(!/## Fix turn/.test(journal), journal);
-    assert.match(journal, /^turns: 1$/m);
+    assert.match(journal, /## Fix turn/);
+    assert.match(journal, /^turns: 2$/m);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

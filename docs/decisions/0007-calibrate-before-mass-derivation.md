@@ -59,7 +59,43 @@ to reach one is visible in the diff.
 seen their own calibration results were no weaker than blind ones would reverse it, and that
 measurement requires the blind baseline this decision protects.
 
-## 3 — The first derivation of a project is a pilot of one domain
+## 3 — A compiler is not a test runner, so a blind stage may be failed by one
+
+**Decision.** `derive-tests` and `bind-adapter` each gain a post-check that compiles the
+acceptance suite and fails the stage on any diagnostic under the directory that stage wrote.
+A failure earns the stage its one repair turn, run in its own workspace rather than in the
+project directory, with the diagnostics as its instructions.
+
+**Why this is not the loop section 2 forbids.** A compiler reports that code is ill-typed. It
+cannot report that an assertion passed, that an expectation matched, or that the application
+behaved. There is nothing in a diagnostic to converge on except correctness of form, so the
+cheapest way to satisfy it is to name the parameter the surface actually declares — not to
+assert less. Calibration is withheld from a derivation for the opposite reason: its rows say
+which criteria passed, and a writer who sees those will write tests that pass.
+
+**Why the stage cannot do this for itself.** A blind stage is given no shell, deliberately:
+the workspace is what makes its blindness structural rather than promised, and a shell inside
+it would reach the network. So a session writes TypeScript against a generated declaration
+file with nothing able to contradict it until a reviewer reads a compiler report, by which
+point a whole domain has been written to the wrong assumption.
+
+**What it cost to learn.** A surface declared `open({ opportunityId })`. Three domains were
+re-derived against it and every one wrote `open({ opportunity })`, taking the parameter's name
+from the criterion's own wording. Nothing objected, the derivations were proposed, and the
+suite could not compile.
+
+**Why the repair turn runs in the workspace.** The project directory holds the application
+source and the other domains' tests — everything the workspace exists to keep from a blind
+session. The workspace is still on disk when a post-check fails, and is exactly as blind as it
+was for the first turn, so the repair happens there and its output is collected back the same
+way the first turn's was.
+
+**What would reverse it.** A harness whose generated declarations are not the only statement
+of the surface — one where the criterion text and the type are derived from a single source a
+writer cannot disagree with — removes the class of error entirely. Short of that, only a
+measurement that repaired derivations are weaker than unrepaired ones.
+
+## 4 — The first derivation of a project is a pilot of one domain
 
 **Decision.** A project's first `derive-tests` run covers one domain, and `calibrate` runs
 immediately after it. The remaining domains are derived only once that calibration has been ruled.
