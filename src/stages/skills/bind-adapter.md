@@ -85,6 +85,22 @@ emptiness.
 So before you write either, ask one thing: did I get to the place? If not, `unbound:`. If yes,
 report exactly what is there, including nothing.
 
+## An action does what the test gave it, and says so the moment it cannot
+
+**Fill the form from the input.** An action like `publish(input)` or `createOrganization(input)`
+is handed the values the test wants entered. Enter every one of them before pressing anything. An
+action that ignores its input and presses submit on an empty form is not binding the action the
+contract names; it is testing whatever the form does when left blank, which is almost never what
+the criterion is about. Match each input key to its field by label, and when a key has no field
+you can find, throw `unbound:` naming the key rather than dropping it.
+
+**A disabled control is an answer, not something to wait out.** When the control an action is
+about to press is disabled, the form is telling you it is not ready — usually because a required
+field was never filled. Do not click it again and again, and do not wait for it: throw at once,
+naming the control and what the page showed. A control clicked until the test's time runs out
+turns one missing value into two minutes of nothing and a failure that names a timeout instead of
+the field that was empty.
+
 ## When an action takes a file
 
 A test names a file the way a person would — `{ file: "scan0001.pdf" }`, sometimes with
