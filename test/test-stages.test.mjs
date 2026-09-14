@@ -634,7 +634,13 @@ test("sdlc run bind-adapter --target old: a mock bindings file missing one obser
   }
 });
 
-test("sdlc run bind-adapter --target old --dry-run: prints the mcp server and the env variable names, never the base URL value", async () => {
+// The prompt carries the running address rather than only naming the variable that holds
+// it. This session has no shell by design and so no way to read an environment variable at
+// all; told only where the value lived, one run browsed an address out of the harness README
+// instead. The variable is still passed, because the adapter's own code reads it at run
+// time. A prompt is never written to disk or committed, so a machine-local port in one is
+// not the thing decision 0006 keeps out of the repository.
+test("sdlc run bind-adapter --target old --dry-run: names the mcp server, the env variables, and the address the target is actually running at", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-dry-"));
   const { dir, prevEgress } = await makeReadyForBindAdapter(tmp);
   writeOldOracleLocal(dir);
@@ -650,7 +656,7 @@ test("sdlc run bind-adapter --target old --dry-run: prints the mcp server and th
     const printed = logs.join("\n");
     assert.match(printed, /^mcp: playwright$/m);
     assert.match(printed, /^env: SDLC_TARGET_URL, SDLC_MAIL_API, SDLC_SANDBOX_PASSWORD$/m);
-    assert.ok(!printed.includes("http://localhost:3100"), printed);
+    assert.ok(printed.includes("http://localhost:3100"), printed);
   } finally {
     console.log = origLog;
     delete process.env.SDLC_ORACLE;
