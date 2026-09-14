@@ -59,6 +59,23 @@ you did not find: "signed in as an administrator, opened the seeded closed oppor
 the consensus tab, no control labelled X" is a finding somebody can act on. "No control labelled
 X" on its own cannot be told apart from never having looked.
 
+## An empty answer means the page was empty
+
+An observation returns what the page says. When it cannot find the thing at all, it throws
+`unbound:` — it never returns `""`, `null`, `0` or an empty list to mean "I could not read
+it". Those are answers, and a test will believe them.
+
+The cost of getting this wrong is not a wrong answer where you made the mistake; it is a
+confusing failure somewhere else. An observation that returns the empty string instead of a
+record's identifier hands that empty string to the next page's `open()`, which then reports
+that it was given no identifier — on a different page, in a different test, naming a problem
+the caller does not have. One such observation put nineteen tests onto a message that pointed
+at the wrong thing.
+
+So: reading nothing is `unbound`, and empty is a value only when the page genuinely shows
+nothing. This is the same rule as never filtering a refusal before returning it. Either way
+the adapter's job is to report what is there and let the test decide what it means.
+
 ## When an action takes a file
 
 A test names a file the way a person would — `{ file: "scan0001.pdf" }`, sometimes with
