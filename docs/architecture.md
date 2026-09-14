@@ -38,8 +38,8 @@ repository are the primitives that shape composes into:
   `templates/hooks/implement-guard.sh`, which reads `SDLC_STAGE` and blocks edits outside the paths
   that stage owns (see `docs/stages/init.md` for both tables). `probe` proves this whole loop end to
   end without being one of the pipeline's own stages; `intent`, `archaeology`, `ratify`, `contract`,
-  `bind-adapter`, `derive-tests`, `calibrate` and `design` are implemented, and every stage after
-  them (`plan`, `build`, …) is a named stub that throws until its own task lands. A stage may also
+  `bind-adapter`, `derive-tests`, `calibrate`, `design` and `plan` are implemented, and every stage
+  after them (`build`, `verify`, …) is a named stub that throws until its own task lands. A stage may also
   declare an MCP server (`bind-adapter`'s browser), an explicit tool allow-list, extra environment
   variables and a `prepare` hook that writes into the workspace before the session starts. The
   onboarding interview behind `sdlc new --interactive` and `sdlc new --answers` runs a separate,

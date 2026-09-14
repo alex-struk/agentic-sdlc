@@ -14,6 +14,7 @@ import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mj
 import { STAGES } from "../profiles.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignCatalogue, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
+import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId } from "../spec/criteria.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
@@ -2131,7 +2132,7 @@ const design = {
   name: "design",
   title: (ctx) => `design ${ctx.domain}`,
   skill: skillPath("design"),
-  workspace: "design",
+  workspace: "spec-and-design",
   gate: "G-DESIGN",
   collect: ["design", "spec/contract/surface.yaml"],
   implemented: true,
@@ -2207,7 +2208,85 @@ function checkDesignSurfaceExists(projectDir, ctx) {
   return { id, ok: true, messages: [] };
 }
 
+// `plan` cuts the build into vertical slices and says how that plan meets the constitution.
+// It holds gate G2, ruled by the architect persona: whether a slice is really a slice —
+// something that can be built, run and shown on its own — is a judgement no check can make,
+// and it is the whole question at that gate.
+//
+// Unlike every stage before it, this one is not per-domain. A slice crosses domains by
+// definition: a vendor finding and reading an opportunity is opportunities and content and
+// users at once, and a plan cut one domain at a time would produce layers wearing a slice's
+// name.
+const plan = {
+  name: "plan",
+  title: "plan",
+  skill: skillPath("plan"),
+  workspace: "spec-and-design",
+  gate: "G2",
+  collect: ["plan", "docs/decisions"],
+  implemented: true,
+  allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
+  prompt(ctx) {
+    const n = ctx.planCriteriaCount ?? 0;
+    return [
+      `Cut the build of this system into vertical slices. There are ${n} accepted criteria to place, across the domains spec/criteria-index.json names, and every one of them belongs to exactly one slice.`,
+      `Write plan/plan.md — including its "## Constitution check" section — and plan/tasks.md with the slices in build order. Write a decision record under docs/decisions/ for any choice a later reader would otherwise have to reverse-engineer.`,
+    ].join("\n\n");
+  },
+  proposal(ctx) {
+    return {
+      name: ctx.planName ?? nextProposalName(ctx.projectDir, "plan"),
+      question: "Is this the right cut of the work, and does each slice stand on its own?",
+      recommendation: recommendationFrom(ctx.agentText),
+    };
+  },
+  preChecks(projectDir, ctx) {
+    const ids = allAcceptedCriterionIds(projectDir);
+    ctx.planCriteriaCount = ids.length;
+    ctx.planAcceptedIds = ids;
+    return [checkPlanHasCriteria(ids), checkPlanHasDesign(projectDir)];
+  },
+  postChecks(projectDir, ctx) {
+    ctx.planName = nextProposalName(projectDir, "plan");
+    const coverage = checkPlanCoverage(projectDir, ctx.planAcceptedIds ?? allAcceptedCriterionIds(projectDir));
+    const shape = planShape(projectDir);
+    return [
+      checkPlanConstitution(projectDir),
+      // A slice carrying most of the spec is not refused — only a person can say whether it
+      // is really one piece of work — but it is put in front of the persona that can.
+      { ...coverage, warnings: shape.warnings },
+    ];
+  },
+};
+
+// Every accepted, non-superseded criterion in the project, across every domain. The plan is
+// the one artefact answerable for all of them at once.
+function allAcceptedCriterionIds(projectDir) {
+  const idxPath = join(projectDir, "spec", "criteria-index.json");
+  if (!existsSync(idxPath)) return [];
+  let index;
+  try { index = JSON.parse(readText(idxPath)); } catch { return []; }
+  return (index.criteria ?? []).filter((c) => c.state === "accepted" && !c.supersededBy).map((c) => c.id);
+}
+
+function checkPlanHasCriteria(ids) {
+  const id = "plan-has-criteria";
+  if (ids.length === 0) return { id, ok: false, messages: ["plan: no accepted criteria to plan against; run ratify first"] };
+  return { id, ok: true, messages: [] };
+}
+
+// A plan cut before the screens are drawn is a plan cut against guesses about them, and the
+// slices are exactly what that would get wrong: how much of a screen one slice delivers is
+// the thing the design settles.
+function checkPlanHasDesign(projectDir) {
+  const id = "plan-has-design";
+  if (!existsSync(join(projectDir, "design", "screens.yaml")))
+    return { id, ok: false, messages: ["plan: design/screens.yaml is missing; run design first"] };
+  return { id, ok: true, messages: [] };
+}
+
 STAGES_BY_NAME.calibrate = calibrate;
+STAGES_BY_NAME.plan = plan;
 STAGES_BY_NAME.design = design;
 
 export function stageFor(name) {

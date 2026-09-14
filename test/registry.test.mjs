@@ -38,7 +38,7 @@ test("probe post-check fails when app/PROBE.md is missing the sentence", () => {
 
 test("every stage name from profiles.mjs other than the implemented ones is an unimplemented stub", () => {
   for (const name of STAGES) {
-    if (["intent", "archaeology", "ratify", "contract", "derive-tests", "bind-adapter", "calibrate", "design"].includes(name)) continue;
+    if (["intent", "archaeology", "ratify", "contract", "derive-tests", "bind-adapter", "calibrate", "design", "plan"].includes(name)) continue;
     const stage = stageFor(name);
     assert.equal(stage.implemented, false, name);
     assert.equal(stage.workspace, "project", name);
@@ -141,7 +141,7 @@ test("design holds gate G-DESIGN, is implemented, and sees neither an applicatio
   const stage = stageFor("design");
   assert.equal(stage.implemented, true);
   assert.equal(stage.gate, "G-DESIGN");
-  assert.equal(stage.workspace, "design");
+  assert.equal(stage.workspace, "spec-and-design");
   assert.deepEqual(stage.collect, ["design", "spec/contract/surface.yaml"]);
   assert.deepEqual(stage.allowedTools, ["Read", "Write", "Edit", "Glob", "Grep"]);
   assert.equal(stage.title({ domain: "opportunities" }), "design opportunities");

@@ -27,7 +27,7 @@ The pages a run covers are the ones the surface marks with this domain, read fro
 
 ## Workspace
 
-`design`: `spec/`, `design/` and `constitution.md`, archived from `HEAD`. No `app/`, no
+`spec-and-design`: `spec/`, `design/` and `constitution.md`, archived from `HEAD`. No `app/`, no
 `sources/`, and no `tests/acceptance/`.
 
 The absent acceptance suite is deliberate and is the same argument the blind stages rest on. A

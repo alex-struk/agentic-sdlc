@@ -38,13 +38,14 @@ const MODES = {
   // prompt is built from `ctx` in the project, before the workspace exists.
   "spec-only": ["spec", "tests/seed", "constitution.md", ...HARNESS, "tests/acceptance"],
   "blind-adapter": ["spec/contract", "tests/adapters", "tests/seed", "constitution.md", ...HARNESS],
-  // The design gate draws the screens the criteria describe. It gets the criteria, the
-  // surface those screens have to offer, and whatever design work other domains have
-  // already done — and no application, so a screen is designed from what the product must
-  // do rather than from what some earlier one happened to look like. No acceptance suite
-  // either: a design that knows which assertions are waiting for it is a design drawn to
-  // satisfy them.
-  "design": ["spec", "design", "constitution.md"],
+  // What the design gate and the planner both work from: the criteria, the surface the
+  // screens have to offer, whatever design work is already done, and the constitution.
+  // No application, so a screen is designed from what the product must do rather than from
+  // what some earlier one happened to look like. No acceptance suite either: a design that
+  // knows which assertions are waiting for it is a design drawn to satisfy them, and a plan
+  // that knows which criteria already have tests will cut its slices around the tests
+  // rather than around the work.
+  "spec-and-design": ["spec", "design", "constitution.md"],
   "with-sources": null,
 };
 
