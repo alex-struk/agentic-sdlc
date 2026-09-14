@@ -38,7 +38,7 @@ test("probe post-check fails when app/PROBE.md is missing the sentence", () => {
 
 test("every stage name from profiles.mjs other than the implemented ones is an unimplemented stub", () => {
   for (const name of STAGES) {
-    if (["intent", "archaeology", "ratify", "contract", "derive-tests", "bind-adapter", "calibrate"].includes(name)) continue;
+    if (["intent", "archaeology", "ratify", "contract", "derive-tests", "bind-adapter", "calibrate", "design"].includes(name)) continue;
     const stage = stageFor(name);
     assert.equal(stage.implemented, false, name);
     assert.equal(stage.workspace, "project", name);
@@ -135,6 +135,26 @@ test("a revising adapter is told to change only what the conditions name", () =>
   assert.match(prompt, /Two observations decide the outcome themselves\./);
   assert.match(prompt, /- Return the refusal unfiltered/);
   assert.doesNotMatch(stage.prompt({ ...ctx, revise: false }), /This is a revision/);
+});
+
+test("design holds gate G-DESIGN, is implemented, and sees neither an application nor the acceptance suite", () => {
+  const stage = stageFor("design");
+  assert.equal(stage.implemented, true);
+  assert.equal(stage.gate, "G-DESIGN");
+  assert.equal(stage.workspace, "design");
+  assert.deepEqual(stage.collect, ["design", "spec/contract/surface.yaml"]);
+  assert.deepEqual(stage.allowedTools, ["Read", "Write", "Edit", "Glob", "Grep"]);
+  assert.equal(stage.title({ domain: "opportunities" }), "design opportunities");
+  const missing = stage.preChecks(".", { domain: undefined, config: {} });
+  assert.ok(missing.some((r) => !r.ok && /--domain/.test(r.messages.join(" "))));
+});
+
+// A design drawn against a surface that does not exist has nothing to cover and nothing to
+// fill in, and its own post-checks would pass for want of anything to compare against.
+test("design refuses to run before there is a surface to design against", () => {
+  const stage = stageFor("design");
+  const checks = stage.preChecks(".", { domain: "billing", config: {} });
+  assert.ok(checks.some((r) => r.id === "design-surface-exists" && !r.ok));
 });
 
 test("ratify holds no gate, is implemented, runs no agent, and its pre-checks fail without --domain", () => {

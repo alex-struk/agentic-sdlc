@@ -13,6 +13,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
+import { checkDesignCatalogue, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId } from "../spec/criteria.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
@@ -2116,7 +2117,98 @@ STAGES_BY_NAME.ratify = ratify;
 STAGES_BY_NAME.contract = contract;
 STAGES_BY_NAME["derive-tests"] = deriveTests;
 STAGES_BY_NAME["bind-adapter"] = bindAdapter;
+// `design` draws the screens the criteria describe, one domain at a time, and is the only
+// stage that fills in the contract's test IDs. It holds gate G-DESIGN, ruled by the UX
+// reviewer persona: the question is whether the catalogue covers the surface, is built out
+// of the design system rather than beside it, and says honestly where a criterion did not
+// settle what a screen should do.
+//
+// Its workspace carries no application and no acceptance suite. No application because a
+// screen designed from a running one is a screen copied rather than designed; no suite
+// because a design that can read the assertions waiting for it is a design drawn to satisfy
+// them rather than to serve the behaviour.
+const design = {
+  name: "design",
+  title: (ctx) => `design ${ctx.domain}`,
+  skill: skillPath("design"),
+  workspace: "design",
+  gate: "G-DESIGN",
+  collect: ["design", "spec/contract/surface.yaml"],
+  implemented: true,
+  allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
+  prompt(ctx) {
+    const d = ctx.domain;
+    const pages = ctx.designPages ?? [];
+    const list = pages.length
+      ? pages.map((p) => `  - ${p}`).join("\n")
+      : "  (the surface names no page for this domain; say so in your journal and write nothing)";
+    return [
+      `Design the screens of the ${d} domain. The pages spec/contract/surface.yaml gives this domain are:\n\n${list}`,
+      `Read spec/domains/${d}.md for what these screens have to support, and spec/contract/surface.yaml for what each one offers. Write design/DESIGN.md, design/screens.yaml and one story per page per state under design/catalogue/, and fill in the test_id of every action and observation on these pages.`,
+      `Other domains have written in design/DESIGN.md and design/screens.yaml before you. Add to both; never replace what is there.`,
+    ].join("\n\n");
+  },
+  proposal(ctx) {
+    const d = ctx.domain;
+    return {
+      name: ctx.designName ?? nextProposalName(ctx.projectDir, `design-${d}`),
+      question: `Do these screens serve the ${d} criteria, and are they built out of the design system?`,
+      recommendation: recommendationFrom(ctx.agentText),
+    };
+  },
+  preChecks(projectDir, ctx) {
+    const domainCheck = checkDomainOption(ctx, "design");
+    if (ctx.domain) ctx.designPages = pagesForDomain(projectDir, ctx.domain);
+    return [
+      domainCheck,
+      checkDesignDomainRatified(projectDir, ctx),
+      checkDesignSurfaceExists(projectDir, ctx),
+    ];
+  },
+  postChecks(projectDir, ctx) {
+    ctx.designName = nextProposalName(projectDir, `design-${ctx.domain}`);
+    return [
+      checkDesignCatalogue(projectDir),
+      checkDesignNoLiteralColours(projectDir),
+      checkDesignSurfaceScope(projectDir),
+    ];
+  },
+};
+
+// The pages one domain owns, read from the surface's own `domain` field — the same field
+// archaeology writes when it appends a page, so a design run covers exactly what its
+// domain put there and never another domain's screens.
+function pagesForDomain(projectDir, domain) {
+  const path = join(projectDir, "spec", "contract", "surface.yaml");
+  if (!existsSync(path)) return [];
+  let doc;
+  try { doc = parseYaml(readText(path)); } catch { return []; }
+  const pages = Array.isArray(doc?.pages) ? doc.pages : [];
+  return pages.filter((p) => p?.domain === domain && p?.id).map((p) => `${p.id} — ${p.route ?? "(no route)"}`);
+}
+
+function checkDesignDomainRatified(projectDir, ctx) {
+  const id = "design-domain-ratified";
+  if (!ctx.domain) return { id, ok: true, messages: [] };
+  const { criteria } = acceptedCriteria(projectDir, ctx.domain);
+  if (criteria.length === 0)
+    return { id, ok: false, messages: [`design: domain ${ctx.domain} has no accepted criteria; run ratify first`] };
+  return { id, ok: true, messages: [] };
+}
+
+// A design run with no surface to design against would write a catalogue nothing can be
+// checked against and no test IDs at all, and its post-checks would pass for want of
+// anything to compare. Refused up front instead, naming the stage that produces one.
+function checkDesignSurfaceExists(projectDir, ctx) {
+  const id = "design-surface-exists";
+  if (!ctx.domain) return { id, ok: true, messages: [] };
+  if (surfacePageIds(projectDir).length === 0)
+    return { id, ok: false, messages: ["design: spec/contract/surface.yaml names no pages; run contract first"] };
+  return { id, ok: true, messages: [] };
+}
+
 STAGES_BY_NAME.calibrate = calibrate;
+STAGES_BY_NAME.design = design;
 
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];
