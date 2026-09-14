@@ -55,6 +55,17 @@ are permanent, and somebody has to accept the risk rather than plan to fix it.
 
 If you cannot tell which, it is `blocked:` — say what you would need to decide.
 
+Before either, read the whole surface again. A page whose `open()` takes an identifier your
+test has no way to obtain often has a sibling that reaches the same thing without one — a
+person's own settings, the signed-in account's own profile, the current user's own list. The
+surface names them separately because they are separately reachable, so a criterion about what
+somebody sees of their *own* record is usually answered by a page that asks for nothing. Record
+nothing as unreachable until you have looked for that sibling and it is not there.
+
+And never do both. A criterion gets a test file or a `not-testable.yaml` entry, never one of
+each: an entry beside a test is a contradiction a check will refuse, and it means you stopped
+half way rather than deciding.
+
 ## The journal
 
 Your final message is read by whoever rules this proposal and by whoever writes the contract
