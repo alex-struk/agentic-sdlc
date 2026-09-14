@@ -12,6 +12,7 @@ import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
 import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR } from "../spec/criteria.mjs";
 import { addRedo } from "../spec/redo.mjs";
+import { addRebind } from "../spec/rebind.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp } from "../commands/oracle.mjs";
@@ -143,6 +144,7 @@ function applyCalibrateGates(projectDir, target, today) {
   const domainsDir = join(projectDir, "spec", "domains");
   const files = existsSync(domainsDir) ? readdirSync(domainsDir).filter((f) => f.endsWith(".md")).sort() : [];
   const redo = [];
+  const rebind = [];
   // Rulings that named a criterion in a file this pass would not rewrite, so they are not
   // recorded as applied and are read again next run.
   const held = new Set();
@@ -163,7 +165,7 @@ function applyCalibrateGates(projectDir, target, today) {
       for (const { line } of blocked) held.add(owner.get(line));
       continue;
     }
-    const { criteria: next, applied, redo: domainRedo } = applyCalibrateRulings(criteria, conditions, today);
+    const { criteria: next, applied, redo: domainRedo, rebind: domainRebind } = applyCalibrateRulings(criteria, conditions, today);
     // No condition named a criterion in this file, so this pass has no business writing
     // it — not even to the byte-identical text the serialiser would produce for a file
     // already in canonical shape, and certainly not to the reformatted text it would
@@ -171,6 +173,7 @@ function applyCalibrateGates(projectDir, target, today) {
     if (applied.length === 0) continue;
     for (const a of applied) result.applied.push({ ...a, gate: owner.get(a.line) ?? null });
     redo.push(...domainRedo);
+    rebind.push(...domainRebind);
     const serialised = serialiseDomainFile(next, domain, preamble);
     if (serialised !== original) {
       writeText(abs, serialised);
@@ -181,6 +184,12 @@ function applyCalibrateGates(projectDir, target, today) {
 
   const redoPath = addRedo(projectDir, redo);
   if (redoPath) result.changed.push(redoPath);
+
+  // The target is stamped on here, not in `applyCalibrateRulings`: which target a
+  // calibration ran against is this stage's business, and a finding about one adapter says
+  // nothing about another's.
+  const rebindPath = addRebind(projectDir, rebind.map((e) => ({ ...e, target })));
+  if (rebindPath) result.changed.push(rebindPath);
 
   // A condition no domain claimed names an id the project does not have — a typo, or an
   // id from before a domain was renamed — or belongs to a file this pass refused to

@@ -430,10 +430,19 @@ export const CALIBRATE_GRAMMAR = [
   "- `test-wrong <ID>: <why>` — the criterion is right and the test is not. The id goes to",
   "  `tests/acceptance/redo.yaml` for `derive-tests` to redo, still blind, and `<why>` records what",
   "  the test got wrong without describing how the application is built.",
+  "- `adapter-wrong <ID>: <why>` — the criterion and the test are both right, and this target's",
+  "  adapter is what failed: it read the wrong thing off the page, reported a control missing that",
+  "  the application does render, or answered empty where it could not read. Nothing about the",
+  "  criterion changes; the id goes to `tests/adapters/rebind.yaml` for `bind-adapter` to correct.",
   "",
   "The ID is the criterion's own id exactly as `spec/criteria-index.json` spells it. `defect-in-old`",
-  "takes no text; the other two require a colon and text on the same line. A condition may not span",
-  "more than one line.",
+  "takes no text; the other three require a colon and text on the same line. A condition may not",
+  "span more than one line.",
+  "",
+  "Use `adapter-wrong` whenever the evidence points at the binding rather than at the product. The",
+  "other verbs fit badly and do harm: `defect-in-old` would make an adapter's bug an obligation on",
+  "the rebuild, and `test-wrong` would send a sound test back for a blind rewrite that hits the very",
+  "same binding again.",
 ].join("\n");
 
 // The note `defect-in-old` leaves on the criterion, without its date. Matched as a
@@ -450,6 +459,7 @@ function parseCalibrateCondition(line) {
   if ((m = /^defect-in-old\s+(\S+)\s*$/.exec(t))) return { verb: "defect-in-old", id: m[1] };
   if ((m = /^spec-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "spec-wrong", id: m[1], text: collapseWhitespace(m[2]) };
   if ((m = /^test-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "test-wrong", id: m[1], text: collapseWhitespace(m[2]) };
+  if ((m = /^adapter-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "adapter-wrong", id: m[1], text: collapseWhitespace(m[2]) };
   return null;
 }
 
@@ -492,6 +502,7 @@ export function applyCalibrateRulings(criteria, conditions, today) {
   const byId = new Map(out.map((c) => [c.id, c]));
   const applied = [];
   const redo = [];
+  const rebind = [];
 
   for (const line of conditions) {
     const parsed = parseCalibrateCondition(line);
@@ -515,13 +526,20 @@ export function applyCalibrateRulings(criteria, conditions, today) {
         // both know which statement the test was judged wrong against.
         redo.push({ id, version: target.version, why: text });
         break;
+      case "adapter-wrong":
+        // Nothing about the criterion moves: this verb says the spec and the test were
+        // both right and the binding was not, so bumping a version or noting a defect
+        // would record a finding against the wrong artefact. The target is filled in by
+        // the caller, which is the only place that knows which one was calibrated.
+        rebind.push({ id, why: text });
+        break;
     }
     // The version recorded is the one the criterion carries *after* the ruling, so a row
     // is read as ruled only while the criterion is still the one that was ruled on.
     applied.push({ line, id, verb, version: target.version });
   }
 
-  return { criteria: out, applied, redo };
+  return { criteria: out, applied, redo, rebind };
 }
 
 // Applies `ratify`'s gate-file conditions to a domain's parsed criteria. Every condition

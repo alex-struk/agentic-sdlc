@@ -87,6 +87,12 @@ What it reads:
   <n> condition(s) not applied` instead, and does not record the ruling those conditions came from as
   applied, so the next run — once the file is fixed — reads it again.
 
+- **`tests/adapters/rebind.yaml`** — `{ rebind: [{ id, target, why }] }`, appended by
+  `adapter-wrong` (`src/spec/rebind.mjs`). The next `bind-adapter` run for that target reads its own
+  entries into its prompt and clears them once its checks pass. Keyed by target as well as by
+  criterion, because an adapter exists per target and a finding about one says nothing about
+  another's.
+
 - **`tests/acceptance/redo.yaml`** — `{ redo: [{ id, version, why }] }`, appended by `test-wrong`
   (`src/spec/redo.mjs`). It is the list `derive-tests --stale` reads to know a criterion needs its
   test written again even though the criterion itself has not moved; `version` is the version the
@@ -212,6 +218,12 @@ answer may use:
 - `test-wrong <ID>: <why>` — the criterion is right and the test is not. The id goes to
   `redo.yaml` for `derive-tests` to redo, still blind, so `<why>` has to say what the test got wrong
   without describing how the application is built.
+- `adapter-wrong <ID>: <why>` — the criterion and the test are both right, and this target's adapter
+  is what failed. Nothing about the criterion moves; the id goes to `tests/adapters/rebind.yaml` for
+  `bind-adapter` to correct. Reach for this whenever the evidence points at the binding: the other
+  verbs fit badly and do harm, since `defect-in-old` would make an adapter's bug an obligation on
+  the rebuild and `test-wrong` would send a sound test back for a blind rewrite that meets the very
+  same binding again (`docs/decisions/0008-adapter-wrong.md`).
 
 `sdlc rule` reads these in the calibration grammar rather than the ratification one, selected by the
 proposal's name (`docs/stages/rule.md`, "Calibration conditions"), and re-prompts the persona once
