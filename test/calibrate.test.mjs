@@ -8,7 +8,7 @@
 // and the mock test runner, so nothing here needs Docker, a browser or a network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -894,4 +894,28 @@ test("after derive-tests --stale answers a test-wrong ruling, the same failure o
     clearCalibrateEnv();
     restoreEgress(prevEgress);
   }
+});
+
+// A criterion the spec has corrected — accepted, but superseded by a later one — carries no
+// test on purpose: derive-tests excludes it, because a test for it could only ever
+// contradict its replacement. Calibration read "accepted" without that exclusion and
+// demanded a row for each, which failed every calibration of a spec that had ever corrected
+// itself. On the first project to reach this stage that was 38 criteria.
+test("calibrate expects no row for a criterion another has superseded", async (t) => {
+  const { calibrateExpectedIds } = await import("../src/stages/calibrate.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "sdlc-calibrate-superseded-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "spec"), { recursive: true });
+  mkdirSync(join(dir, "tests", "acceptance", "billing"), { recursive: true });
+  writeFileSync(join(dir, "tests", "acceptance", "billing", "R-1.1.spec.ts"), "// a test\n");
+  writeFileSync(join(dir, "spec", "criteria-index.json"), JSON.stringify({
+    generated_from: "abc123",
+    criteria: [
+      { id: "R-1.1", domain: "billing", state: "accepted" },
+      { id: "R-1.2", domain: "billing", state: "accepted", supersededBy: "R-1.3" },
+      { id: "R-1.3", domain: "billing", state: "accepted" },
+      { id: "R-1.4", domain: "billing", state: "proposed" },
+    ],
+  }));
+  assert.deepEqual(calibrateExpectedIds(dir), ["R-1.1", "R-1.3"]);
 });

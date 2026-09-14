@@ -256,9 +256,14 @@ function calibrateRuledVerb(rulings, id, version) {
 // not this run's business — `derive-tests` has not reached it — but once a domain has any
 // test at all, a criterion of it missing from the results is a criterion nothing ran and
 // nothing reported, which is exactly what this stage exists to make impossible.
-function calibrateExpectedIds(projectDir) {
+//
+// A criterion carrying `supersededBy` is excluded, on the same reading `derive-tests` uses
+// to decide what to write a test for: it has been replaced by another criterion, a test for
+// it could only ever contradict its replacement, and so it deliberately has none. Expecting
+// a row for it would fail every calibration of a spec that had ever corrected itself.
+export function calibrateExpectedIds(projectDir) {
   const { byId } = calibrateIndex(projectDir);
-  const accepted = [...byId.values()].filter((c) => c.state === "accepted");
+  const accepted = [...byId.values()].filter((c) => c.state === "accepted" && !c.supersededBy);
   const acceptanceDir = join(projectDir, "tests", "acceptance");
   const withTests = new Set();
   if (existsSync(acceptanceDir)) {
