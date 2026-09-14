@@ -134,8 +134,8 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
   // A revise run's own pre-check (`checkRevisionSource`/`checkDeriveTestsRevisionSource`
   // in `registry.mjs`) stashes the returned branch's own commit on `ctx.revision` before
-  // this runs. A stage that also declares `revisionOverlayPaths` (only `derive-tests`
-  // today) gets those paths overlaid into its workspace from that commit, on top of the
+  // this runs. A stage that also declares `revisionOverlayPaths`
+  // (`derive-tests` and `bind-adapter`) gets those paths overlaid into its workspace from that commit, on top of the
   // ordinary `HEAD` archive every run builds — the returned branch's own version of just
   // the domain under revision, not a whole workspace built from a commit that may be well
   // behind `main` by now. A stage with no `ctx.revision` or no `revisionOverlayPaths` sees
@@ -148,7 +148,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   const overlay = ctx.revision?.branchCommit && stage.revisionOverlayPaths
     ? {
       ref: ctx.revision.branchCommit,
-      paths: stage.revisionOverlayPaths(ctx.domain),
+      paths: stage.revisionOverlayPaths(ctx),
       merge: stage.revisionOverlayMerge?.(projectDir, ctx.domain),
     }
     : undefined;

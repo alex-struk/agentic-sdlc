@@ -83,7 +83,7 @@ test("derive-tests holds gate G3, is implemented, workspace spec-only, and its p
     stage.collect({ revise: true, domain: "applications" }),
     ["tests/acceptance/applications", "tests/acceptance/not-testable.yaml", "tests/generated"],
   );
-  assert.deepEqual(stage.revisionOverlayPaths("applications"), ["tests/acceptance/applications", "tests/acceptance/not-testable.yaml"]);
+  assert.deepEqual(stage.revisionOverlayPaths({ domain: "applications" }), ["tests/acceptance/applications", "tests/acceptance/not-testable.yaml"]);
   assert.equal(typeof stage.prepare, "function");
   const missing = stage.preChecks(".", { domain: undefined, config: { project: { domains: ["applications"] } } });
   assert.ok(missing.some((r) => !r.ok && /--domain/.test(r.messages.join(" "))));
@@ -109,6 +109,32 @@ test("bind-adapter holds gate G3, is implemented, workspace blind-adapter, and i
   assert.deepEqual(Object.keys(stage.mcp()), ["playwright"]);
   const missing = stage.preChecks(".", { target: undefined, config: {} });
   assert.ok(missing.some((r) => !r.ok && /--target/.test(r.messages.join(" "))));
+});
+
+// Without a revision path a returned adapter costs a whole binding walked from nothing,
+// which on a real surface is the most expensive turn in the pipeline.
+test("bind-adapter can revise a returned binding, overlaying its own target and nothing else", () => {
+  const stage = stageFor("bind-adapter");
+  assert.deepEqual(stage.revisionOverlayPaths({ target: "old" }), ["tests/adapters/old"]);
+  assert.equal(stage.revisionOverlayMerge, undefined);
+  const noReturn = stage.preChecks(".", { target: "old", revise: true, dryRun: true, config: { targets: { old: {} } } });
+  assert.ok(noReturn.some((r) => r.id === "bind-adapter-revise-source" && !r.ok));
+  const ordinary = stage.preChecks(".", { target: "old", config: { targets: { old: {} } } });
+  assert.ok(ordinary.every((r) => r.id !== "bind-adapter-revise-source" || r.ok));
+});
+
+test("a revising adapter is told to change only what the conditions name", () => {
+  const stage = stageFor("bind-adapter");
+  const ctx = {
+    target: "old", revise: true, bindAdapterIdentity: "sandbox",
+    revision: { rationale: "Two observations decide the outcome themselves.", conditions: ["Return the refusal unfiltered"] },
+  };
+  const prompt = stage.prompt(ctx);
+  assert.match(prompt, /This is a revision/);
+  assert.match(prompt, /change only what the conditions below name/);
+  assert.match(prompt, /Two observations decide the outcome themselves\./);
+  assert.match(prompt, /- Return the refusal unfiltered/);
+  assert.doesNotMatch(stage.prompt({ ...ctx, revise: false }), /This is a revision/);
 });
 
 test("ratify holds no gate, is implemented, runs no agent, and its pre-checks fail without --domain", () => {

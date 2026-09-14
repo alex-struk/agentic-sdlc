@@ -1100,7 +1100,7 @@ const deriveTests = {
   gate: "G3",
   // The paths a `--revise` run's own workspace was overlaid with — see
   // `deriveTestsRevisionScope` above.
-  revisionOverlayPaths: deriveTestsRevisionScope,
+  revisionOverlayPaths: (ctx) => deriveTestsRevisionScope(ctx.domain),
   // Of those paths, `not-testable.yaml` is the one every domain shares, so it cannot be
   // overlaid the way `tests/acceptance/<domain>/` is (the returned branch's content simply
   // replacing whatever `HEAD` has) without discarding whatever entries another domain has
@@ -1398,12 +1398,72 @@ function bindAdapterSignInInstructions(identity) {
 // source to read. It holds gate G3, the same gate `derive-tests` holds: the reviewer
 // persona rules whether the binding is navigation and locators only, covers everything
 // the contract names, and touches nothing outside its own target's corner of the tree.
+// The proposal names a `bind-adapter --revise` run may revise from, newest first: the
+// numbered re-runs for this target, then the first binding's own bare name. Mirrors
+// `deriveTestsRevisionCandidates` above, and for the same reason — a return is always the
+// most recent word on a target, and the highest-numbered proposal is the most recent
+// return there can be.
+function bindAdapterRevisionCandidates(projectDir, target) {
+  const pattern = `refs/heads/proposal/bind-adapter-${target}-*`;
+  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", pattern], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", pattern], projectDir).split("\n").filter(Boolean)
+    : [];
+  const re = new RegExp(`^proposal/bind-adapter-${escapeRe(target)}-(\\d+)$`);
+  const numbers = refs.map((b) => re.exec(b)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
+  return [...numbers.map((n) => `bind-adapter-${target}-${n}`), `bind-adapter-${target}`];
+}
+
+// `bind-adapter --revise`'s own pre-check, the same shape `derive-tests --revise` uses.
+// Without it a returned adapter has no correction path at all: the stage takes neither
+// `--revise` nor `--stale`, so a ruling naming three observations to change costs a
+// binding walked from nothing, which on a surface of this size is the most expensive turn
+// in the pipeline. The returned branch's own commit is stashed on `ctx.revision` for
+// `runStage` to overlay the adapter from, so the revision starts from exactly what was
+// proposed rather than from whatever `main` still carries.
+function checkBindAdapterRevisionSource(projectDir, ctx) {
+  const id = "bind-adapter-revise-source";
+  if (!ctx.revise || !ctx.target) return { id, ok: true, messages: [] };
+  const found = findReturnedBindAdapterRuling(projectDir, ctx.target);
+  if (!found) return { id, ok: false, messages: [`bind-adapter --revise: no returned ruling for ${ctx.target} to revise from`] };
+  const branchCommit = git(["rev-parse", found.branch], projectDir);
+  ctx.revision = { ...found, branchCommit };
+  if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
+  return { id, ok: true, messages: [] };
+}
+
+function findReturnedBindAdapterRuling(projectDir, target) {
+  for (const name of bindAdapterRevisionCandidates(projectDir, target)) {
+    const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
+    if (found) return { name, branch: `proposal/${name}`, ...found };
+  }
+  return null;
+}
+
+// What a `--revise` run is told on top of the ordinary task: the binding it is revising is
+// already in the workspace, and a ruling names what was wrong with it. The instruction to
+// change only what the conditions name is the same promise `derive-tests --revise` keeps —
+// a return names specific bindings as wrong, and is never licence to rewrite the ones
+// nobody asked about.
+function bindAdapterRevisionInstructions(ctx) {
+  const conditions = (ctx.revision?.conditions ?? []).map((c) => `- ${c}`).join("\n");
+  return [
+    `This is a revision. The binding you are correcting is already at tests/adapters/${ctx.target}/ — open it and change only what the conditions below name. Do not rebind what was accepted, and do not start the target's walk over.`,
+    `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`,
+    conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
+  ].filter(Boolean).join("\n\n");
+}
+
 const bindAdapter = {
   name: "bind-adapter",
   title: "bind adapter",
   skill: skillPath("bind-adapter"),
   workspace: "blind-adapter",
   gate: "G3",
+  // On a `--revise` run the returned branch's own adapter is overlaid into the workspace,
+  // so the agent opens the binding it wrote rather than an empty directory. Nothing else
+  // is overlaid: `tests/generated` is regenerated from `HEAD`'s contract by `prepare`, and
+  // an adapter has no file it shares with another target.
+  revisionOverlayPaths: (ctx) => [`tests/adapters/${ctx.target}`],
   // Only the adapter itself: `tests/generated/*`, regenerated in the workspace by
   // `prepare` below, is derived straight from the contract already committed on
   // `main` and needs no commit of its own here.
@@ -1446,7 +1506,8 @@ const bindAdapter = {
       `Write tests/adapters/${t}/bindings.yaml naming every action and observation on every page in the surface exactly once, as "bound" or "unbound: <reason>". Spell every page, action and observation exactly as spec/contract/surface.yaml spells it — "applications-new" and "submit_proposal", not the camelCased TypeScript members ("applicationsNew", "submitProposal") your adapter implements them as:\n\ntarget: ${t}\npages:\n  <pageId>:\n    actions: { <name>: bound }\n    observations: { <name>: "unbound: <why>" }`,
       `Your territory is tests/adapters/${t}/ alone. Never write under tests/acceptance or spec/ — this workspace does not even have them for you to touch by mistake.`,
       `Finish with your journal entry: what was bound, what was not and why, and any page whose route in surface.yaml did not resolve on the target.`,
-    ].join("\n\n");
+      ctx.revise ? bindAdapterRevisionInstructions(ctx) : null,
+    ].filter(Boolean).join("\n\n");
   },
   proposal(ctx) {
     const t = ctx.target;
@@ -1462,6 +1523,7 @@ const bindAdapter = {
       checkTargetOption("bind-adapter", ctx),
       checkSandboxPassword("bind-adapter", ctx, "binding against"),
       checkBindAdapterTargetUp(ctx),
+      checkBindAdapterRevisionSource(projectDir, ctx),
     ];
   },
   postChecks(projectDir, ctx) {
