@@ -502,4 +502,10 @@ test("nextProposalName numbers a stem whose ruling is already recorded", async (
   // A different domain sharing a prefix must not be counted.
   writeFileSync(join(d, ".sdlc/gates/derive-tests-billing-reports.yaml"), "verdict: approve\n");
   assert.equal(nextProposalName(d, stem), `${stem}-3`, "a longer stem is a different proposal");
+
+  // The numbers are not contiguous: a return recorded on main writes its own gate file,
+  // so a family can skip one. Counting the files would hand back a name already taken —
+  // and a proposal opened under a name whose ruling exists is skipped as already ruled.
+  writeFileSync(join(d, `.sdlc/gates/${stem}-6.yaml`), "verdict: return\n");
+  assert.equal(nextProposalName(d, stem), `${stem}-7`, "a gap in the sequence does not reuse a taken name");
 });

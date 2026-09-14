@@ -799,10 +799,7 @@ function checkDeriveTestsStaleHasWork(ctx) {
 // (`derive-tests-<d>`) needs no such counting: like `archaeology`'s, it is fixed per
 // domain, and a second full run is refused outright until the first is ruled.
 function nextDeriveTestsStaleVersion(projectDir, domain) {
-  const dir = join(projectDir, ".sdlc", "gates");
-  if (!existsSync(dir)) return 1;
-  const re = new RegExp(`^derive-tests-${escapeRe(domain)}-stale-(\\d+)\\.yaml$`);
-  return readdirSync(dir).filter((f) => re.test(f)).length + 1;
+  return highestRulingNumber(projectDir, `derive-tests-${domain}-stale`) + 1;
 }
 
 // The proposal name a `--revise` re-run opens: `n` is how many rulings this domain's test
@@ -822,20 +819,32 @@ function nextDeriveTestsStaleVersion(projectDir, domain) {
 // so `rule --pending` does not see it as open and the work sits on a branch nobody can
 // rule. That is not a hypothetical — three re-derivations worth $38 landed exactly there,
 // finished and unrulable, before this existed.
-export function nextProposalName(projectDir, stem) {
+// The highest number already used by a ruling in this family, counting the unnumbered
+// first one as 1. Read as a maximum rather than as a count, because the numbers are not
+// contiguous: a return recorded on `main` writes its own gate file, so a family can hold
+// 1, 2, 3 and 6 with nothing at 4 or 5 — and a count would then hand back a name that is
+// already taken. That is not hypothetical. A revision numbered itself 6 against a family
+// whose highest was already 6, inherited that ruling's own gate file from `main`, and was
+// skipped by `rule --pending` as already ruled.
+function highestRulingNumber(projectDir, stem) {
   const dir = join(projectDir, ".sdlc", "gates");
-  if (!existsSync(dir)) return stem;
-  const re = new RegExp(`^${escapeRe(stem)}(-\\d+)?\\.yaml$`);
-  const n = readdirSync(dir).filter((f) => re.test(f)).length;
-  return n === 0 ? stem : `${stem}-${n + 1}`;
+  if (!existsSync(dir)) return 0;
+  const re = new RegExp(`^${escapeRe(stem)}(?:-(\\d+))?\\.yaml$`);
+  let highest = 0;
+  for (const f of readdirSync(dir)) {
+    const m = re.exec(f);
+    if (m) highest = Math.max(highest, m[1] ? Number(m[1]) : 1);
+  }
+  return highest;
+}
+
+export function nextProposalName(projectDir, stem) {
+  const highest = highestRulingNumber(projectDir, stem);
+  return highest === 0 ? stem : `${stem}-${highest + 1}`;
 }
 
 function nextDeriveTestsRevisionVersion(projectDir, domain) {
-  const dir = join(projectDir, ".sdlc", "gates");
-  if (!existsSync(dir)) return 1;
-  const full = new RegExp(`^derive-tests-${escapeRe(domain)}\\.yaml$`);
-  const revised = new RegExp(`^derive-tests-${escapeRe(domain)}-(\\d+)\\.yaml$`);
-  return readdirSync(dir).filter((f) => full.test(f) || revised.test(f)).length + 1;
+  return highestRulingNumber(projectDir, `derive-tests-${domain}`) + 1;
 }
 
 // The proposal names a returned derive-tests ruling for one domain can be found under:
