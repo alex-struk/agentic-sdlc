@@ -72,6 +72,13 @@ identifiers. `seed.users.<handle>.id` and its siblings are exactly what a page w
 asks for one is asking for, so "I have no way to name this record" is almost never true of a
 record the seed defines.
 
+## When a test needs a file
+
+Name it the way a person would — `{ file: "scan0001.pdf" }` — and add `content` when the
+criterion turns on what is inside, or `bytes` when it turns on how big it is. Never write a
+path: the harness makes the file, so a name is all the adapter needs and a path would only be
+true on one machine.
+
 ## The journal
 
 Your final message is read by whoever rules this proposal and by whoever writes the contract

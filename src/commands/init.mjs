@@ -34,6 +34,7 @@ const TEMPLATE_FILES = [
   { src: ["templates", "project", "tests", "README.md"], dst: ["tests", "README.md"] },
   { src: ["templates", "project", "tests", "fixtures", "index.ts"], dst: ["tests", "fixtures", "index.ts"] },
   { src: ["templates", "project", "tests", "fixtures", "mail.ts"], dst: ["tests", "fixtures", "mail.ts"] },
+  { src: ["templates", "project", "tests", "fixtures", "upload.ts"], dst: ["tests", "fixtures", "upload.ts"] },
   { src: ["templates", "project", "tests", "fixtures", "env.d.ts"], dst: ["tests", "fixtures", "env.d.ts"] },
   { src: ["templates", "project", "tests", "acceptance", "not-testable.yaml"], dst: ["tests", "acceptance", "not-testable.yaml"], onlyIfAbsent: true },
   { src: ["templates", "project", "tests", "acceptance", "attestations.yaml"], dst: ["tests", "acceptance", "attestations.yaml"], onlyIfAbsent: true },

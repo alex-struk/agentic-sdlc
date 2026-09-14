@@ -63,6 +63,7 @@ egress: { rules: [E-1, E-2, E-3, E-4] }
     assert.ok(existsSync(join(dir, "tests/README.md")), "harness: README.md");
     assert.ok(existsSync(join(dir, "tests/fixtures/index.ts")), "harness: fixtures/index.ts");
     assert.ok(existsSync(join(dir, "tests/fixtures/mail.ts")), "harness: fixtures/mail.ts");
+    assert.ok(existsSync(join(dir, "tests/fixtures/upload.ts")), "harness: fixtures/upload.ts");
     assert.ok(existsSync(join(dir, "tests/acceptance/not-testable.yaml")), "harness: acceptance/not-testable.yaml");
     assert.ok(existsSync(join(dir, "tests/acceptance/attestations.yaml")), "harness: acceptance/attestations.yaml");
     assert.ok(existsSync(join(dir, "tests/seed/manifest.yaml")), "harness: seed/manifest.yaml");

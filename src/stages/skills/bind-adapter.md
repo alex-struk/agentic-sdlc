@@ -59,6 +59,17 @@ you did not find: "signed in as an administrator, opened the seeded closed oppor
 the consensus tab, no control labelled X" is a finding somebody can act on. "No control labelled
 X" on its own cannot be told apart from never having looked.
 
+## When an action takes a file
+
+A test names a file the way a person would — `{ file: "scan0001.pdf" }`, sometimes with
+`content` or a size beside it — because what the criterion turns on is the name, the type or
+the size, never a path on the machine the suite happens to be running on. A file chooser needs
+a real file, so the harness makes one: `import { uploadFile } from "../../fixtures/upload"`,
+call it with what the test gave you, and hand the path it returns to `setFiles`.
+
+Never treat the name as a path. A test that says `scan0001.pdf` is not telling you where a
+file is; it is telling you what to call the one you are about to offer.
+
 ## `bindings.yaml`
 
 Write `tests/adapters/<target>/bindings.yaml`, naming every action and observation of every page
