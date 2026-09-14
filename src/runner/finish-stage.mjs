@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
 import { git, gitOk, changedPaths, stageAll, stageSite, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -32,12 +33,31 @@ function resolveTitle(stage, ctx) {
 // a stage whose name depends on a file that does not exist yet (`intent`, before the
 // agent has written one) can still derive a candidate from something already on disk
 // (`intent/brief.md`'s own heading) rather than returning `null` outright.
+// Whether a proposal branch carries its own `return` ruling — the shape a returned or
+// escalated proposal has, since only an approval's gate file ever reaches `main`.
+function returnRecordedOnBranch(projectDir, name, branch) {
+  const gatePath = `.sdlc/gates/${name}.yaml`;
+  if (!gitOk(["cat-file", "-e", `${branch}:${gatePath}`], projectDir)) return false;
+  try {
+    return (parseYaml(git(["show", `${branch}:${gatePath}`], projectDir)) ?? {}).verdict === "return";
+  } catch {
+    return false;
+  }
+}
+
 export function checkProposalNotOpen(projectDir, stage, ctx) {
   if (!stage.gate) return null;
   const p = stage.proposal({ ...ctx, projectDir, agentText: "" });
   if (!p?.name) return null;
   const branch = `proposal/${p.name}`;
   if (!gitOk(["rev-parse", "--verify", branch], projectDir)) return null;
+  // A `--revise` run exists to consume exactly this branch: one whose return was recorded
+  // on its own commit and nowhere else, which is why the check below reports it as open at
+  // all. The stage's own revision-source pre-check reads that ruling and renames the
+  // branch out of the way, so the name it still holds here is not a collision to refuse —
+  // it is the thing being revised. Without this a returned proposal whose next name is its
+  // own is unrevisable, and the only way forward is a full re-run of the stage.
+  if (ctx.revise && returnRecordedOnBranch(projectDir, p.name, branch)) return null;
   const gatePath = join(projectDir, ".sdlc", "gates", `${p.name}.yaml`);
   if (existsSync(gatePath)) {
     // Already ruled: its verdict is either merged into `main` (approve) or recorded on
