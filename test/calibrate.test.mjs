@@ -919,3 +919,41 @@ test("calibrate expects no row for a criterion another has superseded", async (t
   }));
   assert.deepEqual(calibrateExpectedIds(dir), ["R-1.1", "R-1.3"]);
 });
+
+// A whole-suite calibration takes hours on a real project, which makes checking one fix an
+// afternoon. Scoped to a domain it is minutes — but only if the rows it produces are laid
+// over the ones already on file, or the result set would account for one domain and
+// silently omit the rest.
+test("a scoped calibration lays its rows over the full set rather than replacing it", async (t) => {
+  const { sortRows } = await import("../src/testrun/playwright.mjs");
+  const previous = [
+    { id: "R-1.1", domain: "billing", result: "fail" },
+    { id: "R-2.1", domain: "users", result: "pass" },
+    { id: "R-2.2", domain: "users", result: "fail" },
+  ];
+  const fresh = [{ id: "R-2.2", domain: "users", result: "pass" }];
+  const byId = new Map(previous.map((r) => [r.id, r]));
+  for (const row of fresh) byId.set(row.id, row);
+  const merged = sortRows([...byId.values()]);
+  assert.equal(merged.length, 3, "no row is lost");
+  assert.equal(merged.find((r) => r.id === "R-2.2").result, "pass", "the re-run row is replaced");
+  assert.equal(merged.find((r) => r.id === "R-1.1").result, "fail", "another domain is untouched");
+});
+
+test("the suite filter names one domain's directory, anchored so a prefix cannot drag another in", async () => {
+  const calls = [];
+  const { runSuite } = await import("../src/testrun/playwright.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "sdlc-scoped-"));
+  mkdirSync(join(dir, "tests", "acceptance"), { recursive: true });
+  try {
+    runSuite({
+      projectDir: dir, target: "old", baseUrl: "http://x", mailApi: "",
+      domain: "users",
+      exec: (cmd, args) => { calls.push(args); return { stdout: "", stderr: "" }; },
+    });
+  } catch {
+    // The run throws for want of a report; the arguments it was called with are the point.
+  }
+  const testArgs = calls.find((a) => a.includes("test")) ?? [];
+  assert.ok(testArgs.includes("acceptance/users/"), JSON.stringify(testArgs));
+});

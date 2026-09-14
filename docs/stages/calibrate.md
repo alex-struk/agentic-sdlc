@@ -31,11 +31,18 @@ What it reads:
 - `.sdlc/gates/calibrate-<t>-<n>.yaml` — every approved calibration ruling for this target, oldest
   first, so a later ruling's condition on a criterion is applied after (and therefore over) an
   earlier one's. A ruling already recorded in `tests/results/<t>/applied.yaml` is skipped.
-- `spec/domains/*.md` — the criteria the rulings name, and where two of the three verbs write.
+- `spec/domains/*.md` — the criteria the rulings name, and where two of the four verbs write.
 - `spec/criteria-index.json` — the accepted criteria, their current versions and their
   `generated_from` commit, which the results file records as the spec it ran against.
 - `tests/acceptance/` — the suite itself, and `not-testable.yaml`, whose entries become rows with no
   test of their own.
+
+`--domain <d>` narrows the run to that domain's specs. A whole-suite calibration takes hours on a
+real project, which makes checking one fix an afternoon; scoped, it is minutes. The rows it
+produces are laid over the ones already on file, so `latest.json` stays a complete account of every
+criterion rather than becoming a partial one — which is also why it refuses to run before a full
+calibration has happened at least once. A row nobody re-ran says what it said last time, and the
+dated file beside it records when that was.
 
 ## Outputs
 

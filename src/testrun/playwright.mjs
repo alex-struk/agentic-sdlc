@@ -155,9 +155,10 @@ function buildRows(report, projectDir, staleIds) {
 // One row per `not-testable.yaml` entry, with no file and no tests — it stands in for a
 // spec file the same way it stands in for one in `checkTests`'s coverage report. Domain
 // comes from the criteria index, since a not-testable entry names only the id.
-function notTestableRows(projectDir) {
+function notTestableRows(projectDir, domain) {
   const byId = new Map((loadIndex(projectDir)?.criteria ?? []).map((c) => [c.id, c]));
-  return readNotTestable(projectDir).map((entry) => ({
+  const wanted = (entry) => domain === undefined || byId.get(entry.id)?.domain === domain;
+  return readNotTestable(projectDir).filter(wanted).map((entry) => ({
     id: entry.id,
     version: entry.version,
     domain: byId.get(entry.id)?.domain ?? null,
@@ -169,7 +170,7 @@ function notTestableRows(projectDir) {
 
 // Sorted by domain, then numerically within it via the criteria module's own id compare
 // (`R-1.10` after `R-1.2`, not before it as a lexical sort would place it).
-function sortRows(rows) {
+export function sortRows(rows) {
   return [...rows].sort((a, b) => {
     const da = a.domain ?? "", db = b.domain ?? "";
     if (da !== db) return da < db ? -1 : 1;
@@ -195,7 +196,11 @@ function readMockRows(mockDir) {
 // a test passes a recording stand-in instead, so nothing here ever needs a real `npm`,
 // `npx` or browser to be exercised. `runSuite` is itself synchronous, since `exec` is.
 export function runSuite(opts) {
-  const { projectDir, target, baseUrl, mailApi, env = {}, exec = defaultExec } = opts;
+  // `domain` narrows the run to one domain's specs. The whole suite takes hours on a real
+  // project, which makes checking one fix a whole afternoon; scoped, it is minutes. The
+  // caller is responsible for merging the rows it gets back over the rows it already had —
+  // a scoped run reports on its domain and says nothing about any other.
+  const { projectDir, target, baseUrl, mailApi, domain, env = {}, exec = defaultExec } = opts;
 
   // The stale set and the not-testable rows both come from the project's real files
   // regardless of whether the suite itself actually ran — under mock there is no run to
@@ -205,7 +210,8 @@ export function runSuite(opts) {
   if (process.env.SDLC_TEST_RUNNER === "mock") {
     const mockRows = readMockRows(process.env.SDLC_MOCK_DIR ?? "").map((r) =>
       staleIds.has(r.id) ? { ...r, result: "stale" } : r);
-    return { rows: sortRows([...mockRows, ...notTestableRows(projectDir)]), raw: null, ok: true };
+    const scoped = domain === undefined ? mockRows : mockRows.filter((r) => r.domain === domain);
+    return { rows: sortRows([...scoped, ...notTestableRows(projectDir, domain)]), raw: null, ok: true };
   }
 
   ensureDeps(projectDir, exec);
@@ -230,9 +236,13 @@ export function runSuite(opts) {
   // not `tests/`, Playwright would otherwise fail to find `tests/playwright.config.ts` (it
   // only looks in its own `cwd`, never a parent) and silently fall back to an unconfigured
   // default run — `--config` points it at the real config explicitly.
+  // A positional argument to `playwright test` is matched against each spec's path, so one
+  // domain's directory name is the whole filter. Anchored with a trailing separator so a
+  // domain whose name is a prefix of another's does not drag it in.
+  const filter = domain === undefined ? [] : [`acceptance/${domain}/`];
   const run = exec(
     "npx",
-    ["--prefix", "tests", "playwright", "test", "--reporter=json", "--config=tests/playwright.config.ts"],
+    ["--prefix", "tests", "playwright", "test", "--reporter=json", "--config=tests/playwright.config.ts", ...filter],
     { cwd: projectDir, env: runEnv },
   );
 
@@ -241,6 +251,6 @@ export function runSuite(opts) {
     throw new Error(`playwright produced no report at tests/test-results/results.json:\n${run.stderr}`);
   }
   const raw = JSON.parse(readText(reportPath));
-  const rows = sortRows([...buildRows(raw, projectDir, staleIds), ...notTestableRows(projectDir)]);
+  const rows = sortRows([...buildRows(raw, projectDir, staleIds), ...notTestableRows(projectDir, domain)]);
   return { rows, raw, ok: true };
 }

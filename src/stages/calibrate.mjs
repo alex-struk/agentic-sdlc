@@ -16,7 +16,7 @@ import { addRebind } from "../spec/rebind.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp } from "../commands/oracle.mjs";
-import { runSuite } from "../testrun/playwright.mjs";
+import { runSuite, sortRows } from "../testrun/playwright.mjs";
 import { propose } from "../commands/propose.mjs";
 
 function calibrateResultsDir(projectDir, target) {
@@ -304,6 +304,33 @@ function nextDatedResultsName(dir, today) {
   return `${today}-${n}.json`;
 }
 
+// A scoped run's rows, laid over whatever the last full run recorded. Rows this run did not
+// produce are kept exactly as they were — including the `at` of the file they came from,
+// which is why the merged result is honest about being partly older: a row nobody re-ran
+// says what it said last time, and the dated file beside it records when that was.
+function mergeRows(projectDir, target, fresh) {
+  const { results } = readLatestResults(projectDir, target);
+  const previous = Array.isArray(results?.rows) ? results.rows : [];
+  const byId = new Map(previous.map((r) => [r?.id, r]));
+  for (const row of fresh) byId.set(row.id, row);
+  return sortRows([...byId.values()]);
+}
+
+// `--domain` is optional and narrows the suite to that domain. It has to name a domain the
+// project has, and there has to be a full result set already: a scoped run lays its rows
+// over the ones on file, and with nothing to lay them over the result would be a results
+// file that accounts for one domain and silently omits the other seven.
+function checkCalibrateDomain(projectDir, ctx) {
+  const id = "calibrate-domain";
+  if (ctx.domain === undefined) return { id, ok: true, messages: [] };
+  const domains = ctx.config?.project?.domains ?? [];
+  if (domains.length && !domains.includes(ctx.domain))
+    return { id, ok: false, messages: [`calibrate: ${ctx.domain} is not one of config.project.domains`] };
+  if (!existsSync(join(calibrateResultsDir(projectDir, ctx.target), "latest.json")))
+    return { id, ok: false, messages: [`calibrate --domain: no full result set yet for ${ctx.target}; run calibrate without --domain first`] };
+  return { id, ok: true, messages: [] };
+}
+
 function checkCalibrateResults(projectDir, target) {
   const id = "calibrate-results";
   const { results, error } = readLatestResults(projectDir, target);
@@ -441,8 +468,12 @@ export const calibrate = {
     // committed — is unchanged.
     if (!commitAppliedRulings(projectDir, rulings, rulingPaths)) changed.push(...rulingPaths);
 
-    // 3. The suite itself, against the target.
-    const { rows } = runSuite({ projectDir, target, baseUrl, mailApi });
+    // 3. The suite itself, against the target. `--domain` narrows it to one domain, which
+    // turns an afternoon into minutes when what is being checked is one fix; the rows it
+    // returns are merged over the ones already on file, so `latest.json` stays a complete
+    // account of every criterion rather than becoming a partial one.
+    const { rows: fresh } = runSuite({ projectDir, target, baseUrl, mailApi, domain: ctx.domain });
+    const rows = ctx.domain === undefined ? fresh : mergeRows(projectDir, target, fresh);
 
     // 4. The result set: a dated file per run, and `latest.json` beside it for everything
     // that just wants the current state. `base_url` is the target's configured URL, not
@@ -504,6 +535,7 @@ export const calibrate = {
         missing: "calibrate needs --target <t>, or config.oracle.target for it to default to",
       }),
       checkSandboxPassword("calibrate", ctx, "calibrating"),
+      checkCalibrateDomain(projectDir, ctx),
     ];
   },
   postChecks(projectDir, ctx) {
