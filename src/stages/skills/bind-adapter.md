@@ -34,6 +34,31 @@ baseURL: string; persona: typeof persona }): Surface`, implementing every page
   contract names — throws `new Error("unbound: <page>.<member> — <reason>")` from that method
   instead of pretending to succeed.
 
+## Two ways a page hides from you, and what to do about each
+
+Nearly everything an adapter reports as unbound is one of these, and neither is the page failing
+to offer the thing. Read both before you write a single `unbound`.
+
+**A route that needs an identifier.** You cannot open `/opportunities/:opportunityId/edit` without
+an opportunity, so you cannot see the controls on it. The identifiers are in the seed:
+`tests/seed/manifest.yaml` names every record it creates and `tests/generated/seed.ts` is the same
+thing typed, so `seed.opportunities.<handle>.id` is a real identifier of a real record on the
+target you are looking at. Use them to navigate while you bind. A member reported unbound because
+"the route needs a value and none was given" is a member you did not try to reach — the value was
+in the workspace all along.
+
+**A control behind a step you have not taken.** A field on the third page of a wizard, a tab that
+only appears once a panel exists, a form the service will not show until something earlier is
+done. Walk the flow: sign in as a persona who may do it, take the earlier steps, and bind the
+control where it actually appears. If the flow needs a record in a particular state to reach at
+all, the seed usually has one — that is what the seeded records in an advanced state are for.
+
+Report a member unbound only when you have opened its page *in the state the contract describes*
+and the thing genuinely is not there. Say in the reason what you did to reach it, not only what
+you did not find: "signed in as an administrator, opened the seeded closed opportunity, walked to
+the consensus tab, no control labelled X" is a finding somebody can act on. "No control labelled
+X" on its own cannot be told apart from never having looked.
+
 ## `bindings.yaml`
 
 Write `tests/adapters/<target>/bindings.yaml`, naming every action and observation of every page
