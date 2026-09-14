@@ -2169,7 +2169,7 @@ const design = {
   postChecks(projectDir, ctx) {
     ctx.designName = nextProposalName(projectDir, `design-${ctx.domain}`);
     return [
-      checkDesignCatalogue(projectDir),
+      checkDesignCatalogue(projectDir, ctx.domain),
       checkDesignNoLiteralColours(projectDir),
       checkDesignSurfaceScope(projectDir),
     ];
@@ -2203,8 +2203,8 @@ function checkDesignDomainRatified(projectDir, ctx) {
 function checkDesignSurfaceExists(projectDir, ctx) {
   const id = "design-surface-exists";
   if (!ctx.domain) return { id, ok: true, messages: [] };
-  if (surfacePageIds(projectDir).length === 0)
-    return { id, ok: false, messages: ["design: spec/contract/surface.yaml names no pages; run contract first"] };
+  if (surfacePageIds(projectDir, ctx.domain).length === 0)
+    return { id, ok: false, messages: [`design: spec/contract/surface.yaml names no page in the ${ctx.domain} domain; run contract first`] };
   return { id, ok: true, messages: [] };
 }
 

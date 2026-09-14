@@ -56,6 +56,27 @@ test("a catalogue covering every page in every declared state passes", (t) => {
   assert.equal(r.ok, true, r.messages.join(" | "));
 });
 
+// One run covers one domain, so the seven it was not given are not its omission. Everything
+// else about the catalogue is wrong however the run was scoped, and stays project-wide.
+test("a design run is answerable for its own domain's pages, not the whole surface", (t) => {
+  const dir = project(t, {
+    screens: `screens:\n  - page: home\n    states: [default]\n`,
+    catalogue: ["home.default.stories.tsx"],
+  });
+  assert.equal(checkDesignCatalogue(dir, "content").ok, true, "no content page is uncovered");
+  assert.match(checkDesignCatalogue(dir, "opportunities").messages.join("\n"),
+    /opportunity-list is in the contract's surface but has no screen/);
+});
+
+test("a screen naming a page no domain's surface has fails whatever the run was scoped to", (t) => {
+  const dir = project(t, {
+    screens: `screens:\n  - page: invented\n    states: [default]\n`,
+    catalogue: ["invented.default.stories.tsx"],
+  });
+  assert.match(checkDesignCatalogue(dir, "content").messages.join("\n"),
+    /invented is not a page the contract's surface names/);
+});
+
 test("a page the contract names and the design never drew fails", (t) => {
   const dir = project(t, {
     screens: `screens:\n  - page: home\n    states: [default]\n`,

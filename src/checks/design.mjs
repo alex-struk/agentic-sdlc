@@ -22,15 +22,19 @@ function readYaml(path) {
   try { return parseYaml(readText(path)); } catch { return null; }
 }
 
-// Page ids as the contract spells them. A surface that will not parse is not this check's
-// failure to report — `checkContract` owns that — so it reads as no pages rather than as
-// an error here, and the catalogue check says only that it found nothing to cover.
-export function surfacePageIds(projectDir) {
+// Page ids as the contract spells them, optionally narrowed to one domain. A surface that
+// will not parse is not this check's failure to report — `checkContract` owns that — so it
+// reads as no pages rather than as an error here, and the catalogue check says only that it
+// found nothing to cover.
+export function surfacePageIds(projectDir, domain) {
   const doc = readYaml(join(projectDir, SURFACE_PATH));
   const pages = doc?.pages;
-  if (Array.isArray(pages)) return pages.map((p) => p?.id).filter(Boolean);
-  if (pages && typeof pages === "object") return Object.keys(pages);
-  return [];
+  const entries = Array.isArray(pages)
+    ? pages.map((p) => [p?.id, p])
+    : pages && typeof pages === "object" ? Object.entries(pages) : [];
+  return entries
+    .filter(([id, page]) => id && (domain === undefined || page?.domain === domain))
+    .map(([id]) => id);
 }
 
 export function catalogueFiles(projectDir) {
@@ -43,7 +47,13 @@ export function catalogueFiles(projectDir) {
 // is named from it (`<page>.<state>.stories.tsx`) rather than the other way round, so a
 // state that exists only as a file nobody declared is as much a defect as a declared state
 // with no file: a reviewer reads the declaration and expects the catalogue to match it.
-export function checkDesignCatalogue(projectDir) {
+// `domain` narrows only one half of this. Which pages must have a screen is this run's
+// business — a design run covers the domain it was given, and the seven it was not are not
+// its omission. Everything else stays project-wide: a story nobody declared, a screen
+// declared twice, a screen naming a page the surface does not have, are all wrong however
+// this run was scoped, and a check that only looked at one domain would let them survive
+// every run that did not happen to touch them.
+export function checkDesignCatalogue(projectDir, domain) {
   const id = "design-catalogue";
   const messages = [];
   const screensPath = join(projectDir, SCREENS_PATH);
@@ -52,7 +62,8 @@ export function checkDesignCatalogue(projectDir) {
   const screens = Array.isArray(doc?.screens) ? doc.screens : null;
   if (!screens) return { id, ok: false, messages: [`${SCREENS_PATH}: no "screens" list`] };
 
-  const pageIds = surfacePageIds(projectDir);
+  const mustCover = surfacePageIds(projectDir, domain);
+  const allPageIds = surfacePageIds(projectDir);
   const declared = new Map();
   for (const s of screens) {
     const page = s?.page;
@@ -66,11 +77,11 @@ export function checkDesignCatalogue(projectDir) {
     declared.set(page, states);
   }
 
-  for (const page of pageIds) {
+  for (const page of mustCover) {
     if (!declared.has(page)) messages.push(`${SCREENS_PATH}: ${page} is in the contract's surface but has no screen`);
   }
   for (const page of declared.keys()) {
-    if (pageIds.length && !pageIds.includes(page)) messages.push(`${SCREENS_PATH}: ${page} is not a page the contract's surface names`);
+    if (allPageIds.length && !allPageIds.includes(page)) messages.push(`${SCREENS_PATH}: ${page} is not a page the contract's surface names`);
   }
 
   const files = new Set(catalogueFiles(projectDir));

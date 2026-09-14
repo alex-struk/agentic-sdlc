@@ -53,12 +53,19 @@ pages filled in.
 
 ## Checks
 
-`design-catalogue` cross-references three things: every page the surface names has a screen,
+`design-catalogue` cross-references three things: every page the surface gives *this domain* has a
+screen,
 every screen names a page the surface names, every declared state has a story file, and every
 story file answers to a declared state. Both directions matter — a declared state with no story
 is a screen nobody drew, and a story nobody declared is a state the reviewer was never told
 about. Every screen must declare a `default` state, because naming the resting state the same
 thing everywhere is what lets a reviewer compare two screens at all.
+
+Only the coverage half is scoped to the domain being run: the seven domains a run was not given
+are not its omission. A story nobody declared, a screen declared twice, a screen naming a page the
+surface does not have — all are wrong however the run was scoped, so all stay project-wide. A
+check that looked only at one domain would let them survive every run that did not happen to touch
+them.
 
 `design-no-literal-colours` refuses a colour written out by hand anywhere under `design/`, in any
 of the forms one can be written. A literal colour is the design system being bypassed, and it is
