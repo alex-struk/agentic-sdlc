@@ -149,6 +149,11 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "instances": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
         }
       }
     },

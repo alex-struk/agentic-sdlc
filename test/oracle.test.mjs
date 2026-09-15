@@ -456,3 +456,14 @@ test("oracle reseed keeps the tables a project names instead of the defaults, an
   // The name is written into SQL, so it is checked here as well as in the config schema.
   assert.throws(() => truncateAllSql(["users; DROP TABLE users"]), /not a table name/);
 });
+
+// A file written before copies existed carries its one copy at the top level and no list, and
+// every caller still has to find it there.
+test("the copies of a target are read from the list, or from the single copy an older file records", async () => {
+  const { instancesOf } = await import("../src/commands/oracle.mjs");
+  assert.deepEqual(instancesOf(null), []);
+  const old = { base_url: "http://localhost:3100", mail_api: "http://localhost:8025", ports: { app: 3100 }, compose_project: "p" };
+  assert.deepEqual(instancesOf(old), [{ base_url: "http://localhost:3100", mail_api: "http://localhost:8025", ports: { app: 3100 }, compose_project: "p" }]);
+  const many = { ...old, instances: [{ compose_project: "p" }, { compose_project: "p-1" }] };
+  assert.deepEqual(instancesOf(many).map((i) => i.compose_project), ["p", "p-1"]);
+});

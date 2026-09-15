@@ -129,3 +129,18 @@ way. A target with no configured database has nothing to reset and is given no c
 suite run by hand against a developer's own sandbox behaves as it always did.
 
 A reset that fails stops the test rather than letting it run against whatever was left behind.
+
+## Running several copies
+
+`oracle.instances` starts that many independent copies, each a compose project of its own with
+its own application, database and mail catcher, on ports chosen one copy at a time so no two
+collide. `oracle up` records them all; `oracle down` takes them all down; `oracle reseed
+--instance <n>` resets one, which is what each test worker calls for its own copy.
+
+The acceptance suite spreads across them, one worker per copy: tests inside a file stay in order
+in one worker, and different files run at once. Without the key there is one copy and one worker,
+which is what a single oracle always did.
+
+This is the difference between a calibration that takes an hour and one that takes twenty minutes.
+The suite runs one test at a time against one copy because every test shares that copy's data; the
+only way to run more at once is to give each worker data of its own.

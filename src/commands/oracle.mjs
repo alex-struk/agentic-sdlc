@@ -91,6 +91,30 @@ function upServices(config, base, opts) {
   return defined.filter((s) => !application.has(s));
 }
 
+// How many independent copies of the oracle to run. Each is a compose project of its own —
+// its own application, its own database, its own mail catcher — so the acceptance suite can
+// run that many tests at once without two of them sharing data. One by default, because a
+// copy costs memory and a project that never runs the suite in parallel should pay nothing
+// for the option.
+function instanceCount(config) {
+  return Math.max(1, Number(config.oracle.instances ?? 1));
+}
+
+// Instance 0 keeps the unsuffixed project name it has always had, so a project that was up
+// before this existed is still found rather than started a second time beside itself.
+function instanceProject(config, target, i) {
+  const base = `sdlc-${config.project.name}-${target}`;
+  return i === 0 ? base : `${base}-${i}`;
+}
+
+// The copies recorded by the last `oracle up`, oldest shape included: a file written before
+// instances existed carries the one copy at its top level and no list.
+export function instancesOf(local) {
+  if (!local) return [];
+  if (Array.isArray(local.instances) && local.instances.length) return local.instances;
+  return [{ base_url: local.base_url, mail_api: local.mail_api, ports: local.ports, compose_project: local.compose_project }];
+}
+
 async function startOracle(projectDir, config, target) {
   // Checked before anything that touches the network or the filesystem for real:
   // cloning the old application's sources is wasted work if Docker Compose is not even
@@ -132,51 +156,74 @@ async function startOracle(projectDir, config, target) {
   // Already up: a local file from a previous `oracle up` names a compose project, and if
   // that project still has containers, this run is a no-op — the same ports and the same
   // URLs are still good, and starting a second copy over them would be wrong twice over.
+  const wanted = instanceCount(config);
   const existing = readLocal(projectDir, target);
-  if (existing) {
+  if (existing && instancesOf(existing).length === wanted) {
     const psOut = compose([...baseArgs(config, existing.compose_project), "ps", "--format", "json"], { cwd: projectDir });
     if (parsePsJson(psOut).length > 0) {
-      console.log(`oracle up: ${existing.base_url} (mail API ${existing.mail_api})`);
+      console.log(`oracle up: ${existing.base_url} (mail API ${existing.mail_api})${wanted > 1 ? `, ${wanted} copies` : ""}`);
       return 0;
     }
   }
-
-  const ports = await pickPorts(config.oracle.base_url);
-  const baseUrl = `http://localhost:${ports.app}`;
-  const mailApi = `http://localhost:${ports.mail_api}`;
-  writeLocal(projectDir, target, { target, base_url: baseUrl, ports, mail_api: mailApi, compose_project: composeProject });
-
-  const opts = { cwd: projectDir, env: composeEnv(config, ports) };
-  const base = baseArgs(config, composeProject);
-
-  compose([...base, "up", "-d", "--build", ...upServices(config, base, opts)], opts);
-
-  // Nothing to wait for without a configured database — a project can run an oracle with
-  // no database at all (a static site, say), and `db` is optional for exactly that
-  // reason.
-  if (config.oracle.db) await waitForDb(base, config.oracle.db, opts);
-
-  // The migration service is independent of `db`: a project can run migrations through
-  // a one-off compose service without the pipeline knowing that database's connection
-  // details (the service manages its own), so this runs whenever `migrate_service` is
-  // configured — after the db wait above when there is one, but not gated on it.
-  if (config.oracle.migrate_service) compose([...base, "run", "--rm", config.oracle.migrate_service], opts);
-
-  // Seeding, unlike migration, genuinely needs `db`: `loadSeed` connects with `psql`
-  // using `db.user`/`db.database`, which only exist when `db` is configured. When seed
-  // files are sitting in `tests/seed/` with no `db` to load them into, that is very
-  // likely a config a project didn't mean to leave half-set, so this warns rather than
-  // failing silently or refusing the whole `up`.
-  if (config.oracle.db) {
-    loadSeed(projectDir, config, base, opts);
-  } else if (seedFiles(projectDir, config).length > 0) {
-    console.warn(`oracle up: ${seedDirFor(config)}/*.sql files exist but oracle.db is not configured — seed not loaded`);
+  // A different number of copies than last time means the old ones are not what was asked
+  // for. Taking them down first is the only way to reach the asked-for state, and leaving
+  // them would strand containers nothing records any more.
+  if (existing && instancesOf(existing).length !== wanted) {
+    for (const inst of instancesOf(existing)) compose([...baseArgs(config, inst.compose_project), "down", "-v"], { cwd: projectDir });
   }
 
-  compose([...base, "up", "-d", config.oracle.service ?? "app"], opts);
-  await waitForHttp(`${baseUrl}/`, 180000);
+  const instances = [];
+  for (let i = 0; i < wanted; i += 1) {
+    // Ports are picked one copy at a time, and the copy is started before the next one's
+    // are chosen: a free port is only free until something binds it, so choosing all of
+    // them up front would hand the same port to every copy.
+    const ports = await pickPorts(config.oracle.base_url);
+    const baseUrl = `http://localhost:${ports.app}`;
+    const mailApi = `http://localhost:${ports.mail_api}`;
+    const project = instanceProject(config, target, i);
+    const opts = { cwd: projectDir, env: composeEnv(config, ports) };
+    const base = baseArgs(config, project);
 
-  console.log(`oracle up: ${baseUrl} (mail API ${mailApi})`);
+    compose([...base, "up", "-d", "--build", ...upServices(config, base, opts)], opts);
+
+    // Nothing to wait for without a configured database — a project can run an oracle with
+    // no database at all (a static site, say), and `db` is optional for exactly that
+    // reason.
+    if (config.oracle.db) await waitForDb(base, config.oracle.db, opts);
+
+    // The migration service is independent of `db`: a project can run migrations through
+    // a one-off compose service without the pipeline knowing that database's connection
+    // details (the service manages its own), so this runs whenever `migrate_service` is
+    // configured — after the db wait above when there is one, but not gated on it.
+    if (config.oracle.migrate_service) compose([...base, "run", "--rm", config.oracle.migrate_service], opts);
+
+    // Seeding, unlike migration, genuinely needs `db`: `loadSeed` connects with `psql`
+    // using `db.user`/`db.database`, which only exist when `db` is configured. When seed
+    // files are sitting in `tests/seed/` with no `db` to load them into, that is very
+    // likely a config a project didn't mean to leave half-set, so this warns rather than
+    // failing silently or refusing the whole `up`.
+    if (config.oracle.db) {
+      loadSeed(projectDir, config, base, opts);
+    } else if (i === 0 && seedFiles(projectDir, config).length > 0) {
+      console.warn(`oracle up: ${seedDirFor(config)}/*.sql files exist but oracle.db is not configured — seed not loaded`);
+    }
+
+    compose([...base, "up", "-d", config.oracle.service ?? "app"], opts);
+    await waitForHttp(`${baseUrl}/`, 180000);
+    instances.push({ base_url: baseUrl, mail_api: mailApi, ports, compose_project: project });
+
+    // Written after each copy rather than at the end, so an `up` that fails partway leaves
+    // a record of what is actually running for `oracle down` to clean up.
+    writeLocal(projectDir, target, {
+      target, base_url: instances[0].base_url, ports: instances[0].ports,
+      mail_api: instances[0].mail_api, compose_project: instances[0].compose_project, instances,
+    });
+  }
+
+  const baseUrl = instances[0].base_url;
+  const mailApi = instances[0].mail_api;
+  const ports = instances[0].ports;
+  console.log(`oracle up: ${baseUrl} (mail API ${mailApi})${wanted > 1 ? `, ${wanted} copies` : ""}`);
   // The run record is committed history, so it names the target's configured URL and the
   // port only as a local fact: the port `pickPorts` landed on is whatever was free on
   // this machine and means nothing on anybody else's.
@@ -227,24 +274,36 @@ END $$;`;
 //
 // It reuses the seed the oracle was started with, so there is one description of the
 // starting state rather than a second one that could drift from it.
-function oracleReseed(projectDir, config, target) {
+function oracleReseed(projectDir, config, target, instance) {
   const local = readLocal(projectDir, target);
   if (!local) { console.error(`oracle reseed: ${target} is not up; run sdlc oracle up first`); return 1; }
   const db = config.oracle.db;
   if (!db) { console.error("oracle reseed: config.oracle.db is not configured, so there is nowhere to load the seed into"); return 1; }
-  const opts = { cwd: projectDir, env: composeEnv(config, local.ports) };
-  const base = baseArgs(config, local.compose_project);
-  compose([...base, "exec", "-T", db.service, "psql", "-v", "ON_ERROR_STOP=1", "-U", db.user, "-d", db.database,
-    "-c", truncateAllSql(db.keep ?? MIGRATION_TABLES)], opts);
-  const files = loadSeed(projectDir, config, base, opts);
-  console.log(`oracle reseed: ${target} (${files.length} seed file(s))`);
+  const all = instancesOf(local);
+  // One copy when the suite names it — each worker resets only its own, and resetting
+  // another's would wipe data a test running right now is in the middle of using. All of
+  // them when nobody says, which is what a person running this by hand means.
+  if (instance !== undefined && !all[instance]) {
+    console.error(`oracle reseed: ${target} has no copy ${instance} (${all.length} running)`);
+    return 1;
+  }
+  const chosen = instance === undefined ? all : [all[instance]];
+  let files = [];
+  for (const inst of chosen) {
+    const opts = { cwd: projectDir, env: composeEnv(config, inst.ports) };
+    const base = baseArgs(config, inst.compose_project);
+    compose([...base, "exec", "-T", db.service, "psql", "-v", "ON_ERROR_STOP=1", "-U", db.user, "-d", db.database,
+      "-c", truncateAllSql(db.keep ?? MIGRATION_TABLES)], opts);
+    files = loadSeed(projectDir, config, base, opts);
+  }
+  console.log(`oracle reseed: ${target} (${files.length} seed file(s)${chosen.length > 1 ? `, ${chosen.length} copies` : ""})`);
   return 0;
 }
 
 function oracleDown(projectDir, config, target) {
   const local = readLocal(projectDir, target);
-  const composeProject = local?.compose_project ?? `sdlc-${config.project.name}-${target}`;
-  compose([...baseArgs(config, composeProject), "down", "-v"], { cwd: projectDir });
+  const projects = local ? instancesOf(local).map((i) => i.compose_project) : [`sdlc-${config.project.name}-${target}`];
+  for (const project of projects) compose([...baseArgs(config, project), "down", "-v"], { cwd: projectDir });
   removeLocal(projectDir, target);
   console.log(`oracle down: ${target}`);
   recordRun(projectDir, `oracle down ${target}`);
@@ -270,9 +329,9 @@ function oracleStatus(projectDir, config, target) {
 // The shared entry point behind `COMMANDS.oracle` below, exported so tests can drive it
 // with an explicit `projectDir` rather than having to `process.chdir()` into a fixture
 // the way the real CLI's `process.cwd()` would require.
-export async function runOracle(projectDir, sub, { target: wantedTarget } = {}) {
+export async function runOracle(projectDir, sub, { target: wantedTarget, instance } = {}) {
   if (!["up", "down", "status", "reseed"].includes(sub)) {
-    console.error(`unknown oracle subcommand: ${sub ?? "(none)"}\nusage: sdlc oracle up|down|status|reseed [--target <t>]`);
+    console.error(`unknown oracle subcommand: ${sub ?? "(none)"}\nusage: sdlc oracle up|down|status|reseed [--target <t>] [--instance <n>]`);
     return 2;
   }
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
@@ -284,7 +343,7 @@ export async function runOracle(projectDir, sub, { target: wantedTarget } = {}) 
     return 1;
   }
   if (sub === "up") return startOracle(projectDir, config, target);
-  if (sub === "reseed") return oracleReseed(projectDir, config, target);
+  if (sub === "reseed") return oracleReseed(projectDir, config, target, instance);
   if (sub === "down") return oracleDown(projectDir, config, target);
   return oracleStatus(projectDir, config, target);
 }
@@ -303,4 +362,7 @@ export async function oracleUp(projectDir, { target } = {}) {
   return readLocal(projectDir, target ?? config?.oracle?.target);
 }
 
-COMMANDS.oracle = async ({ pos, flags }) => runOracle(resolve(process.cwd()), pos[0], { target: typeof flags.target === "string" ? flags.target : undefined });
+COMMANDS.oracle = async ({ pos, flags }) => runOracle(resolve(process.cwd()), pos[0], {
+  target: typeof flags.target === "string" ? flags.target : undefined,
+  instance: flags.instance === undefined ? undefined : Number(flags.instance),
+});

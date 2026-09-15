@@ -52,6 +52,7 @@ Optional. Container describing the reference system (usually the legacy system t
   - `user` (string): The database user to connect as.
   - `database` (string): The database name.
   - `keep` (array of strings, optional): Tables `oracle reseed` leaves alone, replacing the default `knex_migrations`, `knex_migrations_lock`, `schema_migrations`, `migrations`. These are a migration tool's own bookkeeping: emptying them would tell the application its schema had never been built. Each name must be a plain SQL identifier, since it is written into the statement that empties everything else.
+- `instances` (integer, optional, 1-16): How many independent copies of the oracle to run, each a compose project of its own with its own application, database and mail catcher. The acceptance suite spreads across them, one worker per copy, so that many tests run at once without sharing data. Defaults to 1, which behaves exactly as a single oracle always did. A copy costs whatever the application and its database cost in memory, so raise it to what the machine can hold.
 - `env` (object of strings, optional): Extra environment variables passed to `docker compose` when the oracle comes up.
 
 The mailpit API port the oracle publishes is not a config key: it always reaches the running application as the environment variable `SDLC_MAIL_API_PORT`, chosen by the runner the same way the app and database ports are.

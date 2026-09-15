@@ -210,7 +210,11 @@ export function runSuite(opts) {
   // to the seed. Passed as an environment variable rather than written into the harness,
   // because how a target is reset is the runner's business and a suite run by hand against
   // a developer's own sandbox has no reset at all.
-  const { projectDir, target, baseUrl, mailApi, domain, resetCommand, env = {}, exec = defaultExec } = opts;
+  // `instances` are the independent copies of the target the suite may spread across: each
+  // has its own address, its own mail catcher and its own reset, so two tests running at
+  // once never share data. One copy is the ordinary case and behaves exactly as before.
+  const { projectDir, target, baseUrl, mailApi, domain, resetCommand, instances, env = {}, exec = defaultExec } = opts;
+  const copies = instances?.length ? instances : [{ baseUrl, mailApi, resetCommand }];
 
   // The stale set and the not-testable rows both come from the project's real files
   // regardless of whether the suite itself actually ran — under mock there is no run to
@@ -230,9 +234,18 @@ export function runSuite(opts) {
   const testsDir = join(projectDir, "tests");
   const runEnv = {
     SDLC_TARGET: target,
-    SDLC_TARGET_URL: baseUrl,
-    SDLC_MAIL_API: mailApi,
-    ...(resetCommand ? { SDLC_RESET_COMMAND: resetCommand } : {}),
+    // The first copy's values keep the names everything already reads, so an adapter, a
+    // fixture or a person running one test by hand needs to know nothing about copies.
+    SDLC_TARGET_URL: copies[0].baseUrl ?? baseUrl,
+    SDLC_MAIL_API: copies[0].mailApi ?? mailApi,
+    ...(copies[0].resetCommand ? { SDLC_RESET_COMMAND: copies[0].resetCommand } : {}),
+    // One numbered set per copy, which the harness picks from by worker index.
+    ...Object.fromEntries(copies.flatMap((c, i) => [
+      [`SDLC_TARGET_URL_${i}`, c.baseUrl ?? ""],
+      [`SDLC_MAIL_API_${i}`, c.mailApi ?? ""],
+      ...(c.resetCommand ? [[`SDLC_RESET_COMMAND_${i}`, c.resetCommand]] : []),
+    ])),
+    SDLC_WORKERS: String(copies.length),
     ...env,
     // An absolute path, so where the report lands never depends on which directory
     // Playwright resolves a relative name against — and it is the same path
