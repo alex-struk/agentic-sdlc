@@ -12,8 +12,9 @@ const SDLC_BIN = resolve(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs"
 import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
+import { runCatalogueScan } from "../runner/catalogue.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
-import { checkDesignCatalogue, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
+import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { readRebindFor } from "../spec/rebind.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId } from "../spec/criteria.mjs";
@@ -2300,10 +2301,17 @@ const design = {
     // the same way a derivation's own not-testable decision is carried out for it.
     ctx.designRemoved = removeUndeclaredStories(projectDir);
     ctx.designName = nextProposalName(projectDir, `design-${ctx.domain}`);
+    // Stale stories are cleared first: the scan compiles whatever is in the catalogue, and
+    // a story nobody declares any more would be compiled, scanned, and reported against a
+    // gate that is not about it.
+    runCatalogueScan(projectDir);
     return [
       checkDesignCatalogue(projectDir, ctx.domain),
       checkDesignNoLiteralColours(projectDir),
       checkDesignSurfaceScope(projectDir),
+      checkDesignHarnessUntouched(projectDir),
+      checkDesignCompiles(projectDir),
+      checkDesignAccessibility(projectDir),
     ];
   },
 };

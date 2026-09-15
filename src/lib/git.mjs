@@ -154,6 +154,10 @@ const REQUIRED_IGNORES = [
   // writes its results and HTML report to two directories of their own under `tests/`.
   "tests/test-results/",
   "tests/playwright-report/",
+  // The design catalogue's built Storybook: megabytes of generated assets, rebuilt by
+  // every scan. `design/report.json`, which the scan also writes, is deliberately absent —
+  // it is the evidence a design gate is ruled on and belongs in the history.
+  "design/storybook-static/",
 ];
 const UNIGNORE = "site/";
 

@@ -3,11 +3,12 @@
 // about the two ways a catalogue stops being a design system: a screen nobody drew, and a
 // colour somebody typed in by hand.
 //
-// None of them renders anything. Rendering the catalogue needs a browser and a built
-// Storybook, which is a second piece of machinery and a second decision; what a person can
-// be told deterministically, before any of that exists, is whether every screen and every
-// state the design itself declares has a story behind it.
-import { existsSync, readdirSync } from "node:fs";
+// Two of them read `design/report.json`, which `design/scan.mjs` writes after it compiles
+// the catalogue and scans every story. Nothing here runs a browser: the report is produced
+// outside the gate and the gate reads it, which is what lets a ruling cite a number rather
+// than a claim.
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
@@ -104,6 +105,8 @@ export function checkDesignCatalogue(projectDir, domain) {
 // rather than by a list of forbidden values, since the point is that the value was typed
 // at all — a token reads as `var(--surface-color-primary-button-default)` or as an import,
 // never as `#036`.
+const SKIP = new Set(["node_modules", "storybook-static", "report.json"]);
+
 const COLOUR = /(#[0-9a-fA-F]{3,8}\b|\b(?:rgb|rgba|hsl|hsla)\s*\()/;
 
 export function checkDesignNoLiteralColours(projectDir) {
@@ -114,6 +117,10 @@ export function checkDesignNoLiteralColours(projectDir) {
   const walk = (rel) => {
     for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
       const next = rel ? join(rel, entry.name) : entry.name;
+      // The harness's installed dependencies and its build output are machinery, not
+      // design: both are full of written-out colours, neither was authored here, and
+      // walking `node_modules` would read tens of thousands of files to say so.
+      if (SKIP.has(entry.name) || entry.name.startsWith(".")) continue;
       if (entry.isDirectory()) { walk(next); continue; }
       if (!/\.(tsx?|jsx?|css|scss|md|ya?ml)$/.test(entry.name)) continue;
       const lines = readText(join(dir, next)).split("\n");
@@ -192,4 +199,99 @@ function stableJson(value) {
     return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(",")}}`;
   }
   return JSON.stringify(value ?? null);
+}
+
+// ---- the compiled catalogue, and what the scan found in it ----
+
+export const REPORT_PATH = join("design", "report.json");
+const SCAN_COMMAND = "npm --prefix design install && npm --prefix design run scan";
+
+// The digest `scan.mjs` records, recomputed from the catalogue as it stands now. A report
+// is evidence about the stories it read, and a story edited afterwards is not covered by
+// it — which is the ordinary case, since a revision fixes a story and the old report still
+// says zero.
+function catalogueDigest(projectDir) {
+  const dir = join(projectDir, "design", "catalogue");
+  if (!existsSync(dir)) return null;
+  const hash = createHash("sha256");
+  for (const f of readdirSync(dir).filter((n) => n.endsWith(CATALOGUE_SUFFIX)).sort()) {
+    hash.update(f).update("\0").update(readFileSync(join(dir, f))).update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function readReport(projectDir) {
+  const p = join(projectDir, REPORT_PATH);
+  if (!existsSync(p)) return { missing: true };
+  try { return { report: JSON.parse(readText(p)) }; } catch (e) { return { unreadable: e.message }; }
+}
+
+// Whether the catalogue is real code. A story naming a component the design system does
+// not export, or passing a prop it does not take, reads exactly like a correct one until
+// something compiles it — so until this passes, every component and token name in the
+// catalogue is a guess that happens to look right.
+export function checkDesignCompiles(projectDir) {
+  const id = "design-compiles";
+  const { missing, unreadable, report } = readReport(projectDir);
+  if (missing) return { id, ok: false, messages: [`${REPORT_PATH} is missing; the catalogue has not been compiled. Run: ${SCAN_COMMAND}`] };
+  if (unreadable) return { id, ok: false, messages: [`${REPORT_PATH} does not parse: ${unreadable}`] };
+  const messages = [];
+  const steps = Array.isArray(report?.compile) ? report.compile : [];
+  if (!steps.length) messages.push(`${REPORT_PATH} records no compile step`);
+  for (const step of steps) {
+    if (!step?.ok) messages.push(`the catalogue does not ${step?.step ?? "compile"}:\n${step?.output ?? "(no output recorded)"}`);
+  }
+  const now = catalogueDigest(projectDir);
+  if (now && report?.catalogue && report.catalogue !== now)
+    messages.push(`${REPORT_PATH} was written for a different catalogue; the stories have changed since. Run: ${SCAN_COMMAND}`);
+  else if (now && !report?.catalogue)
+    messages.push(`${REPORT_PATH} does not say which catalogue it read; it cannot be held against this one. Run: ${SCAN_COMMAND}`);
+  return { id, ok: messages.length === 0, messages };
+}
+
+// Whether the catalogue is accessible, which for a government service is a requirement and
+// not a quality. Every story is rendered and scanned; a story that would not render at all
+// counts against this, because an unrendered story is an unscanned one and the zero would
+// otherwise be bought by the failure.
+export function checkDesignAccessibility(projectDir) {
+  const id = "design-accessibility";
+  const { missing, unreadable, report } = readReport(projectDir);
+  if (missing || unreadable) return { id, ok: false, messages: [`${REPORT_PATH} gives no accessibility scan. Run: ${SCAN_COMMAND}`] };
+  const stories = Array.isArray(report?.stories) ? report.stories : [];
+  if (!stories.length) return { id, ok: false, messages: [`${REPORT_PATH} records no story; nothing was scanned`] };
+  const messages = [];
+  const scanned = new Set(stories.map((s) => (s?.file ?? "").split("/").pop()).filter(Boolean));
+  for (const f of catalogueFiles(projectDir)) {
+    if (!scanned.has(f)) messages.push(`design/catalogue/${f}: no story from this file was scanned`);
+  }
+  for (const s of stories) {
+    if (s?.error) messages.push(`${s.id}: did not render — ${s.error}`);
+    for (const v of Array.isArray(s?.violations) ? s.violations : []) {
+      messages.push(`${s.id}: ${v?.id} (${v?.impact}) — ${v?.help} [${(v?.nodes ?? []).join(", ")}]`);
+    }
+  }
+  return { id, ok: messages.length === 0, messages };
+}
+
+// The harness the catalogue is compiled and scanned with, which a design run may read and
+// must not change. Its workspace carries these files so the writer can see which version of
+// the design system is available and what the last scan found; the same access would let a
+// failing scan be answered by editing the scanner, which is the one repair that would make
+// the gate's evidence worthless. Its own dependencies are not listed: `package-lock.json`
+// is written by the installer, not by anybody, and is expected to move.
+const HARNESS = ["design/package.json", "design/tsconfig.json", "design/scan.mjs", "design/.storybook/main.ts", "design/.storybook/preview.ts"];
+
+export function checkDesignHarnessUntouched(projectDir) {
+  const id = "design-harness-untouched";
+  const messages = [];
+  for (const file of HARNESS) {
+    if (!gitOk(["cat-file", "-e", `HEAD:${file}`], projectDir)) continue;
+    const full = join(projectDir, file);
+    if (!existsSync(full)) { messages.push(`${file} was deleted; a design run may not change the harness it is checked by`); continue; }
+    // Asked of git rather than compared as text: the helper trims what it reads back, so a
+    // file and its committed copy would differ by a final newline and nothing else.
+    if (!gitOk(["diff", "--quiet", "HEAD", "--", file], projectDir))
+      messages.push(`${file} was changed; a design run may not change the harness it is checked by`);
+  }
+  return { id, ok: messages.length === 0, messages };
 }

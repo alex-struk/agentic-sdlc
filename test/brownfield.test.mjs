@@ -94,12 +94,13 @@ test("init on a project from an earlier pipeline version reconciles the ignore f
 });
 
 // A project whose `.gitignore` was last reconciled before the acceptance harness
-// existed has every line an earlier pipeline version required, but neither of the two
-// the harness added (`tests/test-results/`, `tests/playwright-report/` — `node_modules/`
-// already covers `tests/node_modules/` and `.sdlc/*.local.yaml` already covers
-// `.sdlc/oracle-*.local.yaml`, so those two need no new line). `init` must reconcile
-// exactly those two in, and a second `init` right after must find nothing left to do.
-test("init on a project whose .gitignore predates the acceptance harness gains exactly the two lines it needs, and a second init changes nothing", async () => {
+// existed has every line an earlier pipeline version required, but none of the three the
+// two harnesses added (`tests/test-results/`, `tests/playwright-report/` and the design
+// catalogue's built Storybook — `node_modules/` already covers both harnesses' installed
+// dependencies and `.sdlc/*.local.yaml` already covers `.sdlc/oracle-*.local.yaml`, so
+// those need no new line). `init` must reconcile exactly those three in, and a second
+// `init` right after must find nothing left to do.
+test("init on a project whose .gitignore predates the acceptance and design harnesses gains exactly the lines it needs, and a second init changes nothing", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-brownfield-ignore-"));
   const prevEgress = process.env.SDLC_EGRESS_NAMES;
   const emptyList = join(tmp, "empty-egress-names.txt");
@@ -120,8 +121,8 @@ test("init on a project whose .gitignore predates the acceptance harness gains e
     await init(dir);
     const afterFirst = readFileSync(join(dir, ".gitignore"), "utf8").split("\n").filter(Boolean);
     const gained = afterFirst.filter((l) => !before.includes(l));
-    assert.deepEqual(gained, ["tests/test-results/", "tests/playwright-report/"],
-      "exactly the two lines nothing else already covers are added");
+    assert.deepEqual(gained, ["tests/test-results/", "tests/playwright-report/", "design/storybook-static/"],
+      "exactly the lines nothing else already covers are added");
     assert.equal(git(["status", "--porcelain"], dir), "", "the reconciling init leaves the tree clean");
 
     const afterFirstText = readFileSync(join(dir, ".gitignore"), "utf8");
