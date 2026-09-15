@@ -159,6 +159,24 @@ test("the design workspace carries the project's installed skills", async () => 
   assert.ok(!MODES["spec-only"].includes("app"), "and still no application anywhere near it");
 });
 
+// A returned design is a page of specific conditions. Redrawing fourteen screens from
+// nothing to meet three of them throws away the eleven that were right.
+test("design can revise a returned design, overlaying the screens already drawn", () => {
+  const stage = stageFor("design");
+  assert.deepEqual(stage.revisionOverlayPaths({ domain: "users" }), ["design", "spec/contract/surface.yaml"]);
+  const prompt = stage.prompt({
+    domain: "users", revise: true, designPages: ["user-list — /users"],
+    revision: { rationale: "the error summary is never announced", conditions: ["Give the wrapper a role that allows a name"] },
+  });
+  assert.match(prompt, /This is a revision/);
+  assert.match(prompt, /change only what the conditions below name/);
+  assert.match(prompt, /- Give the wrapper a role that allows a name/);
+  // A ruling can carry conditions for the runner or the tech lead; those are not the
+  // writer's to carry out, and pretending otherwise produces a revision that invents work.
+  assert.match(prompt, /not yours to carry out/);
+  assert.doesNotMatch(stage.prompt({ domain: "users", designPages: [] }), /This is a revision/);
+});
+
 test("design refuses to run before there is a surface to design against", () => {
   const stage = stageFor("design");
   const checks = stage.preChecks(".", { domain: "billing", config: {} });
