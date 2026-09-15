@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, cpSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, cpSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
@@ -508,4 +508,30 @@ test("nextProposalName numbers a stem whose ruling is already recorded", async (
   // and a proposal opened under a name whose ruling exists is skipped as already ruled.
   writeFileSync(join(d, `.sdlc/gates/${stem}-6.yaml`), "verdict: return\n");
   assert.equal(nextProposalName(d, stem), `${stem}-7`, "a gap in the sequence does not reuse a taken name");
+});
+
+// The writer can read, write and edit files and remove none, so a run that decides an
+// already-tested criterion cannot be tested after all is told to delete a file it has no way
+// to delete. Twice in one batch a domain's whole rewrite was lost to that, so the run's own
+// decision is carried out for it.
+test("a criterion this run newly records as not testable loses the test it already had", async (t) => {
+  const { removeTestsNowRecordedNotTestable } = await import("../src/stages/registry.mjs");
+  const { execFileSync } = await import("node:child_process");
+  const dir = mkdtempSync(join(tmpdir(), "sdlc-nottestable-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "tests/acceptance/billing"), { recursive: true });
+  const notTestable = (ids) => `criteria:\n${ids.map((i) => `  - { id: ${i}, version: 1, reason: "blocked: no page" }`).join("\n")}\n`;
+  writeFileSync(join(dir, "tests/acceptance/not-testable.yaml"), notTestable(["R-1.9"]));
+  for (const id of ["R-1.1", "R-1.2", "R-1.9"]) writeFileSync(join(dir, `tests/acceptance/billing/${id}.spec.ts`), "// a test\n");
+  const run = (args) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+  run(["init", "-q"]); run(["config", "user.email", "t@example.test"]); run(["config", "user.name", "t"]);
+  run(["add", "-A"]); run(["commit", "-q", "-m", "start"]);
+
+  // This run records R-1.1 as not testable; R-1.9 was already recorded before it.
+  writeFileSync(join(dir, "tests/acceptance/not-testable.yaml"), notTestable(["R-1.9", "R-1.1"]));
+  const removed = removeTestsNowRecordedNotTestable(dir, "billing");
+  assert.deepEqual(removed, ["tests/acceptance/billing/R-1.1.spec.ts"]);
+  assert.ok(!existsSync(join(dir, "tests/acceptance/billing/R-1.1.spec.ts")));
+  assert.ok(existsSync(join(dir, "tests/acceptance/billing/R-1.9.spec.ts")), "an entry already on file never deletes a test written since");
+  assert.ok(existsSync(join(dir, "tests/acceptance/billing/R-1.2.spec.ts")));
 });

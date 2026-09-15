@@ -187,10 +187,13 @@ async function startOracle(projectDir, config, target) {
 // The tables a reset leaves alone: a migration tool's own bookkeeping. Emptying those
 // would tell the application its schema had never been built, and the next thing to read
 // them would try to migrate an already-migrated database. The four names below are what
-// the common tools use; a project whose tool uses another name reseeds that table too and
-// has to say so, which is a change worth making when a project actually hits it rather
-// than a config key nobody sets.
+// the common tools use, and `oracle.db.keep` replaces them for a project whose tool names
+// its table something else.
 const MIGRATION_TABLES = ["knex_migrations", "knex_migrations_lock", "schema_migrations", "migrations"];
+
+// A name from config is written into SQL, so it is checked here as well as in the schema:
+// one place validating it is one place that can be changed without the other noticing.
+const TABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 // Empties every other table in one statement, worked out in the database rather than
 // listed here, so a schema that gains a table is covered without anybody remembering to
@@ -198,6 +201,8 @@ const MIGRATION_TABLES = ["knex_migrations", "knex_migrations_lock", "schema_mig
 // them all; `RESTART IDENTITY` so a sequence does not carry numbers over from the run
 // before and make a generated id depend on how many tests ran first.
 export function truncateAllSql(keep = MIGRATION_TABLES) {
+  const bad = keep.filter((t) => !TABLE_NAME.test(t));
+  if (bad.length) throw new Error(`oracle.db.keep: not a table name: ${bad.join(", ")}`);
   const list = keep.map((t) => `'${t}'`).join(", ");
   return `DO $$
 DECLARE stmt text;
@@ -230,7 +235,7 @@ function oracleReseed(projectDir, config, target) {
   const opts = { cwd: projectDir, env: composeEnv(config, local.ports) };
   const base = baseArgs(config, local.compose_project);
   compose([...base, "exec", "-T", db.service, "psql", "-v", "ON_ERROR_STOP=1", "-U", db.user, "-d", db.database,
-    "-c", truncateAllSql()], opts);
+    "-c", truncateAllSql(db.keep ?? MIGRATION_TABLES)], opts);
   const files = loadSeed(projectDir, config, base, opts);
   console.log(`oracle reseed: ${target} (${files.length} seed file(s))`);
   return 0;

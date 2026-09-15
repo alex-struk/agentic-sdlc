@@ -51,6 +51,7 @@ Optional. Container describing the reference system (usually the legacy system t
   - `service` (string): The compose service running the database.
   - `user` (string): The database user to connect as.
   - `database` (string): The database name.
+  - `keep` (array of strings, optional): Tables `oracle reseed` leaves alone, replacing the default `knex_migrations`, `knex_migrations_lock`, `schema_migrations`, `migrations`. These are a migration tool's own bookkeeping: emptying them would tell the application its schema had never been built. Each name must be a plain SQL identifier, since it is written into the statement that empties everything else.
 - `env` (object of strings, optional): Extra environment variables passed to `docker compose` when the oracle comes up.
 
 The mailpit API port the oracle publishes is not a config key: it always reaches the running application as the environment variable `SDLC_MAIL_API_PORT`, chosen by the runner the same way the app and database ports are.

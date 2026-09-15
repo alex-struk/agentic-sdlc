@@ -447,3 +447,12 @@ test("oracle reseed empties every table but the migration tool's own", async () 
     assert.ok(sql.includes(`'${t}'`), t);
   }
 });
+
+test("oracle reseed keeps the tables a project names instead of the defaults, and refuses a name that is not one", async () => {
+  const { truncateAllSql } = await import("../src/commands/oracle.mjs");
+  const sql = truncateAllSql(["flyway_schema_history"]);
+  assert.ok(sql.includes("'flyway_schema_history'"));
+  assert.ok(!sql.includes("knex_migrations"), "the default list is replaced, not added to");
+  // The name is written into SQL, so it is checked here as well as in the config schema.
+  assert.throws(() => truncateAllSql(["users; DROP TABLE users"]), /not a table name/);
+});

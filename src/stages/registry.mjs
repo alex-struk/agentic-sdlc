@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -775,6 +775,42 @@ function resolveCriteriaToDerive(projectDir, ctx) {
   return { criteria: criteria.filter((c) => ids.has(c.id)), generatedFrom };
 }
 
+// A criterion is tested or recorded as not testable, never both, and `checkTests` refuses
+// the contradiction. A run that decides an already-tested criterion cannot be tested after
+// all creates one, and cannot resolve it: the writer's tools read, write and edit files and
+// none of them removes one, so it is told to delete a file it has no way to delete. Twice
+// in one batch a domain's whole rewrite was lost to that.
+//
+// So the run's own decision is carried out here. Only an entry this run added is acted on —
+// compared against `HEAD` — so an entry that was already on file never deletes a test
+// somebody has written since.
+export function removeTestsNowRecordedNotTestable(projectDir, domain) {
+  if (!domain) return [];
+  const before = new Set(notTestableIdsAt(projectDir, "HEAD"));
+  const removed = [];
+  for (const entry of readNotTestable(projectDir)) {
+    const id = entry?.id;
+    if (!id || before.has(id)) continue;
+    const rel = `tests/acceptance/${domain}/${id}.spec.ts`;
+    const abs = join(projectDir, rel);
+    if (!existsSync(abs)) continue;
+    rmSync(abs);
+    removed.push(rel);
+  }
+  return removed;
+}
+
+function notTestableIdsAt(projectDir, ref) {
+  const rel = "tests/acceptance/not-testable.yaml";
+  if (!gitOk(["cat-file", "-e", `${ref}:${rel}`], projectDir)) return [];
+  try {
+    const parsed = parseYaml(git(["show", `${ref}:${rel}`], projectDir));
+    return (Array.isArray(parsed?.criteria) ? parsed.criteria : []).map((c) => c?.id).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function checkDeriveTestsDomainRatified(projectDir, ctx) {
   const id = "derive-tests-domain-ratified";
   if (!ctx.domain) return { id, ok: true, messages: [] };
@@ -1232,6 +1268,9 @@ const deriveTests = {
     ];
   },
   postChecks(projectDir, ctx) {
+    // Done before the checks below, because one of them refuses exactly what this clears
+    // up and the writer has no way to clear it up itself.
+    ctx.deriveTestsRemoved = removeTestsNowRecordedNotTestable(projectDir, ctx.domain);
     // Stashed the same way `contract` stashes its own version: the real `proposal(ctx)`
     // call in `finishStage` does not carry `projectDir`, so a `--stale` or `--revise`
     // run's number has to be resolved here, while it is available, for `proposal` to read
