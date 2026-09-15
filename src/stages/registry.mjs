@@ -2202,6 +2202,52 @@ STAGES_BY_NAME["bind-adapter"] = bindAdapter;
 // screen designed from a running one is a screen copied rather than designed; no suite
 // because a design that can read the assertions waiting for it is a design drawn to satisfy
 // them rather than to serve the behaviour.
+// The proposal names a `design --revise` run may revise from, newest first — the same shape
+// `bind-adapter` and `derive-tests` use, and for the same reason: a returned design is a page
+// of specific conditions, and redrawing fourteen screens from nothing to meet three of them
+// throws away the eleven that were right.
+function designRevisionCandidates(projectDir, domain) {
+  const pattern = `refs/heads/proposal/design-${domain}-*`;
+  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", pattern], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", pattern], projectDir).split("\n").filter(Boolean)
+    : [];
+  const re = new RegExp(`^proposal/design-${escapeRe(domain)}-(\\d+)$`);
+  const numbers = refs.map((b) => re.exec(b)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
+  return [...numbers.map((n) => `design-${domain}-${n}`), `design-${domain}`];
+}
+
+function findReturnedDesignRuling(projectDir, domain) {
+  for (const name of designRevisionCandidates(projectDir, domain)) {
+    const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
+    if (found) return { name, branch: `proposal/${name}`, ...found };
+  }
+  return null;
+}
+
+function checkDesignRevisionSource(projectDir, ctx) {
+  const id = "design-revise-source";
+  if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
+  const found = findReturnedDesignRuling(projectDir, ctx.domain);
+  if (!found) return { id, ok: false, messages: [`design --revise: no returned ruling for ${ctx.domain} to revise from`] };
+  const branchCommit = git(["rev-parse", found.branch], projectDir);
+  ctx.revision = { ...found, branchCommit };
+  if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G-DESIGN", keepBranch: true });
+  return { id, ok: true, messages: [] };
+}
+
+// What a revising run is told on top of the ordinary task. The screens it is correcting are
+// already in the workspace, overlaid from the returned branch, so the instruction is to
+// change what the conditions name and leave the rest.
+function designRevisionInstructions(ctx) {
+  const conditions = (ctx.revision?.conditions ?? []).map((c) => `- ${c}`).join("\n");
+  return [
+    `This is a revision. The screens you are correcting are already under design/ — open them and change only what the conditions below name. Do not redraw a screen nobody asked about.`,
+    `The ruling that returned them:\n\n${ctx.revision?.rationale ?? ""}`,
+    conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
+    `A condition addressed to somebody else — the runner, the tech lead, another stage — is not yours to carry out. Say in your journal which ones you left, and to whom.`,
+  ].filter(Boolean).join("\n\n");
+}
+
 const design = {
   name: "design",
   title: (ctx) => `design ${ctx.domain}`,
@@ -2209,6 +2255,10 @@ const design = {
   workspace: "spec-and-design",
   gate: "G-DESIGN",
   collect: ["design", "spec/contract/surface.yaml"],
+  // On a `--revise` run the returned branch's own design work is overlaid into the
+  // workspace, so a correction starts from the screens that were drawn rather than from an
+  // empty directory.
+  revisionOverlayPaths: () => ["design", "spec/contract/surface.yaml"],
   implemented: true,
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
   prompt(ctx) {
@@ -2221,7 +2271,8 @@ const design = {
       `Design the screens of the ${d} domain. The pages spec/contract/surface.yaml gives this domain are:\n\n${list}`,
       `Read spec/domains/${d}.md for what these screens have to support, and spec/contract/surface.yaml for what each one offers. Write design/DESIGN.md, design/screens.yaml and one story per page per state under design/catalogue/, and fill in the test_id of every action and observation on these pages.`,
       `Other domains have written in design/DESIGN.md and design/screens.yaml before you. Add to both; never replace what is there.`,
-    ].join("\n\n");
+      ctx.revise ? designRevisionInstructions(ctx) : null,
+    ].filter(Boolean).join("\n\n");
   },
   proposal(ctx) {
     const d = ctx.domain;
@@ -2238,6 +2289,7 @@ const design = {
       domainCheck,
       checkDesignDomainRatified(projectDir, ctx),
       checkDesignSurfaceExists(projectDir, ctx),
+      checkDesignRevisionSource(projectDir, ctx),
     ];
   },
   postChecks(projectDir, ctx) {
