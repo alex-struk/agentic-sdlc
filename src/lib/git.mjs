@@ -125,8 +125,14 @@ export function stageAll(projectDir, paths) {
 // for single-value output (a branch name, a commit hash); given multi-line or
 // NUL-separated porcelain output it would only trim the outer whitespace, but the fixed
 // "XY " prefix this parses still depends on nothing upstream having touched the bytes.
+// `-uall` because git otherwise reports a directory it has never tracked as the directory
+// alone (`design/.storybook/`), not the files inside it. Every caller matches on files:
+// `propose` checks each dirty path against the exact paths a stage handed it, and the
+// stage checks filter by extension, so a new domain's first `tests/acceptance/<domain>/`
+// would reach `checkDeriveTestsBlindHeader` as one path ending in `/` and none of its spec
+// files would be read. Ignored files are still left out, so `node_modules` is never walked.
 export function changedPaths(projectDir) {
-  const out = gitRaw(["status", "--porcelain", "-z"], projectDir);
+  const out = gitRaw(["status", "--porcelain", "-z", "-uall"], projectDir);
   const records = out.split("\0");
   const paths = [];
   for (let i = 0; i < records.length; i++) {
