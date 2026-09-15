@@ -151,6 +151,14 @@ test("design holds gate G-DESIGN, is implemented, and sees neither an applicatio
 
 // A design drawn against a surface that does not exist has nothing to cover and nothing to
 // fill in, and its own post-checks would pass for want of anything to compare against.
+// A design drawn without the project's own design-system guidance is a design drawn against
+// nothing in particular, and the packs a project installs are exactly that guidance.
+test("the design workspace carries the project's installed skills", async () => {
+  const { MODES } = await import("../src/runner/workspace.mjs");
+  assert.ok(MODES["spec-and-design"].includes(".claude/skills"));
+  assert.ok(!MODES["spec-only"].includes("app"), "and still no application anywhere near it");
+});
+
 test("design refuses to run before there is a surface to design against", () => {
   const stage = stageFor("design");
   const checks = stage.preChecks(".", { domain: "billing", config: {} });

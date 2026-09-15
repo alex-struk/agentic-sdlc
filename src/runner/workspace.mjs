@@ -30,7 +30,7 @@ export const HARNESS = [
 // the run.
 export const IN_PLACE_MODES = new Set(["project", "with-sources"]);
 
-const MODES = {
+export const MODES = {
   "project": null,
   // `.sdlc/config.yaml` is deliberately absent: it names the old application's repository
   // and commit, and nothing on the derive-tests path reads it from the workspace —
@@ -45,7 +45,12 @@ const MODES = {
   // knows which assertions are waiting for it is a design drawn to satisfy them, and a plan
   // that knows which criteria already have tests will cut its slices around the tests
   // rather than around the work.
-  "spec-and-design": ["spec", "design", "constitution.md"],
+  // `.claude/skills` is what makes the design system available to the session that draws
+  // the screens: the packs a project installs (`sdlc init`) are the org's own accessibility
+  // and component guidance, and a design drawn without them is a design drawn against
+  // nothing in particular. Committed content like everything else here, so the workspace
+  // gets the pinned version rather than whatever is installed today.
+  "spec-and-design": ["spec", "design", "constitution.md", ".claude/skills"],
   "with-sources": null,
 };
 

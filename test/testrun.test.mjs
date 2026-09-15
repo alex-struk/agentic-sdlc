@@ -398,3 +398,46 @@ test("runSuite: the reset command reaches the harness in the environment, and on
   }));
   assert.equal(without.find((c) => c.args.includes("test")).env.SDLC_RESET_COMMAND, undefined);
 });
+
+// One worker per copy of the target: the numbered variables are what the harness picks from
+// by worker index, and the unnumbered ones stay pointing at the first copy so an adapter, a
+// fixture or a person running one test by hand needs to know nothing about copies.
+test("runSuite: several copies become numbered addresses, numbered resets and a worker count", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  writeReport(d, [fileSuite("opportunities", "R-1.1.spec.ts", "views a listing", "passed")]);
+
+  const calls = [];
+  withBrowsersPath(true, () => runSuite({
+    projectDir: d, target: "old", baseUrl: "http://unused", mailApi: "",
+    instances: [
+      { baseUrl: "http://localhost:3100", mailApi: "http://localhost:8025", resetCommand: "reseed 0" },
+      { baseUrl: "http://localhost:3101", mailApi: "http://localhost:8026", resetCommand: "reseed 1" },
+    ],
+    exec: recordingExec(calls),
+  }));
+  const env = calls.find((c) => c.args.includes("test")).env;
+  assert.equal(env.SDLC_WORKERS, "2");
+  assert.equal(env.SDLC_TARGET_URL, "http://localhost:3100");
+  assert.equal(env.SDLC_TARGET_URL_0, "http://localhost:3100");
+  assert.equal(env.SDLC_TARGET_URL_1, "http://localhost:3101");
+  assert.equal(env.SDLC_MAIL_API_1, "http://localhost:8026");
+  assert.equal(env.SDLC_RESET_COMMAND_1, "reseed 1");
+  assert.equal(env.SDLC_RESET_COMMAND, "reseed 0");
+});
+
+test("runSuite: one copy is one worker, named exactly as it always was", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  writeReport(d, [fileSuite("opportunities", "R-1.1.spec.ts", "views a listing", "passed")]);
+  const calls = [];
+  withBrowsersPath(true, () => runSuite({
+    projectDir: d, target: "old", baseUrl: "http://localhost:3100", mailApi: "http://mail", exec: recordingExec(calls),
+  }));
+  const env = calls.find((c) => c.args.includes("test")).env;
+  assert.equal(env.SDLC_WORKERS, "1");
+  assert.equal(env.SDLC_TARGET_URL, "http://localhost:3100");
+  assert.equal(env.SDLC_TARGET_URL_0, "http://localhost:3100");
+});

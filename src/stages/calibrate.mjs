@@ -17,7 +17,7 @@ import { addRedo } from "../spec/redo.mjs";
 import { addRebind, removeRebind } from "../spec/rebind.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
-import { oracleUp } from "../commands/oracle.mjs";
+import { oracleUp, instancesOf } from "../commands/oracle.mjs";
 import { runSuite, sortRows } from "../testrun/playwright.mjs";
 import { propose } from "../commands/propose.mjs";
 
@@ -25,10 +25,24 @@ import { propose } from "../commands/propose.mjs";
 // the target this pipeline knows how to rebuild, through the same seed it started from. A
 // target with no configured database has nothing to reset and gets no command, so its suite
 // runs as it always did.
-function resetCommandFor(config, target) {
+function resetCommandFor(config, target, instance) {
   if (target !== config?.oracle?.target || !config?.oracle?.db) return undefined;
   const bin = resolvePath(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs");
-  return `node ${JSON.stringify(bin)} oracle reseed --target ${target}`;
+  return `node ${JSON.stringify(bin)} oracle reseed --target ${target} --instance ${instance}`;
+}
+
+// The copies of the target the suite may spread across, each with the address, mail catcher
+// and reset that belong to it. Only the oracle has them: it is the target this pipeline
+// starts, and it is `oracle up` that recorded what it started.
+function calibrateInstances(projectDir, config, target) {
+  if (target !== config?.oracle?.target) return undefined;
+  const copies = instancesOf(readLocal(projectDir, target));
+  if (copies.length === 0) return undefined;
+  return copies.map((c, i) => ({
+    baseUrl: c.base_url,
+    mailApi: c.mail_api ?? "",
+    resetCommand: resetCommandFor(config, target, i),
+  }));
 }
 
 function calibrateResultsDir(projectDir, target) {
@@ -617,7 +631,7 @@ export const calibrate = {
     } else {
       const { rows: fresh } = runSuite({
         projectDir, target, baseUrl, mailApi, domain: ctx.domain,
-        resetCommand: resetCommandFor(ctx.config, target),
+        instances: calibrateInstances(projectDir, ctx.config, target),
       });
       rows = ctx.domain === undefined ? fresh : mergeRows(projectDir, target, fresh);
     }
