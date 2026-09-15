@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -155,4 +155,22 @@ test("a page added or removed at the design gate fails", (t) => {
   const dir = gitProject(t, SURFACE);
   writeFileSync(join(dir, "spec", "contract", "surface.yaml"), `${SURFACE}  - id: invented\n    domain: opportunities\n    route: /invented\n    title: "Invented"\n    actions: {}\n    observations: {}\n`);
   assert.match(checkDesignSurfaceScope(dir).messages.join("\n"), /page invented was added/);
+});
+
+// A revision that narrows a screen's states leaves stories nobody declares any more, and the
+// writer cannot clear them up: its tools read, write and edit files and none removes one.
+// The first design revision of a real project failed on exactly three such files.
+test("a story the declaration no longer names is cleared away", async (t) => {
+  const { removeUndeclaredStories } = await import("../src/stages/registry.mjs");
+  const dir = project(t, {
+    screens: `screens:\n  - page: home\n    states: [default]\n`,
+    catalogue: ["home.default.stories.tsx", "home.loading.stories.tsx", "opportunity-list.default.stories.tsx"],
+    design: { "shared.tsx": "export const x = 1;\n" },
+  });
+  const removed = removeUndeclaredStories(dir);
+  assert.deepEqual(removed.sort(), ["design/catalogue/home.loading.stories.tsx", "design/catalogue/opportunity-list.default.stories.tsx"]);
+  assert.equal(checkDesignCatalogue(dir, "content").ok, true, "and the catalogue then answers to the declaration");
+  // A module that is not a story is not a story nobody declared: only the catalogue's own
+  // shape is reconciled, and the rest of design/ is left alone.
+  assert.ok(existsSync(join(dir, "design", "shared.tsx")));
 });

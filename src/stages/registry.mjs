@@ -2293,6 +2293,12 @@ const design = {
     ];
   },
   postChecks(projectDir, ctx) {
+    // `design/screens.yaml` is the declaration and the catalogue answers to it, so a story
+    // whose page and state nobody declares any more is stale by definition. A revision that
+    // narrows a screen's states leaves exactly that behind, and cannot clear it up: the
+    // writer's tools read, write and edit files and none of them removes one. Cleared here,
+    // the same way a derivation's own not-testable decision is carried out for it.
+    ctx.designRemoved = removeUndeclaredStories(projectDir);
     ctx.designName = nextProposalName(projectDir, `design-${ctx.domain}`);
     return [
       checkDesignCatalogue(projectDir, ctx.domain),
@@ -2305,6 +2311,32 @@ const design = {
 // The pages one domain owns, read from the surface's own `domain` field — the same field
 // archaeology writes when it appends a page, so a design run covers exactly what its
 // domain put there and never another domain's screens.
+// Stories the declaration no longer names. Read from `design/screens.yaml` rather than from
+// this run's diff, because the declaration is what the catalogue answers to whoever wrote it
+// — and a story for a state nobody declares is not reviewable: the reviewer reads the
+// declaration and expects the catalogue to match it.
+export function removeUndeclaredStories(projectDir) {
+  const dir = join(projectDir, "design", "catalogue");
+  if (!existsSync(dir)) return [];
+  let declared;
+  try {
+    const doc = parseYaml(readText(join(projectDir, "design", "screens.yaml")));
+    declared = new Set((Array.isArray(doc?.screens) ? doc.screens : [])
+      .flatMap((s) => (Array.isArray(s?.states) ? s.states : []).map((state) => `${s.page}.${state}`)));
+  } catch {
+    return [];
+  }
+  if (declared.size === 0) return [];
+  const removed = [];
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".stories.tsx")) continue;
+    if (declared.has(f.slice(0, -".stories.tsx".length))) continue;
+    rmSync(join(dir, f));
+    removed.push(`design/catalogue/${f}`);
+  }
+  return removed;
+}
+
 function pagesForDomain(projectDir, domain) {
   const path = join(projectDir, "spec", "contract", "surface.yaml");
   if (!existsSync(path)) return [];
