@@ -4,9 +4,11 @@
 // host's other traffic can collide with it. Every actual `docker compose` invocation
 // goes through `compose()` in `src/oracle/compose.mjs`, the one place `SDLC_ORACLE=mock`
 // stands in for a real Docker daemon.
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { loadConfig } from "../config/load.mjs";
+import { writeText } from "../lib/fsx.mjs";
 import { git, SDLC_AUTHOR, stagePaths } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { freePort, readLocal, removeLocal, writeLocal } from "../oracle/ports.mjs";
@@ -115,6 +117,26 @@ export function instancesOf(local) {
   return [{ base_url: local.base_url, mail_api: local.mail_api, ports: local.ports, compose_project: local.compose_project }];
 }
 
+// A container name is global to the Docker daemon, so a compose file that pins one — and
+// plenty do — lets exactly one copy of that service exist at a time, whatever project it
+// belongs to. The second copy fails on the name rather than on anything about itself.
+//
+// Rather than ask every project to rewrite the old application's compose file, a run that
+// wants more than one copy adds an override of the pipeline's own making: every service the
+// compose files define, named after the compose project it belongs to. Written to a scratch
+// file and never into the project, because it is a fact about running several copies on one
+// machine rather than something the project decided.
+function instanceNameArgs(config, project, wanted, opts) {
+  if (wanted < 2) return [];
+  const services = String(compose([...baseArgs(config, project), "config", "--services"], opts))
+    .split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!services.length) return [];
+  const body = ["services:", ...services.map((s) => `  ${s}:\n    container_name: ${project}-${s}`)].join("\n");
+  const file = join(mkdtempSync(join(tmpdir(), "sdlc-oracle-names-")), "container-names.yml");
+  writeText(file, `${body}\n`);
+  return ["-f", file];
+}
+
 async function startOracle(projectDir, config, target) {
   // Checked before anything that touches the network or the filesystem for real:
   // cloning the old application's sources is wasted work if Docker Compose is not even
@@ -182,7 +204,7 @@ async function startOracle(projectDir, config, target) {
     const mailApi = `http://localhost:${ports.mail_api}`;
     const project = instanceProject(config, target, i);
     const opts = { cwd: projectDir, env: composeEnv(config, ports) };
-    const base = baseArgs(config, project);
+    const base = [...baseArgs(config, project), ...instanceNameArgs(config, project, wanted, opts)];
 
     compose([...base, "up", "-d", "--build", ...upServices(config, base, opts)], opts);
 
