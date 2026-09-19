@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { readSlice, buildProposals, specFilesFor } from "../src/stages/slices.mjs";
+import { MODES } from "../src/runner/workspace.mjs";
 
 const TASKS = `# Tasks
 
@@ -51,4 +52,13 @@ test("the spec files for a slice's criteria are found wherever their domain keep
   mkdirSync(join(d, "tests", "acceptance", "users"), { recursive: true });
   writeFileSync(join(d, "tests", "acceptance", "users", "R-4.2.spec.ts"), "");
   assert.deepEqual(specFilesFor(d, ["R-4.1", "R-4.2"]), ["tests/acceptance/users/R-4.2.spec.ts"]);
+});
+
+// A builder that can read the acceptance suite writes code to pass the tests instead of code
+// that does what the criteria say (spec §5.10).
+test("the build workspace carries the spec, the design and the app, and never the suite or its bindings", () => {
+  const paths = MODES.build;
+  for (const p of ["app", "plan", "spec", "design", "docs/decisions", "tests/seed", "constitution.md", ".claude/skills"])
+    assert.ok(paths.includes(p), p);
+  for (const p of paths) assert.ok(!/^tests\/(acceptance|adapters|results)|^sources/.test(p), `${p} must not be in a build workspace`);
 });

@@ -51,6 +51,12 @@ export const MODES = {
   // nothing in particular. Committed content like everything else here, so the workspace
   // gets the pinned version rather than whatever is installed today.
   "spec-and-design": ["spec", "design", "constitution.md", ".claude/skills"],
+  // What a builder works from: the criteria, the contract and design it has to meet, the
+  // plan that says which slice this is, the application as it stands, and the seed
+  // manifest the application's own seed service has to load. No acceptance suite and no
+  // adapter: a build that can read the tests it will be judged by is a build written to
+  // them (spec §5.10), and the rebuilt application is checked by running them, afterwards.
+  "build": ["app", "plan", "spec", "design", "docs/decisions", "tests/seed", "constitution.md", ".claude/skills"],
   "with-sources": null,
 };
 
