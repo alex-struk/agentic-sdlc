@@ -210,7 +210,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       writeRunState(projectDir, state);
 
       const r = await runAgent({
-        cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name),
+        cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name, stage.defaultTurns),
         mcpConfig, allowedTools: stage.allowedTools, env: envVars,
       });
       if (!r.ok) return agentTurnFailed(projectDir, stage, r);

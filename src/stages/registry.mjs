@@ -2256,6 +2256,11 @@ const design = {
   workspace: "spec-and-design",
   gate: "G-DESIGN",
   collect: ["design", "spec/contract/surface.yaml"],
+  // A design run writes one story per page per state — ninety-odd files for a domain of
+  // fourteen pages — and a session's default ceiling ends it a third of the way through,
+  // having written nothing it can hand over. A project's `policy.budgets.design` still
+  // overrides this, as for any stage.
+  defaultTurns: 250,
   // On a `--revise` run the returned branch's own design work is overlaid into the
   // workspace, so a correction starts from the screens that were drawn rather than from an
   // empty directory.
@@ -2390,6 +2395,9 @@ const plan = {
   workspace: "spec-and-design",
   gate: "G2",
   collect: ["plan", "docs/decisions"],
+  // The planner reads every accepted criterion and the whole design before it cuts a
+  // slice, which alone outruns the default ceiling on a project of any size.
+  defaultTurns: 150,
   implemented: true,
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
   prompt(ctx) {
