@@ -9,6 +9,8 @@ test("a suite run given spec files runs exactly those", (t) => {
   const d = mkdtempSync(join(tmpdir(), "sdlc-files-"));
   t.after(() => rmSync(d, { recursive: true, force: true }));
   mkdirSync(join(d, "tests", "acceptance", "users"), { recursive: true });
+  mkdirSync(join(d, "tests", "test-results"), { recursive: true });
+  writeFileSync(join(d, "tests", "test-results", "results.json"), '{"suites":[]}');
   const calls = [];
   const exec = (cmd, args) => { calls.push(args); return { status: 0, stdout: '{"suites":[]}', stderr: "" }; };
   runSuite({ projectDir: d, target: "new", baseUrl: "http://x", files: ["tests/acceptance/users/R-4.1.spec.ts"], exec });

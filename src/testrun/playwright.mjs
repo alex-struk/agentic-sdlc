@@ -275,13 +275,7 @@ export function runSuite(opts) {
 
   const reportPath = join(testsDir, "test-results", "results.json");
   if (!existsSync(reportPath)) {
-    // In test environments with injected exec functions, the report file may not be created.
-    // Return empty rows in this case to allow tests to verify the exec was called with
-    // the correct arguments without needing a full project structure.
-    if (run.status !== 0) {
-      throw new Error(`playwright produced no report at tests/test-results/results.json:\n${run.stderr}`);
-    }
-    return { rows: sortRows(notTestableRows(projectDir, domain)), raw: null, ok: true };
+    throw new Error(`playwright produced no report at tests/test-results/results.json:\n${run.stderr}`);
   }
   const raw = JSON.parse(readText(reportPath));
   const rows = sortRows([...buildRows(raw, projectDir, staleIds), ...notTestableRows(projectDir, domain)]);
