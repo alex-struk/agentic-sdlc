@@ -37,6 +37,7 @@ import { calibrate } from "./calibrate.mjs";
 // `registry.mjs` keeps working unchanged.
 import { nextProposalName, recommendationFrom, recordReturnOnMain, returnedRulingOn, highestRulingNumber } from "./proposals.mjs";
 import { build } from "./build.mjs";
+import { verify } from "./verify.mjs";
 
 export { nextProposalName, recommendationFrom, recordReturnOnMain, returnedRulingOn };
 
@@ -2327,6 +2328,7 @@ STAGES_BY_NAME.calibrate = calibrate;
 STAGES_BY_NAME.plan = plan;
 STAGES_BY_NAME.design = design;
 STAGES_BY_NAME.build = build;
+STAGES_BY_NAME.verify = verify;
 
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];
