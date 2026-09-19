@@ -158,7 +158,9 @@ export function materialise(projectDir, mode, { overlay } = {}) {
       writeText(dst, stringifyYaml({ [key]: merged }));
     }
   }
-  if (existsSync(join(dir, "app"))) {
+  // The build workspace is the one mode that works on the application; every other ephemeral
+  // mode stays blind to it. Reject app/ in any ephemeral mode except build.
+  if (existsSync(join(dir, "app")) && mode !== "build") {
     throw new Error(`blindness violated: app/ present in ${mode} workspace`);
   }
   return { dir, mode, cleanup() { rmSync(dir, { recursive: true, force: true }); } };

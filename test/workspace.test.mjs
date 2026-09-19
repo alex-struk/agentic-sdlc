@@ -308,3 +308,20 @@ test("materialise blind-adapter never carries .sdlc/config.yaml either", () => {
   assert.ok(!existsSync(join(ws.dir, ".sdlc/config.yaml")));
   ws.cleanup();
 });
+
+test("materialise build includes app/ when it exists, but not tests/acceptance", () => {
+  const d = makeProject();
+  const ws = materialise(d, "build");
+  assert.ok(existsSync(join(ws.dir, "app/secret.ts")));
+  assert.ok(!existsSync(join(ws.dir, "tests/acceptance")));
+  ws.cleanup();
+});
+
+test("materialise spec-only maintains blindness: app/ does not appear even on a project that has it", () => {
+  const d = makeProject();
+  const ws = materialise(d, "spec-only");
+  // spec-only's mode definition does not include app/, so even though the project has one,
+  // the workspace does not. The blindness guard protects against accidental inclusion.
+  assert.ok(!existsSync(join(ws.dir, "app")));
+  ws.cleanup();
+});
