@@ -89,7 +89,7 @@ export function readPersonaBrief(projectDir, persona) {
   return readText(p);
 }
 
-export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null }) {
+export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null, escalation = null }) {
   const brief = readPersonaBrief(projectDir, persona);
   const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
   const proposal = readText(proposalPath);
@@ -123,6 +123,20 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
     "",
     proposal.trim(),
     "",
+    // An escalation is ruled by its target with the escalating persona's own account in
+    // front of it: the proposal alone does not say why the gate's holder would not rule.
+    ...(escalation ? [
+      "## The escalation you are ruling",
+      "",
+      `${escalation.by} holds this gate and escalated it to you rather than ruling. Its account:`,
+      "",
+      escalation.rationale,
+      "",
+      "Rule on the proposal itself, taking that account into it. If the reason it could not be",
+      "ruled is that the pipeline cannot do what the proposal needs, escalate: that stops the run",
+      "for the person who owns the pipeline.",
+      "",
+    ] : []),
     "## Tier",
     "",
     tier,

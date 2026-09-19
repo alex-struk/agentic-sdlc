@@ -57,24 +57,24 @@ and `design/report.json` beside them tells a revision what the last scan found.
 scan be answered by editing it. That is the one repair that would make the gate's evidence
 worthless, and it is ruled out by a check rather than left to a prompt.
 
-## 4 — Where the design system has no component, a design may adapt, and says so
+## 4 — Where the design system has no component, a design builds its own and names it
 
-**Decision.** A design may use a pattern the design system does not provide when three things
-hold: the design system has no released component for the need; the pattern is the standard
-accessible one for it; and `design/DESIGN.md` names it as a project adaptation rather than
-presenting it as official. The first users design used three, all accepted on these terms:
+**Decision.** A design uses the design system's component wherever it has one. Where it has none,
+the design builds one from standard HTML, styled only with design tokens, and lists it in
+`design/DESIGN.md` as the project's own component rather than the design system's. The UX
+reviewer accepts a component on that list and refuses one rebuilt by hand where the design system
+already provides it. This is the pipeline's default behaviour; a project configures nothing to get
+it.
 
-- **Section navigation** as a `<nav>` of links with `aria-current="page"`, because each profile
-  section is its own route and the design system has no released tabs component.
-- **A status badge** that states its status as a word, bordered with tokens, so status is never
-  carried by colour alone.
-- **A data table** as a native `<table>` with a caption and column headers, inside a focusable
-  region that scrolls horizontally at narrow widths.
+**Why a default and not a question each time.** The first users design needed four such
+components — section navigation, a status badge, a data table and a choice card — and the UX
+reviewer, told only to escalate "a new pattern not in the design system", escalated them. Every
+design of every domain would do the same, and each escalation would ask the same question. Tokens
+already carry what makes a screen look like the service (colour, spacing, type), and the colour
+check refuses anything else, so a component built from them is consistent by construction; what a
+reviewer needs is to know it is there, which the list gives.
 
-**Why the tech lead rules on these and the UX reviewer does not.** Whether a project may depart
-from the design system is a policy question about the service, and each adaptation is a thing
-the project will maintain that the design system will not. The UX reviewer's brief sends it on,
-and it did.
-
-**What would reverse an adaptation.** The design system releasing a component for the same need.
-A pattern kept after that is no longer an adaptation; it is a divergence.
+**Why not configuration, and not the constitution.** The constitution holds what the product must
+meet, and article P2 already says the design system *should* be used, not *must*. A setting for how
+strict a design stage is would belong in `.sdlc/config.yaml`, and none is added until a project
+needs different behaviour from this default.

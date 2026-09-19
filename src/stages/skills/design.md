@@ -45,6 +45,15 @@ your story actually puts in the markup, for each action and observation on your 
 pages. These are what a later adapter binds against, so an identifier that appears in no story
 is worse than none at all.
 
+## When the design system has no component for it
+
+Use the design system's component whenever it has one; building your own beside it is the
+one thing here a reviewer refuses outright. Where it has none — a card, a data table, a status
+badge — build it from standard HTML elements, styled only with design tokens, and list it in
+`DESIGN.md` under a heading saying these are the project's own components and not the design
+system's, with one line each on what it is and why no design-system component fits. That is
+the whole of the rule: the reviewer accepts a component on that list and refuses one hidden.
+
 ## Colour, and everything else the design system already decided
 
 Never write a colour out. Not `#036`, not `rgb(3, 51, 102)`, not a named CSS colour — a check

@@ -90,6 +90,33 @@ function untrackRunState(projectDir) {
   return true;
 }
 
+// Files `new` copies from the templates that carry the project's name and purpose as
+// placeholders. `new` fills the constitution itself, at creation; these two are filled
+// here instead, because `init` runs on every project and so also repairs one created
+// before they were filled. The purpose is read from the constitution's `**Service:**`
+// line, which the constitution stage writes, so it stays a placeholder until then rather
+// than being guessed. A placeholder filled once is gone, so this is a no-op afterwards.
+const NAMED_FILES = [join("design", "DESIGN.md"), join("plan", "plan.md")];
+
+function fillProjectPlaceholders(projectDir, config) {
+  const constitution = join(projectDir, "constitution.md");
+  const service = existsSync(constitution) ? /^\*\*Service:\*\*\s*(.+)$/m.exec(readText(constitution))?.[1]?.trim() : null;
+  const values = { PROJECT_NAME: config.project.name };
+  if (service && !service.includes("{{")) values.SERVICE_PURPOSE = service.replaceAll('"', "'");
+  const filled = [];
+  for (const rel of NAMED_FILES) {
+    const path = join(projectDir, rel);
+    if (!existsSync(path)) continue;
+    // `init` may run on a dirty tree and stages what it changes by name, so a file with a
+    // person's uncommitted edits in it is left alone: staging it would commit them too.
+    if (!gitOk(["diff", "--quiet", "HEAD", "--", rel], projectDir)) continue;
+    const before = readText(path);
+    const after = Object.entries(values).reduce((t, [k, v]) => t.replaceAll(`{{${k}}}`, v), before);
+    if (after !== before) { writeText(path, after); filled.push(rel); }
+  }
+  return filled;
+}
+
 export async function init(projectDir = process.cwd()) {
   projectDir = resolve(projectDir);
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
@@ -125,6 +152,9 @@ export async function init(projectDir = process.cwd()) {
 
   const tf = installTemplateFiles(projectDir);
   if (tf.changed) changed = true;
+
+  const named = fillProjectPlaceholders(projectDir, config);
+  if (named.length) changed = true;
 
   const wf = readText(join(PIPELINE_ROOT, "templates", "workflows", "sdlc-checkpoint.yml"))
     .replaceAll("{{PIPELINE_REPO}}", config.pipeline.repo)
@@ -173,6 +203,7 @@ export async function init(projectDir = process.cwd()) {
       ".gitattributes",
       relative(projectDir, runPath),
       ...(gitignoreChanged ? [".gitignore"] : []),
+      ...named,
       // Each `onlyIfAbsent` harness file (see TEMPLATE_FILES) is staged only when this
       // very call is the one that created it — never on a later run, where it is project
       // content and a hand edit sitting uncommitted is none of this command's business.

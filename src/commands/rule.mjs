@@ -1,5 +1,6 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
+import { parse as parseYaml } from "yaml";
 import { git, gitOk, assertCleanTree, stagePaths, stageSite, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
@@ -217,6 +218,36 @@ export function conditionGrammarFor(name) {
     : { label: "ratification", text: CONDITION_GRAMMAR, unparsed: unparsedConditions, checked: false };
 }
 
+// Whether a role is played by an agent in this project. Read from the policy rather than
+// configured separately: a project that gives the role a gate of its own as
+// `agent:<role>` has already said it simulates that role, and one that names the role
+// bare has said a person holds it. The first run of a project is simulated end to end
+// (every holder an agent), and this is what lets an escalation stay inside that run
+// instead of stopping it for a person nobody asked to take part.
+export function simulatedRole(config, role) {
+  if (!role) return false;
+  return Object.values(config?.policy?.gates ?? {}).some((g) => g?.holder === `agent:${role}`);
+}
+
+// The escalation standing on a proposal, read from the gate file on its branch, or null.
+// The branch must already be checked out (`openGate` does that); `rulePending` reads the
+// same file out of the branch without checking it out, through `escalationOn`.
+function standingEscalation(projectDir, name) {
+  const path = join(projectDir, ".sdlc", "gates", `${name}.yaml`);
+  return existsSync(path) ? escalationIn(readText(path)) : null;
+}
+
+function escalationIn(text) {
+  let doc;
+  try { doc = parseYaml(text); } catch { return null; }
+  if (doc?.verdict !== "escalated") return null;
+  return { by: doc.by ?? "", rationale: String(doc.rationale ?? "").trim() };
+}
+
+function escalationOn(projectDir, branch, name) {
+  try { return escalationIn(git(["show", `${branch}:.sdlc/gates/${name}.yaml`], projectDir)); } catch { return null; }
+}
+
 // The agent path: no human types --by approve|return. A persona brief is handed to a
 // short-lived agent turn along with the proposal, the diff and the checks, and the
 // verdict it comes back with is trusted the same way a human's --by is trusted — phase 0
@@ -226,9 +257,17 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   assertCleanTree(projectDir, "rule");
   const { branch, proposalPath, proposalText, gate, g, config } = openGate(projectDir, name);
   const by = `agent:${persona}`;
-  // Persona agents cannot rule gates they do not hold: unlike a human, an agent is never
-  // allowed to act as the escalation target, so only an exact match on `holder` passes.
-  if (g.holder !== by) throw new Error(`${by} is not a holder of ${gate} (allowed: ${g.holder})`);
+  // A persona rules the gate it holds. The one other ruling an agent may make is on an
+  // escalation, and only where the project plays the escalation's target by an agent
+  // too (`simulatedRole`) — a project whose tech lead is a person gets the escalation,
+  // as before. A persona never rules its own escalation: that one waits for a person.
+  const escalation = standingEscalation(projectDir, name);
+  const ruleEscalation = g.holder !== by && Boolean(escalation) && g.escalate_to === persona
+    && simulatedRole(config, persona) && escalation.by !== by;
+  if (g.holder !== by && !ruleEscalation) {
+    const allowed = [g.holder, simulatedRole(config, g.escalate_to) ? `agent:${g.escalate_to} (on an escalation)` : null].filter(Boolean);
+    throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
+  }
   // An agent-held gate with nowhere to escalate is a broken policy, not a ruling this
   // agent can be trusted with — checked before the persona brief is even read, since
   // every path below (mandatory escalation, an `escalate` verdict) needs `escalate_to`.
@@ -258,7 +297,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     name, gate, revision: git(["rev-parse", "HEAD"], projectDir),
   });
   assertCleanTree(projectDir, "rule: typecheck modified the working tree");
-  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate, typecheck });
+  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate, typecheck, escalation: ruleEscalation ? escalation : null });
   // A ruling reads and answers; it never writes. The tool list says so up front rather
   // than relying on the clean-tree check below to catch a turn that wrote anyway: the
   // read-only git commands are there because a persona legitimately wants to look
@@ -351,8 +390,12 @@ export async function rulePending(projectDir) {
   for (const branch of branches) {
     const name = branch.slice("proposal/".length);
     // Already ruled: the ruling commit put a gate file on this branch regardless of
-    // verdict (approve, return or escalate), so its presence is the "still open" test.
-    if (gitOk(["cat-file", "-e", `${branch}:.sdlc/gates/${name}.yaml`], projectDir)) continue;
+    // verdict (approve, return or escalate), so its presence is the "still open" test —
+    // except for an escalation, which is still open for its target to rule when that
+    // target is itself an agent (checked below, once the config is read).
+    const ruled = gitOk(["cat-file", "-e", `${branch}:.sdlc/gates/${name}.yaml`], projectDir);
+    const escalation = ruled ? escalationOn(projectDir, branch, name) : null;
+    if (ruled && !escalation) continue;
     let proposalText;
     try { proposalText = git(["show", `${branch}:.sdlc/proposals/${name}.md`], projectDir); } catch { continue; }
     const gateMatch = proposalText.match(/^gate:\s*(\S+)/m);
@@ -362,8 +405,17 @@ export async function rulePending(projectDir) {
     const { config, errors } = parseConfig(configText);
     if (errors.length) continue;
     const g = config.policy.gates[gateMatch[1]];
-    if (!g || !g.holder?.startsWith("agent:")) continue;
-    const persona = g.holder.slice("agent:".length);
+    if (!g) continue;
+    let persona;
+    if (escalation) {
+      // An escalation is ruled here only by a simulated target that did not raise it; any
+      // other escalation is waiting for a person, and a batch leaves it alone.
+      if (!simulatedRole(config, g.escalate_to) || escalation.by === `agent:${g.escalate_to}`) continue;
+      persona = g.escalate_to;
+    } else {
+      if (!g.holder?.startsWith("agent:")) continue;
+      persona = g.holder.slice("agent:".length);
+    }
     // One proposal's agent turn misbehaving (a bad verdict block, an escalation with no
     // target) must not take the rest of the batch down with it: the failure is recorded
     // — printed here and written to the run record — and the loop moves on to the next
@@ -381,7 +433,9 @@ export async function rulePending(projectDir) {
     try {
       const r = await ruleByAgent(projectDir, name, { persona });
       results.push({ name, ...r });
-      console.log(r.escalated ? `${name}: escalated to ${g.escalate_to}` : `${name}: ${r.verdict} at ${gateMatch[1]}`);
+      console.log(!r.escalated ? `${name}: ${r.verdict} at ${gateMatch[1]}`
+        : escalation ? `${name}: escalated again by agent:${persona}; waiting for a person`
+          : `${name}: escalated to ${g.escalate_to}`);
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
       console.log(`${name}: failed — ${e.message}`);
