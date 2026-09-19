@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { runSuite } from "../src/testrun/playwright.mjs";
 import { verify, verifyVerdict, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
+import { build } from "../src/stages/build.mjs";
+import { buildProposalBase } from "../src/stages/slices.mjs";
+import { nextProposalName } from "../src/stages/proposals.mjs";
 
 test("a suite run given spec files runs exactly those", (t) => {
   const d = mkdtempSync(join(tmpdir(), "sdlc-files-"));
@@ -131,6 +134,48 @@ test("the third failing verify of a slice escalates instead of returning again",
   await verify.execute(d, ctx);
   const gate = parseYaml(execFileSync("git", ["show", "proposal/build-slice-1-3:.sdlc/gates/build-slice-1-3.yaml"], { cwd: d, encoding: "utf8" }));
   assert.equal(MAX_VERIFY_RETURNS, 3);
+  assert.equal(gate.verdict, "escalated");
+  assert.equal(gate.escalate_to, "tech-lead");
+});
+
+// The real chain a fixture cannot fabricate its way around: verify writes `return` onto
+// `proposal/build-slice-<n>`, `build --revise`'s own pre-check reads that return and (via
+// `recordReturnOnMain`) renames the branch to `returned/build-slice-<n>` and copies the
+// gate onto `main` — so the *next* proposal in the family is opened after its predecessor
+// has already left `proposal/*` behind. Manually opening that next proposal branch (as
+// `buildProject` above does for the first one) stands in for the real build agent's own
+// commit, since no agent runs here; everything else — the return, the rename, the
+// escalation count — is the pipeline's own code, exercised for real.
+test("three real fail-then-revise cycles escalate only on the third verify", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const openNextProposal = (name) => {
+    run(["checkout", "-q", "-b", `proposal/${name}`]);
+    writeFileSync(join(d, "app", "index.ts"), `export const revision = ${JSON.stringify(name)};\n`);
+    run(["add", "-A"]);
+    run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", `propose ${name}`]);
+    run(["checkout", "-q", "main"]);
+  };
+
+  let proposalName = "build-slice-1";
+  let last;
+  for (let attempt = 1; attempt <= MAX_VERIFY_RETURNS; attempt += 1) {
+    mockSuite(t, [row("R-4.1", "fail", "Error: still wrong"), row("R-4.2", "pass")]);
+    const ctx = ctxFor(d);
+    verify.preChecks(d, ctx);
+    assert.equal(ctx.verifyProposal, proposalName, `attempt ${attempt}`);
+    last = await verify.execute(d, ctx);
+
+    if (attempt < MAX_VERIFY_RETURNS) {
+      assert.match(last.text, /returned/, `attempt ${attempt}`);
+      const pre = build.preChecks(d, { slice: 1, revise: true });
+      assert.ok(pre.every((r) => r.ok), `attempt ${attempt}: ${JSON.stringify(pre)}`);
+      proposalName = nextProposalName(d, buildProposalBase(1));
+      openNextProposal(proposalName);
+    }
+  }
+  assert.match(last.text, /escalated to the tech lead/);
+  const gate = parseYaml(execFileSync("git", ["show", `proposal/${proposalName}:.sdlc/gates/${proposalName}.yaml`], { cwd: d, encoding: "utf8" }));
   assert.equal(gate.verdict, "escalated");
   assert.equal(gate.escalate_to, "tech-lead");
 });

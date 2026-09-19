@@ -9,7 +9,7 @@
 // tech lead instead: a slice that fails three builds running is usually failing for a
 // reason a fourth build will not fix (spec §7.1).
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
@@ -17,8 +17,8 @@ import { appendRun } from "../lib/runrecord.mjs";
 import { runSuite } from "../testrun/playwright.mjs";
 import { resetCommandFor, targetSettings } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
-import { readSlice, buildProposals, specFilesFor } from "./slices.mjs";
-import { skillPath } from "./shared.mjs";
+import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./slices.mjs";
+import { escapeRe, skillPath } from "./shared.mjs";
 
 export const MAX_VERIFY_RETURNS = 3;
 const NEEDS_NO_TEST = new Set(["pass", "not-testable", "attested"]);
@@ -50,11 +50,61 @@ function openBuildProposal(projectDir, slice) {
     .find((name) => !gitOk(["cat-file", "-e", `proposal/${name}:.sdlc/gates/${name}.yaml`], projectDir)) ?? null;
 }
 
+// Every proposal name this slice's build has ever gone under — wherever its gate file
+// lives now, not only under `proposal/*`. `build --revise`'s own pre-check
+// (`recordReturnOnMain`, `src/stages/proposals.mjs`) copies a returned gate onto `main`
+// and renames the spent branch to `returned/<name>` once it has read the return off it, so
+// by the time a later verify run asks this question, an earlier return's gate file is no
+// longer under `proposal/<name>` at all — only on `main` and on `returned/<name>`.
+// Counting just `proposal/*` (as an earlier version of this did) undercounts every return
+// that has already been revised from, which makes `MAX_VERIFY_RETURNS` unreachable: three
+// real fail-then-revise cycles would report `return` every time and never `escalated`.
+// Names are de-duplicated (the same name can carry an identical gate copy on both `main`
+// and `returned/<name>` at once) rather than counted once per place it is found.
+function buildProposalFamily(projectDir, slice) {
+  const base = buildProposalBase(slice);
+  const re = new RegExp(`^${escapeRe(base)}(?:-(\\d+))?$`);
+  const names = new Set(buildProposals(projectDir, slice));
+  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", `refs/heads/returned/${base}*`], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", `refs/heads/returned/${base}*`], projectDir).split("\n").filter(Boolean)
+    : [];
+  for (const ref of refs) {
+    const short = ref.slice("returned/".length);
+    if (re.test(short)) names.add(short);
+  }
+  const gatesDir = join(projectDir, ".sdlc", "gates");
+  if (existsSync(gatesDir)) {
+    for (const f of readdirSync(gatesDir)) {
+      const m = /^(.+)\.yaml$/.exec(f);
+      if (m && re.test(m[1])) names.add(m[1]);
+    }
+  }
+  return names;
+}
+
+// A named proposal's gate file, read from whichever of the three places it actually lives:
+// still open on its own branch, renamed to `returned/<name>` once `build --revise` has
+// read it, or copied onto `main` by that same rename. At most one of these ever holds it
+// (the branch case and the `main` case are mutually exclusive with the renamed case), so
+// the first match wins.
+function verifyReturnGate(projectDir, name) {
+  for (const ref of [`proposal/${name}`, `returned/${name}`, "main"]) {
+    if (!gitOk(["cat-file", "-e", `${ref}:.sdlc/gates/${name}.yaml`], projectDir)) continue;
+    try { return parseYaml(git(["show", `${ref}:.sdlc/gates/${name}.yaml`], projectDir)); }
+    catch { return null; }
+  }
+  return null;
+}
+
+// How many times this slice's build has already been returned by verify itself —
+// `by: "runner:verify"` is what tells its own return apart from a reviewer's, whose
+// return must never count toward this escalation threshold.
 function returnsByVerify(projectDir, slice) {
-  return buildProposals(projectDir, slice).filter((name) => {
-    try { return parseYaml(git(["show", `proposal/${name}:.sdlc/gates/${name}.yaml`], projectDir))?.by === "runner:verify"; }
-    catch { return false; }
-  }).length;
+  let count = 0;
+  for (const name of buildProposalFamily(projectDir, slice)) {
+    if (verifyReturnGate(projectDir, name)?.by === "runner:verify") count += 1;
+  }
+  return count;
 }
 
 function commitOnBranch(projectDir, paths, message) {
