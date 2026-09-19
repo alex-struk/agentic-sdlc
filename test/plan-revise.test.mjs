@@ -55,3 +55,26 @@ test("plan --revise with nothing returned is refused", (t) => {
   assert.equal(check.ok, false);
   assert.match(check.messages[0], /no returned plan ruling/);
 });
+
+// A revision whose agent turn failed leaves the return recorded and its branch renamed,
+// with no proposal to show for it. The recorded return is what it retries from.
+test("plan --revise retries from a recorded return whose branch was renamed", (t) => {
+  const { d, run } = repo(t);
+  run(["checkout", "-q", "-b", "returned/plan"]);
+  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "gates", "plan.yaml"),
+    "gate: G2\nverdict: return\nby: agent:architect\nheld_by: agent\nrationale: the plan ignores the stack profile\nconditions:\n  - \"Adopt the openshift-ts stack profile\"\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
+  run(["checkout", "-q", "main"]);
+  run(["cherry-pick", "returned/plan"]);
+  const ctx = { revise: true, dryRun: true };
+  const plan = stageFor("plan");
+  assert.equal(plan.preChecks(d, ctx).find((c) => c.id === "plan-revise-source").ok, true);
+  assert.equal(ctx.revision.branch, "returned/plan");
+  assert.match(plan.prompt(ctx), /- Adopt the openshift-ts stack profile/);
+
+  // Once a newer proposal exists, the recorded return is spent and not revised again.
+  run(["branch", "proposal/plan-2"]);
+  const later = { revise: true, dryRun: true };
+  assert.equal(stageFor("plan").preChecks(d, later).find((c) => c.id === "plan-revise-source").ok, false);
+});

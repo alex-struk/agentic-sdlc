@@ -2437,22 +2437,48 @@ const plan = {
   },
 };
 
+// Every `plan` proposal branch under one prefix, newest numbering first.
+function planBranches(projectDir, prefix) {
+  const pattern = `refs/heads/${prefix}/plan*`;
+  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", pattern], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", pattern], projectDir).split("\n").filter(Boolean)
+    : [];
+  return refs.map((b) => new RegExp(`^${prefix}/(plan(?:-(\\d+))?)$`).exec(b)).filter(Boolean)
+    .sort((a, b) => Number(b[2] ?? 1) - Number(a[2] ?? 1)).map((m) => m[1]);
+}
+
 // The returned plan a `--revise` run starts from: the newest `proposal/plan` or
 // `proposal/plan-<n>` whose ruling is a return not yet recorded on `main`.
 function checkPlanRevisionSource(projectDir, ctx) {
   const id = "plan-revise-source";
   if (!ctx.revise) return { id, ok: true, messages: [] };
-  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", "refs/heads/proposal/plan*"], projectDir)
-    ? git(["for-each-ref", "--format=%(refname:short)", "refs/heads/proposal/plan*"], projectDir).split("\n").filter(Boolean)
-    : [];
-  const names = refs.map((b) => /^proposal\/(plan(?:-(\d+))?)$/.exec(b)).filter(Boolean)
-    .sort((a, b) => Number(b[2] ?? 1) - Number(a[2] ?? 1)).map((m) => m[1]);
-  for (const name of names) {
+  const open = planBranches(projectDir, "proposal");
+  for (const name of open) {
     const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
     if (!found) continue;
     ctx.revision = { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) };
     if (!ctx.dryRun) recordReturnOnMain(projectDir, ctx.revision, { gate: "G2", keepBranch: true });
     return { id, ok: true, messages: [] };
+  }
+  // A return already recorded on `main` has had its branch renamed to `returned/<name>`,
+  // and its ruling is no longer a candidate above — by design, since the revision it was
+  // recorded for is the one that spends it. A revision that never produced a proposal
+  // (its agent turn failed, or the run was interrupted) leaves exactly that state behind
+  // with nothing to try again from, so the recorded return is read back here. Only while
+  // no proposal branch for the stem exists: once one does, it is the newer word on the
+  // plan and this would revise something already superseded.
+  if (!open.length) {
+    for (const name of planBranches(projectDir, "returned")) {
+      const gatePath = `.sdlc/gates/${name}.yaml`;
+      if (!gitOk(["cat-file", "-e", `returned/${name}:${gatePath}`], projectDir)) continue;
+      const gate = parseYaml(git(["show", `returned/${name}:${gatePath}`], projectDir)) ?? {};
+      if (gate.verdict !== "return") continue;
+      ctx.revision = {
+        name, branch: `returned/${name}`, rationale: gate.rationale ?? gate.note ?? "",
+        conditions: gate.conditions ?? [], branchCommit: git(["rev-parse", `returned/${name}`], projectDir),
+      };
+      return { id, ok: true, messages: [] };
+    }
   }
   return { id, ok: false, messages: ["plan --revise: no returned plan ruling to revise from"] };
 }
