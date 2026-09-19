@@ -248,6 +248,45 @@ function escalationOn(projectDir, branch, name) {
   try { return escalationIn(git(["show", `${branch}:.sdlc/gates/${name}.yaml`], projectDir)); } catch { return null; }
 }
 
+// The four conditions that make a verify result count as current, shared by `buildVerified`
+// (the working tree, read off disk once the branch is checked out) and `rulePending`'s
+// branch check below (read with `git show`, before the branch is ever checked out) — kept
+// in one place so the two paths cannot disagree about what "verified" means.
+function verifiedResult(text, name, slice, appTree, next) {
+  let r;
+  try { r = JSON.parse(text); } catch { return { ok: false, reason: `tests/results/new/slice-${slice}.json does not parse; ${next}` }; }
+  if (r.proposal !== name) return { ok: false, reason: `the verify result on this branch is for ${r.proposal}; ${next}` };
+  if (r.verdict !== "pass") return { ok: false, reason: `${name} did not pass verify` };
+  if (r.app_tree !== appTree) return { ok: false, reason: `the application changed since it was verified; ${next}` };
+  return { ok: true, reason: "" };
+}
+
+// A build proposal is ruled on the application it contains having been run against the
+// acceptance tests for its criteria (spec §5.12: the reviewer reads the verify results).
+// The result counts only for the application as it stands on the branch: a result for an
+// earlier tree is evidence about code that is no longer there.
+export function buildVerified(projectDir, name) {
+  const m = /^build-slice-(\d+)(?:-\d+)?$/.exec(name);
+  if (!m) return { ok: true, reason: "" };
+  const path = join(projectDir, "tests", "results", "new", `slice-${m[1]}.json`);
+  const next = `run sdlc run verify --slice ${m[1]} first`;
+  if (!existsSync(path)) return { ok: false, reason: `${name} has not been verified; ${next}` };
+  return verifiedResult(readText(path), name, m[1], git(["rev-parse", "HEAD:app"], projectDir), next);
+}
+
+// Same check, read off a not-yet-checked-out proposal branch: `rulePending` uses this to
+// leave an unverified build proposal out of a batch silently, rather than letting it reach
+// `ruleByAgent` and fail loudly there.
+function buildVerifiedOnBranch(projectDir, branch, name) {
+  const m = /^build-slice-(\d+)(?:-\d+)?$/.exec(name);
+  if (!m) return { ok: true, reason: "" };
+  const next = `run sdlc run verify --slice ${m[1]} first`;
+  let text;
+  try { text = git(["show", `${branch}:tests/results/new/slice-${m[1]}.json`], projectDir); }
+  catch { return { ok: false, reason: `${name} has not been verified; ${next}` }; }
+  return verifiedResult(text, name, m[1], git(["rev-parse", `${branch}:app`], projectDir), next);
+}
+
 // The agent path: no human types --by approve|return. A persona brief is handed to a
 // short-lived agent turn along with the proposal, the diff and the checks, and the
 // verdict it comes back with is trusted the same way a human's --by is trusted — phase 0
@@ -267,6 +306,13 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   if (g.holder !== by && !ruleEscalation) {
     const allowed = [g.holder, simulatedRole(config, g.escalate_to) ? `agent:${g.escalate_to} (on an escalation)` : null].filter(Boolean);
     throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
+  }
+  // Binds the gate's holder only: an escalation raised after three failed builds is ruled
+  // by the tech lead precisely because the result is not a pass, and must not be refused
+  // for it.
+  if (!ruleEscalation) {
+    const verified = buildVerified(projectDir, name);
+    if (!verified.ok) throw new Error(`rule ${name}: ${verified.reason}`);
   }
   // An agent-held gate with nowhere to escalate is a broken policy, not a ruling this
   // agent can be trusted with — checked before the persona brief is even read, since
@@ -396,6 +442,12 @@ export async function rulePending(projectDir) {
     const ruled = gitOk(["cat-file", "-e", `${branch}:.sdlc/gates/${name}.yaml`], projectDir);
     const escalation = ruled ? escalationOn(projectDir, branch, name) : null;
     if (ruled && !escalation) continue;
+    // A build proposal not yet ruled at all (never an escalation, which is already a
+    // ruling of a kind) is skipped quietly when its own branch has no passing verify
+    // result for the application as it stands — no failure line, no run record, since
+    // there is nothing wrong with the proposal itself to report. `ruleByAgent` enforces
+    // the same requirement loudly for a direct `sdlc rule <name>` call.
+    if (!escalation && !buildVerifiedOnBranch(projectDir, branch, name).ok) continue;
     let proposalText;
     try { proposalText = git(["show", `${branch}:.sdlc/proposals/${name}.md`], projectDir); } catch { continue; }
     const gateMatch = proposalText.match(/^gate:\s*(\S+)/m);
