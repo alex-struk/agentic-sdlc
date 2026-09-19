@@ -14,7 +14,12 @@ const PATTERNS = [
   [new RegExp("One" + "Drive"), "private notes location (rule E-2)"],
   [/\bTeams (call|chat|transcript|message|meeting)\b/i, "meeting reference (rule E-2)"],
   [new RegExp("\\." + "vtt\\b"), "transcript file reference (rule E-2)"],
-  [new RegExp("(/" + "home/|/" + "Users/|[A-Za-z]:\\\\" + "Users\\\\)[A-Za-z0-9._-]+"), "local home path (rule E-2)"],
+  // Anchored to the root of a path: `/home/` has to start one (after nothing, a space, a
+  // quote, a bracket, `=`, `:` or another `/` as in `file:///home/`), never sit in the
+  // middle of one. A page called "home" makes an ordinary identifier like
+  // `opportunities/home/default`, and that is no more a machine's home directory than
+  // `docs/home/index.md` is.
+  [new RegExp("((?<![A-Za-z0-9._-])/" + "home/|(?<![A-Za-z0-9._-])/" + "Users/|[A-Za-z]:\\\\" + "Users\\\\)[A-Za-z0-9._-]+"), "local home path (rule E-2)"],
 ];
 const TEXT_EXT = /\.(md|mjs|js|ts|tsx|json|ya?ml|txt|sh|sql|feature|svg|py|html|css)$/i;
 

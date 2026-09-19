@@ -101,6 +101,17 @@ test("egress: a local home path is a finding", () => {
     assert.ok(r.messages.some((m) => m.startsWith(`${f}:`) && m.includes("local home path")), f);
 });
 
+// A page called "home" is an identifier segment, not a directory at the root of a machine.
+test("egress: a path segment named home inside an identifier is not a home path", () => {
+  const d = repo();
+  writeFileSync(join(d, "story.tsx"), 'const meta = { title: "opportunities/' + 'home/default" };\n');
+  writeFileSync(join(d, "url.md"), "Opened file:///" + "home/someone/notes.txt\n");
+  git(["add", "-A"], d);
+  const r = checkEgress(d, {});
+  assert.ok(!r.messages.some((m) => m.startsWith("story.tsx:")), r.messages.join(" | "));
+  assert.ok(r.messages.some((m) => m.startsWith("url.md:") && m.includes("local home path")), "a file URL still is one");
+});
+
 test("egress: a tracked path that is gone from disk is skipped, not read", () => {
   const d = repo();
   writeFileSync(join(d, "gone.md"), "nothing here\n");

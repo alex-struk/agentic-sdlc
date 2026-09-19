@@ -68,6 +68,14 @@ state what happens when the list is empty, an action the surface names that no c
 explains. Do not invent the behaviour. A gap named here is work for the spec; a gap filled
 silently is a decision nobody made.
 
+## What happens after you finish
+
+The pipeline compiles the catalogue and scans every story for accessibility violations as soon
+as your turn ends, and writes the result to `design/report.json`; the reviewer reads that. You
+have no shell and cannot run either yourself, so do not record the catalogue as unchecked or
+unscanned in `DESIGN.md` or your journal — that is true only for the length of your turn. If a
+report from an earlier run is in the workspace, read it: it says what the last scan found.
+
 ## The journal
 
 Your final message is read by whoever rules this proposal. Say which screens you designed,
