@@ -64,6 +64,22 @@ function installTemplateFiles(projectDir) {
   return { changed, writtenOnlyIfAbsent };
 }
 
+// The stack profile's standards (`stacks/<stack>/SKILL.md`) are the pipeline's own skill for
+// the project's technology: framework, layout, sign-in, deploy. Installed beside the packs'
+// skills in `.claude/skills/`, which every workspace that plans or builds already carries,
+// so the planner and the builder work from the stack the project's config names rather than
+// one they chose. Refreshed like a template file: the pipeline owns its text.
+function installStackSkill(projectDir, config) {
+  if (!config.stack) return false;
+  const src = join(PIPELINE_ROOT, "stacks", config.stack, "SKILL.md");
+  if (!existsSync(src)) return false;
+  const dst = join(projectDir, ".claude", "skills", `stack-${config.stack}`, "SKILL.md");
+  const text = readText(src);
+  if (existsSync(dst) && readText(dst) === text) return false;
+  writeText(dst, text);
+  return true;
+}
+
 // A pack's skills are copied once and `copyTree` never overwrites, so a pack whose
 // pinned commit moved would otherwise keep serving the old skill text forever. The
 // previous lockfile says which commit each pack was installed from; where that differs
@@ -152,6 +168,7 @@ export async function init(projectDir = process.cwd()) {
 
   const tf = installTemplateFiles(projectDir);
   if (tf.changed) changed = true;
+  if (installStackSkill(projectDir, config)) changed = true;
 
   const named = fillProjectPlaceholders(projectDir, config);
   if (named.length) changed = true;

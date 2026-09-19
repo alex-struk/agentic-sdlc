@@ -9,6 +9,8 @@ import { newProject } from "../src/commands/new.mjs";
 import { init } from "../src/commands/init.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { buildPersonaPrompt } from "../src/runner/persona.mjs";
+import { parse as parseYaml } from "yaml";
+const parseYamlConfig = (dir) => parseYaml(readFileSync(join(dir, ".sdlc", "config.yaml"), "utf8"));
 
 const FROM = fileURLToPath(new URL("../fixture-project/fixture.config.yaml", import.meta.url));
 const commit = (dir, msg) => { git(["add", "-A"], dir); git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", msg], dir); };
@@ -80,4 +82,18 @@ test("the escalation's target is shown the escalating persona's own account", as
   assert.match(prompt, /a card the design system does not provide/);
   const plain = await buildPersonaPrompt(dir, "p1", "product-owner", { tier: "STANDARD", gate: "G0" });
   assert.doesNotMatch(plain, /The escalation you are ruling/);
+});
+
+// The planner and the builder read `.claude/skills/`; a stack they cannot see is a stack
+// they replace with one of their own choosing.
+test("init installs the stack profile named in the config as a skill, and refreshes it", async (t) => {
+  const dir = await created(t);
+  const stack = parseYamlConfig(dir).stack;
+  const path = join(dir, ".claude", "skills", `stack-${stack}`, "SKILL.md");
+  assert.match(readFileSync(path, "utf8"), /^---\nname: stack-/);
+  assert.equal(git(["status", "--porcelain"], dir), "");
+  writeFileSync(path, "stale\n");
+  commit(dir, "hand edit");
+  await init(dir);
+  assert.match(readFileSync(path, "utf8"), /^---\nname: stack-/);
 });
