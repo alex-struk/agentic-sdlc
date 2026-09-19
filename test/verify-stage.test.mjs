@@ -145,6 +145,34 @@ test("an unbound slice is neither returned nor passed, and names the binding it 
   assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
 });
 
+test("a failure between the write and the commit leaves the tree dirty on the proposal branch, not main", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const mainBefore = execFileSync("git", ["rev-parse", "main"], { cwd: d, encoding: "utf8" });
+  // `.git/index.lock` makes any git command that writes the index (`add`, `commit`) fail
+  // while leaving read-only commands (`status`, `rev-parse`) untouched — exactly the
+  // shape of the hazard this guards against: the results file has already been written
+  // to the working tree by the time `commitOnBranch`'s own `git add` hits the lock and
+  // throws, so the branch is left holding an untracked file with no commit to show for
+  // it. Written by the sandbox's own `up` (the one hook this test can reach inside
+  // `execute`'s try block) and removed by `down`, the way a real teardown would clean up
+  // after itself once the run is over.
+  const lock = join(d, ".git", "index.lock");
+  const ctx = {
+    ...ctxFor(d),
+    sandbox: {
+      up: async () => { writeFileSync(lock, ""); return { ok: true, baseUrl: "http://localhost:8080" }; },
+      down: () => { rmSync(lock, { force: true }); return { ok: true }; },
+    },
+  };
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.text, /left dirty/);
+  assert.match(r.text, /proposal\/build-slice-1/);
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), "proposal/build-slice-1");
+  assert.equal(execFileSync("git", ["rev-parse", "main"], { cwd: d, encoding: "utf8" }), mainBefore);
+});
+
 test("verify refuses a slice with no open build proposal, and a sandbox that will not start", async (t) => {
   const d = buildProject(t);
   const none = { ...ctxFor(d), slice: 2 };

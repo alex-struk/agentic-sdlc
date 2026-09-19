@@ -75,8 +75,8 @@ export const verify = {
     const id = "verify-slice";
     if (ctx.slice === undefined) return [{ id, ok: false, messages: ["verify needs --slice <n>"] }];
     // The proposal has to exist before the slice's own text does: a build proposal is
-    // named from the slice number alone, so a slice plan/tasks.md has not (yet, or any
-    // longer) defined a heading for is still reported as "no open build proposal" —
+    // named from the slice number alone, so a slice that plan/tasks.md has not yet (or
+    // no longer) defined a heading for is still reported as "no open build proposal" —
     // the precondition a person actually needs to act on — rather than a parse error
     // about the plan.
     const proposal = openBuildProposal(projectDir, ctx.slice);
@@ -139,9 +139,25 @@ export const verify = {
       return { text, changed: [] };
     } finally {
       await down(projectDir);
+      // A throw between the first working-tree write and the commit landing (the
+      // gate-file write, `stringifyYaml`, or the commit itself) can leave the proposal
+      // branch holding a staged or untracked file. `git checkout` succeeds even with
+      // that residue present, and would carry it onto `main`, where `assertCleanTree`
+      // then blocks every later `sdlc run` until a person cleans it up by hand — the
+      // same hazard `rule.mjs`'s `rulePending` guards against for the same reason. So
+      // the checkout back to `start` only happens once the branch is actually clean: a
+      // dirty tree stays exactly where it was made, visible on the branch that produced
+      // it, rather than riding onto `main` silently. The `return` below overrides
+      // whatever was thrown in `try`, since the residue is the diagnostic that matters
+      // now, not that error's own stack trace.
+      if (git(["status", "--porcelain"], projectDir)) {
+        return {
+          text: `verify slice ${slice.number}: the working tree was left dirty on ${branch} after a failure; inspect and clean it before running verify again.`,
+          changed: [],
+        };
+      }
       if (currentBranch(projectDir) !== start) git(["checkout", "-q", start], projectDir);
-      const runPath = appendRun(projectDir, text?.split("\n")[0] ?? `verify slice ${slice.number}: stopped`);
-      void runPath;
+      appendRun(projectDir, text?.split("\n")[0] ?? `verify slice ${slice.number}: stopped`);
     }
   },
   postChecks() { return []; },
