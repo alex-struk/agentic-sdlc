@@ -353,8 +353,8 @@ test("runStage rejects an unimplemented stage by name", async () => {
   const { dir, prevEgress } = await makeProject(tmp);
   try {
     // Whichever stage stands in here is the frontier: each one stops being a stub as its
-    // own task lands, and the next one along takes its place. `plan` is the current one.
-    await assert.rejects(() => runStage(dir, "build"), /not implemented/);
+    // own task lands, and the next one along takes its place. `verify` is the current one.
+    await assert.rejects(() => runStage(dir, "verify"), /not implemented/);
   } finally {
     restoreEgress(prevEgress);
   }

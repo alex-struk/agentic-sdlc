@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { readSlice, buildProposals, specFilesFor } from "../src/stages/slices.mjs";
 import { MODES } from "../src/runner/workspace.mjs";
+import { build, checkBuildScope, appCheck } from "../src/stages/build.mjs";
 
 const TASKS = `# Tasks
 
@@ -61,4 +62,66 @@ test("the build workspace carries the spec, the design and the app, and never th
   for (const p of ["app", "plan", "spec", "design", "docs/decisions", "tests/seed", "constitution.md", ".claude/skills"])
     assert.ok(paths.includes(p), p);
   for (const p of paths) assert.ok(!/^tests\/(acceptance|adapters|results)|^sources/.test(p), `${p} must not be in a build workspace`);
+});
+
+function gitProject(t) {
+  const d = project(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  run(["init", "-q", "-b", "main"]);
+  mkdirSync(join(d, "app"), { recursive: true });
+  writeFileSync(join(d, "app", "README.md"), "app\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "start"]);
+  return d;
+}
+
+test("a build run is refused without a slice, or with one the plan does not have", (t) => {
+  const d = gitProject(t);
+  assert.equal(build.preChecks(d, {}).find((c) => !c.ok).messages[0], "build needs --slice <n>");
+  assert.match(build.preChecks(d, { slice: 9 }).find((c) => !c.ok).messages[0], /plan\/tasks\.md has no slice 9/);
+  assert.ok(build.preChecks(d, { slice: 1 }).every((c) => c.ok));
+});
+
+test("the prompt carries the slice's own text and criteria, and nothing of another slice", (t) => {
+  const d = gitProject(t);
+  const ctx = { slice: 1 };
+  build.preChecks(d, ctx);
+  const p = build.prompt(ctx);
+  assert.match(p, /Slice 1 · Sign in and see your profile/);
+  assert.match(p, /R-4\.1, R-4\.2/);
+  assert.doesNotMatch(p, /Browse opportunities/);
+});
+
+test("a build may change the application and add decision records, and nothing else", (t) => {
+  const d = gitProject(t);
+  writeFileSync(join(d, "app", "index.ts"), "export {};\n");
+  mkdirSync(join(d, "docs", "decisions"), { recursive: true });
+  writeFileSync(join(d, "docs", "decisions", "0001-x.md"), "# x\n");
+  assert.equal(checkBuildScope(d).ok, true);
+  mkdirSync(join(d, "tests", "acceptance", "users"), { recursive: true });
+  writeFileSync(join(d, "tests", "acceptance", "users", "R-4.1.spec.ts"), "");
+  writeFileSync(join(d, "plan", "tasks.md"), "changed\n");
+  const r = checkBuildScope(d);
+  assert.equal(r.ok, false);
+  assert.ok(r.messages.some((m) => m.includes("tests/acceptance/users/R-4.1.spec.ts")));
+  assert.ok(r.messages.some((m) => m.includes("plan/tasks.md")));
+});
+
+test("the application's own check is run by the runner, and its failure carries the output", (t) => {
+  const d = gitProject(t);
+  const calls = [];
+  const fail = (cmd, args) => { calls.push([cmd, ...args].join(" ")); return args.includes("check") ? { status: 1, stdout: "", stderr: "src/a.ts(1,1): error TS2304" } : { status: 0, stdout: "", stderr: "" }; };
+  writeFileSync(join(d, "app", "package.json"), JSON.stringify({ scripts: { check: "tsc --noEmit" } }));
+  const r = appCheck(d, { exec: fail });
+  assert.equal(r.ok, false);
+  assert.match(r.messages.join("\n"), /error TS2304/);
+  assert.ok(calls.some((c) => c === "npm --prefix app install --no-audit --no-fund"));
+  assert.ok(calls.some((c) => c === "npm --prefix app run check"));
+});
+
+test("an application with no check script fails, naming the script the stack requires", (t) => {
+  const d = gitProject(t);
+  writeFileSync(join(d, "app", "package.json"), JSON.stringify({ scripts: {} }));
+  const r = appCheck(d, { exec: () => ({ status: 0, stdout: "", stderr: "" }) });
+  assert.equal(r.ok, false);
+  assert.match(r.messages[0], /app\/package\.json has no "check" script/);
 });
