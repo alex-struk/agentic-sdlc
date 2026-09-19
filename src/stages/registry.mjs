@@ -2398,6 +2398,9 @@ const plan = {
   // The planner reads every accepted criterion and the whole design before it cuts a
   // slice, which alone outruns the default ceiling on a project of any size.
   defaultTurns: 150,
+  // A revision starts from the plan the architect returned, not from nothing: the conditions
+  // name what to change in it, and a replanned cut would move everything the ruling accepted.
+  revisionOverlayPaths: () => ["plan", "docs/decisions"],
   implemented: true,
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep"],
   prompt(ctx) {
@@ -2405,7 +2408,8 @@ const plan = {
     return [
       `Cut the build of this system into vertical slices. There are ${n} accepted criteria to place, across the domains spec/criteria-index.json names, and every one of them belongs to exactly one slice.`,
       `Write plan/plan.md — including its "## Constitution check" section — and plan/tasks.md with the slices in build order. Write a decision record under docs/decisions/ for any choice a later reader would otherwise have to reverse-engineer.`,
-    ].join("\n\n");
+      ctx.revise ? planRevisionInstructions(ctx) : null,
+    ].filter(Boolean).join("\n\n");
   },
   proposal(ctx) {
     return {
@@ -2418,7 +2422,7 @@ const plan = {
     const ids = allAcceptedCriterionIds(projectDir);
     ctx.planCriteriaCount = ids.length;
     ctx.planAcceptedIds = ids;
-    return [checkPlanHasCriteria(ids), checkPlanHasDesign(projectDir)];
+    return [checkPlanHasCriteria(ids), checkPlanHasDesign(projectDir), checkPlanRevisionSource(projectDir, ctx)];
   },
   postChecks(projectDir, ctx) {
     ctx.planName = nextProposalName(projectDir, "plan");
@@ -2432,6 +2436,36 @@ const plan = {
     ];
   },
 };
+
+// The returned plan a `--revise` run starts from: the newest `proposal/plan` or
+// `proposal/plan-<n>` whose ruling is a return not yet recorded on `main`.
+function checkPlanRevisionSource(projectDir, ctx) {
+  const id = "plan-revise-source";
+  if (!ctx.revise) return { id, ok: true, messages: [] };
+  const refs = gitOk(["for-each-ref", "--format=%(refname:short)", "refs/heads/proposal/plan*"], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", "refs/heads/proposal/plan*"], projectDir).split("\n").filter(Boolean)
+    : [];
+  const names = refs.map((b) => /^proposal\/(plan(?:-(\d+))?)$/.exec(b)).filter(Boolean)
+    .sort((a, b) => Number(b[2] ?? 1) - Number(a[2] ?? 1)).map((m) => m[1]);
+  for (const name of names) {
+    const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
+    if (!found) continue;
+    ctx.revision = { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) };
+    if (!ctx.dryRun) recordReturnOnMain(projectDir, ctx.revision, { gate: "G2", keepBranch: true });
+    return { id, ok: true, messages: [] };
+  }
+  return { id, ok: false, messages: ["plan --revise: no returned plan ruling to revise from"] };
+}
+
+function planRevisionInstructions(ctx) {
+  const conditions = (ctx.revision?.conditions ?? []).map((c) => `- ${c}`).join("\n");
+  return [
+    "This is a revision. The plan the architect returned is already under plan/ and docs/decisions/ — change what the conditions below name and keep every slice the ruling did not question.",
+    `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`,
+    conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
+    "A condition addressed to somebody else — the runner, the tech lead, another stage — is not yours to carry out. Say in your journal which ones you left, and to whom.",
+  ].filter(Boolean).join("\n\n");
+}
 
 // Every accepted, non-superseded criterion in the project, across every domain. The plan is
 // the one artefact answerable for all of them at once.
