@@ -1,7 +1,7 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import { git, gitOk, assertCleanTree, stagePaths, stageSite, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, porcelainStatus, stagePaths, stageSite, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -500,7 +500,7 @@ export async function rulePending(projectDir) {
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
       console.log(`${name}: failed — ${e.message}`);
-      if (git(["status", "--porcelain"], projectDir)) {
+      if (porcelainStatus(projectDir)) {
         // The branch is named because the caller is left standing on it, and every
         // command that follows — `init`, `run`, a plain `git log` — reads that tree
         // instead of `main` and reports what it finds there as the project's state.

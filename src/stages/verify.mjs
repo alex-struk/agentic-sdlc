@@ -12,7 +12,7 @@ import { join, relative } from "node:path";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
-import { git, gitOk, stagePaths, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, porcelainStatus, stagePaths, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { runSuite } from "../testrun/playwright.mjs";
 import { resetCommandFor, targetSettings } from "../sandbox/local.mjs";
@@ -220,7 +220,7 @@ export const verify = {
       // the checkout back to `start` only happens once the branch is actually clean: a
       // dirty tree stays exactly where it was made, visible on the branch that produced
       // it, rather than riding onto `main` silently.
-      dirty = Boolean(git(["status", "--porcelain"], projectDir));
+      dirty = Boolean(porcelainStatus(projectDir));
       if (dirty) {
         text = `verify slice ${slice.number}: the working tree was left dirty on ${branch} after a failure; HEAD is still on ${branch}. Inspect and clean it before running verify again.`;
       } else if (currentBranch(projectDir) !== start) {

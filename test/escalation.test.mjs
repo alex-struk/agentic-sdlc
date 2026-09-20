@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { git } from "../src/lib/git.mjs";
+import { git, assertCleanTree } from "../src/lib/git.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { ruleByAgent, rulePending, simulatedRole } from "../src/commands/rule.mjs";
 
@@ -195,4 +195,28 @@ test("a ruling reads the persona brief from main, not from the proposal's branch
   assert.equal(r.verdict, "approve", "main's brief governs, so the persona is asked");
   assert.ok(!r.escalated);
   assert.equal(gateFile(d, "design-a").by, "agent:ux-reviewer");
+});
+
+// `.gitignore` belongs to the project, not to any one branch of it. A proposal opened
+// before the project learned to ignore a directory would otherwise reappear as untracked
+// dirt the moment a ruling checks that branch out, and every command needing a clean tree
+// refuses on files nobody touched.
+test("a branch's older .gitignore does not make the project's own ignored files dirt", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  // The branch predates the rule: its `.gitignore` says nothing about `built/`.
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+  writeFileSync(join(d, ".gitignore"), "built/\n");
+  git(["add", "-A"], d); git(["commit", "-q", "-m", "the project learns to ignore its build output"], d);
+  mkdirSync(join(d, "built"), { recursive: true });
+  writeFileSync(join(d, "built", "bundle.js"), "generated\n");
+
+  reply(t, "approve", "the screens serve the criteria");
+  const r = await ruleByAgent(d, "design-a", { persona: "ux-reviewer" });
+  assert.equal(r.verdict, "approve", "the ruling is not refused over a file main ignores");
+  git(["checkout", "-q", "main"], d);
+
+  // A file nothing ignores is still dirt, on either branch.
+  writeFileSync(join(d, "stray.txt"), "left behind\n");
+  assert.throws(() => assertCleanTree(d, "rule"), /uncommitted changes/);
 });

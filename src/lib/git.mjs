@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The untrimmed form: needed by any caller that parses porcelain output by position
@@ -41,14 +42,37 @@ export function gitOk(args, cwd) {
   try { git(args, cwd); return true; } catch { return false; }
 }
 
+// `.gitignore` is project hygiene, and it belongs to the project rather than to any one
+// branch of it. A proposal branch carries the ignore rules of the day it was opened, so a
+// directory the project learned to ignore since — a build output, a runtime's own mirror
+// — reappears as untracked dirt the moment a ruling checks that branch out, and every
+// command that needs a clean tree refuses on files nobody touched.
+//
+// `main`'s copy is passed as an additional excludes file, which git unions with whatever
+// the checked-out branch says: a path ignored on either is ignored. The file is written
+// once per call into a temporary directory, never into the project.
+function statusArgs(projectDir, extra = []) {
+  const fromMain = gitOk(["cat-file", "-e", "main:.gitignore"], projectDir)
+    ? git(["show", "main:.gitignore"], projectDir) : "";
+  if (!fromMain) return ["status", ...extra];
+  const path = join(mkdtempSync(join(tmpdir(), "sdlc-ignore-")), "ignore");
+  writeFileSync(path, `${fromMain}\n`);
+  return ["-c", `core.excludesFile=${path}`, "status", ...extra];
+}
+
 // A gate command commits on the caller's behalf, so it must not sweep in whatever else
 // happened to be in the tree: the record of a ruling has to contain the ruling and
 // nothing else. Commands check first and stage by name afterwards.
 export function assertCleanTree(projectDir, command) {
-  const dirty = git(["status", "--porcelain"], projectDir);
+  const dirty = git(statusArgs(projectDir, ["--porcelain"]), projectDir);
   if (!dirty) return;
   const paths = dirty.split("\n").map((l) => `  ${l.trim()}`).join("\n");
   throw new Error(`${command}: the working tree has uncommitted changes. Commit or stash them first:\n${paths}`);
+}
+
+// `git status --porcelain` under the same ignore rules `assertCleanTree` uses.
+export function porcelainStatus(projectDir) {
+  return git(statusArgs(projectDir, ["--porcelain"]), projectDir);
 }
 
 // The branch the working tree is on, or "HEAD" when it is detached.
@@ -132,7 +156,7 @@ export function stageAll(projectDir, paths) {
 // would reach `checkDeriveTestsBlindHeader` as one path ending in `/` and none of its spec
 // files would be read. Ignored files are still left out, so `node_modules` is never walked.
 export function changedPaths(projectDir) {
-  const out = gitRaw(["status", "--porcelain", "-z", "-uall"], projectDir);
+  const out = gitRaw(statusArgs(projectDir, ["--porcelain", "-z", "-uall"]), projectDir);
   const records = out.split("\0");
   const paths = [];
   for (let i = 0; i < records.length; i++) {
