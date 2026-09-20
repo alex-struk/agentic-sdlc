@@ -342,8 +342,14 @@ test("verify refuses a slice with no open build proposal, and a sandbox that wil
   mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
   const ctx = { ...ctxFor(d), sandbox: { up: async () => ({ ok: false, messages: ["the application did not answer at http://localhost:8080"] }), down: () => ({ ok: true }) } };
   verify.preChecks(d, ctx);
-  const r = await verify.execute(d, ctx);
-  assert.match(r.text, /did not answer/);
+  // A verification that never happened must not resolve: resolving sends the runner to
+  // its no-op path, which prints `run verify: ok` and exits 0 over a sandbox that never
+  // came up. Nothing is recorded against the build — the cause may be the machine — but
+  // the run itself fails.
+  const err = await verify.execute(d, ctx).then(() => null, (e) => e);
+  assert.ok(err, "a sandbox that will not start fails the run");
+  assert.match(err.message, /did not answer/);
+  assert.match(err.message, /nothing was verified/);
   assert.throws(() => onBranch(d, "tests/results/new/slice-1.json"));
   assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), "main");
 });

@@ -166,7 +166,14 @@ export const verify = {
     try {
       const started = await up(projectDir);
       if (!started.ok) {
+        // A sandbox that will not start is a failed run, not a quiet one. Nothing is
+        // recorded against the build — the cause may be the machine rather than the
+        // application, and a port already taken is not the builder's defect — but the
+        // run has to end non-zero and say so. Returning normally here printed
+        // `run verify: ok` over a verification that never happened, which is the one
+        // outcome a caller must never be given.
         text = `verify slice ${slice.number}: the sandbox did not start, so nothing was verified.\n${started.messages.join("\n")}`;
+        throw new Error(text);
       } else {
         const { rows } = runSuite({
           projectDir, target: "new", baseUrl: targetSettings(config, "new").baseUrl,

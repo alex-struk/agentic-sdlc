@@ -12,6 +12,7 @@ import { checkSeparation } from "../checks/separation.mjs";
 import { readSlice, buildProposalBase, buildProposals } from "./slices.mjs";
 import { nextProposalName, recommendationFrom, recordReturnOnMain, returnedRulingOn } from "./proposals.mjs";
 import { skillPath } from "./shared.mjs";
+import { targetSettings } from "../sandbox/local.mjs";
 
 function defaultExec(cmd, args, { cwd } = {}) {
   const res = spawnSync(cmd, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 30 * 60 * 1000 });
@@ -90,9 +91,21 @@ export const build = {
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash(npm *)", "Bash(npx *)", "Bash(node *)", "Bash(ls *)", "Bash(mkdir *)"],
   prompt(ctx) {
     const s = ctx.buildSlice;
+    // The build skill tells the builder its compose file must answer on the port in
+    // `targets.new.base_url`, and the build workspace deliberately has no
+    // `.sdlc/config.yaml` to read it from — it names the old application's repository and
+    // commit, which a builder must not see. So the value is stated here instead, where
+    // the prompt is composed in the project. An instruction naming a value the agent
+    // cannot reach is an instruction it has to guess at, and the first build guessed a
+    // port the identity provider was already on: the health check found something
+    // answering and called the sandbox up.
+    const { baseUrl } = targetSettings(ctx.config, "new");
     return [
       `Build slice ${s.number} of plan/tasks.md. Its entry in the plan:\n\n${s.body}`,
       `The criteria it is answerable for: ${s.criteria.join(", ")}.`,
+      `The application must answer at ${baseUrl}: that is this project's \`targets.new.base_url\`, `
+        + `it is the address the acceptance suite drives, and app/compose/compose.yaml must publish `
+        + `it there. No other service in that file may take that port.`,
       ctx.revise ? revisionInstructions(ctx) : null,
     ].filter(Boolean).join("\n\n");
   },

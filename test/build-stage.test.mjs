@@ -83,12 +83,16 @@ test("a build run is refused without a slice, or with one the plan does not have
 
 test("the prompt carries the slice's own text and criteria, and nothing of another slice", (t) => {
   const d = gitProject(t);
-  const ctx = { slice: 1 };
+  const ctx = { slice: 1, config: { targets: { new: { base_url: "http://localhost:8080", identity: "sandbox-idp" } }, project: { name: "p" } } };
   build.preChecks(d, ctx);
   const p = build.prompt(ctx);
   assert.match(p, /Slice 1 · Sign in and see your profile/);
   assert.match(p, /R-4\.1, R-4\.2/);
   assert.doesNotMatch(p, /Browse opportunities/);
+  // The build workspace has no `.sdlc/config.yaml`, so an instruction naming a value out
+  // of it is one the builder has to guess at. The address is stated here instead.
+  assert.match(p, /must answer at http:\/\/localhost:8080/);
+  assert.match(p, /No other service in that file may take that port/);
 });
 
 test("a build may change the application and add decision records, and nothing else", (t) => {
