@@ -441,3 +441,54 @@ test("runSuite: one copy is one worker, named exactly as it always was", () => {
   assert.equal(env.SDLC_TARGET_URL, "http://localhost:3100");
   assert.equal(env.SDLC_TARGET_URL_0, "http://localhost:3100");
 });
+
+// ---- an empty file list is not an empty filter ----
+
+// `specFilesFor` (src/stages/slices.mjs) returns the spec files that exist for a slice's
+// criteria, and legitimately returns none: a slice claiming only not-testable criteria has
+// no spec file to run. Passed on to Playwright as an empty argument list, that would have
+// run the whole acceptance suite — the right verdict at the cost of a full suite run
+// reporting on work nobody claimed.
+test("runSuite: an empty files list runs nothing at all, where no files list runs everything", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1"), accepted("R-1.2")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  write(d, "tests/acceptance/not-testable.yaml", 'criteria:\n  - { id: R-1.2, version: 1, reason: "no path through the surface" }\n');
+  writeReport(d, [fileSuite("opportunities", "R-1.1.spec.ts", "views a listing", "passed")]);
+
+  const empty = [];
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "new", baseUrl: "http://x", files: [], exec: recordingExec(empty) }));
+  assert.ok(!empty.some((c) => c.args.includes("playwright")), "no suite run was started");
+  // The rows that never come from a run at all are still reported: they are read off the
+  // project's own files, and a slice claiming only those is verified by them.
+  assert.deepEqual(result.rows.map((r) => r.id), ["R-1.2"]);
+  assert.equal(result.rows[0].result, "not-testable");
+
+  const all = [];
+  withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "new", baseUrl: "http://x", exec: recordingExec(all) }));
+  const run = all.find((c) => c.args.includes("playwright"));
+  assert.deepEqual(run.args.slice(run.args.indexOf("--config=tests/playwright.config.ts") + 1), [],
+    "no files and no domain is the one no-filter case: the whole suite");
+});
+
+test("runSuite: the mock runner reads an empty files list the same way", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1"), accepted("R-1.2")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  write(d, "tests/acceptance/not-testable.yaml", 'criteria:\n  - { id: R-1.2, version: 1, reason: "no path through the surface" }\n');
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-testrun-mock-"));
+  writeFileSync(join(mockDir, "calibrate.json"), JSON.stringify({
+    rows: [{ id: "R-1.1", version: 1, domain: "opportunities", file: "tests/acceptance/opportunities/R-1.1.spec.ts", result: "pass", tests: [] }],
+  }));
+  process.env.SDLC_TEST_RUNNER = "mock"; process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const scoped = runSuite({ projectDir: d, target: "new", baseUrl: "http://x", files: [] });
+    assert.deepEqual(scoped.rows.map((r) => r.id), ["R-1.2"]);
+    const everything = runSuite({ projectDir: d, target: "new", baseUrl: "http://x" });
+    assert.deepEqual(everything.rows.map((r) => r.id), ["R-1.1", "R-1.2"]);
+  } finally {
+    delete process.env.SDLC_TEST_RUNNER; delete process.env.SDLC_MOCK_DIR;
+  }
+});

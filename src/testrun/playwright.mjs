@@ -224,10 +224,22 @@ export function runSuite(opts) {
   if (process.env.SDLC_TEST_RUNNER === "mock") {
     const mockRows = readMockRows(process.env.SDLC_MOCK_DIR ?? "").map((r) =>
       staleIds.has(r.id) ? { ...r, result: "stale" } : r);
-    const wanted = files?.length ? new Set(files) : null;
+    const wanted = files === undefined ? null : new Set(files);
     const byFile = wanted ? mockRows.filter((r) => wanted.has(r.file)) : mockRows;
     const scoped = domain === undefined ? byFile : byFile.filter((r) => r.domain === domain);
     return { rows: sortRows([...scoped, ...notTestableRows(projectDir, domain)]), raw: null, ok: true };
+  }
+
+  // An empty `files` is not the same as no `files` at all. `undefined` is "no filter":
+  // run the whole suite, or the one domain `domain` names. `[]` is a caller that looked
+  // for the specs it wanted and found none — a slice whose criteria are all not-testable,
+  // or whose tests have not been derived yet. Handing that to Playwright as an empty
+  // argument list would run the ENTIRE acceptance suite to answer a question about none
+  // of it: the verdict still comes out right, because the rows it wanted are absent
+  // either way, but it costs a full suite run and reports on work nobody asked about. So
+  // nothing is run, and the only rows are the ones that never come from a run at all.
+  if (files !== undefined && files.length === 0) {
+    return { rows: sortRows(notTestableRows(projectDir, domain)), raw: null, ok: true };
   }
 
   ensureDeps(projectDir, exec);
@@ -265,7 +277,7 @@ export function runSuite(opts) {
   // `files` names the exact specs to run — the criteria one slice claims — and wins over
   // `domain`: a slice's criteria cross domains, and running a whole domain to verify three
   // of its criteria would report on work nobody claimed.
-  const filter = files?.length ? files.map((f) => f.replace(/^tests\//, ""))
+  const filter = files !== undefined ? files.map((f) => f.replace(/^tests\//, ""))
     : domain === undefined ? [] : [`acceptance/${domain}/`];
   const run = exec(
     "npx",

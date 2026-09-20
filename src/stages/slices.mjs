@@ -38,6 +38,12 @@ export function buildProposals(projectDir, number) {
     .sort((a, b) => b.k - a.k).map((x) => x.name);
 }
 
+// The spec files that exist for these criteria, in the order the criteria are claimed. A
+// criterion with no spec file of its own contributes nothing, so the result is often
+// shorter than `criteria` — and it is legitimately EMPTY when a slice claims only
+// criteria that are not-testable, or whose tests have not been derived yet. Empty means
+// "no spec file to run", never "run everything": `runSuite` reads an empty array that way
+// (`src/testrun/playwright.mjs`), and only `undefined` is its no-filter value.
 export function specFilesFor(projectDir, criteria) {
   const root = join(projectDir, "tests", "acceptance");
   if (!existsSync(root)) return [];
