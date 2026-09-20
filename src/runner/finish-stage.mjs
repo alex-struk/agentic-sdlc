@@ -353,9 +353,16 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     // dry-run path above, which is why every stage that needs it to choose a name
     // precomputes that name in `preChecks` and treats the call here as a fallback that
     // never fires. A `proposal(ctx)` may rely on it.
-    const p = stage.proposal({ ...ctx, projectDir, agentText: result.text });
+    // `account` is set only by `resume`, and only when the interrupted run's own journal
+    // entry is still on disk: the journal above records what THIS run did, which for a
+    // resume is nothing, while the proposal describes the WORK, which the recovered
+    // account is. Keeping them apart stops a run that is resumed twice from copying the
+    // whole account into the journal again each time, and stops a gate's ruler being
+    // handed a proposal that says the runner lost it.
+    const account = result.account ?? result.text;
+    const p = stage.proposal({ ...ctx, projectDir, agentText: account });
     const { branch } = propose(projectDir, p.name, {
-      gate: stage.gate, question: p.question, recommendation: p.recommendation, page: result.text, paths: changed,
+      gate: stage.gate, question: p.question, recommendation: p.recommendation, page: account, paths: changed,
     });
     proposal = { name: p.name, gate: stage.gate, branch };
   } else {

@@ -1333,3 +1333,57 @@ test("runStage prints a passing pre-check's warnings before anything is spent", 
     restoreEgress(prevEgress);
   }
 });
+
+// The journal records what a run did; the proposal describes the work. A resume does no
+// work, so its journal entry points at the entry that holds the account — but the gate's
+// ruler still gets that account, because a proposal saying the runner lost it is a
+// ruling made on nothing.
+test("resume rebuilds ctx and gives the proposal the interrupted run's own account", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-account-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  let sawTitle = null;
+  registerStage({
+    name: "resume-account-stage",
+    title: "resume account stage",
+    skill: PROBE_SKILL,
+    workspace: "spec-only",
+    gate: "G1",
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    // `subject` is only ever set by this stage's own pre-checks, so a proposal carrying it
+    // proves `resume` ran them rather than proposing from the bare run-state flags.
+    preChecks: (_d, ctx) => { ctx.subject = "the seeded pages"; return []; },
+    postChecks: () => [],
+    proposal: (ctx) => {
+      sawTitle = ctx.subject;
+      return { name: "resume-account-1", question: `Does ${ctx.subject ?? ""} hold?`, recommendation: ctx.agentText.split("\n")[0] };
+    },
+  });
+  mkdirSync(join(dir, ".sdlc", "journal"), { recursive: true });
+  writeFileSync(join(dir, ".sdlc", "journal", "001-resume-account-stage.md"),
+    `---\nstage: "resume-account-stage"\ntitle: "t"\nat: "2026-09-20T00:00:00.000Z"\ncost: 12.5\nturns: 200\nsession: "abc"\n---\n\nBuilt the seeded pages and tested them.\n\nDetail the ruler needs.\n`);
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "interrupted run's journal"], dir);
+  writeFileSync(join(dir, ".sdlc", "run-state.json"),
+    JSON.stringify({ stage: "resume-account-stage", ctx: {}, phase: "post-checks", fixTurnUsed: true }) + "\n");
+  try {
+    const code = await resume(dir, { again: true });
+    assert.equal(code, 0);
+    assert.equal(sawTitle, "the seeded pages", "pre-checks ran, so ctx carries what the proposal needs");
+
+    const page = readFileSync(join(dir, ".sdlc/proposals/resume-account-1.md"), "utf8");
+    assert.match(page, /Built the seeded pages and tested them\./);
+    assert.match(page, /Detail the ruler needs\./);
+    assert.ok(!/agent output unavailable/.test(page), page);
+
+    // This run's own journal entry says what this run did, and points at the account
+    // rather than copying it — a run resumed twice must not duplicate it.
+    const mine = readFileSync(join(dir, ".sdlc/journal/002-resume-account-stage.md"), "utf8");
+    assert.match(mine, /001-resume-account-stage\.md/);
+    assert.ok(!/Detail the ruler needs/.test(mine), mine);
+    assert.match(mine, /^turns: 0$/m);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});

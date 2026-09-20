@@ -1,10 +1,26 @@
 import { join, resolve } from "node:path";
 import { loadConfig } from "../config/load.mjs";
 import { readRunState } from "../runner/run-state.mjs";
+import { readJournal } from "../runner/journal.mjs";
 import { stageFor } from "../stages/registry.mjs";
 import { finishStage, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { IN_PLACE_MODES } from "../runner/workspace.mjs";
 import { COMMANDS } from "../cli.mjs";
+
+// The most recent journal entry this stage's own agent turn wrote. Entries with no turns
+// are the runner's own (a resume, a deterministic stage), and are not an agent's account.
+function recoverAgentTurn(projectDir, stage) {
+  const mine = readJournal(projectDir).filter((e) => e.stage === stage && e.turns > 0);
+  const last = mine[mine.length - 1];
+  if (!last) return null;
+  return {
+    text: `Resumed at post-checks; no agent turn ran here. The account of the work is in \`.sdlc/journal/${last.file}\`.`,
+    account: last.body,
+    cost: 0,
+    turns: 0,
+    sessionId: last.session,
+  };
+}
 
 export async function resume(projectDir, { again = false } = {}) {
   projectDir = resolve(projectDir);
@@ -54,6 +70,16 @@ export async function resume(projectDir, { again = false } = {}) {
 
   const ctx = { ...state.ctx, config };
 
+  // The stage's own pre-checks are what populate `ctx` beyond the flags the run was
+  // started with — the slice read out of `plan/tasks.md`, the branch a revision starts
+  // from — and `finishStage` builds the proposal from that. Skipping them leaves the
+  // ruler a proposal whose question has a hole where the work's name should be.
+  const pre = stage.preChecks ? stage.preChecks(projectDir, ctx).filter((r) => !r.ok) : [];
+  if (pre.length) {
+    console.log(`resume ${state.stage}: failed\n  ${pre.flatMap((r) => r.messages).join("\n  ")}`);
+    return 1;
+  }
+
   // `resume` has no agent turn of its own to run, but it still lands on `finishStage`,
   // which can open a proposal — so the same pre-flight `sdlc run` performs before its
   // own agent turn belongs here too, before spending a post-checks judgment on files
@@ -68,7 +94,16 @@ export async function resume(projectDir, { again = false } = {}) {
   // The agent step is not re-run here even with --again: there is no session to
   // resume it from, only the files (if any) it left behind before the process died.
   // Post-checks judge those files exactly as they would judge a fresh agent turn.
-  const agentResult = { text: "(resumed; agent output unavailable)", cost: 0, turns: 0, sessionId: "" };
+  //
+  // Its account of the work survives even so. A post-check failure commits the journal
+  // entry the agent's turn produced before leaving the rest of the tree alone, so the
+  // text is on disk — and that text is what a stage's proposal is built from. Without it
+  // the gate's ruler is handed a proposal whose question and recommendation are the
+  // runner apologising for losing them. Cost and turns are recorded as zero because the
+  // entry that already carries them is still there; counting them twice would overstate
+  // what the run spent.
+  const agentResult = recoverAgentTurn(projectDir, state.stage)
+    ?? { text: "(resumed; agent output unavailable)", cost: 0, turns: 0, sessionId: "" };
   const r = await finishStage(projectDir, stage, ctx, agentResult);
   return r.ok ? 0 : 1;
 }
