@@ -164,6 +164,11 @@ const REQUIRED_IGNORES = [
   // every scan. `design/report.json`, which the scan also writes, is deliberately absent —
   // it is the evidence a design gate is ruled on and belongs in the history.
   "design/storybook-static/",
+  // The agent runtime mirrors the skills it is given into `.agents/skills/`. `init`
+  // installs and tracks the canonical copy under `.claude/skills/`, so the mirror is
+  // the same text a second time, rewritten by every turn — and left untracked it is
+  // dirt that stops the next command needing a clean tree.
+  ".agents/",
 ];
 const UNIGNORE = "site/";
 
