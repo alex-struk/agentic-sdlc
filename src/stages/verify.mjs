@@ -207,7 +207,10 @@ export const verify = {
     } catch (err) {
       failure = err;
     } finally {
-      await down(projectDir);
+      // A sandbox that will not stop is its own failure — containers left running — but
+      // it must not mask the one already on its way out, and it must not skip the rest of
+      // the teardown below, which is what decides where HEAD is left.
+      try { await down(projectDir); } catch (err) { failure ??= err; }
       // A throw between the first working-tree write and the commit landing (the
       // gate-file write, `stringifyYaml`, or the commit itself) can leave the proposal
       // branch holding a staged or untracked file. `git checkout` succeeds even with

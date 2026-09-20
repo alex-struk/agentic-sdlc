@@ -110,6 +110,9 @@ of its own — it writes onto one that already exists.
   left exactly where the failure happened, visible in `git status`, rather than being carried onto
   `main`, where a dirty tree would block every later `sdlc run` until a person cleaned it up by
   hand — the same hazard `rule --pending` guards against for the same reason.
+- **The sandbox will not stop**: reported as the run's failure — containers left running
+  is a real problem — but it never replaces a failure already on its way out of the run,
+  and never skips the rest of the teardown, which is what decides where HEAD is left.
 - **A throw that leaves the tree clean**: the sandbox is still torn down, HEAD still returns to the
   branch verify started from, and the run record's line for the attempt is committed there before
   the error is re-raised — so the failure is loud and the next `sdlc run` is not blocked by an

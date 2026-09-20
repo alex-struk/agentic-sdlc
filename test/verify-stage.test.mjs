@@ -367,3 +367,27 @@ test("verify refuses to verify a sandbox-idp target with no password in the envi
     process.env.SDLC_SANDBOX_PASSWORD = prev;
   }
 });
+
+// Teardown is the first thing the `finally` does, and it used to be able to throw its way
+// past the rest of it — leaving HEAD on the proposal branch with no run-record line and
+// the real failure replaced by the sandbox's.
+test("a sandbox that will not stop is reported without hiding what the run was already doing", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const ctx = {
+    ...ctxFor(d),
+    sandbox: {
+      up: async () => ({ ok: true, baseUrl: "http://localhost:8080" }),
+      down: () => { throw new Error("docker compose down failed"); },
+    },
+  };
+  verify.preChecks(d, ctx);
+  await assert.rejects(() => verify.execute(d, ctx), /docker compose down failed/);
+  // The result still landed, HEAD still came home, and the attempt is still recorded.
+  assert.equal(JSON.parse(onBranch(d, "tests/results/new/slice-1.json")).verdict, "pass");
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), "main");
+  const day = new Date().toISOString().slice(0, 10);
+  assert.match(readFileSync(join(d, ".sdlc", "runs", `${day}.md`), "utf8"), /slice 1 verified/);
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: d, encoding: "utf8" }), "",
+    "the record of a failed attempt is committed rather than left to block the next run");
+});
