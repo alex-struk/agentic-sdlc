@@ -172,13 +172,17 @@ const UNIGNORE = "site/";
 // are none of the pipeline's business and are left exactly where they are. Only two
 // edits are ever made: append a required line that is missing, and drop a line that is
 // exactly `site/`. Returns true when the file was rewritten.
-export function reconcileGitignore(projectDir) {
+// `extra` is what the project's stack profile declares as its own generated output
+// (`ignore:` in the profile's front matter). It is the stack that knows which
+// directories its toolchain writes, so the list above — which every project gets —
+// stays about the pipeline's own artifacts.
+export function reconcileGitignore(projectDir, extra = []) {
   const path = join(projectDir, ".gitignore");
   const before = existsSync(path) ? readFileSync(path, "utf8") : "";
   const lines = before.split("\n");
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   const kept = lines.filter((l) => l.trim() !== UNIGNORE);
-  for (const want of REQUIRED_IGNORES) if (!kept.some((l) => l.trim() === want)) kept.push(want);
+  for (const want of [...REQUIRED_IGNORES, ...extra]) if (!kept.some((l) => l.trim() === want)) kept.push(want);
   const after = kept.length ? `${kept.join("\n")}\n` : "";
   if (after === before) return false;
   writeFileSync(path, after);

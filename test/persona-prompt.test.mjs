@@ -209,3 +209,34 @@ test("a G3 prompt distinguishes runner compiler evidence from the blind author's
   assert.match(prompt, /failed or unavailable check is not a pass/);
   assert.match(prompt, /runner owns executing the check/);
 });
+
+// `app/` is left out of a ruling on the spec, and is the whole of a ruling on the build.
+// Getting this wrong is silent: the reviewer still receives a proposal, a file summary
+// and the checks, so a ruling comes back that looks ordinary and was made without the
+// code ever being shown.
+test("a build proposal's ruler is shown the application; a spec proposal's ruler is not", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], dir);
+  write(dir, "app/backend/src/content.ts", "export const findPage = (slug: string) => slug;\n");
+  write(dir, "docs/decisions/0007-a-choice.md", "# 0007\n\nA choice the builder made.\n");
+  write(dir, ".sdlc/proposals/build-slice-1.md", "---\ngate: G3\n---\n\n# Does slice 1 hold?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  // A ruling runs with the proposal's branch checked out, which is where it reads the
+  // proposal page from.
+  const built = await buildPersonaPrompt(dir, "build-slice-1", "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.match(built, /export const findPage/, "the implementation is the evidence for a build ruling");
+  assert.match(built, /A choice the builder made/);
+  git(["checkout", "-q", "main"], dir);
+
+  // The same gate, a proposal that is not about the application: a stray app/ file on the
+  // branch stays out, so an implementation cannot crowd a ruling on the spec.
+  git(["checkout", "-q", "-b", "proposal/derive-tests-applications"], dir);
+  write(dir, "tests/acceptance/applications/R-1.1.spec.ts", "// @R-1.1 v1\n");
+  write(dir, ".sdlc/proposals/derive-tests-applications.md", "---\ngate: G3\n---\n\n# Do these tests follow?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "derive tests"], dir);
+
+  const derived = await buildPersonaPrompt(dir, "derive-tests-applications", "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.match(derived, /R-1\.1\.spec\.ts/);
+  assert.ok(!/export const findPage/.test(derived), "a ruling on the spec is not shown an implementation");
+});

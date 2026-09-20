@@ -121,7 +121,10 @@ test("init on a project whose .gitignore predates the acceptance and design harn
     await init(dir);
     const afterFirst = readFileSync(join(dir, ".gitignore"), "utf8").split("\n").filter(Boolean);
     const gained = afterFirst.filter((l) => !before.includes(l));
-    assert.deepEqual(gained, ["tests/test-results/", "tests/playwright-report/", "design/storybook-static/"],
+    // The first three are the pipeline's own generated directories; the last two come
+    // from the project's stack profile, which is what knows where its toolchain writes.
+    assert.deepEqual(gained,
+      ["tests/test-results/", "tests/playwright-report/", "design/storybook-static/", "app/*/dist/", "app/frontend/.vite/"],
       "exactly the lines nothing else already covers are added");
     assert.equal(git(["status", "--porcelain"], dir), "", "the reconciling init leaves the tree clean");
 

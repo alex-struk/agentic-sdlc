@@ -30,7 +30,17 @@ function diffCapFor(gate) {
 // up in the prompt, so its diff is the same text a second time. Excluded by pathspec so
 // none of them enter the budget at all. `app/` is excluded for a different reason: the
 // personas that hold the spec-side gates rule on the spec, not on an implementation.
-const DIFF_EXCLUDE = [":!app", ":!site", ":!.sdlc/runs", ":!.sdlc/journal", ":!.sdlc/proposals"];
+const DIFF_EXCLUDE = [":!site", ":!.sdlc/runs", ":!.sdlc/journal", ":!.sdlc/proposals"];
+
+// `app/` is evidence exactly when the proposal is about it. A spec-side proposal — a
+// domain file, a derived suite, an adapter — never touches the application, so leaving it
+// out there costs its persona nothing and keeps an implementation out of a ruling on the
+// spec. A build proposal IS `app/`, and ruling one without it is ruling on the builder's
+// own summary of work nobody read.
+function excludesFor(projectDir, branch) {
+  const touchesApp = git(["diff", `main...${branch}`, "--name-only", "--", "app"], projectDir);
+  return touchesApp ? DIFF_EXCLUDE : [":!app", ...DIFF_EXCLUDE];
+}
 
 // The stage's own output, first — the whole point of the ruling. Without this the diff
 // is ordered however git lists paths (alphabetically), so a G1 archaeology proposal
@@ -40,7 +50,9 @@ const DIFF_EXCLUDE = [":!app", ":!site", ":!.sdlc/runs", ":!.sdlc/journal", ":!.
 const PRIORITY_PATHS = {
   G0: ["intent/"],
   G1: ["spec/domains/", "spec/"],
-  G3: ["tests/acceptance/", "tests/adapters/", "evidence/"],
+  // G3 holds both the spec-side derivations and the build. `app/` outranks the rest only
+  // for a proposal that has one, since the others never do.
+  G3: ["app/", "tests/acceptance/", "tests/adapters/", "evidence/"],
 };
 
 // Orders `files` so that anything under one of `prefixes` comes first, in the order the
@@ -66,7 +78,7 @@ export function orderDiffPaths(files, prefixes = []) {
 // marked with what was left out.
 function orderedDiff(projectDir, branch, gate) {
   const range = `main...${branch}`;
-  const listed = git(["diff", range, "--name-only", "--", ".", ...DIFF_EXCLUDE], projectDir);
+  const listed = git(["diff", range, "--name-only", "--", ".", ...excludesFor(projectDir, branch)], projectDir);
   const files = orderDiffPaths(listed ? listed.split("\n").filter(Boolean) : [], PRIORITY_PATHS[gate] ?? []);
   const cap = diffCapFor(gate);
   const parts = [];

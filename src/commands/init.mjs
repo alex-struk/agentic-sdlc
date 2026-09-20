@@ -2,6 +2,7 @@ import { existsSync, chmodSync, rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { git, gitOk, stagePaths, stageSite, reconcileGitignore, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
+import { parse as parseYaml } from "yaml";
 import { loadConfig } from "../config/load.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
 import { buildSite } from "./status.mjs";
@@ -69,6 +70,20 @@ function installTemplateFiles(projectDir) {
 // skills in `.claude/skills/`, which every workspace that plans or builds already carries,
 // so the planner and the builder work from the stack the project's config names rather than
 // one they chose. Refreshed like a template file: the pipeline owns its text.
+// What the project's stack profile declares as its toolchain's own output, from the
+// `ignore:` list in its front matter. Empty for a project with no stack, or a stack that
+// generates nothing outside `node_modules`.
+export function stackIgnores(config) {
+  if (!config.stack) return [];
+  const src = join(PIPELINE_ROOT, "stacks", config.stack, "SKILL.md");
+  if (!existsSync(src)) return [];
+  const m = readText(src).match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
+  if (!m) return [];
+  let front;
+  try { front = parseYaml(m[1]); } catch { return []; }
+  return Array.isArray(front?.ignore) ? front.ignore.map(String) : [];
+}
+
 function installStackSkill(projectDir, config) {
   if (!config.stack) return false;
   const src = join(PIPELINE_ROOT, "stacks", config.stack, "SKILL.md");
@@ -148,7 +163,7 @@ export async function init(projectDir = process.cwd()) {
   // themselves), and by then the file is already canonical, so its second call always
   // reports no change. Only this first call actually saw whatever this run rewrote, so
   // it alone decides whether `.gitignore` belongs in the commit.
-  const gitignoreChanged = reconcileGitignore(projectDir);
+  const gitignoreChanged = reconcileGitignore(projectDir, stackIgnores(config));
   if (gitignoreChanged) changed = true;
   if (untrackRunState(projectDir)) changed = true;
 
