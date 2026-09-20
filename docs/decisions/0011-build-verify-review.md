@@ -8,6 +8,9 @@ proposal is ruled. This records how the two stages divide the work the design sp
 `verify`, `review-and-ship` and `deploy`, and where the first increment's failure routing and
 deploy story land.
 
+Every section number below (§5.13, §7.1) is a section of
+`docs/specs/2026-09-05-rebuild-pipeline-design.md`, the design this pipeline is built from.
+
 ## 1 — Review-and-ship is the reviewer's G3 ruling, not its own stage
 
 **Decision.** There is no `review-and-ship` stage. The reviewer persona
@@ -46,8 +49,9 @@ either source.
 adapter cannot bind (`unbound`) routes to `bind-adapter --target new` and nothing else is reported.
 Anything else that is not `pass`, `not-testable` or `attested` — a `fail`, a `stale` test, or a
 criterion missing from the run altogether — returns the build proposal for `build --revise`. A
-slice returned this way three times running (`MAX_VERIFY_RETURNS`) escalates to the tech lead
-instead of returning a fourth time.
+slice returned this way three times running (`MAX_VERIFY_RETURNS`) escalates instead of returning
+a fourth time, to whoever `policy.gates.G3.escalate_to` names — the tech lead, in the default
+policy the project template ships.
 
 **Why.** The design spec's §7.1 divides a failure into five classes — implementation defect, spec
 ambiguity, test defect, adapter defect, environment defect — each with its own route and its own

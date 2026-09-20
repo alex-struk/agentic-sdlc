@@ -1,5 +1,5 @@
 export const STAGES = ["init","intent","archaeology","ratify","contract","bind-adapter","derive-tests",
-  "calibrate","design","plan","build","verify","review-and-ship","deploy","operate","status"];
+  "calibrate","design","plan","build","verify","deploy","operate","status"];
 
 const without = (...drop) => STAGES.filter((s) => !drop.includes(s));
 
@@ -7,7 +7,7 @@ export const PROFILES = {
   greenfield: without("archaeology", "calibrate"),
   rebuild: [...STAGES],
   remediation: without("intent", "design"),
-  feature: ["init","intent","plan","build","verify","review-and-ship","deploy","status"],
+  feature: ["init","intent","plan","build","verify","deploy","status"],
 };
 
 export function stagesFor(profile) {

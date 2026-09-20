@@ -145,7 +145,7 @@ files elsewhere.
 
 | Stage | Blocked paths |
 | --- | --- |
-| `build`, `verify`, `review-and-ship` (and unset, which defaults to `build`) | `spec/`, `tests/acceptance/`, `constitution.md`, `.sdlc/config.yaml`, `.github/workflows/`, `sources/` |
+| `build`, `verify` (and unset, which defaults to `build`) | `spec/`, `tests/acceptance/`, `constitution.md`, `.sdlc/config.yaml`, `.github/workflows/`, `sources/` |
 | `derive-tests` | `app/`, `tests/adapters/`, `tests/seed/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
 | `bind-adapter` | `app/`, `tests/acceptance/`, `spec/`, `constitution.md`, all of `.sdlc/`, `sources/` |
 | `intent` | everything except `intent/` and `constitution.md` — the brief is turned into one intent document and a glossary row, and nothing else in the tree is its business |

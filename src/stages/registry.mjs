@@ -2023,7 +2023,7 @@ const ratify = {
   },
 };
 
-// Every real pipeline stage (verify, review-and-ship, …) is a stub until its own task
+// Every real pipeline stage (deploy, operate, …) is a stub until its own task
 // lands: calling `prompt` fails loudly and by name, so `sdlc run <stage>` reports a clear
 // reason instead of quietly doing nothing.
 function stub(name) {

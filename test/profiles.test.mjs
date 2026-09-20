@@ -8,7 +8,7 @@ import { STAGES, PROFILES, stagesFor } from "../src/profiles.mjs";
 // every derivation that follows it (docs/decisions/0007-calibrate-before-mass-derivation.md).
 test("sixteen stages, binding before derivation", () => {
   assert.deepEqual(STAGES, ["init","intent","archaeology","ratify","contract","bind-adapter","derive-tests",
-    "calibrate","design","plan","build","verify","review-and-ship","deploy","operate","status"]);
+    "calibrate","design","plan","build","verify","deploy","operate","status"]);
   assert.ok(STAGES.indexOf("bind-adapter") < STAGES.indexOf("derive-tests"));
   assert.ok(STAGES.indexOf("derive-tests") < STAGES.indexOf("calibrate"));
 });
@@ -19,7 +19,7 @@ test("profiles select stages as the spec says", () => {
   assert.deepEqual(stagesFor("rebuild"), STAGES);
   assert.ok(!stagesFor("remediation").includes("intent"));
   assert.ok(!stagesFor("remediation").includes("design"));
-  assert.deepEqual(stagesFor("feature"), ["init","intent","plan","build","verify","review-and-ship","deploy","status"]);
+  assert.deepEqual(stagesFor("feature"), ["init","intent","plan","build","verify","deploy","status"]);
   assert.throws(() => stagesFor("bespoke"));
   assert.equal(Object.keys(PROFILES).length, 4);
 });

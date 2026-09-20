@@ -31,7 +31,7 @@ Intent lives in versioned git under `spec/`. Chat is not the system of record. D
 Source: convention
 
 ### P6 — Human checkpoints
-Humans own spec sign-off (G1), plan approval (G2) and review-and-ship (G3), directly or through a persona agent bound by policy with escalation and sampling. Agents MUST NOT self-merge.
+Humans own spec sign-off (G1), plan approval (G2) and the review of a built slice (G3), directly or through a persona agent bound by policy with escalation and sampling. Agents MUST NOT self-merge.
 Source: convention
 
 ### P7 — Test integrity
