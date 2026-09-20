@@ -78,7 +78,7 @@ the proposal branch.
 - A run-record line, on every attempt — including one that failed part-way and one that left the
   branch dirty.
 - No gate of its own on `pass` or `unbound`: nothing is asked of a person until either the reviewer
-  rules the proposal, or the third failure's escalation reaches the tech lead.
+  rules the proposal, or the third failure's escalation reaches G3's `escalate_to`.
 
 ## The verdict table
 
