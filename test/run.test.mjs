@@ -652,6 +652,42 @@ test("runStage: an agent turn that reports failure is recorded with the agent's 
   }
 });
 
+// Reaching post-checks means the agent's output was already collected into the project,
+// so it is on disk and can be judged again. Re-running instead would spend the whole
+// stage a second time for a post-check that failed on something outside its work.
+test("resume continues a workspace stage that reached its post-checks", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-ws-post-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  let judged = 0;
+  registerStage({
+    name: "spec-only-post-stage",
+    title: "spec only stage past its agent turn",
+    skill: PROBE_SKILL,
+    workspace: "spec-only",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => { judged += 1; return []; },
+  });
+  writeFileSync(join(dir, ".sdlc", "run-state.json"),
+    JSON.stringify({ stage: "spec-only-post-stage", ctx: {}, phase: "post-checks" }) + "\n");
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const code = await resume(dir, { again: true });
+    assert.equal(code, 0, logs.join(" | "));
+    assert.equal(judged, 1, "the collected tree is judged rather than the stage re-run");
+    assert.ok(!logs.some((l) => /resume cannot continue/.test(l)), logs.join(" | "));
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("resume refuses a stage whose workspace was a temporary directory", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-ws-"));
   const { dir, prevEgress } = await makeProject(tmp);
@@ -669,14 +705,14 @@ test("resume refuses a stage whose workspace was a temporary directory", async (
     postChecks: () => [],
   });
   writeFileSync(join(dir, ".sdlc", "run-state.json"),
-    JSON.stringify({ stage: "spec-only-stage", ctx: {}, phase: "post-checks" }) + "\n");
+    JSON.stringify({ stage: "spec-only-stage", ctx: {}, phase: "agent" }) + "\n");
   const logs = [];
   const orig = console.log;
   console.log = (...a) => logs.push(a.join(" "));
   try {
     const code = await resume(dir, { again: true });
     assert.equal(code, 1);
-    assert.ok(logs.some((l) => l === "resume cannot continue a spec-only stage; run it again"), logs.join(" | "));
+    assert.ok(logs.some((l) => l === "resume cannot continue a spec-only stage interrupted before its post-checks; run it again"), logs.join(" | "));
     // Nothing was judged and nothing was committed: no journal entry, run-state intact.
     assert.ok(!existsSync(join(dir, ".sdlc/journal")));
     assert.ok(existsSync(join(dir, ".sdlc/run-state.json")));
@@ -994,14 +1030,14 @@ test("resume resolves a function stage.workspace the same way runStage does", as
     postChecks: () => [],
   });
   writeFileSync(join(dir, ".sdlc", "run-state.json"),
-    JSON.stringify({ stage: "resume-ws-fn-stage", ctx: {}, phase: "post-checks" }) + "\n");
+    JSON.stringify({ stage: "resume-ws-fn-stage", ctx: {}, phase: "agent" }) + "\n");
   const logs = [];
   const orig = console.log;
   console.log = (...a) => logs.push(a.join(" "));
   try {
     const code = await resume(dir, { again: true });
     assert.equal(code, 1);
-    assert.ok(logs.some((l) => l === "resume cannot continue a spec-only stage; run it again"), logs.join(" | "));
+    assert.ok(logs.some((l) => l === "resume cannot continue a spec-only stage interrupted before its post-checks; run it again"), logs.join(" | "));
   } finally {
     console.log = orig;
     restoreEgress(prevEgress);

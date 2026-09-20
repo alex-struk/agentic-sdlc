@@ -32,8 +32,18 @@ export async function resume(projectDir, { again = false } = {}) {
   // wrote is still on disk and is exactly what post-checks should judge. The only thing
   // `with-sources` adds is the read-only checkout at `sources/old`, which `ensureSources`
   // materialises and nothing here removes.
-  if (!IN_PLACE_MODES.has(wsMode)) {
-    console.log(`resume cannot continue a ${wsMode} stage; run it again`);
+  // Reaching `post-checks` means `runStage` already collected the agent's output into
+  // the project (`collect`, before `finishStage` is called at all), so what post-checks
+  // judged is on disk and is judged again here — whatever workspace the stage used. That
+  // matters most for the stages that spend the longest turns: a post-check failing for a
+  // reason outside the agent's work, a missing tool or a broken install, should not cost
+  // the whole stage a second time.
+  //
+  // No repair turn runs on a resumed workspace stage: `finishStage` takes `workspaceDir`
+  // from its caller, that workspace is gone, and repairing in the project directory would
+  // hand a blind stage the very files its workspace kept from it.
+  if (!IN_PLACE_MODES.has(wsMode) && state.phase !== "post-checks") {
+    console.log(`resume cannot continue a ${wsMode} stage interrupted before its post-checks; run it again`);
     return 1;
   }
 

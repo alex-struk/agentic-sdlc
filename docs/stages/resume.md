@@ -41,16 +41,27 @@ two of the four workspace modes do: `project` and `with-sources`. `materialise` 
 application's read-only checkout at `sources/old` first, which nothing here removes — so whatever
 the interrupted agent wrote is still on disk and is exactly what post-checks should judge.
 
-A `spec-only` or `blind-adapter` stage is different: it does its work in a temporary directory
-that the interrupted run's own `finally` (`ws.cleanup()`) has already removed, and whatever its
-agent produced went with it. There is nothing left on disk for post-checks to judge, and judging
+A stage that worked in a temporary directory — `spec-only`, `blind-adapter`, `build` — depends on
+how far the interrupted run got, which `phase` in the run-state records.
+
+Past `phase: "post-checks"` the agent's output is already in the project: `runStage` collects it
+out of the workspace before `finishStage` is called at all, so what the post-checks judged is on
+disk and is judged again here. That is the case worth resuming, because a post-check can fail for
+something outside the agent's work — a tool that will not start, an install that came out broken —
+and re-running would spend the stage's whole turn budget a second time to reach the same files.
+No repair turn runs on a resumed workspace stage: `finishStage` takes the repair directory from
+its caller, that workspace is gone, and repairing in the project directory would hand a blind
+stage the very files its workspace kept from it.
+
+Interrupted before then, there is nothing on disk to judge — the run's own `finally`
+(`ws.cleanup()`) removed the workspace, and whatever the agent produced went with it — and judging
 the project directory instead would pass or fail on files that stage never touched. So `resume`
 looks the recorded stage up in the registry, loads and validates `.sdlc/config.yaml` — needed
 before the mode is even known, since `stage.workspace` may be a function of `config` rather than a
-plain string — and resolves `stage.workspace` against it the same way `runStage` does. Only once
-that resolves to `spec-only` or `blind-adapter` does `resume` refuse, with `resume cannot continue
-a <mode> stage; run it again`, exiting 1 without running a post-check or touching the working
-tree. `.sdlc/run-state.json` is left where it is; running the stage again overwrites it.
+plain string — and resolves `stage.workspace` against it the same way `runStage` does. Only then
+does it refuse, with `resume cannot continue a <mode> stage interrupted before its post-checks;
+run it again`, exiting 1 without running a post-check or touching the working tree.
+`.sdlc/run-state.json` is left where it is; running the stage again overwrites it.
 
 ## Checks that block
 
@@ -105,8 +116,9 @@ further, however many times it is called.
 ## Failure modes
 
 - No run-state file: not a failure — prints `nothing to resume` and exits 0.
-- The recorded stage's workspace is `spec-only` or `blind-adapter`: prints `resume cannot continue
-  a <mode> stage; run it again` and exits 1, having changed nothing.
+- The recorded stage worked in a temporary workspace and was interrupted before its post-checks:
+  prints `resume cannot continue a <mode> stage interrupted before its post-checks; run it again`
+  and exits 1, having changed nothing.
 - Run-state is at `phase: "agent"` and `--again` was not given: prints the guidance above and exits
   1, leaving `.sdlc/run-state.json` untouched.
 - Invalid `.sdlc/config.yaml`: throws listing every schema error.
