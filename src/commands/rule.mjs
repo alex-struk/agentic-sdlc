@@ -429,6 +429,12 @@ export async function ruleByAgent(projectDir, name, { persona }) {
 // the order its branch was created, with no human invocation needed per proposal.
 export async function rulePending(projectDir) {
   projectDir = resolve(projectDir);
+  // Checked before any branch is opened, so that dirt found later in the loop can only
+  // have come from a ruling turn. Without this the batch adopts whatever the caller left
+  // behind — generated output a stale branch's `.gitignore` does not cover is enough —
+  // fails the first ruling's own clean-tree check, and stops holding a branch it never
+  // should have opened, blaming an agent that had not yet run.
+  assertCleanTree(projectDir, "rule --pending");
   const branches = gitOk(["for-each-ref", "--format=%(refname:short)", "--sort=creatordate", "refs/heads/proposal/*"], projectDir)
     ? git(["for-each-ref", "--format=%(refname:short)", "--sort=creatordate", "refs/heads/proposal/*"], projectDir).split("\n").filter(Boolean)
     : [];
@@ -492,7 +498,11 @@ export async function rulePending(projectDir) {
       results.push({ name, failed: true, error: e.message });
       console.log(`${name}: failed — ${e.message}`);
       if (git(["status", "--porcelain"], projectDir)) {
-        const stopped = `${name}: working tree dirty after the ruling agent's turn; inspect and clean before continuing`;
+        // The branch is named because the caller is left standing on it, and every
+        // command that follows — `init`, `run`, a plain `git log` — reads that tree
+        // instead of `main` and reports what it finds there as the project's state.
+        const stopped = `${name}: working tree dirty after the ruling agent's turn; inspect and clean before continuing.`
+          + `\nthe repository is left on ${branch}, not main: commit or discard the changes, then \`git checkout main\``;
         console.log(stopped);
         results.stopped = stopped;
         return results;
@@ -526,7 +536,9 @@ export async function rulePending(projectDir) {
 }
 
 COMMANDS.rule = async ({ pos, flags }) => {
-  if (flags.pending) { await rulePending(process.cwd()); return 0; }
+  // A batch that stopped early exits non-zero: it is holding a proposal branch open and
+  // has not ruled the proposals behind it, which a zero exit reports as a finished batch.
+  if (flags.pending) { const r = await rulePending(process.cwd()); return r.stopped ? 1 : 0; }
   if (typeof flags.by === "string" && flags.by.startsWith("agent:")) {
     // An agent rules through its own turn, not a typed verdict: a verdict positional
     // alongside an `agent:` holder is refused rather than quietly dispatched to the

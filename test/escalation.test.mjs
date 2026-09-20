@@ -143,3 +143,37 @@ test("a batch hands an open escalation to the simulated tech lead", async (t) =>
   assert.equal(gateFile(d, "design-a").by, "agent:tech-lead");
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
 });
+
+// The batch is the one command that walks proposal branches, so it is the one that can
+// leave the repository standing on one. Both halves of that are guarded here: it refuses
+// to start on a tree it did not dirty, and when a ruling turn dirties one it says where
+// it left the caller.
+test("a batch refuses to start on a dirty tree, and opens no branch", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  writeFileSync(join(d, "untracked-output.txt"), "generated");
+
+  reply(t, "approve", "should never be asked");
+  await assert.rejects(() => rulePending(d), /rule --pending: the working tree has uncommitted changes/);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main",
+    "the batch must not open a proposal branch it is going to stop on");
+});
+
+test("a batch stopped by a dirty tree names the branch it leaves the caller on", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  // The ruling turn itself writes a file: the mock executor is told to, so the dirt can
+  // only have come from the turn, which is exactly the case the stop is for.
+  const mock = mkdtempSync(join(tmpdir(), "sdlc-escalation-mock-"));
+  t.after(() => rmSync(mock, { recursive: true, force: true }));
+  writeFileSync(join(mock, "rule.json"), JSON.stringify({
+    text: "```json\n" + JSON.stringify({ verdict: "approve", rationale: "r", conditions: [] }) + "\n```",
+    files: { "tampered.txt": "the turn wrote this" },
+  }));
+  process.env.SDLC_MOCK_DIR = mock;
+
+  const r = await rulePending(d);
+  assert.ok(r.stopped, "the batch stops rather than carrying the turn's changes onto main");
+  assert.match(r.stopped, /left on proposal\/design-a, not main/);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "proposal/design-a");
+});

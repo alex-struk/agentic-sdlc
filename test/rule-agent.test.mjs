@@ -409,7 +409,8 @@ egress: { rules: [E-2] }
   process.env.SDLC_MOCK_DIR = mockDir;
   try {
     const results = await rulePending(dir);
-    assert.match(results.stopped, /^first-one: working tree dirty after the ruling agent's turn; inspect and clean before continuing$/);
+    assert.match(results.stopped, /^first-one: working tree dirty after the ruling agent's turn; inspect and clean before continuing\./m);
+    assert.match(results.stopped, /left on proposal\/first-one, not main/);
     const byName = Object.fromEntries(results.map((r) => [r.name, r]));
     assert.equal(byName["first-one"].failed, true);
     assert.match(byName["first-one"].error, /rule: the ruling agent modified the working tree/);
