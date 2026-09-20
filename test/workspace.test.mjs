@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, symlinkSync, lstatSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
@@ -324,4 +324,32 @@ test("materialise spec-only maintains blindness: app/ does not appear even on a 
   // the workspace does not. The blindness guard protects against accidental inclusion.
   assert.ok(!existsSync(join(ws.dir, "app")));
   ws.cleanup();
+});
+
+// A workspace's installed dependency tree is a build artifact of the machine it was
+// installed on. Carrying one back is how a half-copied tree reaches the project: the
+// links a package manager writes into `.bin` resolve their targets relative to where they
+// sit, so a copy that followed them left plain files that could not find their own code,
+// and every tool in the project failed to start.
+test("collect leaves node_modules behind, and copies symlinks as symlinks", (t) => {
+  const ws = mkdtempSync(join(tmpdir(), "sdlc-collect-ws-"));
+  const project = mkdtempSync(join(tmpdir(), "sdlc-collect-project-"));
+  t.after(() => { rmSync(ws, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true }); });
+
+  mkdirSync(join(ws, "app", "node_modules", ".bin"), { recursive: true });
+  mkdirSync(join(ws, "app", "node_modules", "typescript", "bin"), { recursive: true });
+  mkdirSync(join(ws, "app", "src"), { recursive: true });
+  writeFileSync(join(ws, "app", "node_modules", "typescript", "bin", "tsc"), "require('../lib/tsc.js')\n");
+  symlinkSync("../typescript/bin/tsc", join(ws, "app", "node_modules", ".bin", "tsc"));
+  writeFileSync(join(ws, "app", "src", "main.ts"), "export const x = 1;\n");
+  // A link outside node_modules, to show the rule is about following links rather than
+  // about that one directory.
+  symlinkSync("main.ts", join(ws, "app", "src", "entry.ts"));
+
+  collect(project, ws, ["app"]);
+
+  assert.equal(existsSync(join(project, "app", "src", "main.ts")), true, "the source is collected");
+  assert.equal(existsSync(join(project, "app", "node_modules")), false, "node_modules is not");
+  assert.equal(lstatSync(join(project, "app", "src", "entry.ts")).isSymbolicLink(), true);
+  assert.equal(readlinkSync(join(project, "app", "src", "entry.ts")), "main.ts");
 });

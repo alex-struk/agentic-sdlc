@@ -176,12 +176,20 @@ export function materialise(projectDir, mode, { overlay } = {}) {
 // testable.yaml`, the shape a `--revise` run's own scoped collect uses) — the two need
 // different copy logic, since `copyTreeOverwrite` reads its source with `readdirSync` and
 // throws on a plain file.
+// Never carried back out of a workspace. An installed dependency tree is a build
+// artifact of the machine it was installed on: it is gitignored, it is the largest thing
+// in the workspace by far, and the project runs its own install before it checks anything
+// — so copying one back is slow, pointless, and the only way a half-copied tree can reach
+// the project at all. A destination that already holds one keeps it; nothing here touches
+// what the project installed for itself.
+const NEVER_COLLECTED = new Set(["node_modules"]);
+
 export function collect(projectDir, dir, paths) {
   for (const p of paths) {
     const src = join(dir, p);
     if (!existsSync(src)) continue;
     const dst = join(projectDir, p);
-    if (statSync(src).isDirectory()) { ensureDir(dst); copyTreeOverwrite(src, dst); }
+    if (statSync(src).isDirectory()) { ensureDir(dst); copyTreeOverwrite(src, dst, { skip: NEVER_COLLECTED }); }
     else { ensureDir(dirname(dst)); copyFileSync(src, dst); }
   }
 }
