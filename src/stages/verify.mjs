@@ -236,10 +236,10 @@ export const verify = {
       if (!dirty && failure) commitOnBranch(projectDir, [runRel], `run(verify): slice ${slice.number} failed`);
     }
     // A failed run fails. Resolving with no changed paths would send it to
-    // `finishDeterministicNoOp` (`src/runner/run.mjs`), which commits whatever is dirty
-    // and returns ok — with HEAD on a proposal branch and a half-written result beside
-    // it, that committed the residue onto the proposal, left HEAD there and printed
-    // `run verify: ok`. Where the tree is dirty the residue is the diagnostic a person
+    // `finishDeterministicNoOp` (`src/runner/finish-stage.mjs`, reached from
+    // `src/commands/run.mjs`), which commits whatever is dirty and returns ok — with
+    // HEAD on a proposal branch and a half-written result beside it, that committed the
+    // residue onto the proposal, left HEAD there and printed `run verify: ok`. Where the tree is dirty the residue is the diagnostic a person
     // needs first, so it leads; the error that caused it is carried as the `cause` and
     // quoted in the message rather than replaced by it.
     if (dirty) throw new Error(`${text}\nWhat failed: ${failure?.message ?? "the run left the tree dirty without reporting an error"}`, { cause: failure });
