@@ -8,7 +8,7 @@
 // way `design --revise` picks up a returned design. The third such return escalates to the
 // tech lead instead: a slice that fails three builds running is usually failing for a
 // reason a fourth build will not fix (spec §7.1).
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
@@ -18,7 +18,7 @@ import { runSuite } from "../testrun/playwright.mjs";
 import { resetCommandFor, targetSettings } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./slices.mjs";
-import { escapeRe, skillPath } from "./shared.mjs";
+import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
 
 export const MAX_VERIFY_RETURNS = 3;
 const NEEDS_NO_TEST = new Set(["pass", "not-testable", "attested"]);
@@ -124,69 +124,88 @@ export const verify = {
   preChecks(projectDir, ctx) {
     const id = "verify-slice";
     if (ctx.slice === undefined) return [{ id, ok: false, messages: ["verify needs --slice <n>"] }];
+    // Checked before anything is started, the way `calibrate` and `bind-adapter` check it:
+    // verify signs the suite in to the `new` target, and where that target's identity is
+    // the sandbox's own provider, every test in the slice fails at the sign-in form
+    // without the password in the environment. Verify would read a whole suite of
+    // sign-in failures as the application's fault and return the slice to the builder —
+    // a rebuild that cannot fix an environment defect (spec 7.1). The check reads only
+    // whether the variable is set; its value is never read, printed or stored.
+    const password = checkSandboxPassword("verify", ctx, "verifying", "new");
     // The proposal has to exist before the slice's own text does: a build proposal is
     // named from the slice number alone, so a slice that plan/tasks.md has not yet (or
     // no longer) defined a heading for is still reported as "no open build proposal" —
     // the precondition a person actually needs to act on — rather than a parse error
     // about the plan.
     const proposal = openBuildProposal(projectDir, ctx.slice);
-    if (!proposal) return [{ id, ok: false, messages: [`no open build proposal for slice ${ctx.slice}; run sdlc run build --slice ${ctx.slice} first`] }];
+    if (!proposal) return [password, { id, ok: false, messages: [`no open build proposal for slice ${ctx.slice}; run sdlc run build --slice ${ctx.slice} first`] }];
     const slice = readSlice(projectDir, ctx.slice);
-    if (!slice) return [{ id, ok: false, messages: [`plan/tasks.md has no slice ${ctx.slice}`] }];
+    if (!slice) return [password, { id, ok: false, messages: [`plan/tasks.md has no slice ${ctx.slice}`] }];
     ctx.verifySlice = slice;
     ctx.verifyProposal = proposal;
-    return [{ id, ok: true, messages: [] }];
+    return [password, { id, ok: true, messages: [] }];
   },
   async execute(projectDir, ctx) {
     const { verifySlice: slice, verifyProposal: name, config } = ctx;
     const up = ctx.sandbox?.up ?? ((d) => sandboxUp(d, config, "new"));
     const down = ctx.sandbox?.down ?? ((d) => sandboxDown(d, config, "new"));
+    // Who a G3 escalation goes to is the project's policy, not this stage's: `rule.mjs`
+    // already routes by `policy.gates.G3.escalate_to`, and the name written here is the
+    // same answer rendered for a reader. A project that escalates G3 elsewhere would
+    // otherwise read a gate file naming a role that never gets the question.
+    const escalateTo = config?.policy?.gates?.G3?.escalate_to ?? "tech-lead";
     const branch = `proposal/${name}`;
     const start = currentBranch(projectDir);
     git(["checkout", "-q", branch], projectDir);
     let text;
+    let dirty = false;
+    // Held rather than propagated on its own, so the teardown below can run first and
+    // then say what the run actually left behind. Rethrown either way: nothing that went
+    // wrong here is swallowed.
+    let failure;
     try {
       const started = await up(projectDir);
       if (!started.ok) {
         text = `verify slice ${slice.number}: the sandbox did not start, so nothing was verified.\n${started.messages.join("\n")}`;
-        return { text, changed: [] };
-      }
-      const { rows } = runSuite({
-        projectDir, target: "new", baseUrl: targetSettings(config, "new").baseUrl,
-        files: specFilesFor(projectDir, slice.criteria), resetCommand: resetCommandFor(projectDir, config, "new"),
-      });
-      const claimed = rows.filter((r) => slice.criteria.includes(r.id));
-      const v = verifyVerdict(claimed, slice.criteria);
-      const resultRel = `tests/results/new/slice-${slice.number}.json`;
-      mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
-      writeText(join(projectDir, resultRel), `${JSON.stringify({
-        slice: slice.number, proposal: name, app_tree: git(["rev-parse", "HEAD:app"], projectDir),
-        at: new Date().toISOString(), verdict: v.verdict, rows: claimed,
-      }, null, 2)}\n`);
-      const paths = [resultRel];
-      if (v.verdict === "fail") {
-        const escalate = returnsByVerify(projectDir, slice.number) + 1 >= MAX_VERIFY_RETURNS;
-        const gateRel = `.sdlc/gates/${name}.yaml`;
-        writeText(join(projectDir, gateRel), stringifyYaml({
-          gate: "G3", verdict: escalate ? "escalated" : "return", by: "runner:verify", held_by: "runner",
-          ...(escalate ? { escalate_to: "tech-lead" } : {}),
-          rationale: escalate
-            ? `Slice ${slice.number} has failed verify ${MAX_VERIFY_RETURNS} times. The failures below may not be the application's: a test, the adapter, the criterion or the sandbox can each be what is wrong (spec 7.1), and a fourth build would not find out which.`
-            : `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say. Each condition is the criterion and what the running application did.`,
-          conditions: v.failing.map((r) => `${r.id}: ${firstError(r)}`),
-          at: new Date().toISOString(),
-        }));
-        paths.push(gateRel);
-        text = escalate
-          ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${MAX_VERIFY_RETURNS} builds; escalated to the tech lead.`
-          : `verify slice ${slice.number}: returned — ${v.failing.map((r) => r.id).join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`;
-      } else if (v.verdict === "unbound") {
-        text = `verify slice ${slice.number}: ${v.unbound.join(", ")} have no binding on the new target yet. Next: sdlc run bind-adapter --target new, then verify again.`;
       } else {
-        text = `verify slice ${slice.number} verified: every claimed criterion passes against the application in ${name}. Ready for G3.`;
+        const { rows } = runSuite({
+          projectDir, target: "new", baseUrl: targetSettings(config, "new").baseUrl,
+          files: specFilesFor(projectDir, slice.criteria), resetCommand: resetCommandFor(projectDir, config, "new"),
+        });
+        const claimed = rows.filter((r) => slice.criteria.includes(r.id));
+        const v = verifyVerdict(claimed, slice.criteria);
+        const resultRel = `tests/results/new/slice-${slice.number}.json`;
+        mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
+        writeText(join(projectDir, resultRel), `${JSON.stringify({
+          slice: slice.number, proposal: name, app_tree: git(["rev-parse", "HEAD:app"], projectDir),
+          at: new Date().toISOString(), verdict: v.verdict, rows: claimed,
+        }, null, 2)}\n`);
+        const paths = [resultRel];
+        if (v.verdict === "fail") {
+          const escalate = returnsByVerify(projectDir, slice.number) + 1 >= MAX_VERIFY_RETURNS;
+          const gateRel = `.sdlc/gates/${name}.yaml`;
+          writeText(join(projectDir, gateRel), stringifyYaml({
+            gate: "G3", verdict: escalate ? "escalated" : "return", by: "runner:verify", held_by: "runner",
+            ...(escalate ? { escalate_to: escalateTo } : {}),
+            rationale: escalate
+              ? `Slice ${slice.number} has failed verify ${MAX_VERIFY_RETURNS} times. The failures below may not be the application's: a test, the adapter, the criterion or the sandbox can each be what is wrong (spec 7.1), and a fourth build would not find out which.`
+              : `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say. Each condition is the criterion and what the running application did.`,
+            conditions: v.failing.map((r) => `${r.id}: ${firstError(r)}`),
+            at: new Date().toISOString(),
+          }));
+          paths.push(gateRel);
+          text = escalate
+            ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`
+            : `verify slice ${slice.number}: returned — ${v.failing.map((r) => r.id).join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`;
+        } else if (v.verdict === "unbound") {
+          text = `verify slice ${slice.number}: ${v.unbound.join(", ")} have no binding on the new target yet. Next: sdlc run bind-adapter --target new, then verify again.`;
+        } else {
+          text = `verify slice ${slice.number} verified: every claimed criterion passes against the application in ${name}. Ready for G3.`;
+        }
+        commitOnBranch(projectDir, paths, `verify(slice ${slice.number}): ${v.verdict}`);
       }
-      commitOnBranch(projectDir, paths, `verify(slice ${slice.number}): ${v.verdict}`);
-      return { text, changed: [] };
+    } catch (err) {
+      failure = err;
     } finally {
       await down(projectDir);
       // A throw between the first working-tree write and the commit landing (the
@@ -197,18 +216,32 @@ export const verify = {
       // same hazard `rule.mjs`'s `rulePending` guards against for the same reason. So
       // the checkout back to `start` only happens once the branch is actually clean: a
       // dirty tree stays exactly where it was made, visible on the branch that produced
-      // it, rather than riding onto `main` silently. The `return` below overrides
-      // whatever was thrown in `try`, since the residue is the diagnostic that matters
-      // now, not that error's own stack trace.
-      if (git(["status", "--porcelain"], projectDir)) {
-        return {
-          text: `verify slice ${slice.number}: the working tree was left dirty on ${branch} after a failure; inspect and clean it before running verify again.`,
-          changed: [],
-        };
+      // it, rather than riding onto `main` silently.
+      dirty = Boolean(git(["status", "--porcelain"], projectDir));
+      if (dirty) {
+        text = `verify slice ${slice.number}: the working tree was left dirty on ${branch} after a failure; HEAD is still on ${branch}. Inspect and clean it before running verify again.`;
+      } else if (currentBranch(projectDir) !== start) {
+        git(["checkout", "-q", start], projectDir);
       }
-      if (currentBranch(projectDir) !== start) git(["checkout", "-q", start], projectDir);
-      appendRun(projectDir, text?.split("\n")[0] ?? `verify slice ${slice.number}: stopped`);
+      // Every attempt says what became of it, including the ones that failed: a run with
+      // no line in the record is indistinguishable from a run nobody made.
+      const runRel = relative(projectDir, appendRun(projectDir, text?.split("\n")[0] ?? `verify slice ${slice.number}: stopped`));
+      // On a clean tree the record is the only thing dirty and the run is about to throw,
+      // so nothing downstream will commit it; left uncommitted it would block the next
+      // `sdlc run` at `assertCleanTree`. A dirty tree is committed by nobody: the residue
+      // is the diagnostic, and a person clears this line along with it.
+      if (!dirty && failure) commitOnBranch(projectDir, [runRel], `run(verify): slice ${slice.number} failed`);
     }
+    // A failed run fails. Resolving with no changed paths would send it to
+    // `finishDeterministicNoOp` (`src/runner/run.mjs`), which commits whatever is dirty
+    // and returns ok — with HEAD on a proposal branch and a half-written result beside
+    // it, that committed the residue onto the proposal, left HEAD there and printed
+    // `run verify: ok`. Where the tree is dirty the residue is the diagnostic a person
+    // needs first, so it leads; the error that caused it is carried as the `cause` and
+    // quoted in the message rather than replaced by it.
+    if (dirty) throw new Error(`${text}\nWhat failed: ${failure?.message ?? "the run left the tree dirty without reporting an error"}`, { cause: failure });
+    if (failure) throw failure;
+    return { text, changed: [] };
   },
   postChecks() { return []; },
   proposal() { return null; },
