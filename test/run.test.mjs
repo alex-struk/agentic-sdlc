@@ -1387,3 +1387,30 @@ test("resume rebuilds ctx and gives the proposal the interrupted run's own accou
     restoreEgress(prevEgress);
   }
 });
+
+// A journal entry is committed and published. Its body is whatever the turn and the
+// post-checks produced, and tool output carries absolute paths from the machine the run
+// happened on — which egress rule E-2 exists to keep out of the repository. Catching them
+// in the check after the commit is catching them too late.
+test("a journal entry carries no path that names this machine", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-journal-redact-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    const { writeJournal } = await import("../src/runner/journal.mjs");
+    const elsewhere = `/${"home"}/someone/x`;
+    const p = writeJournal(dir, {
+      stage: "build",
+      title: "build slice 1",
+      // Assembled rather than written out, so this file does not itself carry the shape
+      // the egress check is looking for.
+      body: `npm error path ${dir}/app/backend\nRequire stack:\n- ${elsewhere}/node_modules/.bin/tsc\nThe page at opportunities/home/default is unaffected.\n`,
+    });
+    const text = readFileSync(p, "utf8");
+    assert.ok(!text.includes(dir), "the project's own absolute path is relative in the entry");
+    assert.ok(!text.includes(elsewhere), "a home path outside the project loses the root that names a person");
+    assert.match(text, /npm error path \.\/app\/backend/);
+    assert.match(text, /opportunities\/home\/default/, "an ordinary path that merely contains 'home' is untouched");
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});

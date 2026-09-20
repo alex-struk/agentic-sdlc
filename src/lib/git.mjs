@@ -169,6 +169,8 @@ const REQUIRED_IGNORES = [
   // the same text a second time, rewritten by every turn — and left untracked it is
   // dirt that stops the next command needing a clean tree.
   ".agents/",
+  // Same again for the Codex-compatible hook configuration a runtime writes beside it.
+  ".codex/",
 ];
 const UNIGNORE = "site/";
 

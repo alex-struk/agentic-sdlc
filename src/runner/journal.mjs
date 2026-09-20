@@ -11,6 +11,20 @@ function journalDir(projectDir) {
 // other hand-written front matter block in this codebase (see propose.mjs, rule.mjs):
 // JSON.stringify wraps the string fields so a colon or quote inside a title can never
 // break the fence, and the whole block still parses as plain YAML on the way back in.
+// A journal entry is committed and published, and its body is whatever the turn and the
+// post-checks produced — including tool output, which carries absolute paths from the
+// machine the run happened on. Egress rule E-2 exists to keep those out of the published
+// repository, and a check that only catches them after the commit catches them too late.
+// The project's own directory becomes a relative path; any other local home path keeps
+// its tail and loses the root that names a machine and a person.
+export function redactLocalPaths(text, projectDir) {
+  return String(text)
+    .split(projectDir).join(".")
+    .replace(/(?<![A-Za-z0-9._-])\/home\/[A-Za-z0-9._-]+/g, "~")
+    .replace(/(?<![A-Za-z0-9._-])\/Users\/[A-Za-z0-9._-]+/g, "~")
+    .replace(/[A-Za-z]:\\Users\\[A-Za-z0-9._-]+/g, "~");
+}
+
 export function writeJournal(projectDir, { stage, title, body, metrics = {} }) {
   const dir = journalDir(projectDir);
   const existing = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".md")) : [];
@@ -25,7 +39,7 @@ export function writeJournal(projectDir, { stage, title, body, metrics = {} }) {
     `turns: ${turns}`,
     `session: ${JSON.stringify(session)}`,
   ].join("\n");
-  writeText(path, `---\n${front}\n---\n\n${body}`);
+  writeText(path, redactLocalPaths(`---\n${front}\n---\n\n${body}`, projectDir));
   return path;
 }
 
