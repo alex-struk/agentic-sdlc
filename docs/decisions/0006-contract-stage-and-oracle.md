@@ -50,7 +50,7 @@ up front by a person, at which point there is no agent turn to justify a stage.
 `agent:reviewer`. The persona reads its brief (`.sdlc/personas/reviewer.md`), the proposal page, the
 diff and the check results, and answers with a verdict, a rationale and any conditions — the same
 mechanism every other agent-held gate uses, escalating to a named human on HIGH or CRITICAL tier or
-when the brief says to always escalate on that gate.
+when that gate is named in the brief's `escalates` list.
 
 **Why G3 and not G1.** G1 is the gate on what is *true about the product*: a criterion, a
 statement of behaviour, a correction to the spec. It is held by the product owner because getting it

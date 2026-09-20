@@ -177,3 +177,22 @@ test("a batch stopped by a dirty tree names the branch it leaves the caller on",
   assert.match(r.stopped, /left on proposal\/design-a, not main/);
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "proposal/design-a");
 });
+
+// A persona brief is the ruler's instruction sheet, not part of the proposal, so a
+// proposal opened before a brief was corrected must still be ruled by the corrected one.
+test("a ruling reads the persona brief from main, not from the proposal's branch", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  // The branch already exists, carrying the brief as it stood when it was opened. Declare
+  // the gate escalated there, and correct it on main afterwards.
+  git(["checkout", "-q", "proposal/design-a"], d);
+  writeFileSync(join(d, ".sdlc/personas/ux-reviewer.md"), "---\nescalates: [G-DESIGN]\n---\n# Persona: ux-reviewer\n\nRules.\n");
+  git(["add", "-A"], d); git(["commit", "-q", "-m", "brief that defers G-DESIGN"], d);
+  git(["checkout", "-q", "main"], d);
+
+  reply(t, "approve", "the screens serve the criteria");
+  const r = await ruleByAgent(d, "design-a", { persona: "ux-reviewer" });
+  assert.equal(r.verdict, "approve", "main's brief governs, so the persona is asked");
+  assert.ok(!r.escalated);
+  assert.equal(gateFile(d, "design-a").by, "agent:ux-reviewer");
+});

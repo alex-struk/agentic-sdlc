@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
-import { git } from "../lib/git.mjs";
+import { git, gitOk } from "../lib/git.mjs";
 import { runChecks } from "../checks/index.mjs";
 import { formatChecks } from "../commands/checks.mjs";
 import { formatTypecheckEvidence } from "./typecheck.mjs";
@@ -83,10 +84,37 @@ function orderedDiff(projectDir, branch, gate) {
   return parts.join("\n");
 }
 
+// Read from `main`, not from the working tree. A ruling has the proposal's own branch
+// checked out, and that branch carries the briefs as they stood on the day it was opened
+// — so without this a correction to a persona never reaches the proposals that were
+// already open when it was made, and an old branch silently rules by retired
+// instructions. The brief is the ruler's own instruction sheet, not part of the proposal
+// being ruled, which is why it does not belong to the branch. The working tree is the
+// fallback for a project whose `main` has no brief committed yet.
 export function readPersonaBrief(projectDir, persona) {
-  const p = join(projectDir, ".sdlc", "personas", `${persona}.md`);
+  const rel = `.sdlc/personas/${persona}.md`;
+  if (gitOk(["cat-file", "-e", `main:${rel}`], projectDir)) return git(["show", `main:${rel}`], projectDir);
+  const p = join(projectDir, rel);
   if (!existsSync(p)) throw new Error(`no persona brief for ${persona}`);
   return readText(p);
+}
+
+// The gates a persona will not rule alone, declared in a YAML front-matter block at the
+// top of its brief (`escalates: [G-POL]`) rather than inferred from the brief's prose.
+// The prose still says why, for the agent that reads it; this is what the runner acts on.
+export function personaEscalates(brief) {
+  const m = brief.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
+  if (!m) return [];
+  let front;
+  try { front = parseYaml(m[1]); } catch { return []; }
+  const v = front?.escalates;
+  return Array.isArray(v) ? v.map(String) : typeof v === "string" ? [v] : [];
+}
+
+// The brief as the persona reads it: the front matter is the runner's business, and
+// leaving it in the prompt invites an agent to reason about a field it cannot act on.
+export function briefBody(brief) {
+  return brief.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
 }
 
 export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null, escalation = null }) {
@@ -117,7 +145,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
     "",
     `## Persona brief: ${persona}`,
     "",
-    brief.trim(),
+    briefBody(brief).trim(),
     "",
     "## Proposal",
     "",

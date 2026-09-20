@@ -217,13 +217,26 @@ Some proposals never reach the persona at all. Before asking, `sdlc rule` escala
 when either is true:
 
 - the proposal's tier is `HIGH` or `CRITICAL`;
-- the persona's brief contains the phrase "always escalate", in any capitalisation (a persona can
-  hold a gate and still always defer on it). The match is against the whole brief, so the phrase
-  appearing anywhere in it escalates **every** proposal at that gate, not only the ones the
-  sentence it appears in describes: a brief that should defer on one kind of change and rule on
-  the rest must say so in some other wording — the installed tech-lead brief, for example, says a
-  platform-article change "is escalated, never ruled here" so that the persona still rules on
-  every other policy change.
+- the gate is named in the persona brief's `escalates` list (a persona can hold a gate and still
+  always defer on it). The list lives in a YAML front-matter block at the top of the brief:
+
+  ```markdown
+  ---
+  escalates: [G-POL]
+  ---
+  # Persona: tech-lead
+  ```
+
+  The brief's prose says *why*, for the agent that reads it; this list is what the runner acts on,
+  and the front matter is stripped before the brief reaches the prompt. Nothing is inferred from
+  the prose, so a sentence scoped to one kind of item — the installed tech-lead brief's "a
+  platform-article change is escalated, never ruled here" — leaves the persona ruling every other
+  proposal at that gate, which is what it says.
+
+The brief is read from `main` rather than from the proposal's own branch. A ruling has that branch
+checked out, and a branch opened weeks ago carries the briefs of the day it was opened; the brief
+is the ruler's instruction sheet rather than part of the proposal, so a correction to a persona
+applies to every proposal still open when it is made.
 
 The gate file records `verdict: escalated`, `escalate_to: <the gate's escalate_to>`, and a
 rationale beginning `mandatory escalation: <reason>`. The proposal branch is left open — nothing

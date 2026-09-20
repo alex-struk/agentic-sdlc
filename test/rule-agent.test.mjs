@@ -501,24 +501,48 @@ test("ruleByAgent: an agent turn that reports failure throws with the turn's own
   }
 });
 
-test("ruleByAgent: 'Always escalate' in a brief is matched however it is capitalised", async () => {
-  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-case-"));
+test("ruleByAgent: a gate in the brief's `escalates` list never reaches the persona", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-declared-"));
   const { dir, prevEgress } = await makeProject(tmp);
-  // The wording installed personas actually use: the phrase opens a bullet, so it is
-  // capitalised, and a case-sensitive match would let the proposal through to the agent.
   writeFileSync(join(dir, ".sdlc/personas/product-owner.md"),
-    "# Product owner\n\n- Always escalate a change to what the product promises.\n");
+    "---\nescalates: [G0]\n---\n# Product owner\n\n- A change to what the product promises is escalated, never ruled here.\n");
   git(["add", "-A"], dir);
-  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "brief that always defers"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "brief that defers G0"], dir);
   propose(dir, "p13", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
   // No canned response: reaching the agent at all would throw "no canned response".
-  const emptyMockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-empty-case-"));
+  const emptyMockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-empty-declared-"));
   process.env.SDLC_EXECUTOR = "mock";
   process.env.SDLC_MOCK_DIR = emptyMockDir;
   try {
     const r = await ruleByAgent(dir, "p13", { persona: "product-owner" });
     assert.equal(r.escalated, true);
-    assert.match(r.rationale, /says always escalate/);
+    assert.match(r.rationale, /product-owner does not rule G0 alone/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// The phrase search this replaced could not tell a rule about one kind of item from a
+// rule about every gate, and silently switched the persona off for all of them.
+test("ruleByAgent: prose about escalating does not stop a persona ruling", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-prose-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  writeFileSync(join(dir, ".sdlc/personas/product-owner.md"),
+    "# Product owner\n\n- Always escalate a change to what the product promises.\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "brief with no front matter"], dir);
+  propose(dir, "p13", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-prose-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    text: "```json\n" + JSON.stringify({ verdict: "approve", rationale: "the problem is the right one", conditions: [] }) + "\n```",
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await ruleByAgent(dir, "p13", { persona: "product-owner" });
+    assert.ok(!r.escalated, "prose alone must not trigger a mandatory escalation");
+    assert.equal(r.verdict, "approve");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

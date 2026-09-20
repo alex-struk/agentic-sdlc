@@ -5,7 +5,7 @@ import { git, gitOk, assertCleanTree, stagePaths, stageSite, currentBranch, SDLC
 import { readText, writeText } from "../lib/fsx.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
-import { buildPersonaPrompt, parseVerdict, readPersonaBrief } from "../runner/persona.mjs";
+import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } from "../runner/persona.mjs";
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { buildSite } from "./status.mjs";
@@ -325,10 +325,13 @@ export async function ruleByAgent(projectDir, name, { persona }) {
 
   // Mandatory escalation happens before the persona is ever asked: a HIGH/CRITICAL item,
   // or a persona whose brief always defers on this gate, never gets a chance to rule.
+  // Declared in the brief's front matter (`escalates: [G-POL]`), never read out of its
+  // prose. A brief is written for the agent that reads it, so a sentence scoped to one
+  // kind of item — "a platform-article change is escalated, never ruled here" — is
+  // indistinguishable to a phrase search from a rule covering every gate, and a persona
+  // matched that way is switched off entirely without anything saying so.
   const mandatoryReason = ["HIGH", "CRITICAL"].includes(tier) ? `tier ${tier}`
-    // Matched case-insensitively: a brief is prose, and the phrase reads as naturally at
-    // the start of a bullet ("Always escalate a platform-article change") as inside one.
-    : brief.toLowerCase().includes("always escalate") ? `persona brief for ${persona} says always escalate`
+    : personaEscalates(brief).includes(gate) ? `${persona} does not rule ${gate} alone`
       : null;
 
   if (mandatoryReason) {
