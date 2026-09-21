@@ -10,10 +10,11 @@ import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } 
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { buildSite } from "./status.mjs";
-import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, OVERREACH_CONDITION_FORM, OVERREACH_VERB, addressedConditions, conditionGrammarFor, conditionsAreExecutable, malformedAddressedConditions, malformedOverreachConditions, overreachConditions } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
+import { CONDITIONS_PATH, addConditions, closeCondition, conditionRef, conditionsIn, stillOpen } from "../spec/conditions.mjs";
 import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo.mjs";
 import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } from "../spec/revisions.mjs";
-import { revisableStages, undeliverableConditions } from "../stages/registry.mjs";
+import { proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 // Which grammar a proposal's conditions are read in is a property of the conditions, so it
@@ -167,6 +168,29 @@ function deliverableGuidance(found) {
     + ` ${remedy}`;
 }
 
+const collapse = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+
+function accountedGuidance(line) {
+  return `${JSON.stringify(line)} carries no reason. Write it as \`${CONDITION_MET_FORM}\` or \`${CONDITION_WITHDRAWN_FORM}\`:`
+    + " closing an instruction while recording nothing about why is the state this ledger exists to end.";
+}
+function unknownRefGuidance(ref, open) {
+  const list = open.length
+    ? `The conditions still open are: ${open.map((c) => `${c.ref} (${JSON.stringify(collapse(c.text))})`).join("; ")}.`
+    : "No condition is open in this project, so there is nothing here to close.";
+  return `${JSON.stringify(ref)} is not an open condition. ${list}`;
+}
+
+// The plain conditions `main`'s ledger is still waiting on, read with `git show` rather than
+// off the checkout: `openGate` has the proposal's own branch out by the time any of this
+// runs, and a branch cut before a condition was filed does not carry it. A guard reading the
+// checkout would refuse a reference that is perfectly good, which is the worst way to be
+// wrong about a ledger whose whole job is to stop instructions going missing.
+function openConditionsOnMain(projectDir) {
+  try { return stillOpen(conditionsIn(git(["show", `main:${CONDITIONS_PATH}`], projectDir))); }
+  catch { return []; }
+}
+
 // What a refusal here must not cost a second time. None of the three throws below has
 // written anything by the time it fires — no gate file, no proposal section, no commit —
 // so this message is the only place left holding a ruling that may have cost a full agent
@@ -245,6 +269,31 @@ export function assertDeliverableRulable(name, verdict, conditions) {
   throw new Error(withRulingPreserved(`rule ${name}: ${deliverableGuidance(first)}`, verdict, conditions));
 }
 
+// The two things an accounting line may never be, checked in the same place and for the
+// same reasons as the three above, before a ruling writes anything at all.
+//
+// A line with no reason is refused because the reason is the whole of what the entry gains:
+// `condition-met` with nothing after the colon records that somebody closed an instruction
+// and nothing about what was done, which leaves the ledger saying exactly as little as it
+// said before this existed.
+//
+// A reference nothing open matches is refused because it closes nothing and reads as though
+// it closed something. It is a typo or a guess at a name, and both seats are handed the list
+// of what is actually open so the line can be written again.
+//
+// Unlike the other two verbs this is checked on every verdict. A revision that satisfied a
+// condition is ordinarily approved, and that approval is exactly where a ruler should be
+// able to say so; a rule that only a return may account for earlier work would make the
+// commonest case the one the ledger cannot record.
+export function assertAccountedRulable(projectDir, name, verdict, conditions) {
+  const bad = malformedAccountedConditions(conditions);
+  if (bad.length) throw new Error(withRulingPreserved(`rule ${name}: ${accountedGuidance(bad[0])}`, verdict, conditions));
+  const open = openConditionsOnMain(projectDir);
+  const refs = new Set(open.map((c) => c.ref));
+  const unknown = accountedConditions(conditions).find((a) => !refs.has(a.ref));
+  if (unknown) throw new Error(withRulingPreserved(`rule ${name}: ${unknownRefGuidance(unknown.ref, open)}`, verdict, conditions));
+}
+
 // The first of the three defects above that a re-prompt can fix mechanically, checked in
 // the same order the hard asserts above apply them and reporting only the first: one
 // re-prompt turn, the same as the unparsed-conditions path in `ruleByAgent`, is what the
@@ -259,11 +308,20 @@ export function assertDeliverableRulable(name, verdict, conditions) {
 // persona to reword the line would really be asking it to pick a different verdict — a
 // second bite at the ruling itself, not a correction. It is left to the hard asserts,
 // unprompted, exactly as it always was.
-function firstFixableConditionDefect(name, verdict, conditions) {
+function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
   const overreach = malformedOverreachConditions(conditions)[0];
   if (overreach) return { kind: "overreach", line: overreach };
   const addressed = malformedAddressedConditions(conditions)[0];
   if (addressed) return { kind: "addressed", line: addressed };
+  const accounted = malformedAccountedConditions(conditions)[0];
+  if (accounted) return { kind: "accounted", line: accounted };
+  // A reference to a condition nothing has open is the same kind of slip: the persona was
+  // shown the open list and wrote a name that is not on it, which a rewrite fixes and a
+  // refusal only throws a ruling away over.
+  const open = openConditionsOnMain(projectDir);
+  const refs = new Set(open.map((c) => c.ref));
+  const unknown = accountedConditions(conditions).find((a) => !refs.has(a.ref));
+  if (unknown) return { kind: "unknown-ref", ref: unknown.ref, open };
   if (verdict === "return") {
     const [undeliverable] = undeliverableConditions(name, conditions);
     if (undeliverable) return { kind: "deliverable", ...undeliverable };
@@ -271,13 +329,20 @@ function firstFixableConditionDefect(name, verdict, conditions) {
   return null;
 }
 
+// The sentence a persona is asked to fix, in the same words the throw would have used.
+function defectGuidance(defect) {
+  if (defect.kind === "overreach") return overreachGuidance(defect.line);
+  if (defect.kind === "addressed") return addressedGuidance(defect.line);
+  if (defect.kind === "accounted") return accountedGuidance(defect.line);
+  if (defect.kind === "unknown-ref") return unknownRefGuidance(defect.ref, defect.open);
+  return deliverableGuidance(defect);
+}
+
 // The re-prompt itself, built the same way the unparsed-conditions one above is: the
 // original prompt, the persona's own verdict quoted back, the offending line, and the form
 // that would have been read.
 function conditionDefectReprompt(prompt, verdict, defect) {
-  const guidance = defect.kind === "overreach" ? overreachGuidance(defect.line)
-    : defect.kind === "addressed" ? addressedGuidance(defect.line)
-      : deliverableGuidance(defect);
+  const guidance = defectGuidance(defect);
   return [
     prompt,
     "",
@@ -359,6 +424,53 @@ function fileOverreachRequests(projectDir, { name, gate, conditions }) {
   }
 }
 
+// The ledger side of a ruling: the plain conditions this return is putting on the record as
+// owed, and the earlier ones this ruling accounts for. Both go to `.sdlc/conditions.yaml` on
+// `main`, in one commit, for the reason `fileAddressedRequests` gives — the ruling belongs to
+// the proposal branch and this does not, and a copy on a branch nobody merges is a ledger
+// nothing ever reads.
+//
+// Which conditions are filed is decided by what a condition is rather than by who wrote it.
+// A **return's plain conditions** are instructions the stage it goes back to is meant to
+// carry out, and they are the ones nothing followed. `addressed-to` and `test-overreaches`
+// lines are left out — each has a ledger of its own that already follows it from filing to
+// consumption — and so are the accounting lines, which are about this ruling rather than
+// work for anybody. An **approval's** conditions are left out too: no `--revise` run reads
+// them, so there is nothing to be owed.
+//
+// A ruling in a closed grammar (`ratify` and `calibrate` at G1, the reviewer's triage page)
+// files nothing either. Those conditions are applied by a stage through a fixed vocabulary
+// and are followed by that stage's own records; filing them here would be a second ledger
+// for work already tracked, and one nobody would close.
+function recordConditions(projectDir, { name, gate, by, verdict, conditions, executable }) {
+  const lines = conditions ?? [];
+  const { accounted } = splitConditionsByAddressee(lines);
+  const stage = stageForProposal(name);
+  const owed = verdict === "return" && !executable && stage
+    ? lines.map((line, i) => ({ line, i })).filter(({ line }) => splitConditionsByAddressee([line]).mine.length)
+      .map(({ line, i }) => ({ ref: conditionRef(name, i), text: line, from: name, family: proposalFamily(name), gate, stage, by, at: new Date().toISOString() }))
+    : [];
+  if (!owed.length && !accounted.length) return { opened: [], closed: [] };
+  const branch = currentBranch(projectDir);
+  if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
+  try {
+    const opened = addConditions(projectDir, owed) ? owed.map((o) => o.ref) : [];
+    const closed = [];
+    for (const a of accounted) {
+      if (closeCondition(projectDir, a.ref, { outcome: a.outcome, why: a.text, by })) closed.push({ ref: a.ref, outcome: a.outcome });
+    }
+    if (opened.length || closed.length) {
+      const said = [opened.length ? `owes ${opened.join(", ")}` : "", closed.length ? `closes ${closed.map((c) => `${c.ref} ${c.outcome}`).join(", ")}` : ""]
+        .filter(Boolean).join("; ");
+      stagePaths(projectDir, [CONDITIONS_PATH]);
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${said}`], projectDir);
+    }
+    return { opened, closed };
+  } finally {
+    if (branch !== "main") git(["checkout", "-q", branch], projectDir);
+  }
+}
+
 // Shared by the human path and the agent-approve/return path: write the gate file,
 // append the run record, stage exactly those paths (plus the proposal page when the
 // caller already appended a `## Ruling` section to it), commit, merge on approve, and
@@ -384,13 +496,16 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
     ? { filed: [], unfiled: [], addressed: [], unroutable: [] }
     : { ...fileOverreachRequests(projectDir, { name, gate, conditions }),
       ...fileAddressedRequests(projectDir, { name, gate, by, conditions }) };
+  // After the request ledgers and for the same reason they run after the ruling commit: the
+  // ruling is recorded and the proposal is returned whatever happens here.
+  const ledger = recordConditions(projectDir, { name, gate, by, verdict, conditions, executable });
   if (verdict === "approve") {
     mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
     amendSiteOntoMergeCommit(projectDir);
   } else {
     regenerateSiteOnMain(projectDir, `${name} ${verdict}`);
   }
-  return requests;
+  return { ...requests, ...ledger };
 }
 
 function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics, reprompt }) {
@@ -483,6 +598,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
       assertOverreachRulable(name, verdict, conditions ?? []);
       assertAddressedRulable(name, verdict, conditions ?? []);
       assertDeliverableRulable(name, verdict, conditions ?? []);
+      assertAccountedRulable(projectDir, name, verdict, conditions ?? []);
     }
     // The same evidence the seat's persona is held to, so that sitting in the seat is the
     // whole of what changes when a person takes it. A build with no passing result is
@@ -786,11 +902,9 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // fixes in the ordinary case. A reply that rules `escalate` this time is handled the
     // same way it would have been had it done so first.
     if (!executable) {
-      const defect = firstFixableConditionDefect(name, verdict, conditions ?? []);
+      const defect = firstFixableConditionDefect(projectDir, name, verdict, conditions ?? []);
       if (defect) {
-        const guidance = defect.kind === "overreach" ? overreachGuidance(defect.line)
-          : defect.kind === "addressed" ? addressedGuidance(defect.line)
-            : deliverableGuidance(defect);
+        const guidance = defectGuidance(defect);
         // The console line a person watching a batch run needs, the moment the re-prompt
         // fires rather than only afterward: what the first reply got wrong, in the same
         // words the persona is being asked to fix.
@@ -811,6 +925,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       assertOverreachRulable(name, verdict, conditions ?? []);
       assertAddressedRulable(name, verdict, conditions ?? []);
       assertDeliverableRulable(name, verdict, conditions ?? []);
+      assertAccountedRulable(projectDir, name, verdict, conditions ?? []);
     }
     // Here rather than before the persona is asked, because the verdict is what decides
     // whether it applies at all. By this point the typecheck has run and the ruling turn has
@@ -852,7 +967,7 @@ function pointedAt(text, gatePath) {
 // Redacted the same way the gate file itself is (`redactLocalPaths`) — an agent's own
 // prose can carry a path off the machine it ran on, and a terminal is not exempt from the
 // rule the committed file is held to.
-function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, reprompted }) {
+function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, reprompted, opened, closed }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   const recordedOn = verdict === "approve" ? "main (merged)" : `proposal/${name}`;
   const lines = [`${name}: ${verdict} at ${gate}`];
@@ -865,6 +980,12 @@ function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, 
     lines.push(list.length ? "  conditions:" : "  conditions: none");
     for (const c of list) lines.push(`    - ${c}`);
   }
+  // What this ruling put on the condition ledger and what it took off it. Printed for the
+  // reason the conditions themselves are: an operator who is not told a reference was opened
+  // has no way to tell a return that owes something from one that owes nothing, and the
+  // reference is what a later ruling needs in order to close it.
+  if (opened?.length) lines.push(`  now owed: ${opened.join(", ")} (close with \`${CONDITION_MET_FORM}\`)`);
+  for (const c of closed ?? []) lines.push(`  closed: ${c.ref} ${c.outcome}`);
   lines.push(`  recorded: ${gatePath} on ${recordedOn}`);
   return redactLocalPaths(lines.join("\n"), projectDir);
 }
@@ -952,6 +1073,7 @@ export async function rulePending(projectDir) {
       console.log(formatRuling(projectDir, name, {
         gate: r.gate ?? gateMatch[1], verdict: r.escalated ? "escalate" : r.verdict,
         conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
+        opened: r.opened, closed: r.closed,
       }));
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
@@ -1007,6 +1129,7 @@ COMMANDS.rule = async ({ pos, flags }) => {
     console.log(formatRuling(process.cwd(), pos[0], {
       gate: r.gate, verdict: r.escalated ? "escalate" : r.verdict,
       conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
+      opened: r.opened, closed: r.closed,
     }));
     return 0;
   }
@@ -1016,7 +1139,7 @@ COMMANDS.rule = async ({ pos, flags }) => {
   const conditions = flags.condition === undefined ? undefined
     : [flags.condition].flat().filter((c) => typeof c === "string");
   const r = rule(process.cwd(), pos[0], pos[1], { by: flags.by, note: flags.note ?? "", conditions });
-  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note }));
+  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note, opened: r.opened, closed: r.closed }));
   if (r.filed?.length) console.log(`${pos[0]}: ${r.filed.join(", ")} filed for re-derivation — run sdlc run derive-tests --domain <domain> --stale`);
   for (const id of r.unfiled ?? []) console.warn(`warning: ${pos[0]}: ${id} is not an accepted criterion; nothing was filed for it`);
   return 0;

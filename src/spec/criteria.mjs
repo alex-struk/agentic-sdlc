@@ -621,6 +621,56 @@ export function malformedAddressedConditions(lines) {
   return (lines ?? []).filter((l) => new RegExp(`^${ADDRESSED_VERB}\\b`).test(String(l).trim()) && !parseAddressedCondition(l));
 }
 
+// The two verbs a ruler accounts for an earlier ruling's condition with. A plain condition
+// on a return is an instruction the stage it goes back to is meant to carry out, and until
+// one of these is written nothing says whether it ever was: the revision is ruled on its own
+// merits, and the condition simply stops being mentioned.
+//
+// Two verbs rather than one, because the two claims are different and the record exists to
+// keep them apart. `condition-met` says the work was done and says where it can be seen.
+// `condition-withdrawn` says it should not be done after all. Collapsing them into a single
+// "resolved" would lose exactly the distinction anyone reading the ledger afterwards came
+// for. A condition nobody writes either line about stays open, which is what carrying it
+// forward is: it keeps surfacing on every run until a ruler says something.
+//
+// The target is a reference — `<proposal>#<n>` — rather than the condition's own text,
+// because a condition is a sentence and quoting a sentence back exactly is not something to
+// ask of a turn. `sdlc checks` prints the reference next to every open condition.
+export const CONDITION_MET_VERB = "condition-met";
+export const CONDITION_WITHDRAWN_VERB = "condition-withdrawn";
+
+// Restated wherever a ruler has to be told the forms exist — the ruling prompt, and the
+// error a malformed line is refused with — so the wording cannot drift between the place
+// that offers them and the place that reads them.
+export const CONDITION_MET_FORM = `${CONDITION_MET_VERB} <ref>: <what was done, and where it can be seen>`;
+export const CONDITION_WITHDRAWN_FORM = `${CONDITION_WITHDRAWN_VERB} <ref>: <why it is no longer asked for>`;
+
+// No `/s` flag and a bare `$`, for the same reason `parseCondition` has neither. The reason
+// is required on both: an entry closed with nothing after the colon records that somebody
+// closed it and nothing about why, which is the state this whole ledger exists to end.
+function parseAccountCondition(line) {
+  const m = new RegExp(`^(${CONDITION_MET_VERB}|${CONDITION_WITHDRAWN_VERB})\\s+(\\S+):\\s*(.+)$`).exec(String(line).trim());
+  if (!m) return null;
+  const text = collapseWhitespace(m[3]);
+  return text ? { verb: m[1], outcome: m[1] === CONDITION_MET_VERB ? "met" : "withdrawn", ref: m[2], text } : null;
+}
+
+// Every readable accounting line in a ruling's conditions. Lines in any other shape are
+// somebody else's business and are left exactly as they are.
+export function accountedConditions(lines) {
+  return (lines ?? []).map(parseAccountCondition).filter(Boolean);
+}
+
+// Lines that open with one of the verbs and are not a condition — a bare reference, a colon
+// with nothing after it, a reason that is only whitespace. Reported separately from "not
+// this form at all" for the same reason the other verbs report it separately: an ordinary
+// free-text line is kept verbatim for the writer, and one of these would close a ruling's
+// instruction while recording nothing about why.
+export function malformedAccountedConditions(lines) {
+  return (lines ?? []).filter((l) => new RegExp(`^(${CONDITION_MET_VERB}|${CONDITION_WITHDRAWN_VERB})\\b`).test(String(l).trim())
+    && !parseAccountCondition(l));
+}
+
 // Every path-like token in a free-text condition line. A ruler writes a condition as prose
 // and names a file in it the way anyone does, in backticks or bare, so the tokens are read
 // out of the sentence rather than required in a form.
@@ -653,17 +703,23 @@ export function conditionPaths(line, owned = null) {
 // A stage handed a condition it cannot act on — and in the plain case, one naming a file
 // outside its own overlay — either fails or finds a way, and neither is what the ruler
 // asked for. What `mine` leaves out, `elsewhere` accounts for by name.
+// `accounted` is the third bucket, and it is neither: an accounting line is about a ruling
+// that has already been made, not work for anybody. A stage handed one would read it as a
+// thing to do and have no way to do it.
 export function splitConditionsByAddressee(lines) {
   const mine = [];
   const elsewhere = [];
+  const accounted = [];
   for (const line of lines ?? []) {
+    const account = parseAccountCondition(line);
+    if (account) { accounted.push(account); continue; }
     const addressed = parseAddressedCondition(line);
     if (addressed) { elsewhere.push({ stage: addressed.stage, text: addressed.text }); continue; }
     const overreach = parseOverreachCondition(line);
     if (overreach) { elsewhere.push({ stage: OVERREACH_STAGE, text: overreach.text }); continue; }
     mine.push(line);
   }
-  return { mine, elsewhere };
+  return { mine, elsewhere, accounted };
 }
 
 // The reviewer's two triage verbs, read on their own so a triage line can never be taken for

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkConfig } from "../checks/config.mjs";
 import { checkBriefs } from "../checks/briefs.mjs";
+import { checkConditions } from "../checks/conditions.mjs";
 import { defaultNamesPath } from "../checks/egress.mjs";
 import { composeVersion } from "../oracle/compose.mjs";
 import { COMMANDS } from "../cli.mjs";
@@ -51,6 +52,14 @@ COMMANDS.doctor = async ({ pos }) => {
   console.log(`${sandbox ? "ok  " : "warn"} SDLC_SANDBOX_PASSWORD ${sandbox ? "set" : "not set (needed only for a sandbox-idp target)"}`);
   const cfg = checkConfig(dir);
   console.log(`${cfg.ok ? "ok  " : "FAIL"} config ${cfg.messages.join("; ")}`);
+  // What a ruling asked for and nobody has accounted for. A warning while it is merely
+  // owed — the ordinary state between a return and the revision that answers it — and a
+  // failure where an approval has gone past it, which is a record asserting two things that
+  // cannot both be true.
+  const conditions = checkConditions(dir);
+  const owed = conditions.messages.length + conditions.warnings.length;
+  console.log(`${conditions.ok ? (owed ? "warn" : "ok  ") : "FAIL"} ruling conditions ${owed ? `${owed} outstanding` : "none outstanding"}`);
+  for (const m of [...conditions.messages, ...conditions.warnings]) console.log(`     ${m}`);
   // A persona brief that is behind the pipeline's own copy rules by instructions the
   // pipeline has since corrected, and reads as a complete brief while it does it. Never
   // a failure — a project may have written its own text into one on purpose — and never
@@ -58,5 +67,5 @@ COMMANDS.doctor = async ({ pos }) => {
   const briefs = checkBriefs(dir);
   console.log(`${briefs.warnings.length ? "warn" : "ok  "} persona briefs ${briefs.warnings.length ? briefs.warnings.join("; ") : "current with the pipeline's templates"}`);
   const required = tools.filter((t) => ["node", "git"].includes(t.name)).every((t) => t.found);
-  return required && cfg.ok ? 0 : 1;
+  return required && cfg.ok && conditions.ok ? 0 : 1;
 };

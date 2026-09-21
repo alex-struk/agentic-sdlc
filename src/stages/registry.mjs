@@ -2791,6 +2791,27 @@ export function stageForProposal(name) {
   return best?.stage ?? null;
 }
 
+// The line of work a proposal belongs to: every proposal that is a revision of the same
+// artifact, and no other. A stage's proposals are named `<prefix><subject>` the first time
+// and `<prefix><subject>-<n>` after that (`nextProposalName`), so the family is the name
+// with that trailing number taken off.
+//
+// The number is stripped from the part after the stage's own prefix, and only where that
+// part still holds a separator, because the subject is itself a number for a stage that
+// builds one slice at a time: `build-slice-1` and `build-slice-2` are two different lines
+// of work, while `build-slice-1` and `build-slice-1-2` are two attempts at the same one.
+// Reading the name without the prefix cannot tell those apart, and the registry can.
+//
+// `null` for a proposal belonging to no stage with a prefix, which is the same answer
+// `stageForProposal` gives and for the same reason.
+export function proposalFamily(name) {
+  const stage = stageForProposal(name);
+  if (!stage) return null;
+  const prefix = STAGES_BY_NAME[stage]?.proposalPrefix ?? "";
+  const rest = String(name).slice(prefix.length);
+  return rest.includes("-") ? `${prefix}${rest.replace(/-\d+$/, "")}` : `${prefix}${rest}`;
+}
+
 // The plain conditions on a ruling that name a path the stage receiving them cannot write.
 // Each comes back with the path, the line it was read from, and which stages could deliver
 // it — `[]` where none can, which is a different answer and reads differently.

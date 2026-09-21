@@ -34,6 +34,17 @@ No agent.
   `.sdlc/config.yaml`, `.sdlc/lock.json`, `intent/`, `spec/`, `spec/features`, `spec/domains`,
   `spec/contract`, `plan/`, `app/`, `evidence/pr-evidence.md`, `tests/acceptance`, `tests/adapters`,
   `tests/seed`, plus `design/` when the profile's stages include `design`.
+- **conditions** — every instruction a ruling wrote down and nobody has accounted for.
+  `.sdlc/conditions.yaml` holds each plain condition a return attached to a proposal, with a
+  reference of the form `<proposal>#<n>`; `.sdlc/revision-requests.yaml` holds the cross-stage
+  asks. An instruction that is merely still owed is a **warning**, since that is the ordinary
+  state between a return and the revision that answers it. It **fails** where the same line of
+  work has since had a proposal approved and no ruling ever said whether the instruction was
+  carried out — at that point the gate files assert two things that cannot both be true. A
+  ruler closes one on any later ruling, on an approval as readily as on a return, with
+  `condition-met <ref>: <what was done>` or `condition-withdrawn <ref>: <why it is no longer
+  asked for>`; see `docs/stages/rule.md`. An untaken revision request is always a warning,
+  because the only way to clear one is to take it up.
 - **constitution** — `constitution.md` exists, has no unfilled `{{placeholder}}`, has at least one
   `### P<n>` platform article, and every such article has a `Source:` line that is either the
   literal word `convention` or an `http(s)://` URL.

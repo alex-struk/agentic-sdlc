@@ -173,7 +173,7 @@ test("a condition list splits into the conditions of the stage being asked and t
   ]);
 
   // A list with nothing addressed elsewhere comes back exactly as it went in.
-  assert.deepEqual(splitConditionsByAddressee([MINE]), { mine: [MINE], elsewhere: [] });
+  assert.deepEqual(splitConditionsByAddressee([MINE]), { mine: [MINE], elsewhere: [], accounted: [] });
 });
 
 test("the stages a condition may be addressed to are the ones with a revision mode", () => {

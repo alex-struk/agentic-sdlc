@@ -324,6 +324,44 @@ the filing commit touches the request file and nothing else, and the change itse
 gate the addressed stage holds rather than by the ruler who asked for it
 (`docs/decisions/0024-a-gate-that-only-moves-forward.md`).
 
+### An instruction nobody has accounted for
+
+A plain condition on a return is an instruction: the stage the proposal goes back to is meant to
+carry it out, and its `--revise` run is handed the line verbatim. What nothing said, until this,
+is whether it ever was. The revision is ruled on its own merits, the condition stops being
+mentioned, and a gate file can go on asserting a change the project's own files contradict while
+the record reads as complete.
+
+Every plain condition a return carries is therefore appended to `.sdlc/conditions.yaml`, on
+`main`, in a commit of its own, with a reference of the form `<proposal>#<n>` — the proposal it
+was written on and its place in that ruling's own list. An `addressed-to` or `test-overreaches`
+line is not: each has a ledger of its own that follows it from filing to consumption, and a
+second row here would be a second thing to close for one instruction. An approval's conditions
+are not either: no `--revise` run reads them, so there is nothing to be owed. Nor is a ruling in
+a closed grammar, whose conditions a stage applies through a fixed vocabulary and whose own
+records follow them.
+
+A ruler accounts for one on any later ruling, with either of two lines:
+
+```
+condition-met <ref>: <what was done, and where it can be seen>
+condition-withdrawn <ref>: <why it is no longer asked for>
+```
+
+Two verbs rather than one, because the two claims differ and the ledger exists to keep them
+apart: the first says the work was done, the second says it should not be. Both are accepted on
+an approval as readily as on a return — the revision that satisfies a condition is ordinarily
+approved, and that approval is exactly where a ruler should be able to say so. A reference nobody
+has open is refused before anything is written, with the open list in the message, and a line
+with no reason is refused for the same reason every other verb's is; on the agent seat each gets
+the same single re-prompt a fixable line always gets. An entry is never removed: what was asked
+stays on file beside what was answered, by whom and why.
+
+A condition nobody writes either line about stays open, which is what carrying it forward is. It
+is read back by `sdlc checks` on every run — and so, since the ruling prompt carries the checks,
+to whoever rules next — and it fails that check once the same line of work has had a proposal
+approved past it (`docs/stages/checks.md`).
+
 ### A condition asking for a path the stage cannot deliver
 
 A stage's workspace is writable only where it is collected

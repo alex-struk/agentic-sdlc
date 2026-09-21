@@ -4,7 +4,8 @@ import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
 import { deliveredBy, stageForProposal } from "../stages/registry.mjs";
-import { ADDRESSED_CONDITION_FORM } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM } from "../spec/criteria.mjs";
+import { openConditions } from "../spec/conditions.mjs";
 import { stackBulk } from "../lib/stack.mjs";
 import { runChecks } from "../checks/index.mjs";
 import { formatChecks } from "../commands/checks.mjs";
@@ -201,6 +202,33 @@ function deliverabilityNote(name) {
   ];
 }
 
+// What a ruler does about an instruction an earlier ruling left owed. The open ones are
+// already in front of the persona — `sdlc checks` reads them back on every run and the
+// checks are quoted in this prompt — so what is missing is only the two lines that close
+// one, and the fact that not writing either leaves it open.
+//
+// A person in this seat is handed no prompt and reads the same list out of `sdlc checks`,
+// with the same two lines in it: this is how an agent is given what a person would go and
+// read, and both seats close a condition with the identical line.
+function accountingNote(projectDir) {
+  const open = openConditions(projectDir);
+  if (!open.length) return [];
+  return [
+    "## Instructions an earlier ruling left owed",
+    "",
+    "The `conditions` check above lists them, each with a reference. Where this proposal settles one,",
+    "say so in a condition of your own — on an approval as readily as on a return:",
+    "",
+    `- \`${CONDITION_MET_FORM}\``,
+    `- \`${CONDITION_WITHDRAWN_FORM}\``,
+    "",
+    "A reference you do not account for stays open and is put to whoever rules next, which is the right",
+    "answer where this proposal does not settle it. What must not happen is an approval that passes over",
+    "one in silence: the instruction then reads as done to everything that comes after.",
+    "",
+  ];
+}
+
 export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null, escalation = null }) {
   const brief = readPersonaBrief(projectDir, persona);
   const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
@@ -325,6 +353,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
       "The writer can fix reported TypeScript errors; the runner owns executing the check.",
       "",
     ] : []),
+    ...accountingNote(projectDir),
     ...deliverabilityNote(name),
     `Finish with one fenced \`\`\`json block: {"verdict": "approve"|"return"|"escalate", "rationale": "...", "conditions": [...]}. Nothing after the block.`,
   ].join("\n");
