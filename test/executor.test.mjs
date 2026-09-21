@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync, lstatSync, statSync, utimesSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { ensureConfigHome } from "../src/runner/config-home.mjs";
-import { runAgent, buildArgs, endedBecause, DEFAULT_MAX_TURNS } from "../src/runner/executor.mjs";
+import { runAgent, buildArgs, endedBecause, AUTH_ADVICE, DEFAULT_MAX_TURNS } from "../src/runner/executor.mjs";
 import { turnsFor } from "../src/commands/run.mjs";
 
 test("config home is created with a credentials symlink when the source exists", () => {
@@ -170,13 +170,14 @@ function fakeClaude(root) {
     'if (process.env.FAKE_STDIN_OUT) writeFileSync(process.env.FAKE_STDIN_OUT, prompt);',
     'const out = readFileSync(process.env.FAKE_OUT, "utf8").replaceAll("__MAX_TURNS__", maxTurns);',
     "process.stdout.write(out);",
+    'if (process.env.FAKE_STDERR) process.stderr.write(process.env.FAKE_STDERR);',
     "if (process.env.FAKE_EXIT) process.exit(Number(process.env.FAKE_EXIT));",
   ].join("\n"));
   chmodSync(bin, 0o755);
   return bin;
 }
 
-function withFakeClaude(root, output, { exitCode = null } = {}) {
+function withFakeClaude(root, output, { exitCode = null, stderr = null } = {}) {
   const outPath = join(root, "out.txt");
   writeFileSync(outPath, output);
   process.env.SDLC_CLAUDE_BIN = fakeClaude(root);
@@ -185,10 +186,11 @@ function withFakeClaude(root, output, { exitCode = null } = {}) {
   process.env.FAKE_OUT = outPath;
   process.env.FAKE_STDIN_OUT = join(root, "stdin.txt");
   if (exitCode !== null) process.env.FAKE_EXIT = String(exitCode);
+  if (stderr !== null) process.env.FAKE_STDERR = stderr;
 }
 
 function clearFakeClaude() {
-  for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "FAKE_STDIN_OUT", "FAKE_EXIT"]) delete process.env[k];
+  for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "FAKE_STDIN_OUT", "FAKE_EXIT", "FAKE_STDERR"]) delete process.env[k];
 }
 
 test("runAgent parses the CLI's JSON and reports a real result", async () => {
@@ -291,5 +293,42 @@ test("--max-turns receives the budget turnsFor computed", async () => {
 
     const defaulted = await runAgent({ cwd: root, prompt: "x", stage: "build", maxTurns: turnsFor({}, "build") });
     assert.equal(defaulted.raw.maxTurns, String(DEFAULT_MAX_TURNS));
+  } finally { clearFakeClaude(); }
+});
+
+test("an agent turn that could not authenticate is told what it authenticates with", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-exec-auth-"));
+  withFakeClaude(root, JSON.stringify({
+    is_error: true, result: "Failed to authenticate: OAuth session expired and could not be refreshed",
+    subtype: "error_during_execution",
+  }));
+  try {
+    const r = await runAgent({ cwd: root, prompt: "x", stage: "probe" });
+    assert.equal(r.ok, false);
+    // The CLI's own account is kept: it is the only evidence of which failure this was.
+    assert.match(r.text, /OAuth session expired/);
+    assert.match(r.text, /operator's own CLI login/);
+    assert.match(r.text, /CLAUDE_CONFIG_DIR/);
+    // The advice describes where the credential sits relative to the directory the
+    // pipeline sets, and never a path on the machine it happens to be running on.
+    assert.ok(!AUTH_ADVICE.includes(homedir()));
+  } finally { clearFakeClaude(); }
+});
+
+test("a failure that is not about authentication carries no sign-in advice", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-exec-noauth-"));
+  withFakeClaude(root, JSON.stringify({ is_error: true, result: "I ran out of turns", subtype: "error_max_turns" }));
+  try {
+    const r = await runAgent({ cwd: root, prompt: "x", stage: "probe" });
+    assert.equal(r.text, "I ran out of turns");
+  } finally { clearFakeClaude(); }
+});
+
+test("a CLI that dies complaining about authentication throws with the same advice", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-exec-authexit-"));
+  withFakeClaude(root, "", { exitCode: 1, stderr: "Invalid API key · Please run /login" });
+  try {
+    await assert.rejects(() => runAgent({ cwd: root, prompt: "x", stage: "probe" }),
+      /claude failed[\s\S]*operator's own CLI login/);
   } finally { clearFakeClaude(); }
 });

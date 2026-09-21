@@ -60,6 +60,40 @@ export function turnsFor(config, name, fallback = DEFAULT_MAX_TURNS) {
   return fallback;
 }
 
+// What a failed session is told about how it signs in. A stage session has no login of
+// its own and no way to obtain one: it reads the operator's credential out of the config
+// home the pipeline points `CLAUDE_CONFIG_DIR` at, so an expired sign-in fails the stage
+// while looking exactly like a crash. The wording stays relative to that directory and
+// names no path on any particular machine, because it is printed, journalled and read by
+// people who did not set the directory up.
+export const AUTH_ADVICE = [
+  "A stage session has no sign-in of its own: it authenticates with the operator's own CLI login,",
+  "read from the `.credentials.json` file in the config directory this pipeline points `CLAUDE_CONFIG_DIR`",
+  "at (`SDLC_CLAUDE_HOME` names that directory when it is set).",
+  "Sign in again interactively with the CLI and run this again.",
+  "A credential a stage session refreshes is kept in that same directory rather than written back,",
+  "so a stage and an interactive session can be holding different ones: if signing in does not clear this,",
+  "remove `.credentials.json` from that directory and the next stage takes a fresh copy of the sign-in.",
+].join(" ");
+
+// Whether some text is a session complaining that it could not sign in. Matching on
+// wording is the only evidence available — the CLI reports an authentication failure
+// through the same `is_error` result and the same non-zero exit as anything else — so
+// this errs toward saying yes: a false positive costs a paragraph of advice on an
+// unrelated failure, and a false negative costs a person the diagnosis entirely.
+const AUTH_FAILURE = /\boauth\b|\bauthenticat(e|ed|es|ing|ion)\b|\bunauthori[sz]ed\b|invalid[ _-]?api[ _-]?key|\brun\s+\/login\b|\bnot\s+logged\s+in\b|\bsession\s+(has\s+)?expired\b|\blogin\s+(required|expired)\b/i;
+
+export function looksLikeAuthFailure(text) {
+  return !!text && AUTH_FAILURE.test(text);
+}
+
+// The CLI's own account of the failure, followed by what a person can do about it. The
+// account comes first and is never replaced: it is the only evidence of which failure
+// this was, and the advice is a guess about the cause bolted onto it.
+export function withAuthAdvice(text) {
+  return looksLikeAuthFailure(text) ? `${text}\n\n${AUTH_ADVICE}` : text;
+}
+
 // How the session ended, in words, when the CLI said something worth repeating. The
 // `subtype` on a result is the CLI's own account — `error_max_turns` when the turn
 // ceiling was reached, `error_during_execution` when the session broke — and it is the
@@ -145,7 +179,7 @@ export async function runAgent(opts) {
   const { args, env, input } = buildArgs(opts, ensureConfigHome());
   const raw = await new Promise((resolve, reject) => {
     const child = execFile(claudeBin(), args, { cwd: opts.cwd, env, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err && !stdout) return reject(new Error(`claude failed: ${stderr || err.message}`));
+      if (err && !stdout) return reject(new Error(withAuthAdvice(`claude failed: ${stderr || err.message}`)));
       resolve(stdout);
     });
     // A child that exits before reading all of stdin (a crash, a non-zero exit before
@@ -156,6 +190,11 @@ export async function runAgent(opts) {
     child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
-  let j; try { j = JSON.parse(raw); } catch { throw new Error(`claude returned non-JSON output:\n${raw.slice(0, 500)}`); }
-  return { ok: !j.is_error, text: j.result ?? "", cost: j.total_cost_usd ?? 0, turns: j.num_turns ?? 0, sessionId: j.session_id ?? "", raw: j };
+  let j; try { j = JSON.parse(raw); } catch { throw new Error(withAuthAdvice(`claude returned non-JSON output:\n${raw.slice(0, 500)}`)); }
+  // The advice is attached to a FAILED result only. A stage that succeeded while
+  // writing about sign-in screens returns text that goes on to the journal and the
+  // proposal page, and an explanation of how the pipeline authenticates does not belong
+  // in a stage's own account of what it built.
+  const text = j.is_error ? withAuthAdvice(j.result ?? "") : (j.result ?? "");
+  return { ok: !j.is_error, text, cost: j.total_cost_usd ?? 0, turns: j.num_turns ?? 0, sessionId: j.session_id ?? "", raw: j };
 }
