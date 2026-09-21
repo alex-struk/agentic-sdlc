@@ -100,3 +100,27 @@ test("checkConfig refuses a turn budget the runner would ignore or reduce", () =
   write("{ design: 400 }");
   assert.equal(checkConfig(d).ok, true, "a turn count inside the ceiling passes");
 });
+
+// Nothing in this repository writes `targets.<t>.depends_on`, and a key nothing writes is
+// a key nobody fills. What reaches a project that already exists is the check: the
+// configuration already says the target signs in through a provider the project stands up
+// itself, which is the one shape `sandbox up` cannot settle from the application's own
+// address.
+test("checkConfig warns where a target signs in through a provider it never says how to reach, and does not fail on it", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-depends-"));
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  const write = (targets) => writeFileSync(join(d, ".sdlc/config.yaml"),
+    GOOD.replace("  new: { base_url: http://localhost:8080, identity: sandbox-idp }", targets));
+
+  write("  new: { base_url: http://localhost:8080, identity: sandbox-idp }");
+  const bare = checkConfig(d);
+  assert.equal(bare.ok, true, "the key is optional and a check that failed would make it mandatory");
+  assert.match(bare.warnings.join("\n"), /targets\.new signs in through sandbox-idp and declares no targets\.new\.depends_on\.identity/);
+  assert.match(bare.warnings.join("\n"), /without establishing that anything can sign in there/);
+
+  write('  new: { base_url: http://localhost:8080, identity: sandbox-idp, depends_on: { identity: "http://localhost:8081/realms/sandbox" } }');
+  assert.deepEqual(checkConfig(d).warnings, [], "a target that says where its provider answers is asked nothing");
+
+  write("  new: { base_url: http://localhost:8080, identity: session-route }");
+  assert.deepEqual(checkConfig(d).warnings, [], "a target that signs in through the application itself stands up no provider");
+});

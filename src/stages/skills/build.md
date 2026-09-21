@@ -32,6 +32,11 @@ data. Each seeded user signs in to the sandbox identity provider with their `idp
 username and the password compose reads from the `SDLC_SANDBOX_PASSWORD` environment
 variable. Never write a password into any file.
 
+Where your instructions name addresses this target cannot be used without, alongside the one the
+application itself answers on, a service in this file must stand each of them up and publish it at
+exactly the address you were given. The sandbox is not reported up until every one of them answers,
+and the run stops there.
+
 If the slice is the first one, it creates all of this. A later slice extends it.
 
 ## Screens

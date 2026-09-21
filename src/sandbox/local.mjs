@@ -16,6 +16,9 @@ export function targetSettings(config, target) {
   return {
     baseUrl: t.base_url,
     identity: t.identity,
+    // The addresses this target is not usable without, named. Empty for a target that
+    // declares none, which is every target that predates the key.
+    dependsOn: t.depends_on ?? {},
     compose: t.compose ?? DEFAULT_COMPOSE,
     seedService: t.seed_service ?? DEFAULT_SEED_SERVICE,
     project: `sdlc-${config.project.name}-${target}`,
@@ -137,4 +140,64 @@ export function serviceFailures(rows) {
 // wrote, and a builder can fix it.
 export function causeOf(failures) {
   return failures.some((f) => f.ran) ? APPLICATION : ENVIRONMENT;
+}
+
+// The failures that are certain whatever else is still coming up, for the poll that waits
+// for a target's addresses rather than for the watch that runs once every wait has passed.
+//
+// A container that is dead, or that has exited non-zero, is not going to serve the address
+// something is waiting for: compose has finished with it. Every other state a failure can
+// carry is one a healthy project passes through on its way up. `created` is a container
+// compose has not started yet, and a healthcheck reports `unhealthy` for as long as a
+// service is inside its start period — and `restarting` is the one that has to be read
+// carefully, because it is both halves at once. A container that exits retrying a database
+// it depends on is restarted, crash-loops for ten seconds and then runs, and `--wait`
+// returns while that is going on. Nothing in a `ps` row tells that loop from one that will
+// never end; only waiting does, which is what the poll around this is already doing.
+//
+// So a loop is left to the address itself. If the service recovers, its address answers
+// and the wait ends; if it never does, the wait ends at its ceiling and the watch that
+// runs after it reads `restarting` and refuses with the container named. The cost of
+// ending a wait early on a loop is a build proposal returned for a sandbox that was
+// seconds from healthy, which spends one of the slice's three attempts; the cost of
+// waiting is the wait.
+export function stoppedForGood(failures) {
+  return failures.filter((f) => f.state === "dead" || f.state === "exited");
+}
+
+// Which host ports this project publishes, read out of `docker compose config --format
+// json` — the resolved compose file, not the running containers.
+//
+// The live `ps` rows answer a different question. `Publishers` is what a container has
+// bound at this moment, and a container that is crash-looping has bound nothing: compose
+// reports `"Publishers": []` for it throughout the loop. Reading the ports from there
+// would call a provider that is dying behind its own address an address this project never
+// published, which is the one conclusion that must never be drawn about it. What a project
+// publishes is a property of its compose file and is true whether or not anything is up.
+//
+// `published` is written as a string in compose's own JSON and may be a range, of which
+// the first port is the one an address would be asked on. `null` is nothing known — a
+// document this does not read, or a compose file that publishes no host port at all.
+export function declaredPorts(text) {
+  let doc;
+  try { doc = JSON.parse((text ?? "").trim()); } catch { return null; }
+  if (!doc?.services || typeof doc.services !== "object") return null;
+  const ports = new Set();
+  for (const service of Object.values(doc.services)) {
+    for (const p of Array.isArray(service?.ports) ? service.ports : []) {
+      const n = Number(String(p?.published ?? "").split("-")[0]);
+      if (Number.isInteger(n) && n > 0) ports.add(n);
+    }
+  }
+  return ports.size ? ports : null;
+}
+
+// The host port an address is asked on, or 0 for anything this cannot reason about — a
+// string that is not a URL, or a scheme other than the two `up` polls over. Zero is not a
+// port and every caller reads it as a question it declined to answer.
+export function portOf(url) {
+  let u;
+  try { u = new URL(url); } catch { return 0; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return 0;
+  return Number(u.port) || (u.protocol === "https:" ? 443 : 80);
 }

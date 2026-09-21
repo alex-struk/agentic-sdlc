@@ -57,7 +57,11 @@ Confirmed by cloning that commit:
 - The standards skill: `stacks/openshift-ts/SKILL.md`, which the build stage
   loads.
 - A sandbox identity provider: a Keycloak realm dedicated to tests, added to
-  `app/compose/`. It is not part of the upstream scaffold's compose file.
+  `app/compose/`. It is not part of the upstream scaffold's compose file. A
+  project on this profile declares that realm's own endpoint as
+  `targets.<t>.depends_on.identity`, so `sandbox up` waits for it: the realm
+  endpoint exists only once the realm is loaded, while Keycloak's server root
+  answers before that and goes on answering if the load fails.
 - Mailpit, a mail catcher for local and sandbox outbound mail, also added to
   `app/compose/`.
 
