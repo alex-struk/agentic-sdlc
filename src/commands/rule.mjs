@@ -10,8 +10,10 @@ import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } 
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { buildSite } from "./status.mjs";
-import { CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, OVERREACH_CONDITION_FORM, OVERREACH_VERB, TRIAGE_GRAMMAR, malformedOverreachConditions, overreachConditions, unparsedCalibrateConditions, unparsedConditions, unparsedTriageConditions } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, OVERREACH_CONDITION_FORM, OVERREACH_VERB, TRIAGE_GRAMMAR, addressedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, unparsedCalibrateConditions, unparsedConditions, unparsedTriageConditions } from "../spec/criteria.mjs";
 import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo.mjs";
+import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } from "../spec/revisions.mjs";
+import { revisableStages } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 function mergeApproved(projectDir, branch, message) {
@@ -138,6 +140,66 @@ export function assertOverreachRulable(name, verdict, conditions) {
       + " the criterion stays unverified until a regenerated test binds and passes; return the proposal instead.");
 }
 
+// The two things an `addressed-to` condition may never be, checked in the same place and
+// for the same reasons as the pair above, before a ruling writes anything at all.
+//
+// A line with no reason is refused because the reason is the whole of what travels. The
+// stage the request reaches sees none of the evidence the ruling was made on — not the
+// proposal, not the diff, not the result the ruler read — so a request that says only
+// "change this" arrives as the fact that somebody was unhappy and nothing else.
+//
+// An approval may not carry it because the condition says an artifact this pipeline is
+// building on is wrong. A verdict that accepts the proposal while asking another stage to
+// redo what this one was built against would put both claims on the record at once, and
+// merge the work on the strength of the first.
+export function assertAddressedRulable(name, verdict, conditions) {
+  const bad = malformedAddressedConditions(conditions);
+  if (bad.length)
+    throw new Error(`rule ${name}: ${JSON.stringify(bad[0])} carries no reason. Write it as \`${ADDRESSED_CONDITION_FORM}\`:`
+      + " the stage it is addressed to sees none of the evidence this ruling was made on, so the reason is the whole of what reaches it.");
+  if (verdict === "approve" && addressedConditions(conditions).length)
+    throw new Error(`rule ${name}: an \`${ADDRESSED_VERB}\` condition asks another stage to produce its artifact again, which an approval cannot carry —`
+      + " it says the work being ruled was built against something that has to change; return the proposal instead.");
+}
+
+// Files the revisions a ruling's `addressed-to` conditions ask for onto
+// `.sdlc/revision-requests.yaml`, where the addressed stage's own `--revise` run reads them.
+//
+// On `main`, and in its own commit, for the reason `fileOverreachRequests` below gives: the
+// ruling belongs to the proposal branch and the request does not, and a copy of it on a
+// branch nobody merges would never be read by the stage it is addressed to.
+//
+// A stage with no revision mode is not filed for and comes back in `unroutable`: a request
+// nothing can take up would sit on the list for ever, and the ruler is told which name
+// could not be placed rather than left to assume it was.
+function fileAddressedRequests(projectDir, { name, gate, by, conditions }) {
+  const asked = addressedConditions(conditions ?? []);
+  if (!asked.length) return { addressed: [], unroutable: [] };
+  const revisable = new Set(revisableStages());
+  const branch = currentBranch(projectDir);
+  if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
+  try {
+    const at = new Date().toISOString();
+    const entries = [];
+    const unroutable = [];
+    for (const a of asked) {
+      if (!revisable.has(a.stage)) { unroutable.push(a.stage); continue; }
+      entries.push({ stage: a.stage, why: a.text, from: name, gate, by, at });
+    }
+    const before = readRevisionRequests(projectDir);
+    const addressed = entries
+      .filter((e) => !before.some((r) => r?.stage === e.stage && r?.from === e.from && r?.why === e.why))
+      .map((e) => e.stage);
+    if (addRevisionRequests(projectDir, entries)) {
+      stagePaths(projectDir, [REVISION_REQUESTS_PATH]);
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} asks ${addressed.join(", ")} to revise`], projectDir);
+    }
+    return { addressed, unroutable };
+  } finally {
+    if (branch !== "main") git(["checkout", "-q", branch], projectDir);
+  }
+}
+
 // Files the criteria a ruling's `test-overreaches` conditions name onto
 // `tests/acceptance/redo.yaml`, where `derive-tests --domain <d> --stale` reads them.
 //
@@ -191,8 +253,9 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   // still recorded and the proposal is still returned. An approval never carries this
   // form at all (`assertOverreachRulable`).
   const requests = verdict === "approve" || executable
-    ? { filed: [], unfiled: [] }
-    : fileOverreachRequests(projectDir, { name, gate, conditions });
+    ? { filed: [], unfiled: [], addressed: [], unroutable: [] }
+    : { ...fileOverreachRequests(projectDir, { name, gate, conditions }),
+      ...fileAddressedRequests(projectDir, { name, gate, by, conditions }) };
   if (verdict === "approve") {
     mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
     amendSiteOntoMergeCommit(projectDir);
@@ -247,7 +310,10 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
   const allowed = [g.holder, g.escalate_to].filter(Boolean);
   if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
   const executable = conditionsAreExecutable(gate, name);
-  if (!executable) assertOverreachRulable(name, verdict, conditions ?? []);
+  if (!executable) {
+    assertOverreachRulable(name, verdict, conditions ?? []);
+    assertAddressedRulable(name, verdict, conditions ?? []);
+  }
   // The same evidence the seat's persona is held to, so that sitting in the seat is the
   // whole of what changes when a person takes it. A build with no passing result is
   // returnable here and unapprovable here, exactly as it is on the agent path; the one
@@ -553,7 +619,10 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // that would file an unactionable request refuses the ruling instead. Nothing has been
   // committed at this point, and the turn is read-only, so the proposal is left open for
   // a corrected ruling.
-  if (!executable) assertOverreachRulable(name, verdict, conditions ?? []);
+  if (!executable) {
+    assertOverreachRulable(name, verdict, conditions ?? []);
+    assertAddressedRulable(name, verdict, conditions ?? []);
+  }
   // Here rather than before the persona is asked, because the verdict is what decides
   // whether it applies at all. By this point the typecheck has run and the ruling turn has
   // answered, both read-only against a tree asserted clean; no gate file, no proposal page,

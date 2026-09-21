@@ -529,6 +529,76 @@ export function malformedOverreachConditions(lines) {
   return (lines ?? []).filter((l) => new RegExp(`^${OVERREACH_VERB}\\b`).test(String(l).trim()) && !parseOverreachCondition(l));
 }
 
+// The stage a `test-overreaches` line is addressed to. The form names a criterion rather
+// than a stage, because that is what it is about, but the work it asks for is one stage's
+// and the routing has to be able to say which.
+export const OVERREACH_STAGE = "derive-tests";
+
+// The condition form for a ruling whose work is not the stage being ruled's at all: the
+// reviewer at one gate sees something about an artifact another stage produced, and often
+// an artifact that gate has already approved. The build is what proves a slice claims more
+// than it can demonstrate, and nothing about that was knowable when the plan was ruled.
+//
+// A verb, a target and a reason, the same three parts `test-overreaches` has. The target
+// here is a stage name rather than a criterion id, and the reason is what that stage is
+// handed in place of everything it cannot see: the gate it was raised at, the proposal it
+// was raised on and the evidence behind it all belong to the ruling, not to the stage the
+// request arrives at.
+export const ADDRESSED_VERB = "addressed-to";
+
+// Restated wherever a ruler has to be told the form exists — the persona briefs, and the
+// error a malformed line is refused with — so the wording cannot drift between the place
+// that offers it and the place that reads it.
+export const ADDRESSED_CONDITION_FORM =
+  `${ADDRESSED_VERB} <stage>: <what that stage has to change, and what showed it>`;
+
+// No `/s` flag and a bare `$`, for the same reason `parseCondition` has neither. The
+// reason is required and a reason that collapses to nothing is not one: a request filed
+// without it reaches the addressed stage saying only that somebody was unhappy, which is
+// the defect this form exists to close.
+function parseAddressedCondition(line) {
+  const m = new RegExp(`^${ADDRESSED_VERB}\\s+(\\S+):\\s*(.+)$`).exec(String(line).trim());
+  if (!m) return null;
+  const text = collapseWhitespace(m[2]);
+  return text ? { verb: ADDRESSED_VERB, stage: m[1], text } : null;
+}
+
+// Every readable `addressed-to` line in a ruling's conditions. Lines in any other shape
+// are the ruled stage's own business and are left exactly as they are.
+export function addressedConditions(lines) {
+  return (lines ?? []).map(parseAddressedCondition).filter(Boolean);
+}
+
+// Lines that open with the verb and are not a condition — a bare stage name, a colon with
+// nothing after it, a reason that is only whitespace. Reported separately from "not this
+// form at all" because the two call for opposite handling: an ordinary free-text line is
+// kept verbatim for the writer, and one of these would file a request nobody can act on,
+// so the ruling is refused until it says something.
+export function malformedAddressedConditions(lines) {
+  return (lines ?? []).filter((l) => new RegExp(`^${ADDRESSED_VERB}\\b`).test(String(l).trim()) && !parseAddressedCondition(l));
+}
+
+// A ruling's conditions split into the ones the stage being asked to revise is to act on
+// and the ones addressed to some other stage. Both cross-stage forms are read here, since
+// both leave the same hole in a revise prompt: `test-overreaches` names a criterion whose
+// test another stage writes, and `addressed-to` names the stage outright.
+//
+// A stage handed a condition it cannot act on — and in the plain case, one naming a file
+// outside its own overlay — either fails or finds a way, and neither is what the ruler
+// asked for. What `mine` leaves out, `elsewhere` accounts for by name.
+export function splitConditionsByAddressee(lines) {
+  const mine = [];
+  const elsewhere = [];
+  for (const line of lines ?? []) {
+    const addressed = parseAddressedCondition(line);
+    if (addressed) { elsewhere.push({ stage: addressed.stage, text: addressed.text }); continue; }
+    const overreach = parseOverreachCondition(line);
+    if (overreach) { elsewhere.push({ stage: OVERREACH_STAGE, text: overreach.text }); continue; }
+    mine.push(line);
+  }
+  return { mine, elsewhere };
+}
+
 // The reviewer's two triage verbs, read on their own so a triage line can never be taken for
 // a product ruling or the other way round: each proposal family is read in its own grammar.
 function parseTriageCondition(line) {

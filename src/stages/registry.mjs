@@ -2658,6 +2658,16 @@ STAGES_BY_NAME.design = design;
 STAGES_BY_NAME.build = build;
 STAGES_BY_NAME.verify = verify;
 
+// The stages a condition may be addressed to: the ones that can be asked to produce their
+// artifact again. A stage declares that by having somewhere for a revision to start from
+// (`revisionOverlayPaths`), which is the same property `--revise` itself turns on, so the
+// set is read off the registry rather than listed a second time — a stage that gains a
+// revision mode becomes addressable with it, and one that has none can never be asked for
+// work it has no way to do.
+export function revisableStages() {
+  return Object.entries(STAGES_BY_NAME).filter(([, stage]) => stage?.revisionOverlayPaths).map(([name]) => name).sort();
+}
+
 export function stageFor(name) {
   const stage = STAGES_BY_NAME[name];
   if (!stage) throw new Error(`unknown stage: ${name}`);
