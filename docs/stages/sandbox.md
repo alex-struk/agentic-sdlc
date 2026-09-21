@@ -22,10 +22,14 @@ project's working tree. `--target` defaults to `new`.
 
 `--from <branch>` runs the action with the working tree on that branch and puts HEAD back
 afterwards, which is how an application that exists only on an unmerged proposal branch is started
-from `main` (`docs/decisions/0016-a-sandbox-starts-from-a-branch.md`). It is the same borrow
-`verify` makes to run a slice's suite against its own build proposal — `enterBranch` and
+from `main` (`docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md`). It is the same
+borrow `verify` makes to run a slice's suite against its own build proposal — `enterBranch` and
 `leaveBranch` in `src/lib/git.mjs` are what both use. Without the flag every action behaves as it
 always has: whatever tree it is run in is the one compose reads.
+
+Here `--from` takes a branch name. It is the same spelling `sdlc new --from <config.yaml>` uses for
+a file to create a project from, and the two are unrelated: the argument means whatever the command
+it is passed to reads, and this command reads a branch.
 
 Reads `.sdlc/config.yaml`'s `targets.<t>`: `base_url`, `identity`, `compose` (default
 `app/compose/compose.yaml`) and `seed_service` (default `seed`). Nothing here is written by the
@@ -55,6 +59,9 @@ there is nothing about a particular run worth recording that the config does not
 
 ## Checks that block
 
+- `--from` with no branch name after it — the shell form `sdlc sandbox down --from` — is refused
+  rather than read as "the tree you are standing in": a `down` that silently acted on `main` would
+  report a stack torn down while the containers the branch declares went on running.
 - `--from <branch>` refuses, before anything is started, when nothing resolves that branch name —
   `sandbox <action>: there is no branch <branch> in this repository` — and when the working tree is
   dirty, naming the paths, since a checkout carries uncommitted changes onto the branch and back
@@ -85,6 +92,7 @@ sdlc sandbox up --target new --from proposal/build-slice-<n>
 sdlc run bind-adapter --target new
 # rule the bind-adapter proposal at G3
 sdlc sandbox down --target new --from proposal/build-slice-<n>
+sdlc run verify --slice <n>
 ```
 
 Every later action against that stack takes the same flag, because compose resolves
@@ -112,7 +120,12 @@ a fresh `up` leaves behind.
 - Something dirties the tree while the action runs: HEAD is left on the borrowed branch with the
   residue visible on it rather than carried back, the paths are named, and the command exits 1 even
   where the action itself worked — the next `sdlc run` refuses anywhere but `main`, so that is the
-  thing to deal with first.
+  thing to deal with first. This is reported on the failing path too, before the failure itself is
+  re-raised: a caller who reads only a docker error, fixes docker, and is then refused by the next
+  `sdlc run` has been told nothing about where they are standing.
+- The action fails *and* HEAD cannot be put back — a checkout blocked by something the action left
+  behind: both are reported, and the failure that was already on its way out is the one raised,
+  never the teardown's.
 - The compose file is missing: refused before Docker is touched.
 - `docker compose up` fails, or the application never comes up within its timeout: `up` exits 1
   with the compose output's own tail; whatever containers did start are left running, not torn

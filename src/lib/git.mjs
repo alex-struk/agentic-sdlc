@@ -128,6 +128,31 @@ export function leaveBranch(projectDir, start) {
   return "";
 }
 
+// Merges `ref` into the branch that is checked out, and leaves nothing half-merged either
+// way. A conflict is answered rather than thrown: the paths git could not reconcile are
+// read out of the index first, the merge is aborted so the tree goes back to exactly what
+// it was, and the caller decides what a stale branch means to it.
+//
+// `rule.mjs`'s own `mergeApproved` is not this function and is not replaced by it: that
+// one merges a proposal INTO `main`, moving the caller between branches to do it, and its
+// unwind has to put them back on the proposal. This merges the other direction, on the
+// branch the caller is already standing on, and moves nobody.
+export function mergeInto(projectDir, ref, message) {
+  try {
+    git([...SDLC_AUTHOR, "merge", "-q", "--no-ff", "-m", message, ref], projectDir);
+    return { ok: true, conflicts: [] };
+  } catch (e) {
+    const listed = gitOk(["diff", "--name-only", "--diff-filter=U"], projectDir)
+      ? git(["diff", "--name-only", "--diff-filter=U"], projectDir) : "";
+    const conflicts = listed ? listed.split("\n").filter(Boolean) : [];
+    // `--abort` refuses when there is no merge in progress — a merge git declined to
+    // start at all, over a file it would have to overwrite — and the tree is already
+    // untouched in that case, so the refusal is not itself a failure.
+    gitOk(["merge", "--abort"], projectDir);
+    return { ok: false, conflicts, message: e.message };
+  }
+}
+
 // Stages exactly the given project-relative paths, skipping any that do not exist on
 // disk — a path a command did not end up writing (a run record on a command that wrote
 // none, say) is skipped rather than making `git add` fail. This cannot represent a

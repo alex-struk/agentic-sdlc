@@ -93,7 +93,7 @@ test("run record appends dated lines", () => {
 });
 
 // Borrowing a branch: the pair `sdlc sandbox --from` and `verify` both run on
-// (docs/decisions/0016-a-sandbox-starts-from-a-branch.md).
+// (docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md).
 function twoBranchRepo() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-borrow-"));
   git(["init", "-q", "-b", "main"], d);

@@ -12,7 +12,7 @@ import { join, relative } from "node:path";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
-import { git, gitOk, stagePaths, enterBranch, leaveBranch, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { runSuite } from "../testrun/playwright.mjs";
 import { resetCommandFor, targetSettings } from "../sandbox/local.mjs";
@@ -157,7 +157,7 @@ export const verify = {
     const branch = `proposal/${name}`;
     // The tree goes to the proposal the slice was built on and comes back afterwards, the
     // same borrow `sdlc sandbox --from` makes (`enterBranch`/`leaveBranch`,
-    // `src/lib/git.mjs`, and docs/decisions/0016-a-sandbox-starts-from-a-branch.md).
+    // `src/lib/git.mjs`, and docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md).
     const start = enterBranch(projectDir, branch, `verify slice ${slice.number}`);
     let text;
     let dirty = false;
@@ -166,6 +166,27 @@ export const verify = {
     // wrong here is swallowed.
     let failure;
     try {
+      // The branch was cut from `main` when the slice was built, and `main` has moved
+      // since: an adapter ruled at G3 in the meantime is on `main` and nowhere else, and
+      // so is every other thing the harness has become. Verify runs the suite on this
+      // branch, so a branch left as it was cut is verified against a test rig the
+      // project no longer has — and, where the missing piece is the adapter, reports the
+      // same criteria unbound for ever with no command able to change it
+      // (docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md). Bringing `main` in
+      // first is what makes the slice's next verify see it.
+      const merged = mergeInto(projectDir, "main", `merge(verify): main into ${branch} before slice ${slice.number}`);
+      if (!merged.ok) {
+        // Not a verdict about the application: nothing has run, so nothing is written to
+        // a gate file and the builder is not returned anything. A proposal that no
+        // longer merges is a slice that needs rebuilding on top of what `main` now has,
+        // and the reviewer would otherwise be the one to find that out.
+        text = [
+          `verify slice ${slice.number}: ${branch} no longer merges with main, so nothing was verified.`,
+          `Conflicted paths:\n  ${merged.conflicts.join("\n  ") || "(git named none)"}`,
+          `The merge was undone and ${branch} is exactly as it was. Rule or close this proposal and rebuild the slice on top of main.`,
+        ].join("\n");
+        throw new Error(text);
+      }
       const started = await up(projectDir);
       if (!started.ok) {
         // A sandbox that will not start is a failed run, not a quiet one. Nothing is
@@ -211,10 +232,9 @@ export const verify = {
           // proposal branch alone until the proposal is ruled — so naming
           // `bind-adapter` on its own names a step that refuses, every time, for a
           // target that has nothing running (0016). The whole sequence is printed
-          // instead, branch name filled in, ending where the reader has to act rather
-          // than run something: an adapter ruled onto `main` is not on a proposal branch
-          // that was opened before the ruling, and verify reads this slice's adapter off
-          // the branch it checks out.
+          // instead, branch name filled in, and it ends with the verify that picks the
+          // ruled adapter up — which is a step that runs because this stage merges
+          // `main` in first, and was a step that could not be reached before it did.
           text = [
             `verify slice ${slice.number}: ${v.unbound.join(", ")} have no binding on the new target yet.`,
             `The application they need is on ${branch} and nowhere else until that proposal is ruled, so bind against it from there. From main, with a clean tree:`,
@@ -222,7 +242,8 @@ export const verify = {
             "  2. sdlc run bind-adapter --target new",
             "  3. rule the bind-adapter proposal at G3, which puts the adapter on main",
             `  4. sdlc sandbox down --target new --from ${branch}`,
-            `Then verify slice ${slice.number} again once its build proposal carries that adapter: a proposal branch opened before the adapter was ruled does not have it, and verify runs the suite on the branch, not on main.`,
+            `  5. sdlc run verify --slice ${slice.number}`,
+            `Step 5 picks the ruled adapter up: verify merges main into ${branch} before it runs the suite, so the branch carries whatever was ruled onto main after it was cut.`,
           ].join("\n");
         } else {
           text = `verify slice ${slice.number} verified: every claimed criterion passes against the application in ${name}. Ready for G3.`;

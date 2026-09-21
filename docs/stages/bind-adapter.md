@@ -27,7 +27,7 @@ A `build` slice writes the application under `app/` on `proposal/build-slice-<n>
 G3; `main` has none of it until a reviewer approves. This stage runs from `main` and pre-checks
 that the target answers HTTP, so for target `new` the application has to be started from that
 proposal branch first. `sdlc sandbox --from <branch>` is what does it
-(`docs/decisions/0016-a-sandbox-starts-from-a-branch.md`): it builds and starts the branch's
+(`docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md`): it builds and starts the branch's
 compose stack and puts HEAD back where it found it, so this stage still begins on `main` with a
 clean tree, as it requires.
 
@@ -36,11 +36,16 @@ sdlc sandbox up --target new --from proposal/build-slice-<n>
 sdlc run bind-adapter --target new
 # rule the bind-adapter proposal at G3 — the adapter lands on main
 sdlc sandbox down --target new --from proposal/build-slice-<n>
+sdlc run verify --slice <n>
 ```
 
-The `--from` on the last line is not a flourish: compose resolves the target's compose file against
-the tree it is run in, and on `main` there is nothing to read, so tearing the stack down needs the
-branch just as starting it did.
+The `--from` on the fourth line is not a flourish: compose resolves the target's compose file
+against the tree it is run in, and on `main` there is nothing to read, so tearing the stack down
+needs the branch just as starting it did.
+
+The last line is what the adapter was bound for, and it reaches the adapter because `verify` merges
+`main` into the proposal branch before running the suite — a branch cut before the ruling does not
+carry it otherwise (`docs/stages/verify.md`).
 
 This is not only the first slice's problem. Every slice's new screens exist on that slice's
 proposal branch alone until it merges, so binding an adapter to them always runs against a tree

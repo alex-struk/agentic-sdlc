@@ -5,7 +5,7 @@
 // from the working tree, waited on, then seeded.
 //
 // `--from <branch>` is how an application that exists only on an unmerged proposal branch
-// is started from `main` (docs/decisions/0016-a-sandbox-starts-from-a-branch.md): the
+// is started from `main` (docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md): the
 // action runs with the working tree on that branch and HEAD is put back afterwards.
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -91,6 +91,14 @@ async function sandboxAction(projectDir, config, sub, target, { exec = defaultEx
 // stack, which is why `down`, `reset` and `status` take the same flag.
 export async function runSandbox(projectDir, sub, { target = "new", from } = {}, deps = {}) {
   if (!["up", "down", "reset", "status"].includes(sub)) { console.error(`unknown sandbox subcommand: ${sub ?? "(none)"}\n${USAGE}`); return 1; }
+  // `--from` with nothing after it parses as `true`, and a flag that reads as set but
+  // carries no branch must not quietly become "the tree you are standing in": a
+  // `sandbox down --from` typed that way would report a stack torn down while the
+  // containers the branch declares go on running.
+  if (from !== undefined && (typeof from !== "string" || !from)) {
+    console.error(`sandbox ${sub}: --from needs a branch name — sdlc sandbox ${sub} --from proposal/<name>`);
+    return 1;
+  }
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) { console.error(`config invalid:\n  ${errors.join("\n  ")}`); return 1; }
   if (!from) return sandboxAction(projectDir, config, sub, target, deps);
@@ -105,19 +113,31 @@ export async function runSandbox(projectDir, sub, { target = "new", from } = {},
   let failure;
   try { code = await sandboxAction(projectDir, config, sub, target, deps); }
   catch (err) { failure = err; }
-  const dirty = leaveBranch(projectDir, start);
+  // Where HEAD was left is reported before anything is rethrown, and reported on the
+  // failing path too. An action that threw after dirtying the tree is exactly when the
+  // caller most needs to be told: they read the docker failure, fix it, and the next
+  // `sdlc run` refuses with `must start on main` for a reason nothing has mentioned.
+  // `failure ??=` is why the report survives a teardown that fails as well — a checkout
+  // blocked by a file the action left behind must not replace the failure already on its
+  // way out (`src/stages/verify.mjs` does the same for the same reason).
+  let dirty = "";
+  try { dirty = leaveBranch(projectDir, start); }
+  catch (err) {
+    failure ??= err;
+    console.error(`sandbox ${sub}: HEAD could not be put back on ${start} and is still on ${from}; check it out by hand once the cause below is dealt with.`);
+  }
+  if (dirty) console.error(`sandbox ${sub}: the working tree was left dirty on ${from}, so HEAD is still there. Inspect and clean it, then check out ${start}:\n${dirty}`);
   if (failure) throw failure;
   // The action may well have worked — the stack can be up and serving — but HEAD is not
   // where the caller left it, and the next `sdlc run` refuses anywhere but `main`. That
   // is the thing to deal with first, so it decides the exit code.
-  if (dirty) {
-    console.error(`sandbox ${sub}: the working tree was left dirty on ${from}, so HEAD is still there. Inspect and clean it, then check out ${start}:\n${dirty}`);
-    return 1;
-  }
-  return code;
+  return dirty ? 1 : code;
 }
 
+// `flags.from` is passed through exactly as the parser produced it — a string, or `true`
+// for a bare `--from` — so the refusal above is the one place that decides what a flag
+// carrying no branch means, and a test can reach it without a shell.
 COMMANDS.sandbox = async ({ pos, flags }) => runSandbox(process.cwd(), pos[0], {
   target: typeof flags.target === "string" ? flags.target : "new",
-  from: typeof flags.from === "string" ? flags.from : undefined,
+  from: flags.from,
 });

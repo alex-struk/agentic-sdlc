@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { targetSettings, resetCommandFor } from "../src/sandbox/local.mjs";
 import { sandboxUp, sandboxReset, sandboxDown, runSandbox } from "../src/commands/sandbox.mjs";
 import { parseConfig } from "../src/config/load.mjs";
+import { COMMANDS } from "../src/cli.mjs";
 
 const CONFIG = { project: { name: "mkt" }, targets: { new: { base_url: "http://localhost:8080", identity: "sandbox-idp" } } };
 
@@ -215,4 +216,110 @@ test("work that dirties the branch keeps HEAD there and says so, rather than car
   assert.equal(headOf(d), "proposal/build-slice-1");
   assert.match(said.join("\n"), /left dirty on proposal\/build-slice-1/);
   assert.match(said.join("\n"), /leftover\.log/);
+});
+
+// stderr, captured: the refusals and the "where HEAD was left" reports are the whole
+// point of the paths below, and a message nobody can read is the defect being tested for.
+function saidOnStderr(t) {
+  const lines = [];
+  const err = console.error;
+  console.error = (m) => lines.push(String(m));
+  t.after(() => { console.error = err; });
+  return () => lines.join("\n");
+}
+
+test("an action that throws after dirtying the branch still fails, and says where HEAD was left", async (t) => {
+  const d = branchProject(t);
+  const said = saidOnStderr(t);
+  const exec = () => { writeFileSync(join(d, "app", "compose", "leftover.log"), "x\n"); throw new Error("docker: no such daemon"); };
+  const err = await runSandbox(d, "up", { target: "new", from: "proposal/build-slice-1" }, { exec, health: async () => true })
+    .then(() => null, (e) => e);
+  assert.ok(err, "the failure is not swallowed");
+  assert.match(err.message, /no such daemon/);
+  // Without this the caller reads a docker error, fixes docker, and the next `sdlc run`
+  // refuses with `must start on main` having never been told where it is standing.
+  assert.match(said(), /left dirty on proposal\/build-slice-1/);
+  assert.match(said(), /leftover\.log/);
+  assert.equal(headOf(d), "proposal/build-slice-1");
+});
+
+test("a teardown that cannot put HEAD back does not replace the failure already on its way out", async (t) => {
+  const d = branchProject(t);
+  const said = saidOnStderr(t);
+  // A lock file is what a crashed git leaves behind, and it fails the checkout home
+  // without touching `git status` — so the tree reads clean and the way back is shut.
+  const exec = () => { writeFileSync(join(d, ".git", "index.lock"), ""); throw new Error("docker: no such daemon"); };
+  const err = await runSandbox(d, "up", { target: "new", from: "proposal/build-slice-1" }, { exec, health: async () => true })
+    .then(() => null, (e) => e);
+  assert.match(err.message, /no such daemon/, "the docker failure survives a teardown that failed too");
+  assert.doesNotMatch(err.message, /index\.lock/);
+  assert.match(said(), /HEAD could not be put back on main/);
+  assert.equal(headOf(d), "proposal/build-slice-1");
+});
+
+test("a teardown that cannot put HEAD back is itself the failure when nothing else went wrong", async (t) => {
+  const d = branchProject(t);
+  saidOnStderr(t);
+  const exec = () => { writeFileSync(join(d, ".git", "index.lock"), ""); return { status: 0, stdout: "", stderr: "" }; };
+  const err = await runSandbox(d, "up", { target: "new", from: "proposal/build-slice-1" }, { exec, health: async () => true })
+    .then(() => null, (e) => e);
+  assert.ok(err, "a command that cannot give the tree back does not report success");
+  assert.match(err.message, /index\.lock/);
+});
+
+test("reset --from and status --from read the compose file the branch carries", async (t) => {
+  const d = branchProject(t);
+  const calls = [];
+  const exec = (cmd, args) => {
+    calls.push({ line: [cmd, ...args].join(" "), composePresent: existsSync(join(d, "app", "compose", "compose.yaml")) });
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  assert.equal(await runSandbox(d, "reset", { target: "new", from: "proposal/build-slice-1" }, { exec }), 0);
+  assert.equal(await runSandbox(d, "status", { target: "new", from: "proposal/build-slice-1" }, { exec }), 0);
+  assert.match(calls[0].line, /run --rm seed$/);
+  assert.match(calls[1].line, /ps$/);
+  assert.ok(calls.every((c) => c.composePresent), "both actions ran with the branch's tree in place");
+  assert.equal(headOf(d), "main");
+});
+
+test("a detached HEAD is given back detached, at the commit it was on", async (t) => {
+  const d = branchProject(t);
+  execFileSync("git", ["checkout", "-q", "--detach"], { cwd: d });
+  const at = execFileSync("git", ["rev-parse", "HEAD"], { cwd: d, encoding: "utf8" }).trim();
+  const { exec } = recorder();
+  assert.equal(await runSandbox(d, "up", { target: "new", from: "proposal/build-slice-1" }, { exec, health: async () => true }), 0);
+  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), at);
+  assert.equal(headOf(d), "HEAD", "still detached, rather than put on a branch it was never on");
+});
+
+test("a --from carrying no branch name is refused, not quietly run against the tree you are on", async (t) => {
+  const d = branchProject(t);
+  const said = saidOnStderr(t);
+  const { calls, exec } = recorder();
+  assert.equal(await runSandbox(d, "down", { target: "new", from: true }, { exec }), 1);
+  assert.match(said(), /--from needs a branch name/);
+  assert.deepEqual(calls, [], "no stack is torn down on the strength of a flag with nothing in it");
+});
+
+test("an unknown subcommand names itself and prints what the command takes", async (t) => {
+  const d = branchProject(t);
+  const said = saidOnStderr(t);
+  const { calls, exec } = recorder();
+  assert.equal(await runSandbox(d, "upp", { target: "new" }, { exec }), 1);
+  assert.match(said(), /unknown sandbox subcommand: upp/);
+  assert.match(said(), /usage: sdlc sandbox up\|down\|reset\|status \[--target <t>\] \[--from <branch>\]/);
+  assert.deepEqual(calls, []);
+});
+
+test("the CLI hands --from through as the parser produced it, so a bare one is caught", async (t) => {
+  const d = branchProject(t);
+  const said = saidOnStderr(t);
+  const cwd = process.cwd();
+  process.chdir(d);
+  t.after(() => process.chdir(cwd));
+  // A bare flag is refused before docker is reached, so this exercises the mapping
+  // without a daemon: `--from proposal/build-slice-1` would go on to run one.
+  assert.equal(await COMMANDS.sandbox({ pos: ["down"], flags: { target: "new", from: true } }), 1);
+  assert.match(said(), /--from needs a branch name/);
+  assert.equal(headOf(d), "main");
 });
