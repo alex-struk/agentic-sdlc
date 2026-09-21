@@ -64,8 +64,11 @@ The mailpit API port the oracle publishes is not a config key: it always reaches
 Optional. Container of deployment targets.
 
 - Each key is a target name (e.g., `new`). Each value is an object:
-  - `base_url` (string, format URI): A URL starting with `http://` or `https://`.
+  - `base_url` (string, format URI): A URL starting with `http://` or `https://`. The address the application itself publishes on, and the one `sandbox up` waits for before it reports the target up.
   - `identity` (enum): One of `session-route` or `sandbox-idp`.
+  - `compose` (string, optional): The target's own Docker Compose file, relative to the project root. Defaults to `app/compose/compose.yaml`, which is where the stack profile has the build declare the application's local services.
+  - `seed_service` (string, optional, pattern `^[a-z0-9][a-z0-9_-]*$`): The one-shot compose service that puts the data back to what `tests/seed/manifest.yaml` describes. Defaults to `seed`.
+  - `depends_on` (object of strings, optional): Addresses the target is not usable without, as a map of a name to a URL — conventionally `identity` for the sandbox's own identity provider. Names are lowercase words joined by hyphens; values are URLs of the same shape as `base_url`. `sandbox up` waits for each one after it has waited for `base_url`, and refuses the target by name when one of them never answers: a web tier that serves is not a usable sandbox when the provider every test signs in through cannot be reached. Declare an address a service answers on once it is genuinely ready — for a Keycloak, its realm's own endpoint rather than the server root, since the server answers before the realm is imported and would answer whether the import succeeded or not. A target that omits the key is waited for exactly as it always was.
 
 ## policy
 

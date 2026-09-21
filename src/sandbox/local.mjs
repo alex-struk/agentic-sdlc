@@ -16,6 +16,9 @@ export function targetSettings(config, target) {
   return {
     baseUrl: t.base_url,
     identity: t.identity,
+    // The addresses this target is not usable without, named. Empty for a target that
+    // declares none, which is every target that predates the key.
+    dependsOn: t.depends_on ?? {},
     compose: t.compose ?? DEFAULT_COMPOSE,
     seedService: t.seed_service ?? DEFAULT_SEED_SERVICE,
     project: `sdlc-${config.project.name}-${target}`,
@@ -137,4 +140,19 @@ export function serviceFailures(rows) {
 // wrote, and a builder can fix it.
 export function causeOf(failures) {
   return failures.some((f) => f.ran) ? APPLICATION : ENVIRONMENT;
+}
+
+// The failures that are already certain while the sandbox is still coming up, for the
+// poll that waits for its addresses to answer rather than for the watch that runs once
+// every wait has passed.
+//
+// A container that ran and is no longer running — restarting, dead, exited non-zero — has
+// failed whatever else is still starting around it. The two states left out are ones a
+// healthy project passes through on its way up: `created` is a container compose has not
+// started yet, and a service's own healthcheck reports `unhealthy` for as long as it is
+// inside its start period. Ending a wait on either of those would refuse sandboxes that
+// were about to be fine, which is the opposite error from the one this all exists for and
+// costs a run either way.
+export function ranAndStopped(failures) {
+  return failures.filter((f) => f.ran && f.state !== "running");
 }

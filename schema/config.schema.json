@@ -339,6 +339,17 @@
         "seed_service": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "depends_on": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9-]*$": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
         }
       }
     },

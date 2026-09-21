@@ -32,6 +32,10 @@ data. Each seeded user signs in to the sandbox identity provider with their `idp
 username and the password compose reads from the `SDLC_SANDBOX_PASSWORD` environment
 variable. Never write a password into any file.
 
+Every address the project's configuration lists under `targets.new.depends_on` must be published by
+a service in this file and must answer once that service is genuinely usable — the sandbox is not
+reported up until each of them does, and the run stops there.
+
 If the slice is the first one, it creates all of this. A later slice extends it.
 
 ## Screens

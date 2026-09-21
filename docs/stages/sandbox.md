@@ -32,7 +32,8 @@ a file to create a project from, and the two are unrelated: the argument means w
 it is passed to reads, and this command reads a branch.
 
 Reads `.sdlc/config.yaml`'s `targets.<t>`: `base_url`, `identity`, `compose` (default
-`app/compose/compose.yaml`) and `seed_service` (default `seed`). Nothing here is written by the
+`app/compose/compose.yaml`), `seed_service` (default `seed`) and `depends_on` (default none — the
+addresses the target is not usable without, as a map of a name to a URL). Nothing here is written by the
 pipeline the way `contract` writes the oracle's compose override — the compose file is the
 project's own, declared once when the first slice builds the application and extended by later
 slices as they need to.
@@ -45,7 +46,8 @@ identity provider's test users can sign in without the password ever appearing o
 
 - `up` — builds and starts the compose project (`docker compose ... up -d --build --wait`), waits
   for the application to answer at its configured `base_url` with anything short of a server
-  error, establishes that the project's services are actually running, then runs `reset`. Prints
+  error, waits the same way for each address the target declares under `depends_on`, establishes
+  that the project's services are actually running, then runs `reset`. Prints
   `sandbox <target> up at <base_url>` and exits 0, or names what failed and exits 1.
 - `reset` — runs the target's `seed_service` (`docker compose ... run --rm <service>`), which puts
   the data back to what `tests/seed/manifest.yaml` describes. Prints `sandbox <target> reseeded`,
@@ -72,6 +74,11 @@ there is nothing about a particular run worth recording that the config does not
 - `up` fails when `docker compose up` itself fails, or when the application never answers at its
   `base_url` (`the application did not answer at <base_url>`) — health is polled every two seconds
   for up to two minutes.
+- `up` fails when an address the target declares under `depends_on` never answers — `the sandbox is
+  not up: its <name> dependency did not answer at <url>`, polled the same way for the same length
+  of time. A target that signs its tests in through an identity provider of its own is not a usable
+  sandbox until that provider answers, and a provider whose realm import failed never answers at all
+  while the web tier in front of it serves normally throughout.
 - `up` fails when any service of the project is not running once both waits have passed. `--wait`
   gates only on services that declare a healthcheck, and the base-URL poll asks one service one
   question, so an identity provider that dies on startup and is restarted for ever satisfies both;
@@ -79,6 +86,31 @@ there is nothing about a particular run worth recording that the config does not
   names the service, what became of it and the end of its own log.
 - `up`'s own seed step is the same one `reset` runs on its own: a failing seed service fails the
   whole `up`, reported with the service's own tail.
+
+## What `up` waits for
+
+`base_url` first, then each address under `depends_on` in the order the file declares them, each
+polled every two seconds for up to two minutes until something answers with anything short of a
+server error.
+
+**The services are watched throughout every one of those waits, not only after them.** Between
+attempts the project's containers are read, and a container that ran and is no longer running ends
+the wait immediately: the refusal then names the service and quotes its log, rather than describing
+an address that stayed quiet for two minutes because the container behind it was crash-looping the
+whole time.
+
+Only a container that ran and stopped — restarting, dead, exited non-zero — ends a wait, and a `ps`
+that could not be read does not end one either. While the project is still coming up, the other
+states a container can be in are ones a healthy project passes through: `created` is a container
+compose has not started yet, and a service's own healthcheck reports `unhealthy` for as long as it
+is inside its start period. Ending a wait on either would refuse sandboxes that were about to be
+fine. Reading every failure, and refusing on an answer nothing could parse, belongs to the watch
+below, which runs once every wait has passed and nothing is still on its way up.
+
+**Which address to declare matters.** A service often answers on its root before the thing a test
+needs is loaded: a Keycloak serves HTTP while its realm import is still running, and goes on serving
+if that import fails. The address to declare is the one that is only there once the service is
+genuinely usable — the realm's own endpoint rather than the server root.
 
 ## Which services count as failed
 
@@ -127,13 +159,14 @@ application's. An image that never builds is the machine's, deliberately: compos
 Dockerfile defect and a registry that would not answer the same way, and no container exists to
 ask. A container the kernel killed for memory exits 137 and is reported as the application's, which
 is the wrong side — `ps --format json` carries no `OOMKilled` field and nothing here can know.
-`docs/decisions/0017-a-sandbox-that-is-not-up.md` has the reasoning, and `docs/stages/verify.md`
-has what `verify` does with each.
+`docs/decisions/0017-a-sandbox-that-is-not-up.md` has the reasoning for the split and
+`docs/decisions/0018-a-sandbox-is-ready-when-what-it-serves-through-answers.md` for what `up` waits
+for; `docs/stages/verify.md` has what `verify` does with each.
 
 ## Exit criterion
 
-`up` exits 0 once the application answers, every service of the project is running or has finished
-with exit 0, and the seed has loaded. `down` always exits 0. `reset`
+`up` exits 0 once the application answers, every address the target declares it depends on answers,
+every service of the project is running or has finished with exit 0, and the seed has loaded. `down` always exits 0. `reset`
 exits 0 once the seed service exits 0. `status` always exits 0.
 
 ## Starting the application from a proposal branch
@@ -192,5 +225,10 @@ a fresh `up` leaves behind.
 - `docker compose ps` will not run, or answers in a form this does not read: `up` exits 1 saying
   whether the services are running could not be established, with the cause `environment`. Nothing
   is claimed about the application on an answer nothing could parse.
+- An address under `depends_on` never answers: `up` exits 1 naming that dependency and the address,
+  with the cause `application` — those addresses are published by the same compose file the build
+  writes. Whatever containers did start are left running, and are not seeded.
+- A container dies while one of those addresses is still being waited for: `up` exits 1 naming the
+  service, what became of it, the end of its own log and the dependency whose wait it interrupted.
 - The seed service fails: `up` exits 1 naming the service and its own tail; the application is left
   running unseeded.

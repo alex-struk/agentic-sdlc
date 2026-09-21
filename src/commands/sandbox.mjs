@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { loadConfig } from "../config/load.mjs";
-import { targetSettings, composeArgs, parseComposePs, serviceFailures, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
+import { targetSettings, composeArgs, parseComposePs, serviceFailures, ranAndStopped, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
 import { enterBranch, leaveBranch } from "../lib/git.mjs";
 import { COMMANDS } from "../cli.mjs";
 
@@ -25,10 +25,24 @@ function defaultExec(cmd, args, { cwd, env = {} } = {}) {
   return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr || (res.error ? res.error.message : "") };
 }
 
-async function defaultHealth(url) {
-  for (let i = 0; i < 60; i += 1) {
-    try { const r = await fetch(url); if (r.status < 500) return true; } catch { /* not up yet */ }
-    await new Promise((ok) => setTimeout(ok, 2000));
+// How long one address is waited for, and how often it is asked.
+const HEALTH_TRIES = 60;
+const HEALTH_MS = 2000;
+
+// The wait for one address: `true` once something answers with anything short of a server
+// error, `false` once the tries run out — and, between attempts, whatever `tick` hands
+// back when it has found a service of this project already failed.
+//
+// That third answer is what keeps a wait from outliving the thing it is waiting for. An
+// address behind a container that is crash-looping will never answer, and waiting the full
+// two minutes to say so both costs the run two minutes and describes the wrong thing: the
+// answer is the container, and the container is knowable now.
+export async function pollAddress(url, tick = async () => null, { fetchUrl = (u) => fetch(u), sleep = sleepMs, tries = HEALTH_TRIES } = {}) {
+  for (let i = 0; i < tries; i += 1) {
+    try { const r = await fetchUrl(url); if (r.status < 500) return true; } catch { /* not up yet */ }
+    const stopped = await tick();
+    if (stopped) return stopped;
+    await sleep(HEALTH_MS);
   }
   return false;
 }
@@ -121,6 +135,41 @@ async function watchServices(projectDir, s, exec, { sleep = sleepMs, samples = S
   return { unreadable: "", failures: [...seen.values()] };
 }
 
+// The service watch as a single sample, for `pollAddress` to call between its own
+// attempts, so a container that dies while an address is still being waited for is caught
+// rather than raced.
+//
+// Only a container that ran and stopped ends a wait, and a `ps` that could not be read
+// does not end one either. While the project is still coming up this is an opportunity to
+// find a failure early and never the thing that establishes there is none: a container
+// that compose has created but not started, and a healthcheck still inside its start
+// period, are both states a healthy project passes through. Reading every failure, and
+// refusing on an answer nothing could parse, belongs to the watch that runs once every
+// wait has passed and nothing is still on its way up.
+function watchTick(projectDir, s, exec) {
+  return async () => {
+    const ps = psRows(projectDir, s, exec);
+    if (!ps.ok) return null;
+    const failures = ranAndStopped(serviceFailures(ps.rows));
+    return failures.length ? { failures } : null;
+  };
+}
+
+// The addresses `up` waits for, in the order it waits for them: the target's own base URL,
+// then each address it declares under `targets.<t>.depends_on`, named. A target that
+// declares none waits for exactly what it waited for before.
+//
+// A front door that answers is not a usable sandbox on its own. Where a target signs
+// people in through an identity provider of its own, nothing behind that provider can be
+// reached until it answers — and a provider whose realm import failed never answers at
+// all, while the web tier in front of it serves normally throughout
+// (docs/decisions/0018-a-sandbox-is-ready-when-what-it-serves-through-answers.md).
+function readiness(s) {
+  return [{ name: "", url: s.baseUrl }, ...Object.entries(s.dependsOn ?? {}).map(([name, url]) => ({ name, url }))];
+}
+
+const notRunning = (bad) => (bad.length === 1 ? "a service of this project is not running" : `${bad.length} services of this project are not running`);
+
 function withLogs(projectDir, s, exec, failures) {
   return failures.map((f) => ({ ...f, log: logTail(projectDir, s, exec, f.service) }));
 }
@@ -132,7 +181,7 @@ const describe = (f) => (f.log ? `${f.service} ${f.reason}. The end of its own l
 // that has to write one condition per service rather than print a paragraph.
 const failed = (cause, messages, failures = []) => ({ ok: false, cause, failures, messages });
 
-export async function sandboxUp(projectDir, config, target, { exec = defaultExec, health = defaultHealth, sleep = sleepMs, samples = SETTLE_SAMPLES } = {}) {
+export async function sandboxUp(projectDir, config, target, { exec = defaultExec, health = pollAddress, sleep = sleepMs, samples = SETTLE_SAMPLES } = {}) {
   const s = targetSettings(config, target);
   // The compose file is written by the build that declares the application's local
   // services, and it lives under `app/` with the rest of that build's output, so a missing
@@ -144,17 +193,34 @@ export async function sandboxUp(projectDir, config, target, { exec = defaultExec
     const bad = withLogs(projectDir, s, exec, psFailures(projectDir, s, exec));
     return failed(causeOf(bad), [`docker compose up failed:\n${tail(up)}`, ...bad.map(describe)], bad);
   }
-  if (!(await health(s.baseUrl))) {
+  const tick = watchTick(projectDir, s, exec);
+  for (const { name, url } of readiness(s)) {
+    const answer = await health(url, tick);
+    if (answer === true) continue;
+    const waiting = name ? ` while waiting for its ${name} dependency at ${url}` : "";
+    if (answer) {
+      // A service of this project ran and stopped while the wait was still going on, so
+      // the address was never going to answer. What is reported is the service, since
+      // that is what a builder can act on; the wait it interrupted is named alongside it.
+      const bad = withLogs(projectDir, s, exec, answer.failures);
+      return failed(causeOf(bad), [`the sandbox is not up${waiting}: ${notRunning(bad)}`, ...bad.map(describe)], bad);
+    }
     // The address in `targets.<t>.base_url` is the one the build was told to publish on
-    // and the one the acceptance suite drives. Nothing answering there is the application
-    // not serving, whatever state the containers around it are in.
+    // and the one the acceptance suite drives, and each address under `depends_on` is one
+    // the same compose file was told to publish. Nothing answering at either is the
+    // application not serving, whatever state the containers around it are in.
     const bad = withLogs(projectDir, s, exec, psFailures(projectDir, s, exec));
-    return failed(APPLICATION, [`the application did not answer at ${s.baseUrl}`, ...bad.map(describe)], bad);
+    const missed = name
+      ? `the sandbox is not up: its ${name} dependency did not answer at ${url}`
+      : `the application did not answer at ${url}`;
+    return failed(APPLICATION, [missed, ...bad.map(describe)], bad);
   }
-  // `--build --wait` gates only on services that declare a healthcheck, and the base-URL
-  // wait only ever asked one service anything. Neither notices a second service that came
+  // `--build --wait` gates only on services that declare a healthcheck, and the waits above
+  // ask only the addresses this target declares. None of them notices a service that came
   // up, fell over and has been restarting ever since — which is a sandbox that is not up,
-  // whatever the web tier says.
+  // whatever the web tier says. This is the reading that decides: it looks at every
+  // container, including the ones still coming up when the last wait passed, and refuses
+  // on a `ps` it could not read.
   const watched = await watchServices(projectDir, s, exec, { sleep, samples });
   // Whether the services are running could not be established, so the sandbox is not
   // reported up. This is the machine's: a `ps` that will not run or will not parse says
@@ -163,10 +229,7 @@ export async function sandboxUp(projectDir, config, target, { exec = defaultExec
   if (watched.unreadable)
     return failed(ENVIRONMENT, [`the sandbox is not reported up: whether this project's services are running could not be established.\n${watched.unreadable}`]);
   const bad = withLogs(projectDir, s, exec, watched.failures);
-  if (bad.length) {
-    const what = bad.length === 1 ? "a service of this project is not running" : `${bad.length} services of this project are not running`;
-    return failed(causeOf(bad), [`the sandbox is not up: ${what}`, ...bad.map(describe)], bad);
-  }
+  if (bad.length) return failed(causeOf(bad), [`the sandbox is not up: ${notRunning(bad)}`, ...bad.map(describe)], bad);
   const seeded = sandboxReset(projectDir, config, target, { exec });
   return seeded.ok ? { ok: true, baseUrl: s.baseUrl, messages: [] } : seeded;
 }
