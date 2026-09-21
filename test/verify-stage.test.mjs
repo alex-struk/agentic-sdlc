@@ -25,6 +25,9 @@ test("a suite run given spec files runs exactly those", (t) => {
   mkdirSync(join(d, "tests", "acceptance", "users"), { recursive: true });
   mkdirSync(join(d, "tests", "test-results"), { recursive: true });
   writeFileSync(join(d, "tests", "test-results", "results.json"), '{"suites":[]}');
+  // The target has an adapter: without one there is nothing to drive and no run happens.
+  mkdirSync(join(d, "tests", "adapters", "new"), { recursive: true });
+  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = {};\n");
   const calls = [];
   const exec = (cmd, args) => { calls.push(args); return { status: 0, stdout: '{"suites":[]}', stderr: "" }; };
   runSuite({ projectDir: d, target: "new", baseUrl: "http://x", files: ["tests/acceptance/users/R-4.1.spec.ts"], exec });

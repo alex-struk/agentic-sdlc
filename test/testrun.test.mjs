@@ -7,10 +7,17 @@ import { git } from "../src/lib/git.mjs";
 import { writeText } from "../src/lib/fsx.mjs";
 import { runSuite } from "../src/testrun/playwright.mjs";
 
-function project() {
+// Every target these tests run against has an adapter on disk. A target with none is a
+// case of its own, exercised below: `runSuite` answers it without a run, because with the
+// module absent every spec dies at import and the run can say nothing useful.
+function project(targets = ["old", "new"]) {
   const d = mkdtempSync(join(tmpdir(), "sdlc-testrun-"));
   git(["init", "-q", "-b", "main"], d);
   git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
+  for (const t of targets) {
+    mkdirSync(join(d, "tests", "adapters", t), { recursive: true });
+    writeFileSync(join(d, "tests", "adapters", t, "index.ts"), "export const surface = {};\n");
+  }
   return d;
 }
 
@@ -491,4 +498,37 @@ test("runSuite: the mock runner reads an empty files list the same way", () => {
   } finally {
     delete process.env.SDLC_TEST_RUNNER; delete process.env.SDLC_MOCK_DIR;
   }
+});
+
+// Every acceptance spec reaches its target through the adapter, so a target with no
+// adapter at all makes every spec die at import with a module-resolution error — which
+// reads like an ordinary failure. Verify then returns the slice to the builder with a
+// condition per criterion, blaming it for a harness nobody has written, and each such
+// return counts toward the ceiling that escalates the slice.
+test("runSuite: a target with no adapter is unbound for every spec, without a run", () => {
+  const d = project([]);
+  writeIndex(d, [accepted("R-7.1", "content"), accepted("R-7.2", "content")]);
+  write(d, "tests/acceptance/content/R-7.1.spec.ts", specHeader("R-7.1", 1));
+  write(d, "tests/acceptance/content/R-7.2.spec.ts", specHeader("R-7.2", 1));
+  const calls = [];
+  const exec = (cmd, args) => { calls.push(args); return { status: 0, stdout: "", stderr: "" }; };
+
+  const { rows } = runSuite({ projectDir: d, target: "new", baseUrl: "http://x", exec });
+
+  assert.deepEqual(rows.map((r) => [r.id, r.result]), [["R-7.1", "unbound"], ["R-7.2", "unbound"]]);
+  assert.match(rows[0].tests[0].error, /^Error: unbound: tests\/adapters\/new\/index\.ts does not exist/);
+  assert.equal(calls.length, 0, "a browser started to discover nothing can be driven is a browser started for nothing");
+});
+
+// The guard is about the adapter being absent, not about any run being unwelcome: a
+// target that has one is run exactly as before.
+test("runSuite: a target that has an adapter is still run", () => {
+  const d = project(["new"]);
+  writeIndex(d, [accepted("R-7.1", "content")]);
+  write(d, "tests/acceptance/content/R-7.1.spec.ts", specHeader("R-7.1", 1));
+  write(d, "tests/test-results/results.json", '{"suites":[]}');
+  const calls = [];
+  const exec = (cmd, args) => { calls.push(args); return { status: 0, stdout: '{"suites":[]}', stderr: "" }; };
+  runSuite({ projectDir: d, target: "new", baseUrl: "http://x", exec });
+  assert.ok(calls.some((a) => a.includes("playwright")), "the suite runs when there is something to drive");
 });

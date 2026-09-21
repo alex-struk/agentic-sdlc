@@ -161,6 +161,30 @@ function buildRows(report, projectDir, staleIds) {
 // One row per `not-testable.yaml` entry, with no file and no tests — it stands in for a
 // spec file the same way it stands in for one in `checkTests`'s coverage report. Domain
 // comes from the criteria index, since a not-testable entry names only the id.
+// The domain a spec belongs to is the folder above it, which is how `buildRows` reads it
+// off a report and how `checkTests` requires them to be laid out.
+function domainOfSpec(relFile) {
+  return basename(dirname(relFile));
+}
+
+// Every spec on disk, as project-relative paths, optionally narrowed to one domain. Used
+// only where there is no run to read a file list out of.
+function listSpecFiles(projectDir, domain) {
+  const acceptanceDir = join(projectDir, "tests", "acceptance");
+  if (!existsSync(acceptanceDir)) return [];
+  const out = [];
+  for (const entry of readdirSync(acceptanceDir)) {
+    if (domain !== undefined && entry !== domain) continue;
+    const abs = join(acceptanceDir, entry);
+    if (!statSync(abs).isDirectory()) continue;
+    for (const filename of readdirSync(abs)) {
+      if (statSync(join(abs, filename)).isDirectory()) continue;
+      out.push(`tests/acceptance/${entry}/${filename}`);
+    }
+  }
+  return out;
+}
+
 function notTestableRows(projectDir, domain) {
   const byId = new Map((loadIndex(projectDir)?.criteria ?? []).map((c) => [c.id, c]));
   const wanted = (entry) => domain === undefined || byId.get(entry.id)?.domain === domain;
@@ -240,6 +264,32 @@ export function runSuite(opts) {
   // nothing is run, and the only rows are the ones that never come from a run at all.
   if (files !== undefined && files.length === 0) {
     return { rows: sortRows(notTestableRows(projectDir, domain)), raw: null, ok: true };
+  }
+
+  // A target with no adapter at all is the unbound case at its largest, and the run
+  // cannot say so for itself: every spec imports the adapter through the fixtures, so
+  // with the module absent each one dies at import with a resolution error, which reads
+  // to `classify` as an ordinary failure. Verify then returns the slice to the builder
+  // with a condition per criterion, blaming it for a test harness that was never written
+  // — and each such return counts toward the ceiling that escalates the slice.
+  //
+  // Checked here rather than matched in the error text, which would turn a message format
+  // into a contract, and answered without a run: a browser started to discover that
+  // nothing can be driven is a browser started for nothing.
+  const adapterEntry = join(projectDir, "tests", "adapters", target, "index.ts");
+  if (!existsSync(adapterEntry)) {
+    const reason = `unbound: tests/adapters/${target}/index.ts does not exist, so nothing on ${target} can be driven yet`;
+    const specs = (files ?? listSpecFiles(projectDir, domain)).map((relFile) => {
+      const header = readHeader(join(projectDir, relFile), relFile);
+      return {
+        id: header.id, version: header.version,
+        domain: domainOfSpec(relFile), file: relFile,
+        result: header.error ? "fail" : "unbound",
+        tests: [{ title: header.error ?? reason, status: "failed", error: header.error ?? `Error: ${reason}` }],
+        ...(header.error ? { error: header.error } : {}),
+      };
+    });
+    return { rows: sortRows([...specs, ...notTestableRows(projectDir, domain)]), raw: null, ok: true };
   }
 
   ensureDeps(projectDir, exec);

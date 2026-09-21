@@ -1003,6 +1003,10 @@ test("the suite filter names one domain's directory, anchored so a prefix cannot
   const { runSuite } = await import("../src/testrun/playwright.mjs");
   const dir = mkdtempSync(join(tmpdir(), "sdlc-scoped-"));
   mkdirSync(join(dir, "tests", "acceptance"), { recursive: true });
+  // The target has an adapter: a target with none is answered without a run at all, and
+  // this test is about the arguments a real run is given.
+  mkdirSync(join(dir, "tests", "adapters", "old"), { recursive: true });
+  writeFileSync(join(dir, "tests", "adapters", "old", "index.ts"), "export const surface = {};\n");
   try {
     runSuite({
       projectDir: dir, target: "old", baseUrl: "http://x", mailApi: "",
