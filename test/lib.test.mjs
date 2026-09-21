@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, gitOk, assertCleanTree, stageAll } from "../src/lib/git.mjs";
+import { git, gitOk, assertCleanTree, stageAll, enterBranch, leaveBranch, mergeInto } from "../src/lib/git.mjs";
 import { copyTree, copyTreeOverwrite, readText } from "../src/lib/fsx.mjs";
 import { appendRun } from "../src/lib/runrecord.mjs";
 
@@ -90,4 +90,103 @@ test("run record appends dated lines", () => {
   const p = appendRun(d, "init: installed 2 packs");
   assert.match(readText(p), /^- \d\d:\d\d:\d\d init: installed 2 packs$/m);
   assert.match(p, /\.sdlc\/runs\/\d{4}-\d\d-\d\d\.md$/);
+});
+
+// Borrowing a branch: the pair `sdlc sandbox --from` and `verify` both run on
+// (docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md).
+function twoBranchRepo() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-borrow-"));
+  git(["init", "-q", "-b", "main"], d);
+  git(["config", "user.email", "test@example.com"], d);
+  git(["config", "user.name", "Test"], d);
+  writeFileSync(join(d, "on-main.txt"), "main\n");
+  git(["add", "-A"], d); git(["commit", "-q", "-m", "init"], d);
+  git(["checkout", "-q", "-b", "side"], d);
+  writeFileSync(join(d, "on-side.txt"), "side\n");
+  git(["add", "-A"], d); git(["commit", "-q", "-m", "side"], d);
+  git(["checkout", "-q", "main"], d);
+  return d;
+}
+
+test("entering a branch checks it out and reports where HEAD was, and leaving puts it back", () => {
+  const d = twoBranchRepo();
+  const start = enterBranch(d, "side", "borrow");
+  assert.equal(start, "main");
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "side");
+  assert.ok(existsSync(join(d, "on-side.txt")));
+  assert.equal(leaveBranch(d, start), "");
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+  assert.equal(existsSync(join(d, "on-side.txt")), false);
+});
+
+test("a branch that does not exist is named, and nothing is checked out", () => {
+  const d = twoBranchRepo();
+  assert.throws(() => enterBranch(d, "sideways", "borrow"), /borrow: there is no branch sideways/);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+});
+
+test("a dirty tree is refused before the checkout, since the checkout would carry it across", () => {
+  const d = twoBranchRepo();
+  writeFileSync(join(d, "on-main.txt"), "edited\n");
+  assert.throws(() => enterBranch(d, "side", "borrow"), /borrow: the working tree has uncommitted changes/);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+  assert.equal(readFileSync(join(d, "on-main.txt"), "utf8"), "edited\n");
+});
+
+test("a tree dirtied on the borrowed branch stays there, and the residue is handed back", () => {
+  const d = twoBranchRepo();
+  const start = enterBranch(d, "side", "borrow");
+  writeFileSync(join(d, "leftover.txt"), "x\n");
+  const dirty = leaveBranch(d, start);
+  assert.match(dirty, /leftover\.txt/);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "side", "HEAD stays where the residue was made");
+});
+
+// `mergeInto` is what lets verify test a proposal against the project's current test rig.
+// Its failure shape matters as much as its success: a merge that git declined for a reason
+// that is not a conflict must not be reported as a stale proposal, because the remedy for
+// the two is different.
+test("mergeInto: merges, reports conflicts, and distinguishes a refusal that is not one", (t) => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-mergeinto-"));
+  t.after(() => rmSync(d, { recursive: true, force: true }));
+  const g = (...a) => git(a, d);
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@example.org"); g("config", "user.name", "t");
+  writeFileSync(join(d, "shared.txt"), "base\n");
+  g("add", "-A"); g("commit", "-q", "-m", "base");
+  g("checkout", "-q", "-b", "topic");
+
+  // main moves; topic does not touch the same file, so the merge lands.
+  g("checkout", "-q", "main");
+  writeFileSync(join(d, "other.txt"), "from main\n");
+  g("add", "-A"); g("commit", "-q", "-m", "main moves");
+  g("checkout", "-q", "topic");
+  const clean = mergeInto(d, "main", "merge: main into topic");
+  assert.deepEqual(clean, { ok: true, conflicts: [] });
+  assert.equal(readFileSync(join(d, "other.txt"), "utf8"), "from main\n");
+
+  // Already up to date: no second commit.
+  const before = git(["rev-parse", "HEAD"], d);
+  assert.equal(mergeInto(d, "main", "merge again").ok, true);
+  assert.equal(git(["rev-parse", "HEAD"], d), before, "an up-to-date merge writes no commit");
+
+  // A real conflict: named, undone, branch untouched.
+  g("checkout", "-q", "main");
+  writeFileSync(join(d, "shared.txt"), "main's line\n");
+  g("add", "-A"); g("commit", "-q", "-m", "main edits shared");
+  g("checkout", "-q", "topic");
+  writeFileSync(join(d, "shared.txt"), "topic's line\n");
+  g("add", "-A"); g("commit", "-q", "-m", "topic edits shared");
+  const tip = git(["rev-parse", "HEAD"], d);
+  const conflicted = mergeInto(d, "main", "merge: main into topic");
+  assert.equal(conflicted.ok, false);
+  assert.deepEqual(conflicted.conflicts, ["shared.txt"]);
+  assert.equal(git(["rev-parse", "HEAD"], d), tip, "the branch is exactly as it was");
+  assert.equal(git(["status", "--porcelain"], d), "", "nothing is left half-merged");
+
+  // A ref that does not resolve is a failure with NO conflicted path, and git's own
+  // reason is carried so the caller can say what actually happened.
+  const missing = mergeInto(d, "no-such-ref", "merge: nothing");
+  assert.equal(missing.ok, false);
+  assert.deepEqual(missing.conflicts, []);
+  assert.ok(missing.message, "git's reason is carried, not discarded");
 });

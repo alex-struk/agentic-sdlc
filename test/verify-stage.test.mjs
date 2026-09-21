@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { runSuite } from "../src/testrun/playwright.mjs";
-import { verify, verifyVerdict, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
+import { verify, verifyVerdict, mergeFailureText, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
 import { build } from "../src/stages/build.mjs";
 import { buildProposalBase } from "../src/stages/slices.mjs";
 import { nextProposalName } from "../src/stages/proposals.mjs";
@@ -248,13 +248,20 @@ test("three real fail-then-revise cycles escalate only on the third verify", asy
   assert.equal(gate.escalate_to, "tech-lead");
 });
 
-test("an unbound slice is neither returned nor passed, and names the binding it needs", async (t) => {
+test("an unbound slice is neither returned nor passed, and names the whole sequence the binding needs", async (t) => {
   const d = buildProject(t);
   mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound")]);
   const ctx = ctxFor(d);
   verify.preChecks(d, ctx);
   const r = await verify.execute(d, ctx);
   assert.match(r.text, /bind-adapter --target new/);
+  // bind-adapter refuses a target that is not answering, and the only tree the
+  // application exists in is the proposal's, so the step before it has to be there and
+  // has to name that branch — a reader given `bind-adapter` alone runs a command that
+  // cannot work (docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md).
+  assert.match(r.text, /sdlc sandbox up --target new --from proposal\/build-slice-1/);
+  assert.match(r.text, /sdlc sandbox down --target new --from proposal\/build-slice-1/);
+  assert.match(r.text, /rule the bind-adapter proposal/);
   assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
 });
 
@@ -399,4 +406,71 @@ test("a sandbox that will not stop is reported without hiding what the run was a
   assert.match(readFileSync(join(d, ".sdlc", "runs", `${day}.md`), "utf8"), /slice 1 verified/);
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: d, encoding: "utf8" }), "",
     "the record of a failed attempt is committed rather than left to block the next run");
+});
+
+// `main` moves while a build proposal is open — a ruled adapter is the case that matters,
+// since `bind-adapter` can only run once the slice's application is up, which is after the
+// proposal exists (docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md). The branch has
+// to carry what was ruled, or the suite runs against a test rig the project no longer has.
+function commitOnMain(d, path, body) {
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  run(["checkout", "-q", "main"]);
+  mkdirSync(join(d, path, ".."), { recursive: true });
+  writeFileSync(join(d, path), body);
+  run(["add", "-A"]);
+  run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", `main: ${path}`]);
+}
+
+test("verify brings main into the proposal branch before it runs the suite", async (t) => {
+  const d = buildProject(t);
+  commitOnMain(d, "tests/adapters/new/index.ts", "export default function create() { return {}; }\n");
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  // The adapter ruled onto main after the branch was cut is now on the branch, which is
+  // the tree the suite ran against and the tree a reviewer will read.
+  assert.match(onBranch(d, "tests/adapters/new/index.ts"), /export default function create/);
+  assert.equal(execFileSync("git", ["merge-base", "--is-ancestor", "main", "proposal/build-slice-1"], { cwd: d }).toString(), "");
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), "main");
+});
+
+test("a proposal that no longer merges with main is reported as that, not as a failing slice", async (t) => {
+  const d = buildProject(t);
+  // The same path written differently on both sides: the slice's own application file.
+  commitOnMain(d, "app/index.ts", "export const fromAnotherSlice = true;\n");
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const branchBefore = execFileSync("git", ["rev-parse", "proposal/build-slice-1"], { cwd: d, encoding: "utf8" });
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const err = await verify.execute(d, ctx).then(() => null, (e) => e);
+  assert.ok(err, "a branch that cannot be merged fails the run");
+  assert.match(err.message, /no longer merges with main/);
+  assert.match(err.message, /app\/index\.ts/);
+  // Nothing half-merged, nothing written: the branch is exactly as it was, no gate file
+  // returns the slice to the builder, and the caller is back on main.
+  assert.equal(existsSync(join(d, ".git", "MERGE_HEAD")), false);
+  assert.equal(execFileSync("git", ["rev-parse", "proposal/build-slice-1"], { cwd: d, encoding: "utf8" }), branchBefore);
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), "main");
+});
+
+// A stale proposal and a merge git simply declined need different remedies. Reporting the
+// second as the first sends a person to rebuild a slice that has nothing wrong with it, and
+// throws away the one line that would have said so.
+test("verify tells a conflicted merge apart from a merge that failed for another reason", () => {
+  const stale = mergeFailureText(1, "proposal/build-slice-1", {
+    ok: false, conflicts: ["app/index.ts", "app/other.ts"], message: "CONFLICT (content): ...",
+  });
+  assert.match(stale, /no longer merges with main/);
+  assert.match(stale, /app\/index\.ts/);
+  assert.match(stale, /rebuild the slice on top of main/);
+
+  const declined = mergeFailureText(1, "proposal/build-slice-1", {
+    ok: false, conflicts: [], message: "fatal: not something we can merge",
+  });
+  assert.match(declined, /could not be merged/);
+  assert.match(declined, /not a stale proposal/);
+  assert.match(declined, /fatal: not something we can merge/, "git's own reason is carried");
+  assert.ok(!/rebuild the slice/.test(declined), "the wrong remedy is not prescribed");
 });

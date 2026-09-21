@@ -27,27 +27,37 @@ asks for happens at the gate it is returned to, not here.
 ## What `execute` does, in order
 
 1. **Check out the build proposal's branch** (`proposal/<name>`) — verify runs against exactly the
-   code that branch carries, not against `main`.
-2. **Bring the sandbox up** against target `new` (`sandboxUp`, `docs/stages/sandbox.md`): the
+   code that branch carries, not against `main`. HEAD goes back where it was found afterwards
+   (`enterBranch`/`leaveBranch`, `src/lib/git.mjs`).
+2. **Merge `main` into that branch** (`merge(verify): main into proposal/<name> before slice <n>`).
+   The branch was cut when the slice was built and `main` has moved since: an adapter ruled at G3
+   in the meantime is on `main` and nowhere else, and so are the fixtures, the generated surface
+   types, the seed and the ratified criteria index. Without this the suite runs against a test rig
+   the project no longer has — and where the missing piece is the adapter, reports the same
+   criteria `unbound` for ever, since the `unbound` route writes no gate file for `build --revise`
+   to read and the open proposal blocks a fresh `build`
+   (`docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md`). A merge that conflicts is
+   undone, and ends the run: see "Checks" below.
+3. **Bring the sandbox up** against target `new` (`sandboxUp`, `docs/stages/sandbox.md`): the
    project's own compose file, built, started, health-checked and reseeded. A sandbox that will not
    start ends the run there, reporting why, with nothing recorded.
-3. **Run the acceptance suite** for the slice's spec files against the running sandbox, then keep
+4. **Run the acceptance suite** for the slice's spec files against the running sandbox, then keep
    only the rows for criteria the slice actually claims. A slice with no spec files at all runs
    nothing: an empty file list means "nothing to run", not "no filter", so a slice whose criteria
    are all not-testable — or whose tests have not been derived yet — never costs a full suite run.
-4. **Classify the result** (`verifyVerdict`): every claimed criterion is looked up by id.
+5. **Classify the result** (`verifyVerdict`): every claimed criterion is looked up by id.
    - `unbound` — every criterion whose adapter binding does not exist on `new` is set aside
      separately.
    - Anything else that is not `pass`, `not-testable` or `attested` — a `fail`, a `stale` test, or
      a criterion missing from the run altogether — counts as failing.
    - The verdict is `fail` if anything failed, `unbound` if nothing failed but something is
      unbound, otherwise `pass`.
-5. **Write the result file**, `tests/results/new/slice-<n>.json` —
+6. **Write the result file**, `tests/results/new/slice-<n>.json` —
    `{ slice, proposal, app_tree, at, verdict, rows }`. `app_tree` is the commit the branch's `app/`
    tree hashes to, which is what `buildVerified` compares against later, so a ruling cannot be given
    on the strength of verify evidence about a version of the application the proposal no longer
    carries.
-6. **On `fail`, return the build proposal.** `.sdlc/gates/<name>.yaml` is written with
+7. **On `fail`, return the build proposal.** `.sdlc/gates/<name>.yaml` is written with
    `verdict: return`, `by: runner:verify`, `held_by: runner`, and one condition per failing
    criterion (`<id>: <its first error>`) — the same gate-file shape a reviewer's own return would
    leave, so `build --slice <n> --revise` reads either one the same way
@@ -57,11 +67,24 @@ asks for happens at the gate it is returned to, not here.
    failures below may not even be the application's to fix. Only verify's own returns
    (`by: runner:verify`) count toward that third strike; a reviewer's return of the same proposal
    does not.
-7. **On `unbound`, report and stop.** Nothing is written to a gate file; the next step is
-   `sdlc run bind-adapter --target new`, then verifying again.
-8. **On `pass`, report ready for G3.** Nothing else is written; the reviewer can now rule the build
+8. **On `unbound`, report and stop.** Nothing is written to a gate file. What is printed is the
+   whole sequence binding takes, with the proposal branch's name filled in:
+
+   ```
+   sdlc sandbox up --target new --from proposal/<name>
+   sdlc run bind-adapter --target new
+   # rule the bind-adapter proposal at G3 — the adapter lands on main
+   sdlc sandbox down --target new --from proposal/<name>
+   sdlc run verify --slice <n>
+   ```
+
+   The application exists on that branch alone until the build proposal is ruled, and
+   `bind-adapter` refuses a target that is not answering, so `bind-adapter` named on its own is a
+   step that cannot run. The last line picks the ruled adapter up because of step 2 above
+   (`docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md`).
+9. **On `pass`, report ready for G3.** Nothing else is written; the reviewer can now rule the build
    proposal.
-9. **Commit the result** — and the gate file, on a `fail` — onto the proposal branch, then tear the
+10. **Commit the result** — and the gate file, on a `fail` — onto the proposal branch, then tear the
    sandbox down and check back out to the branch verify started from.
 
 Teardown happens whatever the outcome, and it is teardown only: an exception on its way out of the
@@ -75,6 +98,7 @@ the proposal branch.
   `verify(slice <n>): <verdict>`.
 - `.sdlc/gates/<name>.yaml`, only on a `fail` verdict — `return`, or on the third such return for
   the slice, `escalated` naming G3's `escalate_to`.
+- A merge commit on the proposal's branch, whenever `main` has moved since the branch was cut.
 - A run-record line, on every attempt — including one that failed part-way and one that left the
   branch dirty.
 - No gate of its own on `pass` or `unbound`: nothing is asked of a person until either the reviewer
@@ -87,12 +111,21 @@ the proposal branch.
 | `pass` | Ready for G3 — the reviewer can now rule the build proposal. | None. |
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
-| `unbound` | `sdlc run bind-adapter --target new`, then verify again. | None. |
+| `unbound` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |
+| the branch no longer merges with `main` | Nothing ran. Rule or close the proposal and rebuild the slice on top of `main`. | None. |
 
 ## Checks
 
-None beyond the classification above: `postChecks` returns nothing and `verify` opens no proposal
-of its own — it writes onto one that already exists.
+`postChecks` returns nothing and `verify` opens no proposal of its own — it writes onto one that
+already exists. Two things end a run before any classification happens, and neither records
+anything against the build:
+
+- **The branch no longer merges with `main`.** The merge is aborted, so the branch is exactly as it
+  was and nothing is left half-merged, and the run fails naming the conflicted paths. No gate file
+  is written and the builder is not returned anything: a conflict is a fact about two branches, not
+  a verdict about the application, and the slice needs rebuilding on top of what `main` now has.
+- **The sandbox will not start.** Reported with the compose failure's own tail, with nothing
+  recorded — the cause may be the machine rather than the application.
 
 ## Failure modes
 
@@ -102,6 +135,9 @@ of its own — it writes onto one that already exists.
   is started. Without it every test in the slice fails at the sign-in form, and verify would read a
   suite of sign-in failures as the application's fault and return the slice to a builder that
   cannot fix an environment defect.
+- **The branch no longer merges with `main`**: the merge is aborted before the sandbox is touched,
+  the conflicted paths are named, and the run fails. Nothing is written, and the branch is exactly
+  as it was.
 - **The sandbox does not start**: reported in the run's own text; nothing is written and the branch
   is left exactly as it was.
 - **A throw leaves the branch dirty** — between the result write and the commit landing: verify
