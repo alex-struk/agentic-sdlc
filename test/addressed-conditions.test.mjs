@@ -318,3 +318,102 @@ test("a line in this form at a gate with a closed grammar is left to that gramma
   const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/archaeology-fees.yaml"), "utf8"));
   assert.deepEqual(gate.conditions, [CONDITION]);
 });
+
+// --- what a revise prompt carries, and what it says about what it does not ---
+//
+// These drive the stages directly against a bare repository holding a hand-written gate
+// file, the way `test/plan-revise.test.mjs` does: what is under test is which conditions
+// reach a prompt, which needs a ruling and a stage and nothing else.
+import { mkdirSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { returnedRulingOn } from "../src/stages/proposals.mjs";
+import { openRevisionRequestsFor } from "../src/spec/revisions.mjs";
+
+const OVERREACH = "test-overreaches R-1.3: the test signs in as a reviewer and reads an audit log the criterion never names";
+
+function repo(t) {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-addressed-repo-"));
+  t.after(() => rmSync(d, { recursive: true, force: true }));
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  run(["init", "-q", "-b", "main"]);
+  writeFileSync(join(d, "README.md"), "x\n");
+  run(["add", "-A"]);
+  run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "start"]);
+  return { d, run };
+}
+
+// A returned proposal standing on its own branch, ruled with `conditions`.
+function returned(d, run, { name, gate, rationale, conditions }) {
+  run(["checkout", "-q", "-b", `proposal/${name}`]);
+  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+  mkdirSync(join(d, ".sdlc", "proposals"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "proposals", `${name}.md`), `---\ngate: ${gate}\n---\n`);
+  writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`),
+    `gate: ${gate}\nverdict: return\nby: agent:reviewer\nheld_by: agent\nrationale: ${rationale}\n`
+    + `conditions:\n${conditions.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n`);
+  run(["add", "-A"]);
+  run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
+  run(["checkout", "-q", "main"]);
+}
+
+test("a returned ruling hands a stage its own conditions and accounts for the rest by stage", (t) => {
+  const { d, run } = repo(t);
+  returned(d, run, { name: "plan", gate: "G2", rationale: "three of these are not the planner's", conditions: [MINE, CONDITION, OVERREACH] });
+  const found = returnedRulingOn(d, "plan", "proposal/plan");
+  assert.deepEqual(found.conditions, [MINE]);
+  assert.deepEqual(found.addressedElsewhere, [
+    { stage: "plan", text: WHY },
+    { stage: "derive-tests", text: OVERREACH.slice("test-overreaches R-1.3: ".length) },
+  ]);
+});
+
+// A closed grammar is closed on purpose: nothing reads a second verb out of it, so
+// nothing is taken out of the list the stage that owns the grammar is given.
+test("a ruling whose conditions are a closed grammar keeps every line", (t) => {
+  const { d, run } = repo(t);
+  returned(d, run, { name: "archaeology-fees", gate: "G1", rationale: "go again", conditions: [CONDITION, "spec-wrong R-1.1: the statement names the wrong actor"] });
+  const found = returnedRulingOn(d, "archaeology-fees", "proposal/archaeology-fees");
+  assert.deepEqual(found.conditions, [CONDITION, "spec-wrong R-1.1: the statement names the wrong actor"]);
+  assert.deepEqual(found.addressedElsewhere, []);
+});
+
+test("a plan revise prompt carries only the planner's conditions, and names the ones it is not carrying", (t) => {
+  const { d, run } = repo(t);
+  const planCondition = "plan/tasks.md leaves criterion R-1.3 unassigned to any slice";
+  returned(d, run, {
+    name: "plan", gate: "G2", rationale: "the cut is close",
+    conditions: [planCondition, "addressed-to design: the screen the second slice delivers is not drawn anywhere", OVERREACH],
+  });
+  const stage = stageFor("plan");
+  const ctx = { revise: true, dryRun: true };
+  const check = stage.preChecks(d, ctx).find((c) => c.id === "plan-revise-source");
+  assert.equal(check.ok, true);
+
+  const prompt = stage.prompt(ctx);
+  assert.match(prompt, /- plan\/tasks\.md leaves criterion R-1\.3 unassigned/, "its own condition is carried");
+  assert.ok(!prompt.includes("- addressed-to design:"), "and a condition for another stage is not");
+  assert.ok(!prompt.includes("- test-overreaches"), "nor one naming a criterion whose test another stage writes");
+
+  // Told they exist, told where they went, and told in whose words.
+  assert.match(prompt, /2 condition/, "the count of what is not being carried");
+  assert.match(prompt, /to design: the screen the second slice delivers is not drawn anywhere/);
+  assert.match(prompt, /to derive-tests: the test signs in as a reviewer/);
+});
+
+test("a build revise prompt reports the same way", (t) => {
+  const { d, run } = repo(t);
+  returned(d, run, { name: "build-slice-2", gate: "G3", rationale: "two of these are yours", conditions: [MINE, CONDITION] });
+  const found = returnedRulingOn(d, "build-slice-2", "proposal/build-slice-2");
+  const ctx = {
+    revise: true,
+    slice: 2,
+    revision: { name: "build-slice-2", ...found },
+    buildSlice: { number: 2, body: "a slice", criteria: ["R-1.1"] },
+    config: { project: { name: "p" }, targets: { new: { base_url: "http://localhost:3000" } } },
+  };
+  const prompt = stageFor("build").prompt(ctx);
+  assert.match(prompt, /- app\/routes\.js returns 500/);
+  assert.ok(!prompt.includes("- addressed-to plan:"));
+  assert.match(prompt, /1 condition/);
+  assert.match(prompt, /to plan: slice 2 claims a criterion about a fee/);
+});

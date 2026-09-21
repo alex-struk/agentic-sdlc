@@ -10,7 +10,7 @@ import { readText } from "../lib/fsx.mjs";
 import { changedPaths, git } from "../lib/git.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { readSlice, buildProposalBase, buildProposals } from "./slices.mjs";
-import { nextProposalName, recommendationFrom, recordReturnOnMain, returnedRulingOn } from "./proposals.mjs";
+import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, returnedRulingOn, revisionConditionList } from "./proposals.mjs";
 import { skillPath } from "./shared.mjs";
 import { targetSettings } from "../sandbox/local.mjs";
 
@@ -67,11 +67,12 @@ function checkBuildRevisionSource(projectDir, ctx) {
 }
 
 function revisionInstructions(ctx) {
-  const conditions = (ctx.revision?.conditions ?? []).map((c) => `- ${c}`).join("\n");
+  const conditions = revisionConditionList(ctx);
   return [
     "This is a revision. The application as the returned proposal left it is already under app/; change what the ruling below names and leave the rest.",
     `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`,
     conditions ? `What it must now do:\n\n${conditions}` : "",
+    addressedElsewhereNote(ctx),
     "A failing criterion is described by what the running application did, never by the test's code, which you will not see. Read the criterion again and find where the application departs from it.",
   ].filter(Boolean).join("\n\n");
 }

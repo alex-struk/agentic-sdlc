@@ -529,6 +529,42 @@ export function malformedOverreachConditions(lines) {
   return (lines ?? []).filter((l) => new RegExp(`^${OVERREACH_VERB}\\b`).test(String(l).trim()) && !parseOverreachCondition(l));
 }
 
+// Which grammar a G1 ruling's conditions are read in. Two proposals reach G1 carrying
+// conditions and they ask different questions: an archaeology or ratify follow-up asks
+// which recovered criteria become the contract (the ratification grammar), and a
+// calibration proposal asks what a criterion the old target fails actually means (the
+// calibration grammar). The proposal's own name is what tells them apart — every
+// calibration proposal is `calibrate-<target>-<n>` — because a condition read in the
+// wrong grammar is not a parse error, it is a ruling that would be dropped in silence.
+//
+// A third family, `calibrate-triage-<target>-<n>`, is checked first because its name also
+// starts `calibrate-`: the reviewer's sorting of a calibration's failures, read in its own
+// two-verb grammar at G3, before any failure reaches the product owner.
+export function conditionGrammarFor(name) {
+  if (name.startsWith("calibrate-triage-"))
+    return { label: "triage", text: TRIAGE_GRAMMAR, unparsed: unparsedTriageConditions, checked: true };
+  return name.startsWith("calibrate-")
+    ? { label: "calibration", text: CALIBRATE_GRAMMAR, unparsed: unparsedCalibrateConditions, checked: false }
+    : { label: "ratification", text: CONDITION_GRAMMAR, unparsed: unparsedConditions, checked: false };
+}
+
+// Whether this proposal's conditions are an instruction a stage applies through a closed
+// vocabulary, rather than free-text lines a writer reads. Three families are: ratification
+// and calibration at G1, and the reviewer's triage page at G3. Everything else at G3 and
+// every other gate carries free text.
+//
+// It decides where the cross-stage forms are read — `test-overreaches` and `addressed-to`
+// both. A closed grammar is closed on purpose — a
+// line it cannot parse is a ruling that would otherwise be dropped in silence, so it is
+// recorded verbatim under `unparsed_conditions` for a person to rewrite, and the stage that
+// owns the grammar refuses to act on the gate file until they have. Reading a second,
+// unrelated verb out of those same lines would file a request off a ruling that has been
+// declared unreadable, and jam the owning stage while doing it. Where the conditions are
+// free text there is no such contract to break and nothing else is reading them.
+export function conditionsAreExecutable(gate, name) {
+  return gate === "G1" || conditionGrammarFor(name).checked;
+}
+
 // The stage a `test-overreaches` line is addressed to. The form names a criterion rather
 // than a stage, because that is what it is about, but the work it asks for is one stage's
 // and the routing has to be able to say which.

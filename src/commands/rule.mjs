@@ -10,11 +10,15 @@ import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } 
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { buildSite } from "./status.mjs";
-import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, OVERREACH_CONDITION_FORM, OVERREACH_VERB, TRIAGE_GRAMMAR, addressedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, unparsedCalibrateConditions, unparsedConditions, unparsedTriageConditions } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, OVERREACH_CONDITION_FORM, OVERREACH_VERB, addressedConditions, conditionGrammarFor, conditionsAreExecutable, malformedAddressedConditions, malformedOverreachConditions, overreachConditions } from "../spec/criteria.mjs";
 import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo.mjs";
 import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } from "../spec/revisions.mjs";
 import { revisableStages } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
+
+// Which grammar a proposal's conditions are read in is a property of the conditions, so it
+// is defined with them; `rule` is what applies it, and is where a caller reaches it.
+export { conditionGrammarFor, conditionsAreExecutable };
 
 function mergeApproved(projectDir, branch, message) {
   git(["checkout", "-q", "main"], projectDir);
@@ -348,41 +352,6 @@ function rulingFailure(result) {
 // its own verdict and evidence read against the adapter, so it gets the same budget.
 export function rulingTurns(config, gate, name = "") {
   return turnsFor(config, "rule", gate === "G1" || name.startsWith("calibrate-triage-") ? DEFAULT_MAX_TURNS : 12);
-}
-
-// Which grammar a G1 ruling's conditions are read in. Two proposals reach G1 carrying
-// conditions and they ask different questions: an archaeology or ratify follow-up asks
-// which recovered criteria become the contract (the ratification grammar), and a
-// calibration proposal asks what a criterion the old target fails actually means (the
-// calibration grammar). The proposal's own name is what tells them apart — every
-// calibration proposal is `calibrate-<target>-<n>` — because a condition read in the
-// wrong grammar is not a parse error, it is a ruling that would be dropped in silence.
-//
-// A third family, `calibrate-triage-<target>-<n>`, is checked first because its name also
-// starts `calibrate-`: the reviewer's sorting of a calibration's failures, read in its own
-// two-verb grammar at G3, before any failure reaches the product owner.
-export function conditionGrammarFor(name) {
-  if (name.startsWith("calibrate-triage-"))
-    return { label: "triage", text: TRIAGE_GRAMMAR, unparsed: unparsedTriageConditions, checked: true };
-  return name.startsWith("calibrate-")
-    ? { label: "calibration", text: CALIBRATE_GRAMMAR, unparsed: unparsedCalibrateConditions, checked: false }
-    : { label: "ratification", text: CONDITION_GRAMMAR, unparsed: unparsedConditions, checked: false };
-}
-
-// Whether this proposal's conditions are an instruction a stage applies through a closed
-// vocabulary, rather than free-text lines a writer reads. Three families are: ratification
-// and calibration at G1, and the reviewer's triage page at G3. Everything else at G3 and
-// every other gate carries free text.
-//
-// It decides where `test-overreaches` is read. A closed grammar is closed on purpose — a
-// line it cannot parse is a ruling that would otherwise be dropped in silence, so it is
-// recorded verbatim under `unparsed_conditions` for a person to rewrite, and the stage that
-// owns the grammar refuses to act on the gate file until they have. Reading a second,
-// unrelated verb out of those same lines would file a request off a ruling that has been
-// declared unreadable, and jam the owning stage while doing it. Where the conditions are
-// free text there is no such contract to break and nothing else is reading them.
-export function conditionsAreExecutable(gate, name) {
-  return gate === "G1" || conditionGrammarFor(name).checked;
 }
 
 // Whether a role is played by an agent in this project. Read from the policy rather than

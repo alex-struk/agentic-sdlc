@@ -8,6 +8,7 @@ import { parse as parseYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { escapeRe } from "./shared.mjs";
+import { conditionsAreExecutable, splitConditionsByAddressee } from "../spec/criteria.mjs";
 
 // One sentence off the front of `text`, plus whatever is left after it. The terminator
 // has to be followed by whitespace or the end of the string, so a dot inside a filename
@@ -108,7 +109,47 @@ export function returnedRulingOn(projectDir, name, branch) {
   // is only ever an agent ruling's own list of free-text lines (a human `rule --return`
   // records no such field at all) — `[]` for a human return, so a revise prompt can
   // always iterate it without checking who ruled first.
-  return { rationale: gate.rationale ?? gate.note ?? "", conditions: gate.conditions ?? [] };
+  return { rationale: gate.rationale ?? gate.note ?? "", ...splitRulingConditions(gate, name) };
+}
+
+// A ruling's conditions as the stage being asked to revise should receive them:
+// `conditions` are the ones it is to act on, and `addressedElsewhere` accounts by stage
+// for the ones it is not. A stage handed a condition addressed to another stage either
+// fails at it or finds a way, and in the plain case it is asked for a file outside the
+// overlay its workspace even holds.
+//
+// Where the conditions are a closed grammar — ratification and calibration at G1, the
+// reviewer's triage page — nothing is taken out. The stage that owns the grammar reads
+// every line, and a verb read out of those same lines would come off a ruling that
+// grammar may yet declare unreadable.
+export function splitRulingConditions(gate, name) {
+  const all = gate?.conditions ?? [];
+  if (conditionsAreExecutable(gate?.gate, name)) return { conditions: all, addressedElsewhere: [] };
+  const { mine, elsewhere } = splitConditionsByAddressee(all);
+  return { conditions: mine, addressedElsewhere: elsewhere };
+}
+
+// The bullet list of conditions a revise prompt asks the stage to meet.
+export function revisionConditionList(ctx) {
+  return (ctx.revision?.conditions ?? []).map((c) => `- ${c}`).join("\n");
+}
+
+// What a revise prompt says about the conditions on the same ruling that are not in that
+// list. A stage shown a shorter list with nothing to explain it cannot tell a ruling that
+// asked less of it from one whose other halves it was never given, and it has no way to
+// reason about the gap between the ruling it can read on the branch and the work it has
+// been set. So each one is named with the stage it went to and the ruler's own words.
+//
+// Empty — no paragraph at all — where nothing was addressed elsewhere, so an ordinary
+// revision's prompt reads exactly as it always has.
+export function addressedElsewhereNote(ctx) {
+  const away = ctx.revision?.addressedElsewhere ?? [];
+  if (!away.length) return null;
+  return `${away.length} condition${away.length === 1 ? "" : "s"} on that ruling ${away.length === 1 ? "is" : "are"} addressed to another stage and `
+    + `${away.length === 1 ? "is" : "are"} not yours to carry out. ${away.length === 1 ? "It has" : "They have"} been filed where that stage reads `
+    + `${away.length === 1 ? "it" : "them"}, and ${away.length === 1 ? "is" : "are"} named here so the list above is not silently shorter than the ruling:\n\n`
+    + `${away.map((a) => `- to ${a.stage}: ${a.text}`).join("\n")}\n\n`
+    + "Leave each of those alone. Doing one of them here would change work this proposal is not answerable for, and the stage it was addressed to would then be asked for it again.";
 }
 
 // The side effect every `--revise` pre-check performs, on a real run only, once it has
