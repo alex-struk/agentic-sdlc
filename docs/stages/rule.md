@@ -313,10 +313,19 @@ a request is appended to `.sdlc/revision-requests.yaml`, on `main`, in a commit 
 same reason the redo entry above lands there.
 
 That request is what makes an artifact its own gate has already approved revisable again. `sdlc run
-<stage> --revise` with no returned ruling of its own takes the oldest open request addressed to it,
-is handed the ruler's words verbatim with the proposal, gate and seat they came from, and opens a
-fresh proposal at its own gate. The entry is marked `taken` rather than removed, so what was asked
-for and who asked survives the revision being merged.
+<stage> --revise` with no returned ruling of its own is handed **every** open request addressed to
+it — each one numbered, with the ruler's words verbatim and the proposal, gate and seat they came
+from — and opens one fresh proposal at its own gate answering all of them. Requests filed by the
+same ruling are kept together and the older ruling's come first.
+
+The round is spent where the run delivers, not where it reads: every request the run answered is
+marked `taken` in one write, in a commit of its own on `main`, after the proposal is opened. A run
+refused by a later check, or one that lost its agent turn, leaves every request open for the next
+one. A request the run could not answer is named back in its journal entry on a line of its own —
+`deferred-request <n>: <why it cannot be answered here>` — and stays open with that reason recorded
+against it, so `sdlc checks` goes on reporting it. An entry is marked rather than removed either
+way, so what was asked for and who asked survives the revision being merged
+(`docs/decisions/0034-a-queue-read-as-though-it-held-one-thing.md`).
 
 Reopening is not accepting, and the guard is the same shape as the one above: an `approve` carrying
 the form is refused outright, a form with no reason refuses the ruling before anything is written,

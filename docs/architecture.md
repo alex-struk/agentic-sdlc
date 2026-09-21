@@ -119,8 +119,9 @@ what the results *mean*.
   `test-wrong` ruling and by `sdlc rule` for a `test-overreaches` one, and cleared by the
   `derive-tests` run that answers it. `src/spec/revisions.mjs` is its counterpart for a ruling
   about a whole stage's output — `.sdlc/revision-requests.yaml`, written by `sdlc rule` for an
-  `addressed-to <stage>` condition and read by that stage's own `--revise` run, which is what
-  makes an artifact its own gate has already approved revisable again.
+  `addressed-to <stage>` condition and read whole — every open request addressed to a stage, as one
+  round — by that stage's own `--revise` run, which is what makes an artifact its own gate has
+  already approved revisable again.
 
 `src/stages/shared.mjs` holds what more than one of these stages needs — the skill-path helper, the
 follow-up-proposal bookkeeping (`followUpState`, shared by `ratify`'s and `calibrate`'s follow-up
