@@ -11,10 +11,12 @@ import { readJournal } from "../runner/journal.mjs";
 import { STATES, orderDomains } from "../spec/criteria.mjs";
 import { coverage, readNotTestable } from "../checks/tests.mjs";
 import { followUpState } from "../stages/shared.mjs";
+import { RESULT_VALUES } from "../testrun/results.mjs";
 
-// Every value a results row's `result` field can hold (`src/testrun/playwright.mjs`),
-// in the fixed order the board and the results page always report them in.
-export const RESULT_VALUES = ["pass", "fail", "unbound", "stale", "not-testable"];
+// Every value a results row's `result` field can hold, in the fixed order the board and
+// the results page always report them in. The list is the one the suite and the verify
+// stage read from, so a row can never arrive in a value no column counts.
+export { RESULT_VALUES };
 
 // ISO 8601 week: Thursday of the same week decides the week-numbering year, which is
 // what makes the last days of December (or first days of January) land in the correct

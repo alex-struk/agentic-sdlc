@@ -83,7 +83,8 @@ every `.sdlc/proposals/*.md`, every `.sdlc/runs/*.md`, `tests/acceptance/<domain
   with a table of every dated results file in it (`<date>.json`, `<date>-2.json`, …; `latest.json`
   and `applied.yaml` are not rows here — the first duplicates the newest dated file, the second is
   calibration's own bookkeeping) — file name, the run's `at`, and a count per `result` value
-  (`pass`, `fail`, `unbound`, `stale`, `not-testable`) — sorted newest `at` first, followed by a
+  (`pass`, `fail`, `unbound`, `stale`, `not-testable`, `attested`) — one column per value a row can
+  hold, so no row lands outside every column — sorted newest `at` first, followed by a
   line naming the open calibration proposal for that target (`followUpState(projectDir,
   "calibrate-<target>")`) or, when none is open, "no calibration ruling open." A project with no
   `tests/results/` directory at all gets a page saying there are no results yet, instead of an

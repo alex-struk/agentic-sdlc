@@ -303,6 +303,22 @@ test("criteria page marks a target result ruled when the row carries a ruling ve
   assert.match(page, /\| R-1\.1 \| acceptance\/a\/R-1\.1\.spec\.ts \| pass \(ruled: defect-in-old\) \|/);
 });
 
+// A criterion nobody asserted against the target is still a row in the file. Counted in no
+// column it leaves the page's own arithmetic short, and the only place that says the row
+// exists at all is the file the page was built from.
+test("results.md counts a row for a criterion that was attested to rather than dropping it", () => {
+  const d = testsAndCalibrationFixture();
+  const latest = JSON.parse(readFileSync(join(d, "tests/results/old/latest.json"), "utf8"));
+  latest.rows.push({ id: "R-1.3", version: 1, domain: "a", file: null, result: "attested", reason: "a person vouched for it in place of a test", tests: [] });
+  const text = `${JSON.stringify(latest, null, 2)}\n`;
+  writeFileSync(join(d, "tests/results/old/latest.json"), text);
+  writeFileSync(join(d, "tests/results/old/2026-01-02.json"), text);
+  buildSite(d);
+  const results = readFileSync(join(d, "site/results.md"), "utf8");
+  assert.match(results, /\| file \| at \| pass \| fail \| unbound \| stale \| not-testable \| attested \|/);
+  assert.match(results, /\| 2026-01-02\.json \| 2026-01-02T00:00:00\.000Z \| 1 \| 0 \| 0 \| 0 \| 1 \| 1 \|/);
+});
+
 test("results.md lists every results file by date, newest first, with counts and calibration status", () => {
   const d = testsAndCalibrationFixture();
   // A second, earlier dated file so newest-first ordering is actually exercised.

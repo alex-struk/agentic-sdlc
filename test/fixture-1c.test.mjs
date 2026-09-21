@@ -261,8 +261,9 @@ test("fixture project: archaeology through calibrate on the mock executor, oracl
     const resultsMd = readFileSync(join(dir, "site/results.md"), "utf8");
     const today = new Date().toISOString().slice(0, 10);
     assert.match(resultsMd, /^## old$/m);
-    // The columns are pass · fail · unbound · stale · not-testable, in that fixed order.
-    assert.match(resultsMd, new RegExp(`^\\| ${today}\\.json \\| [^|]+ \\| 1 \\| 1 \\| 0 \\| 0 \\| 1 \\|$`, "m"));
+    // The columns are pass · fail · unbound · stale · not-testable · attested, in that
+    // fixed order — one per value a row's result can hold, so every row lands in a column.
+    assert.match(resultsMd, new RegExp(`^\\| ${today}\\.json \\| [^|]+ \\| 1 \\| 1 \\| 0 \\| 0 \\| 1 \\| 0 \\|$`, "m"));
     assert.match(resultsMd, /^Open calibration proposal: calibrate-triage-old-1\.$/m);
 
     const domainPage = readFileSync(join(dir, "site/criteria/applications.md"), "utf8");
