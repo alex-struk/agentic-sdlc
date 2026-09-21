@@ -7,6 +7,7 @@ import { git } from "../src/lib/git.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { rule } from "../src/commands/rule.mjs";
 import { newProject } from "../src/commands/new.mjs";
+import { buildSite } from "../src/commands/status.mjs";
 
 const CONFIG = `
 pipeline: { repo: agentic-sdlc, ref: main }
@@ -160,5 +161,59 @@ test("two proposals opened the same day both merge into main", async () => {
   } finally {
     if (prevEgressNames === undefined) delete process.env.SDLC_EGRESS_NAMES;
     else process.env.SDLC_EGRESS_NAMES = prevEgressNames;
+  }
+});
+
+// Egress rule E-2 keeps the machine a run happened on out of the repository. A proposal
+// page is the agent's own journal text verbatim — a failing `npm run check`, a stack
+// trace, the path it read a file from — and it is committed to a branch and then
+// published to `site/`, so the scrub happens at the write rather than at a scan that runs
+// after the commit (docs/decisions/0019-a-run-that-did-not-pass-says-so.md is the trailer;
+// this one is 0020).
+//
+// Every home path below is assembled from pieces so this file does not itself carry the
+// shape the egress check looks for.
+test("a proposal page carries no path that names this machine", () => {
+  const d = project();
+  const elsewhere = `/${"home"}/someone/tools`;
+  propose(d, "build-slice-1", {
+    gate: "G3",
+    question: `Does ${d}/app do what slice 1 says?`,
+    recommendation: `npm error path ${d}/app/backend`,
+    page: [
+      `npm error path ${d}/app/backend`,
+      "npm error Require stack:",
+      `npm error - ${elsewhere}/node_modules/.bin/tsc`,
+      "The route at opportunities/home/default is unaffected.",
+    ].join("\n"),
+  });
+  const text = readFileSync(join(d, ".sdlc/proposals/build-slice-1.md"), "utf8");
+  assert.ok(!text.includes(d), "the project's own absolute path is relative on the page");
+  assert.ok(!text.includes(elsewhere), "a home path outside the project loses the root that names a person");
+  assert.match(text, /npm error path \.\/app\/backend/);
+  assert.match(text, /opportunities\/home\/default/, "an ordinary route that merely contains 'home' is untouched");
+});
+
+test("a ruling's own text carries no path that names this machine", () => {
+  const d = project();
+  propose(d, "plan-v1", { gate: "G2", question: "Sound?", recommendation: "No." });
+  const elsewhere = `/${"home"}/someone/tools`;
+  rule(d, "plan-v1", "return", { by: "tech-lead", note: `tsc at ${elsewhere}/bin failed on ${d}/plan/tasks.md` });
+  const gate = readFileSync(join(d, ".sdlc/gates/plan-v1.yaml"), "utf8");
+  assert.ok(!gate.includes(elsewhere) && !gate.includes(d), gate);
+  assert.match(gate, /~\/tools\/bin failed on \.\/plan\/tasks\.md/, "the root that names a person goes; the tail that says what the tool was stays");
+});
+
+test("nothing published to site/ names this machine, whatever the file it was rendered from says", () => {
+  const d = project();
+  const elsewhere = `/${"home"}/someone/tools`;
+  mkdirSync(join(d, ".sdlc", "proposals"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "proposals", "old-page.md"),
+    `---\ngate: G1\nquestion: "q"\nrecommendation: "r"\nopened: 2026-01-01T00:00:00.000Z\n---\n\n# q\n\nnpm error - ${elsewhere}/node_modules/.bin/tsc\n`);
+  buildSite(d);
+  for (const f of ["site/proposals/old-page.md", "site/proposals/old-page.html"]) {
+    const text = readFileSync(join(d, f), "utf8");
+    assert.ok(!text.includes(elsewhere), `${f} still names a person's home directory`);
+    assert.match(text, /~\/tools\/node_modules\/\.bin\/tsc/);
   }
 });

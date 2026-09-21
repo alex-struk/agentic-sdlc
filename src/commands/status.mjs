@@ -10,6 +10,7 @@
 // unchanged project a diff.
 import { join, resolve } from "node:path";
 import { writeText } from "../lib/fsx.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { collect } from "../site/model.mjs";
 import { renderMarkdown } from "../site/markdown.mjs";
@@ -20,7 +21,14 @@ export function buildSite(projectDir) {
   projectDir = resolve(projectDir);
   const model = collect(projectDir);
   const pages = [...renderMarkdown(model), ...renderHtml(model)];
-  for (const [p, t] of pages) writeText(join(projectDir, p), t);
+  // `site/` is the published surface: a page here is rendered from a proposal, a ruling,
+  // a journal entry or the run record, and each of those is redacted where it is written.
+  // The pass here is the boundary rather than a second copy of that rule — it holds for
+  // whatever the model grows to read next, including a file some future writer forgets,
+  // and it is what makes "nothing under `site/` names this machine" a property of the
+  // directory instead of a property of every writer that feeds it (rule E-2,
+  // `src/lib/redact.mjs`).
+  for (const [p, t] of pages) writeText(join(projectDir, p), redactLocalPaths(t, projectDir));
   const assets = installAssets(projectDir);
   return { pages: pages.map(([p]) => p), assets };
 }

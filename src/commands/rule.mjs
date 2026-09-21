@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { git, gitOk, assertCleanTree, porcelainStatus, stagePaths, stageSite, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } from "../runner/persona.mjs";
@@ -118,7 +119,13 @@ function regenerateSiteOnMain(projectDir, reason) {
 // fold the rebuilt site into that same commit.
 function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics, proposalPath, proposalAppended }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
-  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics }));
+  // A ruling's rationale and conditions are an agent's own prose, and its typecheck
+  // evidence is a compiler's output: both routinely quote a path on the machine the
+  // ruling ran on. The gate file is committed and read straight into the state site, so
+  // rule E-2's redaction applies here for the same reason it applies to the journal and
+  // the proposal page (`src/lib/redact.mjs`).
+  writeText(join(projectDir, gatePath),
+    redactLocalPaths(gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics }), projectDir));
   const runPath = appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
   const paths = [gatePath, relative(projectDir, runPath)];
   if (proposalAppended) paths.push(relative(projectDir, proposalPath));
@@ -134,7 +141,8 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
 
 function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
-  writeText(join(projectDir, gatePath), gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, rationale, metrics }));
+  writeText(join(projectDir, gatePath),
+    redactLocalPaths(gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, rationale, metrics }), projectDir));
   const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`);
   stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} escalated to ${escalateTo ?? "?"}`], projectDir);
@@ -423,7 +431,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
 
   // The ruling has to land in the proposal page's own commit, not a follow-up one, so
   // it is appended and written before `commitRuling` stages and commits.
-  writeText(proposalPath, appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }));
+  writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }), projectDir));
   commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true });
   return { verdict, rationale, unparsed, escalated: false, ...metrics };
 }

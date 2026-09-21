@@ -664,3 +664,35 @@ test("rulingTurns: a G1 ruling gets the stage default, other gates a dozen, and 
   assert.equal(rulingTurns({ policy: { budgets: { rule: 60 } } }, "G1"), 60);
   assert.equal(rulingTurns({ policy: { budgets: { rule: 60 } } }, "G3"), 60);
 });
+
+// A ruling agent reads the runner's own typecheck evidence and the proposal's diff, and
+// its rationale and conditions quote what it saw — compiler output and paths on the
+// machine the ruling ran on. Both the gate file and the `## Ruling` section this path
+// appends to the proposal page are committed and then published to `site/`, so rule E-2's
+// redaction applies to them (docs/decisions/0020-a-published-page-is-scrubbed-where-it-is-written.md).
+// The home path below is assembled from pieces so this file does not itself carry the
+// shape the egress check looks for.
+test("ruleByAgent: neither the gate file nor the ruling section names this machine", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-redact-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p-redact", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const elsewhere = `/${"home"}/someone/tools`;
+  const mockDir = mockRule(`Looked at it.\n\n\`\`\`json\n{"verdict":"return","rationale":"tsc from ${elsewhere}/bin could not resolve ${dir}/app/index.ts","conditions":["fix the import in ${dir}/app/index.ts"]}\n\`\`\``);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    await ruleByAgent(dir, "p-redact", { persona: "product-owner" });
+    const gate = readFileSync(join(dir, ".sdlc/gates/p-redact.yaml"), "utf8");
+    const page = readFileSync(join(dir, ".sdlc/proposals/p-redact.md"), "utf8");
+    for (const [what, text] of [["the gate file", gate], ["the ruling section", page]]) {
+      assert.ok(!text.includes(elsewhere), `${what} still names a person's home directory`);
+      assert.ok(!text.includes(dir), `${what} still carries the project's absolute path`);
+      assert.match(text, /~\/tools\/bin/);
+      assert.match(text, /\.\/app\/index\.ts/);
+    }
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    rmSync(mockDir, { recursive: true, force: true });
+    restoreEgress(prevEgress);
+  }
+});

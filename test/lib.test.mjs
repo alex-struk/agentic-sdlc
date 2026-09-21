@@ -92,6 +92,20 @@ test("run record appends dated lines", () => {
   assert.match(p, /\.sdlc\/runs\/\d{4}-\d\d-\d\d\.md$/);
 });
 
+// The record is one line per run outcome, committed and published as `site/runs.*`. The
+// line is usually the first line of a stage's own account of itself, so it carries
+// whatever that account quoted — a container log, a failing command. The home path below
+// is assembled from pieces so this file does not itself carry the shape the egress check
+// looks for.
+test("a run record line names neither this machine nor more than one line", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-run-redact-"));
+  const elsewhere = `/${"home"}/someone/tools`;
+  const p = appendRun(d, `verify slice 1: the sandbox did not start.\n  npm error - ${elsewhere}/bin/tsc\n  in ${d}/app`);
+  const text = readText(p);
+  assert.ok(!text.includes(elsewhere) && !text.includes(d), text);
+  assert.match(text, /^- \d\d:\d\d:\d\d verify slice 1: the sandbox did not start\. npm error - ~\/tools\/bin\/tsc in \.\/app$/m);
+});
+
 // Borrowing a branch: the pair `sdlc sandbox --from` and `verify` both run on
 // (docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md).
 function twoBranchRepo() {

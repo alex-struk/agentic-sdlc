@@ -12,6 +12,7 @@ import { join, relative } from "node:path";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
 import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { runSuite } from "../testrun/playwright.mjs";
@@ -116,12 +117,16 @@ function returnsByVerify(projectDir, slice) {
 function writeVerifyResult(projectDir, { slice, name, verdict, rows, notVerified = "" }) {
   const resultRel = `tests/results/new/slice-${slice}.json`;
   mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
-  writeText(join(projectDir, resultRel), `${JSON.stringify({
+  // Each row carries the acceptance test's own error text, which is a browser's or a
+  // runner's stack trace and names the file it was thrown from. The file is committed to
+  // the proposal branch, so rule E-2's redaction applies to it as it does to every other
+  // agent-produced text this pipeline commits (`src/lib/redact.mjs`).
+  writeText(join(projectDir, resultRel), redactLocalPaths(`${JSON.stringify({
     slice, proposal: name, app_tree: git(["rev-parse", "HEAD:app"], projectDir),
     at: new Date().toISOString(), verdict,
     ...(notVerified ? { not_verified: notVerified } : {}),
     rows,
-  }, null, 2)}\n`);
+  }, null, 2)}\n`, projectDir));
   return resultRel;
 }
 
@@ -132,13 +137,16 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, notVerified
 function writeVerifyReturn(projectDir, { name, slice, escalateTo, conditions, rationale, escalatedRationale }) {
   const escalate = returnsByVerify(projectDir, slice) + 1 >= MAX_VERIFY_RETURNS;
   const gateRel = `.sdlc/gates/${name}.yaml`;
-  writeText(join(projectDir, gateRel), stringifyYaml({
+  // The conditions are a service's own log or an acceptance test's own error, quoted
+  // verbatim so the builder has the evidence. Both come off this machine and name paths
+  // on it, and this file is committed and published (`src/lib/redact.mjs`).
+  writeText(join(projectDir, gateRel), redactLocalPaths(stringifyYaml({
     gate: "G3", verdict: escalate ? "escalated" : "return", by: "runner:verify", held_by: "runner",
     ...(escalate ? { escalate_to: escalateTo } : {}),
     rationale: escalate ? escalatedRationale : rationale,
     conditions,
     at: new Date().toISOString(),
-  }));
+  }), projectDir));
   return { escalate, gateRel };
 }
 

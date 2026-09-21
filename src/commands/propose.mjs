@@ -1,6 +1,7 @@
 import { join, relative, resolve } from "node:path";
 import { git, assertCleanTree, stageAll, changedPaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { COMMANDS } from "../cli.mjs";
@@ -36,8 +37,17 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   const opened = new Date().toISOString();
   const proposalPath = join(".sdlc", "proposals", `${name}.md`);
   const tierLine = tier ? `tier: ${tier}\n` : "";
-  writeText(join(projectDir, proposalPath),
-    `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n${tierLine}---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`);
+  // A proposal page is the agent's own account of its work: for every gated stage the
+  // `page` is the journal text verbatim, and the question and the recommendation are
+  // drawn from it. That text carries whatever the turn pasted into it — a failing
+  // `npm run check`, a stack trace, a path it read a file from — and this page is
+  // committed to a branch and then published to `site/`. Egress rule E-2 keeps the
+  // machine a run happened on out of both, and the redaction has to happen at the write
+  // rather than at a later scan, because by then the commit already carries it.
+  const body = redactLocalPaths(
+    `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n${tierLine}---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`,
+    projectDir);
+  writeText(join(projectDir, proposalPath), body);
   const runPath = appendRun(projectDir, `propose ${name} at ${gate}`);
   // Everything the caller named, plus this command's own two files. Nothing is filtered
   // out: a stage that holds a gate builds no state site (`src/runner/finish-stage.mjs`),
