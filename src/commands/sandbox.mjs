@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { loadConfig } from "../config/load.mjs";
-import { targetSettings, composeArgs, parseComposePs, serviceFailures, ranAndStopped, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
+import { targetSettings, composeArgs, parseComposePs, serviceFailures, stoppedForGood, publishedPorts, portOf, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
 import { enterBranch, leaveBranch } from "../lib/git.mjs";
 import { COMMANDS } from "../cli.mjs";
 
@@ -139,18 +139,19 @@ async function watchServices(projectDir, s, exec, { sleep = sleepMs, samples = S
 // attempts, so a container that dies while an address is still being waited for is caught
 // rather than raced.
 //
-// Only a container that ran and stopped ends a wait, and a `ps` that could not be read
-// does not end one either. While the project is still coming up this is an opportunity to
-// find a failure early and never the thing that establishes there is none: a container
-// that compose has created but not started, and a healthcheck still inside its start
-// period, are both states a healthy project passes through. Reading every failure, and
+// Only a container compose has finished with ends a wait — dead, or exited non-zero — and
+// a `ps` that could not be read does not end one either. While the project is still coming
+// up this is an opportunity to find a failure early and never the thing that establishes
+// there is none. Everything else a `ps` row can say is a state a healthy project passes
+// through on its way up, a restart loop that recovers included; `stoppedForGood` in
+// `src/sandbox/local.mjs` is where that line is drawn and why. Reading every failure, and
 // refusing on an answer nothing could parse, belongs to the watch that runs once every
 // wait has passed and nothing is still on its way up.
 function watchTick(projectDir, s, exec) {
   return async () => {
     const ps = psRows(projectDir, s, exec);
     if (!ps.ok) return null;
-    const failures = ranAndStopped(serviceFailures(ps.rows));
+    const failures = stoppedForGood(serviceFailures(ps.rows));
     return failures.length ? { failures } : null;
   };
 }
@@ -169,6 +170,21 @@ function readiness(s) {
 }
 
 const notRunning = (bad) => (bad.length === 1 ? "a service of this project is not running" : `${bad.length} services of this project are not running`);
+
+// The port a declared address is asked on, when this project publishes host ports and that
+// is not one of them — 0 whenever the question cannot be settled, which is a `ps` that
+// could not be read, a compose version that names no publishers, a project reached some
+// way this cannot see, and an address whose port is published and simply silent.
+//
+// The direction of the guess is the one 0017 settles every other guess here by: concluding
+// wrongly that the configuration is at fault costs a re-run, and concluding wrongly that
+// the application is at fault costs one of a slice's three attempts.
+function addressThisProjectDoesNotServe(ps, url) {
+  if (!ps.ok) return 0;
+  const ports = publishedPorts(ps.rows);
+  const want = portOf(url);
+  return ports && want && !ports.has(want) ? want : 0;
+}
 
 function withLogs(projectDir, s, exec, failures) {
   return failures.map((f) => ({ ...f, log: logTail(projectDir, s, exec, f.service) }));
@@ -205,11 +221,27 @@ export async function sandboxUp(projectDir, config, target, { exec = defaultExec
       const bad = withLogs(projectDir, s, exec, answer.failures);
       return failed(causeOf(bad), [`the sandbox is not up${waiting}: ${notRunning(bad)}`, ...bad.map(describe)], bad);
     }
+    const ps = psRows(projectDir, s, exec);
+    const unserved = name ? addressThisProjectDoesNotServe(ps, url) : 0;
+    if (unserved) {
+      // The address is a string in `.sdlc/config.yaml`, and no build writes that file or
+      // is shown it. An address on a port nothing here publishes is that string being
+      // wrong, not the application failing to serve — and returning it would spend one of
+      // the slice's three attempts on a line only the operator can fix, against a builder
+      // who cannot see it. So this halts instead, the way every other fault that is not
+      // the build's does.
+      const published = [...publishedPorts(ps.rows)].sort((a, b) => a - b).join(", ");
+      return failed(ENVIRONMENT, [
+        `the sandbox is not up: nothing answered at ${url}, and no container of this project publishes port ${unserved} — the ports it publishes are ${published}.`,
+        `targets.${target}.depends_on.${name} names an address this project does not serve. Nothing is recorded against the build: that address is in .sdlc/config.yaml, which no build writes.`,
+      ]);
+    }
     // The address in `targets.<t>.base_url` is the one the build was told to publish on
     // and the one the acceptance suite drives, and each address under `depends_on` is one
-    // the same compose file was told to publish. Nothing answering at either is the
-    // application not serving, whatever state the containers around it are in.
-    const bad = withLogs(projectDir, s, exec, psFailures(projectDir, s, exec));
+    // the same compose file was told to publish, on a port this project is publishing.
+    // Nothing answering at either is the application not serving, whatever state the
+    // containers around it are in.
+    const bad = withLogs(projectDir, s, exec, serviceFailures(ps.rows ?? []));
     const missed = name
       ? `the sandbox is not up: its ${name} dependency did not answer at ${url}`
       : `the application did not answer at ${url}`;

@@ -142,17 +142,51 @@ export function causeOf(failures) {
   return failures.some((f) => f.ran) ? APPLICATION : ENVIRONMENT;
 }
 
-// The failures that are already certain while the sandbox is still coming up, for the
-// poll that waits for its addresses to answer rather than for the watch that runs once
-// every wait has passed.
+// The failures that are certain whatever else is still coming up, for the poll that waits
+// for a target's addresses rather than for the watch that runs once every wait has passed.
 //
-// A container that ran and is no longer running — restarting, dead, exited non-zero — has
-// failed whatever else is still starting around it. The two states left out are ones a
-// healthy project passes through on its way up: `created` is a container compose has not
-// started yet, and a service's own healthcheck reports `unhealthy` for as long as it is
-// inside its start period. Ending a wait on either of those would refuse sandboxes that
-// were about to be fine, which is the opposite error from the one this all exists for and
-// costs a run either way.
-export function ranAndStopped(failures) {
-  return failures.filter((f) => f.ran && f.state !== "running");
+// A container that is dead, or that has exited non-zero, is not going to serve the address
+// something is waiting for: compose has finished with it. Every other state a failure can
+// carry is one a healthy project passes through on its way up. `created` is a container
+// compose has not started yet, and a healthcheck reports `unhealthy` for as long as a
+// service is inside its start period — and `restarting` is the one that has to be read
+// carefully, because it is both halves at once. A container that exits retrying a database
+// it depends on is restarted, crash-loops for ten seconds and then runs, and `--wait`
+// returns while that is going on. Nothing in a `ps` row tells that loop from one that will
+// never end; only waiting does, which is what the poll around this is already doing.
+//
+// So a loop is left to the address itself. If the service recovers, its address answers
+// and the wait ends; if it never does, the wait ends at its ceiling and the watch that
+// runs after it reads `restarting` and refuses with the container named. The cost of
+// ending a wait early on a loop is a build proposal returned for a sandbox that was
+// seconds from healthy, which spends one of the slice's three attempts; the cost of
+// waiting is the wait.
+export function stoppedForGood(failures) {
+  return failures.filter((f) => f.state === "dead" || f.state === "exited");
+}
+
+// Which host ports this project's containers publish, or `null` when compose named none —
+// an older `ps --format json` that writes no `Publishers` field, or a project whose
+// containers are reached some way this cannot see. `null` is nothing known, and a caller
+// that read it as "this project publishes nothing" would call every address wrong.
+export function publishedPorts(rows) {
+  const ports = new Set();
+  for (const row of rows) {
+    if (!Array.isArray(row?.Publishers)) continue;
+    for (const p of row.Publishers) {
+      const n = Number(p?.PublishedPort ?? 0);
+      if (n > 0) ports.add(n);
+    }
+  }
+  return ports.size ? ports : null;
+}
+
+// The host port an address is asked on, or 0 for anything this cannot reason about — a
+// string that is not a URL, or a scheme other than the two `up` polls over. Zero is not a
+// port and every caller reads it as a question it declined to answer.
+export function portOf(url) {
+  let u;
+  try { u = new URL(url); } catch { return 0; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return 0;
+  return Number(u.port) || (u.protocol === "https:" ? 443 : 80);
 }

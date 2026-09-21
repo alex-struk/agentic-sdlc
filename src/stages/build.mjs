@@ -99,13 +99,25 @@ export const build = {
     // cannot reach is an instruction it has to guess at, and the first build guessed a
     // port the identity provider was already on: the health check found something
     // answering and called the sandbox up.
-    const { baseUrl } = targetSettings(ctx.config, "new");
+    const { baseUrl, dependsOn } = targetSettings(ctx.config, "new");
+    // The same substitution, for the same reason, for the addresses the target says it
+    // cannot be used without: `sandbox up` waits for every one of them and the run stops
+    // where one does not answer, so a builder that cannot read them is a builder that
+    // cannot satisfy them.
+    const deps = Object.entries(dependsOn ?? {});
     return [
       `Build slice ${s.number} of plan/tasks.md. Its entry in the plan:\n\n${s.body}`,
       `The criteria it is answerable for: ${s.criteria.join(", ")}.`,
       `The application must answer at ${baseUrl}: that is this project's \`targets.new.base_url\`, `
         + `it is the address the acceptance suite drives, and app/compose/compose.yaml must publish `
         + `it there. No other service in that file may take that port.`,
+      deps.length
+        ? `The same compose file must stand up, and publish at exactly these addresses, everything this target cannot be used without: `
+          + `${deps.map(([n, u]) => `${n} at ${u}`).join("; ")}. `
+          + `Each is waited for before the sandbox is reported up, and the run stops where one does not answer. `
+          + `Publish each at the address that exists only once its service is usable rather than one that answers earlier — `
+          + `an identity provider's realm endpoint answers when the realm is loaded, while its server root answers before that and goes on answering if the load fails.`
+        : null,
       ctx.revise ? revisionInstructions(ctx) : null,
     ].filter(Boolean).join("\n\n");
   },

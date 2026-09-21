@@ -93,6 +93,17 @@ test("the prompt carries the slice's own text and criteria, and nothing of anoth
   // of it is one the builder has to guess at. The address is stated here instead.
   assert.match(p, /must answer at http:\/\/localhost:8080/);
   assert.match(p, /No other service in that file may take that port/);
+  assert.doesNotMatch(p, /depends_on/, "a target that declares no dependency adds nothing to the prompt");
+
+  // The addresses a target says it cannot be used without are substituted the same way and
+  // for the same reason: `sandbox up` waits for every one of them, and the workspace has no
+  // configuration file to read them out of.
+  const withDeps = { slice: 1, config: { project: { name: "p" }, targets: { new: { base_url: "http://localhost:8080", identity: "sandbox-idp", depends_on: { identity: "http://localhost:8081/realms/sandbox" } } } } };
+  build.preChecks(d, withDeps);
+  const q = build.prompt(withDeps);
+  assert.match(q, /identity at http:\/\/localhost:8081\/realms\/sandbox/);
+  assert.match(q, /the run stops where one does not answer/);
+  assert.doesNotMatch(q, /depends_on/, "the addresses are stated, not the key they came from");
 });
 
 test("a build may change the application and add decision records, and nothing else", (t) => {

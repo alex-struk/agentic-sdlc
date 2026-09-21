@@ -55,45 +55,59 @@ targets:
 `up` waits for `base_url` as it always did, then for each declared address in the order the file
 gives them, each polled every two seconds for up to two minutes until something answers with
 anything short of a server error. A dependency that never answers is a refusal that names it: `the
-sandbox is not up: its identity dependency did not answer at <url>`.
+sandbox is not up: its identity dependency did not answer at <url>`. A target declaring N addresses
+can therefore wait (N+1) × two minutes in the worst case, where nothing answers anywhere.
 
 The name is the project's, not a fixed set. `identity` is the convention for the sandbox's own
 provider and is the case this was written for, but a target that cannot be used without a search
 index or a document store declares those the same way and gets the same sentence with its own word
 in it.
 
-**A target that declares nothing waits for exactly what it waited for before.** The key is optional
-and empty by default, so every existing project behaves as it does today; only a project that says
-what it depends on is held to it.
+**A target that declares nothing waits for exactly what it waited for before.** The key is optional,
+and a target with nothing to declare omits it rather than writing an empty map. Every existing
+project behaves as it does today; only a project that says what it depends on is held to it.
 
 **Which address is declared decides whether this works at all.** A service usually answers on its
 root before the thing a test needs is loaded, and goes on answering there if the load fails: a
 Keycloak serves HTTP throughout an import that never completes. The address to declare is the one
 that exists only once the service is genuinely usable — the realm's own endpoint rather than the
-server root. This is the boundary this decision leaves open: the pipeline polls what it is given and
-cannot tell a well-chosen address from a lazy one, so a project that declares a root URL buys itself
-very little. The stage documentation says so where the key is described, and the build skill tells
-the builder that every declared address has to answer once its service is usable.
+server root. The pipeline polls what it is given and cannot tell a well-chosen address from a lazy
+one, so this is a boundary the configuration has to hold up. The stage documentation says so where
+the key is described, the stack profile names the endpoint its own scaffold stands up, and the build
+prompt tells the builder to publish each address at the point its service becomes usable.
+
+### The addresses reach the builder as values, not as a key to look up
+
+The build workspace deliberately carries no `.sdlc/config.yaml` — it names the old application's
+repository and commit, which a builder must not see. `targets.new.base_url` is already substituted
+into the build prompt as a literal for that reason, and the declared addresses are substituted the
+same way. An instruction naming a value the agent cannot reach is an instruction it has to guess at,
+and the first build on this pipeline guessed a port the identity provider was already on: the health
+check found something answering and called the sandbox up.
 
 ### The services are watched throughout every wait, not only after it
 
-Between poll attempts the project's containers are read, and a container that ran and is no longer
-running ends the wait there. The refusal then names the service, what became of it and the end of
-its own log, alongside the dependency whose wait it interrupted — because the answer to "why is
-nothing answering at this address" is the container, and the container is knowable in seconds rather
-than in two minutes.
+Between poll attempts the project's containers are read, and a container compose has finished with
+ends the wait there. The refusal then names the service, what became of it and the end of its own
+log, alongside the dependency whose wait it interrupted — because the answer to "why is nothing
+answering at this address" is the container, and the container is knowable in seconds rather than in
+two minutes.
 
-This is what makes the measured run fail at the moment it goes wrong. The base URL answers at t+12s,
-the wait for the identity provider's realm begins, nothing answers there, and at t+18s the sample
-between two attempts reads `Restarting (1)`. The run stops with the provider named and its import
-error quoted.
+**Only `dead` and `exited` non-zero end a wait.** Every other state a container can be in is one a
+healthy project passes through on its way up. `created` is a container compose has not started yet,
+and a healthcheck reports `unhealthy` for as long as a service is inside its start period.
+`restarting` is the one that has to be read carefully, because it is both halves at once: a
+container that exits retrying a database it depends on is restarted, crash-loops for about ten
+seconds and then serves, and `docker compose --wait` returns while that is going on. Nothing in a
+`ps` row tells that loop from one that will never end; only waiting does.
 
-**Only a container that ran and stopped ends a wait — restarting, dead, exited non-zero.** The two
-other states a failure can carry are ones a healthy project passes through on its way up: `created`
-is a container compose has not started yet, and a service's own healthcheck reports `unhealthy` for
-as long as it is inside its start period. Ending a wait on either would refuse sandboxes that were
-about to be fine, which costs a run exactly as a missed crash loop does, and in the direction that
-is harder to diagnose.
+So a loop is left to the address. If the service recovers, its address answers and the wait ends. If
+it never does, the wait ends at its ceiling, and the watch that runs after it reads `restarting` and
+refuses with the container named and its log quoted. That is what happens to the measured run: the
+base URL answers at t+12s, the wait for the realm's address begins and never completes, and the
+refusal at the end of it names the identity provider and quotes the import error. The defect is
+caught, the builder is told which service and why, and the price of drawing the line here is the
+wait rather than a build proposal returned for a sandbox that was seconds from healthy.
 
 **A `ps` that cannot be read does not end a wait either.** While the project is coming up, this
 sampling is an opportunity to find a failure early and never the thing that establishes there is
@@ -104,16 +118,55 @@ which reads every failure and is still the reading that decides.
 
 The poll interval and the two-minute ceiling are the ones the base-URL wait has always used, and
 they bound the wait rather than define readiness: the wait ends when the address answers, or when a
-container behind it has died. A service that takes twice as long as the one measured here is waited
-for twice as long and then reported up. A service that takes a second is not waited for at all.
+container behind it is one compose has finished with. A service that takes twice as long as the one
+measured here is waited for twice as long and then reported up. A service that takes a second is not
+waited for at all.
 
-### The cause split is unchanged
+### An address this project never served is the configuration's, not the build's
 
-An address that never answers is the application's, the same way `base_url` already is: the
-addresses under `depends_on` are published by the same compose file the build writes, and a builder
-can act on a service that will not serve. A container that ran and died during a wait is the
+`depends_on` is a string in `.sdlc/config.yaml`. No build writes that file or is shown it, so an
+address that never answers because the string is wrong must not return the proposal to a builder:
+that spends one of the slice's three attempts against somebody who can neither see the cause nor fix
+it.
+
+The two are told apart by the ports the project publishes. `docker compose ps --format json` carries
+each container's `Publishers`, so when the declared address asks on a port no container of the
+project publishes, the address is one this project does not serve. That refusal carries the cause
+`environment`, names the key, the port and the ports that are published, and records nothing against
+the build. When the port is published and simply silent, the service behind it is one the build's
+compose file stands up, and the cause is `application` as before.
+
+This reaches a wrong host or port and not a wrong path, and that is the whole of what reaches this
+failure mode anyway: a path that is wrong on a server that is up answers 404, and `up` accepts
+anything short of a server error as an answer, exactly as it does at the base URL. Two cases fall
+outside it and are decided as the application's: a compose version whose `ps` names no publishers at
+all, and a project whose services are reached some way this cannot see. Both are "nothing known",
+and the guess goes the way 0017 settles every other guess here — except in this one direction, where
+concluding wrongly that the configuration is at fault costs a re-run and concluding wrongly that the
+application is at fault costs an attempt, so an unpublished port is called configuration on the
+first reading rather than the second.
+
+The rest of the cause split is unchanged. A container that ran and died during a wait is the
 application's because it ran; one that was never created is the machine's. `verify` keeps returning
-the build proposal for the first and halting the run for the second, with no change on its side.
+the build proposal for an `application` cause and halting the run for an `environment` one, with no
+change on its side.
+
+### A key nothing writes is a key nobody fills
+
+No template, profile or interview in this repository produced a `depends_on` before this, so the
+defect would have stayed uncaught until somebody hand-edited a configuration. Three things close
+that, and the first is the one that reaches projects that already exist:
+
+- **`sdlc checks` warns** where a target's `identity` is `sandbox-idp` and it declares no
+  `depends_on.identity`. The configuration already says that target signs in through a provider the
+  project stands up itself, which is exactly the shape `up` cannot settle from the application's own
+  address. It warns rather than fails: the key is optional, a project may have decided it has
+  nothing to declare, and a check that failed would turn an addition into a requirement every
+  existing project is in breach of.
+- **The onboarding interview asks** for each target's addresses, so a project gets them at birth
+  rather than after its first misdiagnosed run.
+- **The stack profile names the endpoint** its own scaffold stands up, so the answer to the
+  interview's question is written down rather than invented.
 
 ## What was considered instead
 
@@ -129,6 +182,12 @@ for the whole of the window. It also adds nothing the watch does not already do,
 reads every container of the project including that one. What was missing was never the container's
 state; it was whether anything answered.
 
+**Ending a wait on `restarting` seen twice in a row.** It would catch the measured provider seconds
+after it started looping, and it decides a question two seconds cannot answer: a container in a
+backoff reads `restarting` for most of every cycle, so two consecutive samples find a loop that is
+about to recover as readily as one that will not. The interval is the poll's, which makes the rule a
+two-second bet on a service's startup — the shape this decision exists to avoid.
+
 **Requiring a healthcheck on every service, so `--wait` is sufficient.** Rejected in 0017 and for
 the same reason: it puts the pipeline in the business of dictating the contents of a compose file
 the project owns, and a build that forgot one is reported healthy again.
@@ -143,3 +202,8 @@ statement in the same file.
 **Racing the watch against the wait as two independent loops.** Interleaving the sample into the
 poll gives the same result with one thread of control, and a race between two loops has an order
 that is not reproducible in a test.
+
+**Failing `sdlc checks` on a `sandbox-idp` target with no declared identity address.** It would make
+every project that has one declare it, and it would refuse configurations that were valid the day
+before over a key that is optional by design. The warning puts the same sentence in front of the
+same person without that.

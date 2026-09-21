@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { targetSettings, resetCommandFor, parseComposePs, serviceFailures, ranAndStopped, causeOf } from "../src/sandbox/local.mjs";
+import { targetSettings, resetCommandFor, parseComposePs, serviceFailures, stoppedForGood, publishedPorts, portOf, causeOf } from "../src/sandbox/local.mjs";
 import { sandboxUp, sandboxReset, sandboxDown, runSandbox, pollAddress } from "../src/commands/sandbox.mjs";
 import { parseConfig } from "../src/config/load.mjs";
 import { COMMANDS } from "../src/cli.mjs";
@@ -592,20 +592,36 @@ test("the config schema accepts the addresses a target declares it depends on, a
   assert.match(parseConfig(cfg("{ identity: 7 }")).errors.join(" "), /must be string/);
 });
 
-// While the project is still coming up, most of what `ps` can report about a container is
-// a state a healthy project passes through. Only a container that ran and is no longer
-// running has already failed.
-test("a container still on its way up is not yet a failure; one that ran and stopped is", () => {
+// Most of what `ps` can report about a container while the project is coming up is a state
+// a healthy project passes through, and `restarting` is the one that matters: a container
+// that exits retrying its database is restarted, loops for ten seconds and then runs, and
+// `--wait` returns while that is going on.
+test("only a container compose has finished with is certain while the project is still coming up", () => {
   const rows = [
     { Service: "web", State: "running" },
     { Service: "db", State: "created" },
     { Service: "api", State: "running", Health: "unhealthy" },
     { Service: "idp", State: "restarting" },
+    { Service: "worker", State: "dead" },
     { Service: "migrate", State: "exited", ExitCode: 3 },
     { Service: "seed", State: "exited", ExitCode: 0 },
   ];
-  assert.deepEqual(ranAndStopped(serviceFailures(rows)).map((f) => f.service), ["idp", "migrate"]);
-  assert.deepEqual(ranAndStopped([]), []);
+  assert.deepEqual(stoppedForGood(serviceFailures(rows)).map((f) => f.service), ["worker", "migrate"]);
+  assert.deepEqual(stoppedForGood([]), []);
+});
+
+test("the ports a project publishes are read from compose's own rows, and an unanswerable question answers null", () => {
+  const rows = [
+    { Service: "web", State: "running", Publishers: [{ PublishedPort: 8080, TargetPort: 3000 }, { PublishedPort: 0, TargetPort: 9229 }] },
+    { Service: "db", State: "running", Publishers: [] },
+  ];
+  assert.deepEqual([...publishedPorts(rows)], [8080], "a port published on 0 is not published");
+  assert.equal(publishedPorts([{ Service: "web", State: "running" }]), null, "a compose version that names no publishers has said nothing");
+  assert.equal(publishedPorts([]), null);
+  assert.equal(portOf("http://localhost:8081/realms/sandbox"), 8081);
+  assert.equal(portOf("http://localhost/realms/sandbox"), 80);
+  assert.equal(portOf("https://idp.test/realms/sandbox"), 443);
+  assert.equal(portOf("localhost:8081"), 0, "a string that is not an address is not a port");
 });
 
 test("the wait for an address ends at the service that will never let it answer, rather than running out", async () => {
@@ -650,20 +666,68 @@ test("a declared dependency that never answers is a sandbox that is not up, what
   assert.ok(!calls.some((c) => c.includes("run --rm seed")), "a sandbox that is not up is not seeded");
 });
 
-// The same run, with the provider dying at the point the measurement found it dying:
-// seconds after the base URL started answering, while its own address is still being
-// waited for. The services are watched throughout that wait, so it is reported as the
-// container it is.
-test("a service that dies while a dependency is still being waited for is caught then, not after", async (t) => {
+// The measured run: the provider is `Up` while the base URL comes good, and reads
+// `Restarting (1)` by the time anyone looks again. A restart loop never ends a wait, since
+// nothing in a `ps` row tells one that recovers from one that does not, so the wait for the
+// realm's address runs to its end — and the refusal still names the provider and quotes the
+// import error, because the containers are read again when it does.
+test("a provider that crash-loops behind its own address is refused with the container named, at the end of the wait", async (t) => {
+  const d = project(t);
+  const { calls, exec } = recorder({
+    "ps --all": { status: 0, stdout: psLines([{ Service: "web", State: "running" }, { Service: "idp", State: "restarting" }]), stderr: "" },
+    logs: { status: 0, stdout: "ERROR: Failed to run import\nERROR: Unrecognized field \"_comment\"\n", stderr: "" },
+  });
+  let attempts = 0;
+  const health = async (url, tick) => {
+    if (url === "http://localhost:8080") return true;
+    for (let i = 0; i < 6; i += 1) { attempts += 1; if (await tick()) return { failures: [] }; }
+    return false;
+  };
+  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec, health, sleep: noSleep });
+  assert.equal(r.ok, false);
+  assert.equal(r.cause, "application");
+  assert.equal(attempts, 6, "a restart loop is left to the address: it may yet recover");
+  assert.match(r.messages[0], /its identity dependency did not answer at http:\/\/localhost:8081\/realms\/sandbox/);
+  assert.deepEqual(r.failures.map((f) => f.service), ["idp"]);
+  assert.match(r.messages.join("\n"), /Unrecognized field/, "the service's own log is still what says why");
+  assert.ok(!calls.some((c) => c.includes("run --rm seed")));
+});
+
+// The other half of the same rule, and the reason it is drawn where it is. An application
+// container that exits retrying a database it depends on is restarted, loops for about ten
+// seconds and then serves; `--wait` returns while that is going on. Refusing it would send
+// a build proposal back for a sandbox that was seconds from healthy.
+test("a container that crash-loops on its way up and then serves is a sandbox that is up", async (t) => {
   const d = project(t);
   let samples = 0;
   const exec = (cmd, args) => {
     const line = [cmd, ...args].join(" ");
     if (line.includes("ps --all")) {
       samples += 1;
-      return { status: 0, stdout: psLines([{ Service: "web", State: "running" }, { Service: "idp", State: samples < 3 ? "running" : "restarting" }]), stderr: "" };
+      return { status: 0, stdout: psLines([{ Service: "web", State: "running" }, { Service: "api", State: samples < 4 ? "restarting" : "running" }]), stderr: "" };
     }
-    if (line.includes("logs")) return { status: 0, stdout: "ERROR: Failed to run import\nERROR: Unrecognized field \"_comment\"\n", stderr: "" };
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const health = async (url, tick) => {
+    if (url === "http://localhost:8080") return true;
+    for (let i = 0; i < 6; i += 1) { if (await tick()) return { failures: [] }; }
+    return true;
+  };
+  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec, health, sleep: noSleep });
+  assert.equal(r.ok, true, "a loop that recovers is not a sandbox that failed");
+});
+
+// A container compose has finished with is the one case nothing is waiting on any more.
+test("a container that exited non-zero while a dependency is still being waited for ends that wait", async (t) => {
+  const d = project(t);
+  let samples = 0;
+  const exec = (cmd, args) => {
+    const line = [cmd, ...args].join(" ");
+    if (line.includes("ps --all")) {
+      samples += 1;
+      return { status: 0, stdout: psLines([{ Service: "web", State: "running" }, { Service: "idp", State: samples < 3 ? "running" : "exited", ExitCode: samples < 3 ? 0 : 1 }]), stderr: "" };
+    }
+    if (line.includes("logs")) return { status: 0, stdout: "ERROR: Failed to run import\n", stderr: "" };
     return { status: 0, stdout: "", stderr: "" };
   };
   let attempts = 0;
@@ -674,18 +738,49 @@ test("a service that dies while a dependency is still being waited for is caught
   };
   const r = await sandboxUp(d, DEP_CONFIG, "new", { exec, health, sleep: noSleep });
   assert.equal(r.ok, false);
-  assert.equal(r.cause, "application", "a container that ran and died ran something the build wrote");
+  assert.equal(r.cause, "application", "a container that started and died ran something the build wrote");
   assert.match(r.messages[0], /while waiting for its identity dependency at http:\/\/localhost:8081\/realms\/sandbox/);
   assert.deepEqual(r.failures.map((f) => f.service), ["idp"]);
-  assert.match(r.messages.join("\n"), /Unrecognized field/, "the service's own log is still what says why");
+  assert.match(r.messages.join("\n"), /Failed to run import/);
   assert.equal(attempts, 3, "the wait ended at the sample that found it rather than at its own end");
+});
+
+// The address is a string in `.sdlc/config.yaml`. No build writes that file or is shown it,
+// so a build proposal returned for it would spend one of a slice's three attempts against
+// somebody who can neither see the cause nor fix it.
+test("an address on a port this project does not publish is the configuration's, and nothing is recorded against the build", async (t) => {
+  const d = project(t);
+  const rows = [{ Service: "web", State: "running", Publishers: [{ PublishedPort: 8080 }] }, { Service: "idp", State: "running", Publishers: [{ PublishedPort: 8081 }] }];
+  const { calls, exec } = recorder({ "ps --all": { status: 0, stdout: psLines(rows), stderr: "" } });
+  const typo = { project: { name: "mkt" }, targets: { new: { ...CONFIG.targets.new, depends_on: { identity: "http://localhost:8181/realms/sandbox" } } } };
+  const r = await sandboxUp(d, typo, "new", { exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
+  assert.equal(r.ok, false);
+  assert.equal(r.cause, "environment", "a line only the operator can fix does not go back to a builder");
+  assert.match(r.messages.join("\n"), /no container of this project publishes port 8181 — the ports it publishes are 8080, 8081/);
+  assert.match(r.messages.join("\n"), /targets\.new\.depends_on\.identity names an address this project does not serve/);
+  assert.deepEqual(r.failures, [], "there is no service to write a condition about");
+  assert.ok(!calls.some((c) => c.includes("run --rm seed")));
+});
+
+test("an address on a port this project does publish is the application's, and so is one where nothing could be told apart", async (t) => {
+  const d = project(t);
+  const served = recorder({
+    "ps --all": { status: 0, stdout: psLines([{ Service: "idp", State: "running", Publishers: [{ PublishedPort: 8081 }] }]), stderr: "" },
+  });
+  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec: served.exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
+  assert.equal(r.cause, "application", "the port is published and simply silent: the service is not serving");
+  assert.match(r.messages[0], /its identity dependency did not answer/);
+
+  const quiet = recorder({ "ps --all": { status: 0, stdout: psLines([{ Service: "idp", State: "running" }]), stderr: "" } });
+  const older = await sandboxUp(d, DEP_CONFIG, "new", { exec: quiet.exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
+  assert.equal(older.cause, "application", "a compose version that names no publishers has said nothing to decide on");
 });
 
 // A wait that ended on a container compose had not started yet would refuse sandboxes that
 // were about to be fine, which is the opposite error and costs a run just the same.
-test("a container still starting does not end a wait, and neither does a `ps` that could not be read", async (t) => {
+test("a container still starting or looping does not end a wait, and neither does a `ps` that could not be read", async (t) => {
   const d = project(t);
-  const starting = psLines([{ Service: "web", State: "running" }, { Service: "db", State: "created" }, { Service: "api", State: "running", Health: "unhealthy" }]);
+  const starting = psLines([{ Service: "web", State: "running" }, { Service: "db", State: "created" }, { Service: "api", State: "running", Health: "unhealthy" }, { Service: "idp", State: "restarting" }]);
   for (const ps of [{ status: 0, stdout: starting, stderr: "" }, { status: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" }]) {
     const { exec } = recorder({ "ps --all": ps });
     let ticks = 0;

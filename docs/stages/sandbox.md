@@ -79,6 +79,11 @@ there is nothing about a particular run worth recording that the config does not
   of time. A target that signs its tests in through an identity provider of its own is not a usable
   sandbox until that provider answers, and a provider whose realm import failed never answers at all
   while the web tier in front of it serves normally throughout.
+- `up` refuses a declared address on a port no container of the project publishes, with the cause
+  `environment` — `no container of this project publishes port <n>`, naming the key and the ports
+  that are published. `sdlc checks` warns, without failing, where a target signs in through
+  `sandbox-idp` and declares no `depends_on.identity`, since that is the shape `up` cannot otherwise
+  settle.
 - `up` fails when any service of the project is not running once both waits have passed. `--wait`
   gates only on services that declare a healthcheck, and the base-URL poll asks one service one
   question, so an identity provider that dies on startup and is restarted for ever satisfies both;
@@ -93,18 +98,27 @@ there is nothing about a particular run worth recording that the config does not
 polled every two seconds for up to two minutes until something answers with anything short of a
 server error.
 
-**The services are watched throughout every one of those waits, not only after them.** Between
-attempts the project's containers are read, and a container that ran and is no longer running ends
-the wait immediately: the refusal then names the service and quotes its log, rather than describing
-an address that stayed quiet for two minutes because the container behind it was crash-looping the
-whole time.
+Each address is polled for up to two minutes, so a target declaring N of them can wait (N+1) times
+that in the worst case, where nothing answers anywhere.
 
-Only a container that ran and stopped — restarting, dead, exited non-zero — ends a wait, and a `ps`
-that could not be read does not end one either. While the project is still coming up, the other
-states a container can be in are ones a healthy project passes through: `created` is a container
-compose has not started yet, and a service's own healthcheck reports `unhealthy` for as long as it
-is inside its start period. Ending a wait on either would refuse sandboxes that were about to be
-fine. Reading every failure, and refusing on an answer nothing could parse, belongs to the watch
+**The services are watched throughout every one of those waits, not only after them.** Between
+attempts the project's containers are read, and a container compose has finished with — dead, or
+exited non-zero — ends the wait immediately: the refusal then names the service and quotes its log,
+rather than describing an address that stayed quiet while the container behind it was already gone.
+
+Nothing else ends a wait. Every other state a container can be in is one a healthy project passes
+through on its way up: `created` is a container compose has not started yet, a healthcheck reports
+`unhealthy` for as long as a service is inside its start period, and a container that exits retrying
+a database it depends on is restarted, loops for ten seconds and then runs — which `docker compose
+--wait` returns in the middle of. Nothing in a `ps` row tells that loop from one that never ends, so
+a loop is left to the address itself: if the service recovers, its address answers and the wait ends,
+and if it never does, the wait ends at its ceiling and the watch below reads `restarting` and refuses
+with the container named. Ending a wait early on a loop would return a build proposal for a sandbox
+that was seconds from healthy, and spend one of the slice's three attempts on it.
+
+A `ps` that could not be read does not end a wait either. While the project is coming up this
+sampling is an opportunity to find a failure early and never the thing that establishes there is
+none; reading every failure, and refusing on an answer nothing could parse, belongs to the watch
 below, which runs once every wait has passed and nothing is still on its way up.
 
 **Which address to declare matters.** A service often answers on its root before the thing a test
@@ -155,7 +169,11 @@ executed: a container that reached a state of its own and failed out of it ran a
 produced, and a failure with no such container behind it is the machine.
 
 A missing compose file, nothing answering at the base URL, and a failing seed are the
-application's. An image that never builds is the machine's, deliberately: compose reports a
+application's. A declared address on a port no container of the project publishes is neither: it is
+the configuration, and it is reported as `environment` so that the run halts and nothing is written
+against the build. That discrimination reaches a wrong host or port and not a wrong path, since a
+path that is wrong on a server that is up answers 404, which `up` accepts as an answer the same way
+it accepts one from the base URL. An image that never builds is the machine's, deliberately: compose reports a
 Dockerfile defect and a registry that would not answer the same way, and no container exists to
 ask. A container the kernel killed for memory exits 137 and is reported as the application's, which
 is the wrong side — `ps --format json` carries no `OOMKilled` field and nothing here can know.
@@ -225,9 +243,15 @@ a fresh `up` leaves behind.
 - `docker compose ps` will not run, or answers in a form this does not read: `up` exits 1 saying
   whether the services are running could not be established, with the cause `environment`. Nothing
   is claimed about the application on an answer nothing could parse.
-- An address under `depends_on` never answers: `up` exits 1 naming that dependency and the address,
-  with the cause `application` — those addresses are published by the same compose file the build
-  writes. Whatever containers did start are left running, and are not seeded.
+- An address under `depends_on` never answers, on a port the project does publish: `up` exits 1
+  naming that dependency and the address, with the cause `application` — the service behind that
+  port is one the build's own compose file stands up. Whatever containers did start are left
+  running, and are not seeded.
+- An address under `depends_on` names a port no container of the project publishes: `up` exits 1
+  with the cause `environment`, naming the key, the port and the ports that are published. That
+  address is a string in `.sdlc/config.yaml`, which no build writes or is shown, so returning the
+  proposal would spend one of a slice's three attempts against somebody who can neither see the
+  cause nor fix it.
 - A container dies while one of those addresses is still being waited for: `up` exits 1 naming the
   service, what became of it, the end of its own log and the dependency whose wait it interrupted.
 - The seed service fails: `up` exits 1 naming the service and its own tail; the application is left
