@@ -38,6 +38,29 @@ Return rather than approve when a test asserts something its criterion does not 
 belongs to whoever writes the test, not to a note in the ruling that the reviewer let it through
 anyway.
 
+## A criterion that could not be exercised at all
+
+`verify` reports a criterion `unbound` when the adapter could not bind something its test calls:
+the test asked the surface for something and the application does not provide it. That message is
+accurate and it names the application, which is right for two of the three things it can mean —
+the slice is missing something it was asked to build, or the slice was asked for too much.
+
+The third is that the criterion is right and the test derived from it reaches past it: the test
+drives a capability, a screen or a step the criterion never asks for, so there is nothing for the
+adapter to bind and the application is reported as lacking a surface it was never answerable for.
+Rebuilding cannot fix that and re-scoping the slice gives up a criterion that was correct. Where
+the criterion and the adapter's reason say that is what happened, return the proposal with
+
+```
+test-overreaches <ID>: <what the test demands that the criterion does not ask for>
+```
+
+among its conditions. That files the criterion for re-derivation and carries the reason to the
+writer, who is handed it in place of the test it is replacing — so say what the test asked for
+that the criterion does not, specifically, and say nothing about how the application is built.
+It asserts nothing about the criterion: it stays unverified until a regenerated test binds and
+passes, so it is never the way to get a criterion past a gate.
+
 ## Sorting a calibration's failures
 
 When the acceptance suite runs against a target (`calibrate`), its failures come to this persona
