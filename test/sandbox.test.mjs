@@ -2,10 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { targetSettings, resetCommandFor, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portOf, causeOf } from "../src/sandbox/local.mjs";
 import { sandboxUp, sandboxReset, sandboxDown, runSandbox, pollAddress } from "../src/commands/sandbox.mjs";
+import { portIsFree, portHolder } from "../src/lib/ports.mjs";
 import { parseConfig } from "../src/config/load.mjs";
 import { COMMANDS } from "../src/cli.mjs";
 
@@ -61,7 +63,7 @@ test("up builds and starts the project's own compose file, waits for health, the
   const { calls, exec } = recorder();
   const r = await sandboxUp(d, CONFIG, "new", { exec, health: async () => true });
   assert.equal(r.ok, true);
-  assert.match(calls[0], /^docker compose -p sdlc-mkt-new -f app\/compose\/compose\.yaml up -d --build --wait/);
+  assert.ok(calls.some((c) => /^docker compose -p sdlc-mkt-new -f app\/compose\/compose\.yaml up -d --build --wait/.test(c)), calls.join(" | "));
   assert.match(calls.at(-1), /^docker compose -p sdlc-mkt-new -f app\/compose\/compose\.yaml run --rm seed$/);
 });
 
@@ -146,7 +148,7 @@ test("up --from builds the application a proposal branch carries and leaves HEAD
   const { calls, exec } = recorder();
   const code = await runSandbox(d, "up", { target: "new", from: "proposal/build-slice-1" }, { exec, health: async () => true });
   assert.equal(code, 0);
-  assert.match(calls[0], /^docker compose -p sdlc-mkt-new -f app\/compose\/compose\.yaml up -d --build --wait/);
+  assert.ok(calls.some((c) => /^docker compose -p sdlc-mkt-new -f app\/compose\/compose\.yaml up -d --build --wait/.test(c)), calls.join(" | "));
   assert.match(calls.at(-1), /run --rm seed$/);
   // The containers run from the images that build produced, so the tree goes back: HEAD
   // on the branch it started on, and the branch's own files out of the way again.
@@ -345,6 +347,10 @@ const noSleep = async () => {};
 // is not running. What a project publishes therefore comes from `compose config`, and a
 // fixture that left `Publishers` out would be agreeing with the reader rather than testing
 // it.
+// The port preflight is not what these tests are about, and a real probe would make them
+// answer differently on a machine that happens to be using one of the fixture's ports.
+const freePorts = async () => true;
+
 const upRow = (service, port) => ({
   Service: service, Name: `sdlc-mkt-new-${service}-1`, State: "running", Status: "Up 8 seconds", Health: "", ExitCode: 0,
   Publishers: [{ URL: "0.0.0.0", TargetPort: 3000, PublishedPort: port, Protocol: "tcp" }],
@@ -706,7 +712,7 @@ test("a provider that crash-loops behind its own address is refused with the con
     for (let i = 0; i < 6; i += 1) { attempts += 1; if (await tick()) return { failures: [] }; }
     return false;
   };
-  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec, health, sleep: noSleep });
+  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec, health, sleep: noSleep, portFree: freePorts });
   assert.equal(r.ok, false);
   assert.equal(r.cause, "application");
   assert.equal(attempts, 6, "a restart loop is left to the address: it may yet recover");
@@ -778,7 +784,7 @@ test("an address on a port this project does not publish is the configuration's,
     "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
   });
   const typo = { project: { name: "mkt" }, targets: { new: { ...CONFIG.targets.new, depends_on: { identity: "http://localhost:8181/realms/sandbox" } } } };
-  const r = await sandboxUp(d, typo, "new", { exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
+  const r = await sandboxUp(d, typo, "new", { exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep, portFree: freePorts });
   assert.equal(r.ok, false);
   assert.equal(r.cause, "environment", "a line only the operator can fix does not go back to a builder");
   assert.match(r.messages.join("\n"), /no service in app\/compose\/compose\.yaml publishes port 8181 — the ports it publishes are 8080, 8081/);
@@ -798,7 +804,7 @@ test("a provider crash-looping behind its own declared address is the applicatio
     "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
     logs: { status: 0, stdout: "ERROR: Failed to run import\nERROR: Unrecognized field \"_comment\"\n", stderr: "" },
   });
-  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
+  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep, portFree: freePorts });
   assert.equal(r.ok, false);
   assert.equal(r.cause, "application");
   assert.deepEqual(r.failures.map((f) => f.service), ["idp"], "the container that is dying is what the builder is told about");
@@ -813,7 +819,7 @@ test("an address on a port this project does publish is the application's, and s
     "ps --all": { status: 0, stdout: psLines([upRow("web", 8080), upRow("idp", 8081)]), stderr: "" },
     "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
   });
-  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec: served.exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
+  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec: served.exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep, portFree: freePorts });
   assert.equal(r.cause, "application", "the port is published and simply silent: the service is not serving");
   assert.match(r.messages[0], /its identity dependency did not answer/);
 
@@ -823,6 +829,95 @@ test("an address on a port this project does publish is the application's, and s
   });
   const older = await sandboxUp(d, DEP_CONFIG, "new", { exec: unreadable.exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
   assert.equal(older.cause, "application", "a compose that would not answer what it publishes has said nothing to decide on");
+});
+
+// --- the ports this project is about to publish ---
+
+// A port an unrelated process is already holding turns `up` into a container build, every
+// service and every wait, all thrown away at the end on a bind error naming a port and
+// nothing to do about it. Asked first instead, against the ports the compose file itself
+// declares.
+test("a host port this project publishes and something else holds refuses up before anything starts", async (t) => {
+  const d = project(t);
+  const { calls, exec } = recorder({
+    "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
+    "docker ps --format": { status: 0, stdout: "other-web\t0.0.0.0:8080->3000/tcp\n", stderr: "" },
+  });
+  const r = await sandboxUp(d, CONFIG, "new", { exec, health: async () => true, portFree: async (p) => p !== 8080 });
+  assert.equal(r.ok, false);
+  assert.equal(r.cause, "environment", "a port another process holds is not something a builder can see or fix");
+  assert.match(r.messages[0], /publishes a host port this machine is already using — port 8080, held by the container other-web\./);
+  assert.match(r.messages[1], /Free it and run this again, or publish this target somewhere else/);
+  assert.match(r.messages[1], /targets\.new\.base_url in \.sdlc\/config\.yaml/);
+  assert.match(r.messages[1], /Nothing of this project was started\./);
+  assert.deepEqual(r.failures, [], "there is no container to write a condition about");
+  assert.ok(!calls.some((c) => c.includes("up -d --build")), calls.join(" | "));
+});
+
+// Every port, not the first one found: an operator who frees one and re-runs to be told
+// about the next has paid for the preflight twice.
+test("every held port is named, in ascending order, and one with no nameable holder still counts", async (t) => {
+  const d = project(t);
+  const { exec } = recorder({ "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" } });
+  const r = await sandboxUp(d, CONFIG, "new", { exec, health: async () => true, portFree: async () => false });
+  assert.equal(r.ok, false);
+  assert.match(r.messages[0], /publishes 2 host ports this machine is already using — port 8080; port 8081\./);
+  assert.match(r.messages[1], /Free them and run this again/);
+});
+
+// Bringing a stack that is already running up again is the ordinary case. A preflight that
+// refused the project's own containers would make the command runnable exactly once.
+test("a port this project's own container is already publishing is not a conflict", async (t) => {
+  const d = project(t);
+  const { calls, exec } = recorder({
+    "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
+    "ps --all": { status: 0, stdout: psLines([upRow("web", 8080), upRow("idp", 8081)]), stderr: "" },
+  });
+  const r = await sandboxUp(d, CONFIG, "new", { exec, health: async () => true, portFree: async () => false });
+  assert.equal(r.ok, true);
+  assert.ok(calls.some((c) => c.includes("up -d --build")), calls.join(" | "));
+});
+
+// A compose file this could not resolve says nothing about what it publishes, and `up`
+// itself is where an unreadable compose file is reported.
+test("a compose file that will not say what it publishes leaves the preflight silent", async (t) => {
+  const d = project(t);
+  const { calls, exec } = recorder({
+    "config --format json": { status: 1, stdout: "", stderr: "unsupported flag: --format" },
+  });
+  const r = await sandboxUp(d, CONFIG, "new", { exec, health: async () => true, portFree: async () => false });
+  assert.equal(r.ok, true);
+  assert.ok(calls.some((c) => c.includes("up -d --build")), calls.join(" | "));
+});
+
+test("portIsFree answers for a port something is listening on, and for one nothing is", async () => {
+  const srv = createServer();
+  await new Promise((ok) => srv.listen(0, ok));
+  const port = srv.address().port;
+  try {
+    assert.equal(await portIsFree(port), false);
+  } finally {
+    await new Promise((ok) => srv.close(ok));
+  }
+  assert.equal(await portIsFree(port), true, "the same port once the listener has gone");
+});
+
+test("portHolder names a container, then a listening process, and says nothing when neither answers", () => {
+  const container = (cmd, args) => (cmd === "docker" && args.includes("ps")
+    ? { status: 0, stdout: "a-web\t0.0.0.0:8080->3000/tcp\nb-db\t\n", stderr: "" }
+    : { status: 0, stdout: "", stderr: "" });
+  assert.equal(portHolder(8080, container), "the container a-web");
+  // A container publishing a different host port is not the one holding this one, and the
+  // container port after the arrow is not a host port at all.
+  assert.equal(portHolder(3000, container), "");
+
+  const listener = (cmd) => (cmd === "lsof"
+    ? { status: 0, stdout: "p4321\nctest-server\n", stderr: "" }
+    : { status: 0, stdout: "", stderr: "" });
+  assert.equal(portHolder(8080, listener), "test-server (pid 4321)");
+
+  const silent = () => { throw new Error("command not found"); };
+  assert.equal(portHolder(8080, silent), "", "a probe this machine cannot run answers nothing, not a guess");
 });
 
 // A wait that ended on a container compose had not started yet would refuse sandboxes that

@@ -16,7 +16,8 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { loadConfig } from "../config/load.mjs";
-import { targetSettings, composeArgs, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portOf, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
+import { targetSettings, composeArgs, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portsBoundByProject, portOf, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
+import { portIsFree, portHolder } from "../lib/ports.mjs";
 import { enterBranch, leaveBranch } from "../lib/git.mjs";
 import { COMMANDS } from "../cli.mjs";
 
@@ -184,14 +185,57 @@ const notRunning = (bad) => (bad.length === 1 ? "a service of this project is no
 // wrongly that the configuration is at fault costs a re-run, and concluding wrongly that
 // the application is at fault costs one of a slice's three attempts.
 function addressThisProjectDoesNotServe(projectDir, s, exec, url) {
+  const ports = publishedPorts(projectDir, s, exec);
+  const want = portOf(url);
+  return ports && want && !ports.has(want) ? { port: want, ports } : null;
+}
+
+// Which host ports this project publishes, read off the resolved compose file, or `null`
+// when the question cannot be settled — compose would not run, answered non-zero, or
+// answered in a shape `declaredPorts` does not read. Shared by the preflight below and by
+// the address check above, so the two cannot come to different conclusions about what this
+// project publishes.
+function publishedPorts(projectDir, s, exec) {
   let r;
   try { r = exec("docker", [...composeArgs(projectDir, s), "config", "--format", "json"], { cwd: projectDir, env: composeEnv() }); }
   catch { return null; }
   if (!r || r.status !== 0) return null;
-  const ports = declaredPorts(r.stdout);
-  const want = portOf(url);
-  return ports && want && !ports.has(want) ? { port: want, ports } : null;
+  return declaredPorts(r.stdout);
 }
+
+// Every host port this project is about to publish that something else on this machine is
+// already holding, in ascending order, each with whatever could be established about what
+// holds it.
+//
+// Asked before anything starts. Without it, an unrelated process on one of these ports
+// turns the whole of `up` — a container build, every service, every wait — into work that
+// is thrown away at the end, and the operator is handed Docker's own bind error after
+// minutes of output, naming a port and nothing they can do about it.
+//
+// Every held port is reported rather than the first one found: an operator who frees one
+// and re-runs only to be told about the next has paid for the whole preflight twice.
+//
+// A port this project's own containers are already publishing is not a conflict. Bringing
+// a stack that is already running up again is the ordinary case, and a preflight that
+// refused it would make the command runnable exactly once.
+//
+// A compose file this could not resolve answers `null` and nothing is claimed: nothing is
+// known about the ports then, and `up` itself is where an unreadable compose file is
+// reported.
+async function portsAlreadyHeld(projectDir, s, exec, portFree) {
+  const want = publishedPorts(projectDir, s, exec);
+  if (!want) return [];
+  const mine = portsBoundByProject(psRows(projectDir, s, exec).rows ?? []);
+  const held = [];
+  for (const port of [...want].sort((a, b) => a - b)) {
+    if (mine.has(port)) continue;
+    if (await portFree(port)) continue;
+    held.push({ port, holder: portHolder(port, (cmd, args) => exec(cmd, args, { cwd: projectDir })) });
+  }
+  return held;
+}
+
+const heldBy = (h) => (h.holder ? `port ${h.port}, held by ${h.holder}` : `port ${h.port}`);
 
 function withLogs(projectDir, s, exec, failures) {
   return failures.map((f) => ({ ...f, log: logTail(projectDir, s, exec, f.service) }));
@@ -204,13 +248,27 @@ const describe = (f) => (f.log ? `${f.service} ${f.reason}. The end of its own l
 // that has to write one condition per service rather than print a paragraph.
 const failed = (cause, messages, failures = []) => ({ ok: false, cause, failures, messages });
 
-export async function sandboxUp(projectDir, config, target, { exec = defaultExec, health = pollAddress, sleep = sleepMs, samples = SETTLE_SAMPLES } = {}) {
+export async function sandboxUp(projectDir, config, target, { exec = defaultExec, health = pollAddress, sleep = sleepMs, samples = SETTLE_SAMPLES, portFree = portIsFree } = {}) {
   const s = targetSettings(config, target);
   // The compose file is written by the build that declares the application's local
   // services, and it lives under `app/` with the rest of that build's output, so a missing
   // one is something a builder can be told to write.
   if (!existsSync(join(projectDir, s.compose)))
     return failed(APPLICATION, [`${s.compose} is missing; the stack profile has the application declare its local services there`]);
+  // Before anything is started, so a port that was never going to be available costs the
+  // operator a sentence rather than a bring-up that fails at the end of itself.
+  //
+  // The machine's, not the application's: a port an unrelated process on this machine holds
+  // is not something a builder can see or fix, and returning it would spend one of a
+  // slice's three attempts against a build that may be sound
+  // (docs/decisions/0017-a-sandbox-that-is-not-up.md).
+  const held = await portsAlreadyHeld(projectDir, s, exec, portFree);
+  if (held.length) {
+    return failed(ENVIRONMENT, [
+      `the sandbox was not started: ${s.compose} publishes ${held.length === 1 ? "a host port" : `${held.length} host ports`} this machine is already using — ${held.map(heldBy).join("; ")}.`,
+      `Free ${held.length === 1 ? "it" : "them"} and run this again, or publish this target somewhere else: the address the suite drives is targets.${target}.base_url in .sdlc/config.yaml, and ${s.compose} has to publish it there. Nothing of this project was started.`,
+    ]);
+  }
   const up = exec("docker", [...composeArgs(projectDir, s), "up", "-d", "--build", "--wait"], { cwd: projectDir, env: composeEnv() });
   if (up.status !== 0) {
     const bad = withLogs(projectDir, s, exec, psFailures(projectDir, s, exec));

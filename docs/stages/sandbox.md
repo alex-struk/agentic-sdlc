@@ -44,7 +44,8 @@ identity provider's test users can sign in without the password ever appearing o
 
 ## Outputs
 
-- `up` — builds and starts the compose project (`docker compose ... up -d --build --wait`), waits
+- `up` — checks that every host port the compose file publishes is free, builds and starts the
+  compose project (`docker compose ... up -d --build --wait`), waits
   for the application to answer at its configured `base_url` with anything short of a server
   error, waits the same way for each address the target declares under `depends_on`, establishes
   that the project's services are actually running, then runs `reset`. Prints
@@ -71,6 +72,18 @@ there is nothing about a particular run worth recording that the config does not
 - `up` refuses, before touching anything, when the target's compose file does not exist on disk —
   `<compose path> is missing; the stack profile has the application declare its local services
   there`.
+- `up` refuses, before anything is started, when a host port the compose file publishes is already
+  held on this machine, with the cause `environment` — `the sandbox was not started: <compose file>
+  publishes a host port this machine is already using — port <n>, held by <what>`, followed by what
+  to do: free it, or publish this target somewhere else, which is `targets.<t>.base_url` in
+  `.sdlc/config.yaml` and the compose file that has to match it. Every held port is named at once,
+  in ascending order, so freeing one and re-running does not lead straight to the next.
+
+  The ports come from `docker compose config`, the same reading the declared-address check below
+  makes. What holds a port is established only as far as it can be without privileges — a container
+  of another compose project, or a listening process of this user — and where nothing answers, the
+  port is named on its own. A port one of this project's *own* containers is already publishing is
+  not a conflict: bringing a stack that is already running up again is the ordinary case.
 - `up` fails when `docker compose up` itself fails, or when the application never answers at its
   `base_url` (`the application did not answer at <base_url>`) — health is polled every two seconds
   for up to two minutes.
@@ -241,6 +254,11 @@ a fresh `up` leaves behind.
   behind: both are reported, and the failure that was already on its way out is the one raised,
   never the teardown's.
 - The compose file is missing: refused before Docker is touched.
+- A host port the compose file publishes is already held by something else on this machine: `up`
+  exits 1 naming every such port and what holds it, with the cause `environment`, and nothing of
+  the project is started. The port is not something a build can see or fix, and a bring-up that
+  discovers it at the end has spent a container build, every service and every wait to arrive at
+  Docker's own bind error.
 - `docker compose up` fails, or the application never comes up within its timeout: `up` exits 1
   with the compose output's own tail; whatever containers did start are left running, not torn
   down, so `sandbox down` or `sandbox status` is the next step.

@@ -192,6 +192,27 @@ export function declaredPorts(text) {
   return ports.size ? ports : null;
 }
 
+// The host ports this project's own containers have bound at this moment, read off the
+// same `ps` rows everything else here is read off.
+//
+// This is the one question `Publishers` is the right source for, and it is the opposite of
+// `declaredPorts` above: there the question is what the project publishes whether or not
+// anything is up, here it is what is bound right now and by whom. A port one of this
+// project's own containers is already holding is not a conflict for `up` — bringing a
+// stack that is already running up again is the ordinary case — and a crash-looping
+// container that has bound nothing simply does not appear, which is correct: nothing of
+// this project is holding that port.
+export function portsBoundByProject(rows) {
+  const ports = new Set();
+  for (const row of rows ?? []) {
+    for (const p of Array.isArray(row?.Publishers) ? row.Publishers : []) {
+      const n = Number(p?.PublishedPort);
+      if (Number.isInteger(n) && n > 0) ports.add(n);
+    }
+  }
+  return ports;
+}
+
 // The host port an address is asked on, or 0 for anything this cannot reason about — a
 // string that is not a URL, or a scheme other than the two `up` polls over. Zero is not a
 // port and every caller reads it as a question it declined to answer.

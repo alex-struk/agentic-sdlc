@@ -6,10 +6,10 @@
 // and each one's ports are independent. Untracked (see templates/project/.gitignore):
 // ports are a fact about this machine's current run, not something to commit.
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
+import { portIsFree } from "../lib/ports.mjs";
 
 function localPath(projectDir, target) {
   return join(projectDir, ".sdlc", `oracle-${target}.local.yaml`);
@@ -29,28 +29,14 @@ export function removeLocal(projectDir, target) {
   if (existsSync(p)) unlinkSync(p);
 }
 
-// Whether `port` is free to bind on this machine right now, tested the only way that is
-// actually reliable — opening a real listening socket rather than asking the OS for a
-// list of ports in use, which differs by platform and misses ports a process holds
-// without a listener. Bound to 127.0.0.1 specifically: the oracle is published for this
-// machine only, so a port free on the loopback interface is what matters, not on every
-// interface the host has.
-function tryPort(port) {
-  return new Promise((resolvePort) => {
-    const srv = createServer();
-    srv.once("error", () => resolvePort(false));
-    srv.listen(port, "127.0.0.1", () => srv.close(() => resolvePort(true)));
-  });
-}
-
 // Picks a free port: `prefer` first when given (so a project's configured `base_url`
 // port is kept whenever nothing else is already using it), otherwise scanning upward
 // from `from` until one binds. When `prefer` and `from` are the same port and it is
 // taken, the scan starts one above it rather than re-testing the port the line above
 // already found taken.
 export async function freePort(prefer, from) {
-  if (prefer && (await tryPort(prefer))) return prefer;
+  if (prefer && (await portIsFree(prefer))) return prefer;
   let port = from === prefer ? from + 1 : from;
-  while (!(await tryPort(port))) port++;
+  while (!(await portIsFree(port))) port++;
   return port;
 }
