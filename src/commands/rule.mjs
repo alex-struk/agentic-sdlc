@@ -50,6 +50,18 @@ function blockScalar(text) {
   return text.split("\n").map((l) => (l ? `  ${l}` : "")).join("\n");
 }
 
+// Two turns' worth of cost, turns and session folded into one figure rather than the
+// second overwriting the first — the same shape `finishStage`'s own fix turn already
+// folds (`src/runner/finish-stage.mjs`). A ruling that needed a second turn to reach its
+// verdict spent both of them, and a gate file or a caller told about only the last one is
+// told less than the ruling actually cost: the turn that got refused or failed is still a
+// turn that was paid for. The session named is the first turn's — the transcript a person
+// would go back and read is the one the ruling started as, not whichever turn happened to
+// answer last.
+function sumMetrics(a, b) {
+  return { cost: (a?.cost ?? 0) + (b?.cost ?? 0), turns: (a?.turns ?? 0) + (b?.turns ?? 0), session: a?.session || b?.session || "" };
+}
+
 // The gate file's body differs by who ruled and how: a human writes a free-text
 // `note`; an agent approving or returning writes a `rationale` block plus the
 // `conditions` it attached to the verdict; an escalation (mandatory or agent-decided)
@@ -62,11 +74,18 @@ function blockScalar(text) {
 // what it spent on stages. Every agent path passes it, including a mandatory escalation
 // that never asked the persona anything (cost 0, no session); a human ruling has no
 // turn to measure and the keys are left out of its file entirely.
-function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, escalateTo, metrics }) {
+function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, escalateTo, metrics, reprompt }) {
   let text = `gate: ${gate}\nverdict: ${verdict}\nby: ${by}\nheld_by: ${heldBy}\n`;
   if (escalateTo !== undefined) text += `escalate_to: ${escalateTo ?? ""}\n`;
   if (rationale !== undefined) text += `rationale: |2-\n${blockScalar(rationale)}\n`;
   else text += `note: ${JSON.stringify(note ?? "")}\n`;
+  // Written only where a guard refused the first reply and the persona was asked again
+  // (`ruleByAgent`'s `askOnce` called a second time over the same defect) — what the first
+  // attempt got wrong, in the persona's own words. This is the ruling's own record that it
+  // took two turns to reach what it says, which nothing else on disk carries: the verdict
+  // and conditions below are already the corrected reply, and without this line they read
+  // as if the persona wrote them right the first time.
+  if (reprompt) text += `reprompt: |2-\n${blockScalar(reprompt)}\n`;
   // Conditions are written wherever a ruler attached any, which is what lets a person in
   // a gate seat return a proposal with the same structured list an agent in that seat
   // returns it with. Every stage that acts on a return reads `conditions`, so a seat that
@@ -344,7 +363,7 @@ function fileOverreachRequests(projectDir, { name, gate, conditions }) {
 // append the run record, stage exactly those paths (plus the proposal page when the
 // caller already appended a `## Ruling` section to it), commit, merge on approve, and
 // fold the rebuilt site into that same commit.
-function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics, proposalPath, proposalAppended, executable }) {
+function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics, proposalPath, proposalAppended, executable, reprompt }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   // A ruling's rationale and conditions are an agent's own prose, and its typecheck
   // evidence is a compiler's output: both routinely quote a path on the machine the
@@ -352,7 +371,7 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   // rule E-2's redaction applies here for the same reason it applies to the journal and
   // the proposal page (`src/lib/redact.mjs`).
   writeText(join(projectDir, gatePath),
-    redactLocalPaths(gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics }), projectDir));
+    redactLocalPaths(gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics, reprompt }), projectDir));
   const runPath = appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
   const paths = [gatePath, relative(projectDir, runPath)];
   if (proposalAppended) paths.push(relative(projectDir, proposalPath));
@@ -374,10 +393,10 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   return requests;
 }
 
-function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics }) {
+function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics, reprompt }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   writeText(join(projectDir, gatePath),
-    redactLocalPaths(gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, rationale, metrics }), projectDir));
+    redactLocalPaths(gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, rationale, metrics, reprompt }), projectDir));
   const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`);
   stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} escalated to ${escalateTo ?? "?"}`], projectDir);
@@ -475,7 +494,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
       Boolean(escalation) && by === g.escalate_to && escalation.by !== by);
     const heldBy = by.startsWith("agent:") ? "agent" : "human";
     const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, conditions, executable });
-    return { gate, verdict, heldBy, ...requests };
+    return { gate, verdict, heldBy, note, conditions: conditions ?? [], ...requests };
   } catch (e) {
     throw leaveRuling(projectDir, start, branch, e);
   }
@@ -650,7 +669,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       // No persona turn ran, so the ruling cost nothing — recorded as zero rather than
       // omitted, so every agent-held gate file carries the same three keys.
       writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics: { cost: 0, turns: 0, session: "" } });
-      return { verdict: "escalate", rationale, escalated: true };
+      return { verdict: "escalate", rationale, escalated: true, gate, escalateTo: g.escalate_to };
     }
 
     const typecheck = await acceptanceTypecheck(projectDir, {
@@ -677,9 +696,15 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // left behind. The edit is left in place (not reset) so the tampering stays visible.
     const askOnce = async (text) => {
       let result = await runRuling(text);
+      // A failed turn still spent whatever it spent before it failed, so its cost and
+      // turns are carried into the retry's rather than dropped: a session that hit the
+      // turn cap once before answering costs what both turns cost, not what the second
+      // one alone did.
+      let spent = { cost: result.cost, turns: result.turns, session: result.sessionId };
       if (!result.ok) {
         console.warn(`warning: the ruling turn for ${name} failed (${rulingFailure(result)}); retrying once`);
         result = await runRuling(text);
+        spent = sumMetrics(spent, { cost: result.cost, turns: result.turns, session: result.sessionId });
       }
       // A turn that reports failure has no verdict to read, and its own text is the only
       // account of why — except when it has no text at all, which is exactly when a person
@@ -688,10 +713,15 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       // otherwise be the error a person sees for what is actually a failed session.
       if (!result.ok) throw new Error(`ruling agent turn failed after one retry: ${rulingFailure(result)}`);
       assertCleanTree(projectDir, "rule: the ruling agent modified the working tree");
-      return { ...parseVerdict(result.text), metrics: { cost: result.cost, turns: result.turns, session: result.sessionId } };
+      return { ...parseVerdict(result.text), metrics: spent };
     };
 
     let { verdict, rationale, conditions, metrics } = await askOnce(prompt);
+    // Set the moment a guard's re-prompt fires, and carried through to whichever exit this
+    // ruling takes: an approval or return's gate file, an escalation's, or (had the second
+    // reply still been wrong) the refusal thrown below. `null` for the ordinary ruling that
+    // never needed a second turn, which is most of them.
+    let reprompt = null;
 
     // At G1 a condition is not commentary, it is an instruction `ratify` will execute
     // against the domain file, so a line the ratification grammar cannot read is a silently
@@ -707,6 +737,9 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     const executable = conditionsAreExecutable(gate, name);
     let unparsed = executable && verdict !== "escalate" ? grammar.unparsed(conditions) : [];
     if (unparsed.length) {
+      const why = `${unparsed.length} condition line(s) did not match the ${grammar.label} grammar: `
+        + `${unparsed.map((c) => JSON.stringify(c)).join(", ")}`;
+      console.log(`${name}: re-asking once — the first reply's conditions could not be read. ${why}`);
       const again = [
         prompt,
         "",
@@ -722,14 +755,17 @@ export async function ruleByAgent(projectDir, name, { persona }) {
         "Rule again. Keep the conditions that were fine exactly as they were, rewrite these in the",
         "grammar above, and finish with the JSON block as before.",
       ].join("\n");
-      ({ verdict, rationale, conditions, metrics } = await askOnce(again));
+      const next = await askOnce(again);
+      metrics = sumMetrics(metrics, next.metrics);
+      reprompt = `The first reply ruled ${verdict}. ${why}. Asked again in the ${grammar.label} grammar.`;
+      ({ verdict, rationale, conditions } = next);
       unparsed = verdict === "escalate" ? [] : grammar.unparsed(conditions);
       if (unparsed.length) console.warn(`warning: ${name}: ${unparsed.length} condition line(s) still unreadable after one re-prompt; recorded as unparsed_conditions`);
     }
 
     if (verdict === "escalate") {
-      writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics });
-      return { verdict, rationale, escalated: true };
+      writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
+      return { verdict, rationale, escalated: true, gate, escalateTo: g.escalate_to, reprompted: Boolean(reprompt) };
     }
 
     // The same check a person's ruling is held to, in the same place in the sequence:
@@ -752,10 +788,20 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     if (!executable) {
       const defect = firstFixableConditionDefect(name, verdict, conditions ?? []);
       if (defect) {
-        ({ verdict, rationale, conditions, metrics } = await askOnce(conditionDefectReprompt(prompt, verdict, defect)));
+        const guidance = defect.kind === "overreach" ? overreachGuidance(defect.line)
+          : defect.kind === "addressed" ? addressedGuidance(defect.line)
+            : deliverableGuidance(defect);
+        // The console line a person watching a batch run needs, the moment the re-prompt
+        // fires rather than only afterward: what the first reply got wrong, in the same
+        // words the persona is being asked to fix.
+        console.log(`${name}: re-asking once — the first reply's condition could not be carried out. ${guidance}`);
+        const next = await askOnce(conditionDefectReprompt(prompt, verdict, defect));
+        metrics = sumMetrics(metrics, next.metrics);
+        reprompt = `You ruled ${verdict}. ${guidance}`;
+        ({ verdict, rationale, conditions } = next);
         if (verdict === "escalate") {
-          writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics });
-          return { verdict, rationale, escalated: true };
+          writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
+          return { verdict, rationale, escalated: true, gate, escalateTo: g.escalate_to, reprompted: true };
         }
       }
       // The final word, whether or not a re-prompt was tried: a defect still present here
@@ -775,11 +821,52 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // The ruling has to land in the proposal page's own commit, not a follow-up one, so
     // it is appended and written before `commitRuling` stages and commits.
     writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }), projectDir));
-    const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true, executable });
-    return { verdict, rationale, unparsed, escalated: false, ...requests, ...metrics };
+    const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true, executable, reprompt });
+    return { verdict, rationale, conditions, unparsed, escalated: false, gate, escalateTo: null, reprompted: Boolean(reprompt), ...requests, ...metrics };
   } catch (e) {
     throw leaveRuling(projectDir, start, branch, e);
   }
+}
+
+// How much of a rationale is shown at the terminal before it is pointed at rather than
+// quoted whole. A rationale can run to a paragraph or more, and the gate file this line
+// names is where the rest of it already lives; a condition gets no such cap, because a
+// return's conditions are instructions a later run acts on, and summarising the
+// actionable part would defeat the reason this function exists.
+const RATIONALE_SHOWN = 400;
+
+function pointedAt(text, gatePath) {
+  const t = (text ?? "").trim();
+  if (!t) return "";
+  return t.length <= RATIONALE_SHOWN ? t : `${t.slice(0, RATIONALE_SHOWN)}… (see ${gatePath} for the rest)`;
+}
+
+// What `sdlc rule` prints once a ruling is recorded — the verdict alone used to be the
+// whole of it, which is the defect three operators reported independently: an operator
+// who does not know to go and open the gate file has no way to tell "approved, no
+// conditions" apart from "approved, and I was never shown any." Every condition is shown
+// in full here, never summarised, because a return's conditions are instructions the next
+// run acts on rather than commentary; the rationale behind them is pointed at instead,
+// since the gate file this line names already carries the whole of it.
+//
+// Redacted the same way the gate file itself is (`redactLocalPaths`) — an agent's own
+// prose can carry a path off the machine it ran on, and a terminal is not exempt from the
+// rule the committed file is held to.
+function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, reprompted }) {
+  const gatePath = join(".sdlc", "gates", `${name}.yaml`);
+  const recordedOn = verdict === "approve" ? "main (merged)" : `proposal/${name}`;
+  const lines = [`${name}: ${verdict} at ${gate}`];
+  if (escalateTo) lines.push(`  escalated to: ${escalateTo}`);
+  if (reprompted) lines.push(`  re-asked once: the first reply was refused; see "reprompt" in the gate file for what it got wrong`);
+  const text = pointedAt(rationale || note, gatePath);
+  if (text) lines.push(`  rationale: ${text}`);
+  if (verdict !== "escalate") {
+    const list = conditions ?? [];
+    lines.push(list.length ? "  conditions:" : "  conditions: none");
+    for (const c of list) lines.push(`    - ${c}`);
+  }
+  lines.push(`  recorded: ${gatePath} on ${recordedOn}`);
+  return redactLocalPaths(lines.join("\n"), projectDir);
 }
 
 // `sdlc rule --pending`: every open proposal branch whose gate is agent-held, ruled in
@@ -861,9 +948,11 @@ export async function rulePending(projectDir) {
     try {
       const r = await ruleByAgent(projectDir, name, { persona });
       results.push({ name, ...r });
-      console.log(!r.escalated ? `${name}: ${r.verdict} at ${gateMatch[1]}`
-        : escalation ? `${name}: escalated again by agent:${persona}; waiting for a person`
-          : `${name}: escalated to ${g.escalate_to}`);
+      if (r.escalated && escalation) console.log(`${name}: escalated again by agent:${persona}; waiting for a person`);
+      console.log(formatRuling(projectDir, name, {
+        gate: r.gate ?? gateMatch[1], verdict: r.escalated ? "escalate" : r.verdict,
+        conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
+      }));
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
       console.log(`${name}: failed — ${e.message}`);
@@ -915,7 +1004,10 @@ COMMANDS.rule = async ({ pos, flags }) => {
     // agent path with the typed verdict discarded.
     if (pos[1]) throw new Error("an agent holder rules through its own turn; omit the verdict, or rule as a human role");
     const r = await ruleByAgent(process.cwd(), pos[0], { persona: flags.by.slice("agent:".length) });
-    console.log(r.escalated ? `${pos[0]}: escalated (${r.rationale})` : `${pos[0]}: ${r.verdict}`);
+    console.log(formatRuling(process.cwd(), pos[0], {
+      gate: r.gate, verdict: r.escalated ? "escalate" : r.verdict,
+      conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
+    }));
     return 0;
   }
   // `--condition` may be given more than once, and each occurrence is one condition line.
@@ -924,7 +1016,7 @@ COMMANDS.rule = async ({ pos, flags }) => {
   const conditions = flags.condition === undefined ? undefined
     : [flags.condition].flat().filter((c) => typeof c === "string");
   const r = rule(process.cwd(), pos[0], pos[1], { by: flags.by, note: flags.note ?? "", conditions });
-  console.log(`${pos[0]}: ${r.verdict} at ${r.gate}`);
+  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note }));
   if (r.filed?.length) console.log(`${pos[0]}: ${r.filed.join(", ")} filed for re-derivation — run sdlc run derive-tests --domain <domain> --stale`);
   for (const id of r.unfiled ?? []) console.warn(`warning: ${pos[0]}: ${id} is not an accepted criterion; nothing was filed for it`);
   return 0;
