@@ -710,6 +710,9 @@ test("resume continues a workspace stage that reached its post-checks", async ()
     assert.equal(code, 0, logs.join(" | "));
     assert.equal(judged, 1, "the collected tree is judged rather than the stage re-run");
     assert.ok(!logs.some((l) => /resume cannot continue/.test(l)), logs.join(" | "));
+    // A resume that reaches `finishStage` and succeeds used to print nothing at all —
+    // the same gap `sdlc run` closed for its own success line.
+    assert.ok(logs.some((l) => l === "resume spec-only-post-stage: ok"), logs.join(" | "));
   } finally {
     console.log = orig;
     restoreEgress(prevEgress);

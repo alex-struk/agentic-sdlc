@@ -11,6 +11,17 @@ import { init } from "../src/commands/init.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { rule, ruleByAgent, rulePending, rulingTurns } from "../src/commands/rule.mjs";
 import { buildSite } from "../src/commands/status.mjs";
+import { COMMANDS } from "../src/cli.mjs";
+
+// Captures everything `sdlc rule` prints for one call, the way `test/commands.test.mjs`
+// does for `sdlc doctor`.
+async function ruleLines(args) {
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(" "));
+  try { await COMMANDS.rule(args); } finally { console.log = orig; }
+  return lines.join("\n");
+}
 
 const FROM = fileURLToPath(new URL("../fixture-project/fixture.config.yaml", import.meta.url));
 
@@ -102,6 +113,30 @@ test("ruleByAgent: escalate leaves the branch open with an escalated gate record
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/p2");
     assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc rule prints the escalation target, not only the bare verdict", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-cli-escalate-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  propose(dir, "p2b", { gate: "G0", question: "Right problem?", recommendation: "Maybe." });
+  const mockDir = mockRule('Two readings of the intent are both plausible.\n\n```json\n{"verdict":"escalate","rationale":"two readings of the intent are both plausible","conditions":[]}\n```');
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  // `COMMANDS.rule` reads `process.cwd()` rather than taking a directory, the way the
+  // real `sdlc` CLI is invoked from inside the project — `test/sandbox.test.mjs` and
+  // `test/verify-stage.test.mjs` do the same for the same reason.
+  const origCwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const out = await ruleLines({ pos: ["p2b"], flags: { by: "agent:product-owner" } });
+    assert.match(out, /^p2b: escalate at G0$/m);
+    assert.match(out, /^\s+escalated to: tech-lead$/m);
+    assert.match(out, /two readings of the intent are both plausible/);
+  } finally {
+    process.chdir(origCwd);
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }
@@ -576,6 +611,11 @@ test("ruleByAgent: the retry succeeds when the second turn comes back with a ver
     assert.match(warnings[0], /hit the turn cap \(error_max_turns\)/);
     assert.match(warnings[0], /retrying once/);
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    // The failed first turn spent a turn too, and it is not dropped once the retry lands:
+    // this ruling made two calls, and the gate file's total is both of them.
+    const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/p13.yaml"), "utf8"));
+    assert.equal(gate.turns, 2);
+    assert.equal(r.turns, 2);
   } finally {
     console.warn = origWarn;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
@@ -608,6 +648,9 @@ test("a G1 ruling whose conditions do not parse is re-prompted once, and the cor
   }));
   process.env.SDLC_EXECUTOR = "mock";
   process.env.SDLC_MOCK_DIR = mockDir;
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
   try {
     const r = await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" });
     assert.equal(r.verdict, "approve");
@@ -615,7 +658,15 @@ test("a G1 ruling whose conditions do not parse is re-prompted once, and the cor
     const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/archaeology-applications.yaml"), "utf8"));
     assert.deepEqual(gate.conditions, ["confirm D-applications-1", "obsolete D-applications-2: the fee table is gone"]);
     assert.equal(gate.unparsed_conditions, undefined);
+    // Same visibility the deliverability re-prompt got: said at the terminal as it
+    // happened, recorded on the gate file, and the two turns' cost summed rather than the
+    // second one overwriting the first.
+    assert.ok(logs.some((l) => /re-asking once/.test(l)), logs.join(" | "));
+    assert.match(gate.reprompt, /did not match the ratification grammar/);
+    assert.equal(gate.turns, 2);
+    assert.equal(r.turns, 2);
   } finally {
+    console.log = origLog;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }

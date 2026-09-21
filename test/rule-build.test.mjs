@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
 import { buildVerified, rule, ruleByAgent, rulePending, simulatedRole } from "../src/commands/rule.mjs";
+import { COMMANDS } from "../src/cli.mjs";
 
 function repo(t) {
   const d = mkdtempSync(join(tmpdir(), "sdlc-rule-build-"));
@@ -247,6 +248,55 @@ test("a person in the gate seat is refused the same approval, and returns the sa
   assert.equal(gate.verdict, "return");
 });
 
+// `sdlc rule` used to print one line: `<name>: <verdict> at <gate>`. That is
+// indistinguishable at the terminal from a return that carried no conditions at all, which
+// three operators each found out the hard way — the fix is what these two tests cover.
+test("sdlc rule prints a return's every condition in full, and where the ruling was recorded", async (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "pass" });
+  const c1 = "Give the results list an accessible name.";
+  const c2 = "Add a loading state while the second page of results is fetched.";
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(" "));
+  // `COMMANDS.rule` reads `process.cwd()` the way the real CLI does when it is run from
+  // inside a project, so the process is put there for the call and returned afterward —
+  // `test/sandbox.test.mjs` and `test/verify-stage.test.mjs` do the same.
+  const origCwd = process.cwd();
+  process.chdir(d);
+  let code;
+  try {
+    code = await COMMANDS.rule({
+      pos: ["build-slice-1", "return"],
+      flags: { by: "tech-lead", note: "the route is sound; two things have to change first", condition: [c1, c2] },
+    });
+  } finally { console.log = orig; process.chdir(origCwd); }
+  const out = lines.join("\n");
+  assert.equal(code, 0);
+  assert.match(out, /^build-slice-1: return at G3$/m);
+  assert.match(out, /^\s+conditions:$/m);
+  assert.ok(out.includes(`- ${c1}`), out);
+  assert.ok(out.includes(`- ${c2}`), out);
+  assert.ok(out.includes(".sdlc/gates/build-slice-1.yaml"), out);
+  assert.ok(out.includes("on proposal/build-slice-1"), out);
+});
+
+test("sdlc rule prints 'conditions: none' for an approval that carried none, rather than staying silent", async (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "pass" });
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.join(" "));
+  const origCwd = process.cwd();
+  process.chdir(d);
+  try {
+    await COMMANDS.rule({ pos: ["build-slice-1", "approve"], flags: { by: "tech-lead", note: "every criterion this slice claims passes" } });
+  } finally { console.log = orig; process.chdir(origCwd); }
+  const out = lines.join("\n");
+  assert.match(out, /^build-slice-1: approve at G3$/m);
+  assert.match(out, /^\s+conditions: none$/m);
+});
+
 test("an escalation's target may approve without one, and the escalation is the record of it", (t) => {
   const d = project(t, HUMAN_HELD);
   buildProposal(d, { verdict: "fail", escalatedTo: "delivery-lead" });
@@ -296,12 +346,27 @@ test("a return whose plain condition names an undeliverable path is re-prompted 
     { verdict: "return", rationale: "the route is sound; the plan asked this slice for something it cannot show", conditions: [OK_CONDITION, UNDELIVERABLE_CONDITION] },
     { verdict: "return", rationale: "the route is sound; the plan asked this slice for something it cannot show", conditions: [OK_CONDITION, CORRECTED_CONDITION] },
   ]);
-  const r = await ruleByAgent(d, "build-slice-1", { persona: "reviewer" });
+  const said1 = await said(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }));
+  const r = said1.value;
   assert.equal(r.verdict, "return");
   assert.deepEqual(r.addressed, ["plan"], "the corrected condition was filed to the stage it named");
   const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
   assert.equal(gate.verdict, "return");
   assert.deepEqual(gate.conditions, [OK_CONDITION, CORRECTED_CONDITION], "the kept condition survived; the fixed one is what landed");
+
+  // The re-prompt this guard runs (`0028`) used to leave no trace anywhere that it had
+  // fired. It now says so at the terminal, naming what the first reply got wrong, and the
+  // gate file carries the same account.
+  assert.equal(r.reprompted, true);
+  assert.match(said1.lines, /re-asking once/);
+  assert.match(said1.lines, /plan\/tasks\.md/);
+  assert.match(gate.reprompt, /plan\/tasks\.md/, "the gate file records what the first attempt got wrong");
+  assert.match(gate.reprompt, /You ruled return\./);
+
+  // Two turns ran — the first reply and the re-prompt — and the mock charges one turn
+  // each; the gate file's own total is the sum, not just the second turn's alone.
+  assert.equal(gate.turns, 2, "the first turn's cost is not dropped when the second one lands");
+  assert.equal(r.turns, 2);
 });
 
 test("a plain condition still undeliverable after the re-prompt is refused, and the verdict and every condition are still visible", async (t) => {
