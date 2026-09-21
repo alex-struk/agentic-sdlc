@@ -742,6 +742,26 @@ test("an unbound slice whose adapter is already in place is not told to bind aga
   assert.match(r.text, /build --slice 1 --revise/, "taking the surface on is the other");
 });
 
+// The third cause an unbound verdict can have, and the one the other two exits cannot
+// express: the criterion is right, and the acceptance test derived from it reaches past
+// what it asks for. The adapter then reports the application as lacking a surface nobody
+// ever put in the contract — an accurate message naming the wrong culprit — and neither
+// rebuilding nor re-scoping the slice is the remedy.
+test("an unbound slice is offered the exit for a test that reaches past its criterion", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  mkdirSync(join(d, "tests", "adapters", "new"), { recursive: true });
+  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = {};\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "adapter"]);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: a.b — no control on the page does this")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.text, /test-overreaches <ID>: /, `the third exit is named:\n${r.text}`);
+  assert.match(r.text, /derive-tests --domain .* --stale/);
+  assert.match(r.text, /stays unverified/, "and it is said plainly that this verifies nothing");
+});
+
 test("an unbound slice with no adapter at all still gets the whole binding sequence", async (t) => {
   const d = buildProject(t);
   mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: tests/adapters/new/index.ts does not exist")]);

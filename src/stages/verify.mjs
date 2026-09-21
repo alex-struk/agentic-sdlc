@@ -20,6 +20,7 @@ import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.m
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./slices.mjs";
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
+import { OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
 
 export const MAX_VERIFY_RETURNS = 3;
 const NEEDS_NO_TEST = new Set(["pass", "not-testable", "attested"]);
@@ -360,14 +361,23 @@ export const verify = {
             // surface these criteria need as absent. Re-binding is the one remedy that
             // cannot change that: it would drive the same application again and write the
             // same reasons. So the reasons are quoted, because they are the evidence, and
-            // what they name is a question about what this slice builds rather than about
-            // how it is driven.
+            // what they name is a question about what this slice builds, about what it was
+            // asked to build, or about what was asked of it on the criterion's behalf.
+            //
+            // The third exit is there because the message this verdict produces is accurate
+            // and names the wrong culprit whenever the test is the thing that over-reached:
+            // the adapter truthfully reports a surface the application does not provide, and
+            // the application was never answerable for it. Without a way to say so, that
+            // judgement arrives at a gate with no lever and the only exits on offer are a
+            // rebuild that cannot succeed and a re-scope that gives up a criterion.
             ? [
               head,
               "tests/adapters/new/index.ts is in place and was exercised. It reports each of these as part of the surface the application does not provide:",
               ...unboundReasons(claimed, v.unbound).map(({ id, reason }) => `  ${id}: ${reason}`),
-              "Binding again would drive the same application and write the same reasons, so that is not the next step. What is missing is in the application, and the choice is a person's: rule "
-                + `${name} at G3 with those reasons as the conditions, which returns it and lets sdlc run build --slice ${slice.number} --revise take them on; or, if that surface belongs to a later slice, change what slice ${slice.number} claims in plan/tasks.md so its criteria match what it builds.`,
+              "Binding again would drive the same application and write the same reasons, so that is not the next step. The question is whether the application is missing something it was asked for, whether this slice was asked for too much, or whether a test is asking for something its criterion never did — and the choice is a person's:",
+              `  - rule ${name} at G3 with those reasons as the conditions, which returns it and lets sdlc run build --slice ${slice.number} --revise take them on;`,
+              `  - or, if that surface belongs to a later slice, change what slice ${slice.number} claims in plan/tasks.md so its criteria match what it builds;`,
+              `  - or, where a criterion is right and the test derived from it reaches past it — the test drives a capability the criterion never asks for, which is why there is nothing to bind — return ${name} with \`${OVERREACH_CONDITION_FORM}\` among the conditions. That files the criterion for re-derivation and carries your reason to the writer: sdlc run derive-tests --domain <the criterion's domain> --stale then writes that one test again. It verifies nothing — the criterion stays unverified until a regenerated test binds and passes.`,
               "Nothing was written to the gate file, because nothing about the application was tested and there is no verdict on it to record.",
             ].join("\n")
             // No adapter for this target yet. Binding needs the application answering, and

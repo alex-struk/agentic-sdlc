@@ -69,8 +69,20 @@ asks for happens at the gate it is returned to, not here.
    failures below may not even be the application's to fix. Only verify's own returns
    (`by: runner:verify`) count toward that third strike; a reviewer's return of the same proposal
    does not.
-8. **On `unbound`, report and stop.** Nothing is written to a gate file. What is printed is the
-   whole sequence binding takes, with the proposal branch's name filled in:
+8. **On `unbound`, report and stop.** Nothing is written to a gate file. What is printed depends
+   on whether `tests/adapters/new/index.ts` exists.
+
+   With an adapter in place, it ran and reported the surface these criteria need as absent, so
+   binding again would drive the same application and write the same reasons. Each adapter's own
+   reason is quoted — it is the only place in the pipeline that reason is written down — and three
+   exits are offered: return the build proposal at G3 with those reasons as the conditions, so
+   `build --slice <n> --revise` takes them on; change what the slice claims in `plan/tasks.md`, if
+   the surface belongs to a later slice; or, where a criterion is right and the test derived from it
+   reaches past it, return the proposal with `test-overreaches <ID>: <why>` among the conditions
+   (`docs/stages/rule.md`, "A test that reaches past its criterion").
+
+   With no adapter, what is printed is the whole sequence binding takes, with the proposal branch's
+   name filled in:
 
    ```
    sdlc sandbox up --target new --from proposal/<name>
@@ -113,7 +125,8 @@ the proposal branch.
 | `pass` | Ready for G3 — the reviewer can now rule the build proposal. | None. |
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
-| `unbound` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |
+| `unbound`, no adapter for `new` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |
+| `unbound`, adapter in place | A person's choice of three: return at G3 with the adapter's reasons as conditions and `build --revise`; re-scope the slice in `plan/tasks.md`; or return with `test-overreaches <ID>: <why>` and `derive-tests --domain <d> --stale`. | None. |
 | the sandbox did not start, `cause: application` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | the sandbox did not start, `cause: application` (3rd return running) | Escalated — the compose file, the stack profile or the machine can each be the cause, and a fourth build would not find out which. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
 | the sandbox did not start, `cause: environment` | Nothing ran. The run fails; fix the machine and run verify again. | None. |
