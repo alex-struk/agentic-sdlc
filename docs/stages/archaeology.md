@@ -15,7 +15,9 @@ a human or the persona bound to G1 rules on it.
 one of the names in `.sdlc/config.yaml`'s `project.domains`. The stage reads `sources/old` — a
 read-only checkout of the old application, cloned and pinned to the commit `config.sources.old`
 names, with every path in its `exclude` list already removed from the working tree before the
-agent session starts — plus `constitution.md`, `spec/`, and `intent/` for context. It never reads
+agent session starts — plus `constitution.md`, `spec/`, and `intent/` for context. It also reads
+`spec/recovery.yaml`, where a ratification ruling records the criteria in this domain that have to
+be recovered again and why (see "Recovering a criterion again" below). It never reads
 `sources/old/tests`, and never reads anything else outside `sources/old`.
 
 ## Outputs
@@ -70,7 +72,27 @@ archaeology reads stays exactly as read-only in practice as it is in name.
   - In `--revise` mode only (`archaeology-revise-keeps-minted`): every `R-` criterion in
     `spec/domains/<d>.md` still matches the one `HEAD` had, compared field by field with each
     criterion's own `line` left out of the comparison. A revision may correct the criterion the
-    returning ruling named; it may never alter or remove one already minted permanent.
+    returning ruling named; it may never alter or remove one already minted permanent. The one
+    exception is a minted criterion with an outstanding re-recovery request against it, measured
+    against `HEAD`: rewriting that row is the instruction, and refusing it here would leave the run
+    unable to satisfy both this check and `archaeology-recovery`. Removing it is still refused —
+    the contract, its tests and anything that replaces it all point at that permanent id, and
+    deciding a behaviour should not be carried forward is `obsolete`'s ruling, not a recovery's.
+  - `archaeology-recovery` — no criterion this domain was told to recover again has come back
+    exactly as it went out, and the run did not write the record of what it was told. The requests
+    the run is judged against are the outstanding entries in `spec/recovery.yaml` as `HEAD` holds
+    it, and each one is judged by comparing its criterion at `HEAD` with the same criterion in the
+    working tree: same statement, citations, given/when/then, confidence, reconciliation class and
+    notes means the run left it alone, and the check fails naming the criterion and every reason it
+    was sent back. `spec/recovery.yaml` itself is the pipeline's own bookkeeping, like
+    `tests/acceptance/redo.yaml`. The runner stamps a request there once every check has passed, so
+    the only change a run may leave in that file is `answered` appearing on a request it was
+    itself asked to recover; anything else — an entry added, removed or reworded, an answer
+    rewritten, or an answer on a request this run was not owed — fails the check, since a session
+    that could write that file freely could mark its own work done without doing it. Marking the
+    right request without doing the work is caught by the unchanged-row rule above, because what a
+    run is owed and whether its row moved are both read from `HEAD`. See "Recovering a criterion
+    again" below.
   - Nothing changed outside `spec/`, checked against `git status --porcelain`.
   - In `--revise` mode only (`archaeology-revise-scope`): nothing changed outside
     `spec/domains/<d>.md` itself — narrower than the scope check above, which still allows a first
@@ -156,6 +178,50 @@ deleted by the pre-flight above or by the ordinary re-run cleanup — with the q
 revised `<d>` domain right where the return said it was wrong?" and a recommendation taken from the
 journal, the same way any other archaeology proposal's is.
 
+## Recovering a criterion again
+
+A ratification ruling can find that one criterion is not a record of the old application at all —
+its statement, its citations and its given/when/then describe behaviour the application does not
+have — while the rest of the domain is sound. That is not a return, which sends the whole proposal
+back and holds up every criterion in it; it is the single condition `recovery-wrong <ID>: <what the
+evidence actually shows>` (`docs/stages/ratify.md`), and `ratify` acts on it by minting the rest of
+the domain as usual and writing the criterion, the version it was at and the ruler's text to
+`spec/recovery.yaml`.
+
+The next `sdlc run archaeology --domain <d>` — an ordinary run or a `--revise` one; both carry the
+same instruction — is given those entries in its prompt, each with the ruling's own words verbatim,
+and is told it is recovering those criteria again rather than discovering them. It reads the
+evidence in `sources/old` again and rewrites that criterion's statement, citations, given/when/then
+and confidence from what it finds, keeping the id. If the evidence turns out to support the row as
+it stands, the run records what was read and where in a `note` on the row rather than leaving it
+untouched.
+
+Untouched is what `archaeology-recovery` refuses. A run that re-emits the row exactly as `HEAD` had
+it fails its post-checks, naming the criterion and every reason it was sent back — the stage would
+otherwise look as if it had acted on the ruling, and nothing downstream could tell that it had not.
+Any real change to the row answers the check: a corrected statement, a corrected citation, a note
+recording what was read, or the row's removal where the behaviour turns out not to exist.
+
+A request ends when a run answers it, and only then. Once every check has passed, the run stamps
+each request it was owed, and the presence of that stamp is what `ratify` reads to know the work was
+done. What the stamp holds — the version the criterion came back at, or that the recovery removed
+the row — is an audit record for whoever reads the ledger; nothing in the pipeline branches on it. The
+runner writes it, after the checks have judged the tree, so it is never the session's to claim; a
+failed run stamps nothing and the requests are still owed on the next attempt. The entry itself is
+never deleted: it is the record that the request was made. A criterion the ruling has merely
+reworded or spiked in the meantime is still owed its recovery, because a row reading differently is
+not the same fact as somebody having gone back to the old application for it.
+
+The ruling on the re-recovery is made on the proposal that run opens, `archaeology-<d>-<n>`, and
+`ratify` reads that proposal's conditions alongside the first proposal's and the closing loop's
+(`docs/stages/ratify.md`, "Inputs"). A `confirm` there is how a criterion that went back reaches the
+contract.
+
+A criterion sent back a second time, because the first re-recovery answered the wrong question, is a
+second entry against the same id. `ratify`'s journal says how many times a criterion has been sent
+back, which is what makes a row that keeps coming back unchanged legible as a problem rather than as
+routine.
+
 ## Failure modes
 
 - The domain's own proposal (`proposal/archaeology-<d>`) is still open: refused before a workspace
@@ -169,6 +235,12 @@ journal, the same way any other archaeology proposal's is.
 - The agent session itself fails to run, or reports failure (turn limit, an error result): handled
   the same way every stage's agent-turn failure is (`docs/stages/run.md`) — no post-checks run,
   the turn's own text becomes the journal entry, and `run` returns `{ ok: false }`.
+- A `--revise` run alters a minted criterion nobody sent back: `archaeology-revise-keeps-minted`
+  fails, naming the criterion, exactly as it always has.
+- A criterion the domain was told to recover again comes back exactly as `HEAD` had it, or the run
+  left a change in `spec/recovery.yaml` other than the answer it was owed: `archaeology-recovery`
+  fails the run, naming the criterion and every reason it was sent back (see "Recovering a
+  criterion again" above).
 - The agent writes no domain file, a domain file with a parse error or zero criteria, a domain
   file that mints an `R-` ID that is new relative to `HEAD`, touches a path outside `spec/`, or —
   in `--revise` mode — alters or removes an already-minted `R-` criterion, or touches any path

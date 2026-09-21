@@ -68,6 +68,19 @@ For each criterion:
   outcome — concrete enough that a later stage can turn it into a test without reading the old
   application at all.
 
+## Recovering a criterion again
+
+Your prompt may name criteria that were recovered on an earlier run and sent back by the ruling on
+it, each with the ruler's own account of what the evidence actually shows. Those are not yours to
+re-discover from scratch and not yours to renumber: keep the id, read the evidence in `sources/old`
+again, and rewrite that criterion's statement, citations, given/when/then and confidence from what
+you find there.
+
+If reading it again supports the row exactly as it stands, say so on the row — a `note` naming what
+you read and where. A criterion that comes back with nothing changed at all fails this run's checks,
+because a re-recovery that leaves no trace cannot be told from one that never happened. Saying "I
+read it again and it holds, here is the line" is a real answer; silence is not.
+
 ## The contract surface
 
 Alongside the domain file, append what you recovered about the domain's shape to

@@ -71,7 +71,12 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // so a stage's own pre-checks — `archaeology`'s `checkRevisionSource` in particular —
   // can tell a dry run from a real one without `runStage` having to special-case any one
   // stage's side effects itself.
-  const ctx = { slice, domain, target, stale, config, revise, dryRun, skipSuite };
+  // `projectDir` rides on `ctx` too, so a stage's `prompt` can read what the project
+  // already knows before the workspace exists — `archaeology` reads the re-recovery
+  // requests a ratification ruling filed for its domain (`spec/recovery.yaml`) this way.
+  // `finishStage` adds the same field before calling `stage.proposal`, which is where
+  // every other reader of it already gets it.
+  const ctx = { slice, domain, target, stale, config, revise, dryRun, skipSuite, projectDir };
   // `stage.workspace` may be a plain string or a function of `config` — resolved once,
   // here, so every later use (`materialise`, the run-state a crashed session leaves for
   // `resume` to read, the dry-run print below) sees the same resolved mode rather than

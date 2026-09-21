@@ -181,3 +181,10 @@ permanent record of every criterion that was already accepted.
 a verb carrying a question back to a stage and holding the follow-up open until it is answered —
 would remove the need to leave and re-enter through a different stage. That is a larger change than
 a verb: it means a proposal that can wait on a run, which nothing in the gate model does today.
+
+For a single criterion in an otherwise sound domain, the narrower form of that verb exists:
+`recovery-wrong <ID>: <text>` sends one criterion back to `archaeology` with the ruler's reason and
+lets the rest of the domain ratify around it, with no proposal held open and no run waited on
+(`docs/decisions/0015-one-criterion-goes-back.md`). A recovery that is wrong broadly still leaves
+and re-enters through `--revise`, for the reason this section gives: there is no sound remainder to
+release.

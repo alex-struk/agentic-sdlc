@@ -151,8 +151,9 @@ committed — so the ruling is part of the same commit the gate file is, not a f
 
 `conditions` is free-form for most personas, but `product-owner`'s own brief
 (`.sdlc/personas/product-owner.md`) gives it a closed vocabulary at G1 — one line per criterion ID,
-using `contract`, `confirm`, `edit`, `defect`, `spike`, `obsolete` or `drop` — that `sdlc run
-ratify` (`docs/stages/ratify.md`) reads back out of this same gate file and applies mechanically.
+using `contract`, `confirm`, `edit`, `defect`, `spike`, `recovery-wrong`, `obsolete` or `drop` — that
+`sdlc run ratify` (`docs/stages/ratify.md`) reads back out of this same gate file and applies
+mechanically.
 
 Two of those are easy to read as each other's synonym and are not. `contract <ID>` changes nothing:
 the row's confidence, state and wording are untouched, and it is recorded only so the journal can
@@ -164,6 +165,13 @@ evidence alone, and the persona is required to say in its rationale what tipped 
 itself a second witness, and a defect row is a confirmed record of what the old system does, merely
 marked as a defect rather than carried forward as-is. A criterion nobody mentions at
 all is treated exactly as `contract`, so approving a proposal without a line per ID is normal.
+
+`recovery-wrong <ID>: <text>` is the one verb whose work another stage carries out. It says the row
+is not a record of the old application at all, which is a statement about the *evidence* rather than
+about the wording or the disposition, so `ratify` files the criterion and the ruler's text to
+`spec/recovery.yaml` for the next `archaeology` run on that domain to recover again, drops the row to
+`open` so it cannot mint in the meantime, and ratifies the rest of the domain around it
+(`docs/decisions/0015-one-criterion-goes-back.md`).
 
 An archaeology proposal legitimately carries criteria marked `inferred` or `open` — that is
 archaeology reporting what the evidence supports, and approving such a proposal is the ordinary
