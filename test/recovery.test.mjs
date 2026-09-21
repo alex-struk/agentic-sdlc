@@ -717,3 +717,21 @@ test("resume: the repair turn after a failed archaeology run is told what it is 
     restoreEgress(prevEgress);
   }
 });
+
+test("applyConditions: a ruling that both confirms and sends back the same criterion behaves the same on every pass", () => {
+  // Contradictory conditions on one id are the persona's mistake, not the reader's, and
+  // the last one wins — but whichever way it resolves it has to resolve the same way
+  // every pass, or a criterion sent back on one run mints on the next with nothing
+  // changing in between.
+  const lines = ["confirm D-content-1", "recovery-wrong D-content-1: the guard sits behind a check that is always false"];
+  const first = applyConditions([criterion()], lines).criteria;
+  assert.equal(first[0].confidence, "open");
+
+  const filed = [{
+    id: "D-content-1", domain: "content", version: first[0].version,
+    why: "the guard sits behind a check that is always false", fingerprint: criterionFingerprint(first[0]),
+  }];
+  const second = applyConditions(first, lines, filed).criteria;
+  assert.equal(second[0].confidence, "open", "the request is still outstanding, so the row stays where it was put");
+  assert.deepEqual(second[0].notes, first[0].notes);
+});

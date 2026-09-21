@@ -650,6 +650,13 @@ export const RECOVERY_NOTE_PREFIX = "sent back for re-recovery: ";
 // as it does the first time it is read.
 export function applyConditions(criteria, conditions, filed = []) {
   const out = criteria.map((c) => ({ ...c, notes: [...(c.notes ?? [])] }));
+  // Each criterion as it arrived, before any condition in this pass touched it — which is
+  // the state a filed re-recovery request is comparing against, since a request records
+  // the row as it was written to the domain file at the end of the pass that filed it.
+  // Taken here rather than read off the row when the condition is applied, so another
+  // condition in the same ruling cannot change the answer to "is this still the row that
+  // was sent back?" and make the verb behave differently on two passes over one ruling.
+  const arrivedAs = new Map(out.map((c) => [c.id, criterionFingerprint(c)]));
   const byId = new Map(out.map((c) => [c.id, c]));
   const additions = [];
   const applied = [];
@@ -715,8 +722,8 @@ export function applyConditions(criteria, conditions, filed = []) {
         // already on file whose fingerprint no longer matches the row is answered, and the
         // condition does nothing at all from then on. A request on file that still matches
         // is still outstanding, and re-applying it is the no-op it was the first time.
-        const answered = filed.some((e) => e?.id === target.id && e?.why === text)
-          && !filed.some((e) => e?.id === target.id && e?.why === text && e?.fingerprint === criterionFingerprint(target));
+        const requests = filed.filter((e) => e?.id === target.id && e?.why === text);
+        const answered = requests.length > 0 && !requests.some((e) => e.fingerprint === arrivedAs.get(target.id));
         if (answered) break;
         const note = `${RECOVERY_NOTE_PREFIX}${text}`;
         if (!target.notes.includes(note)) target.notes.push(note);
