@@ -93,7 +93,11 @@ export function checkConditions(projectDir) {
   // and giving requests a withdrawal of their own is its own change.
   for (const r of readRevisionRequests(projectDir)) {
     if (!r || r.taken) continue;
-    const line = `${r.stage ?? "?"} has an untaken revision request from ${r.from ?? "?"} (${r.gate ?? "?"}, ${r.by ?? "?"}): "${quote(r.why)}"`;
+    // A request a run was given and could not answer carries its own account of why, and
+    // that is the thing worth reading back: without it the line says only that nobody has
+    // taken the request up, which is also what it said before a run tried.
+    const deferred = r.deferred?.why ? ` A run${r.deferred.proposal ? ` opening ${r.deferred.proposal}` : ""} deferred it: "${quote(r.deferred.why)}"` : "";
+    const line = `${r.stage ?? "?"} has an untaken revision request from ${r.from ?? "?"} (${r.gate ?? "?"}, ${r.by ?? "?"}): "${quote(r.why)}"${deferred}`;
     // A revision request names a stage rather than one of its proposals, so the stage is the
     // line of work here: what was asked for is that stage's artifact, whichever of them the
     // ruling happened to be reading when it asked.
