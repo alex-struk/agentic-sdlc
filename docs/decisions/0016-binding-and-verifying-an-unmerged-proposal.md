@@ -50,6 +50,16 @@ the branch is left exactly as it was, the conflicted paths are named, and the ru
 written to a gate file and nothing is returned to the builder: a conflict is not a verdict about
 the application, and the slice needs rebuilding on top of what `main` now has.
 
+A merge can also fail for a reason that is not a conflict — an unresolvable ref, a hook, a refused
+commit. Those are told apart by whether git named a conflicted path, and reported with git's own
+reason, because prescribing a rebuild for a hook that declined the commit would send a person to
+fix the wrong thing.
+
+**The merge commit stays even when the run that followed it failed.** A sandbox that will not
+start, or a suite that throws, leaves the branch merged and carrying no result. That is the honest
+record — the merge did happen — and the next verify finds the branch already up to date and
+creates no second commit.
+
 **The borrow is one pair of functions, `enterBranch` and `leaveBranch` in `src/lib/git.mjs`**, used
 by both the sandbox command and verify. `enterBranch` refuses a branch name nothing resolves and
 refuses a dirty tree — `git checkout` carries uncommitted changes across, and a command that

@@ -112,6 +112,26 @@ function commitOnBranch(projectDir, paths, message) {
   git([...SDLC_AUTHOR, "commit", "-q", "-m", message], projectDir);
 }
 
+// A merge can fail for reasons that are not a conflict at all — an unresolvable ref, a
+// hook, a commit git declined. Reporting those as a conflict names the wrong cause and
+// prescribes a rebuild that would not help, so the two are told apart by whether git named
+// any conflicted path, and git's own reason is carried rather than discarded.
+export function mergeFailureText(sliceNumber, branch, merged) {
+  if (merged.conflicts.length) {
+    return [
+      `verify slice ${sliceNumber}: ${branch} no longer merges with main, so nothing was verified.`,
+      `Conflicted paths:\n  ${merged.conflicts.join("\n  ")}`,
+      `The merge was undone and ${branch} is exactly as it was. Rule or close this proposal and rebuild the slice on top of main.`,
+    ].join("\n");
+  }
+  const said = (merged.message ?? "").split("\n").map((l) => `  ${l}`).join("\n").trimEnd();
+  return [
+    `verify slice ${sliceNumber}: main could not be merged into ${branch}, so nothing was verified.`,
+    `git named no conflicted path, so this is not a stale proposal. What it said:\n${said}`,
+    `${branch} is exactly as it was.`,
+  ].join("\n");
+}
+
 export const verify = {
   name: "verify",
   title: (ctx) => `verify slice ${ctx.slice}`,
@@ -180,11 +200,7 @@ export const verify = {
         // a gate file and the builder is not returned anything. A proposal that no
         // longer merges is a slice that needs rebuilding on top of what `main` now has,
         // and the reviewer would otherwise be the one to find that out.
-        text = [
-          `verify slice ${slice.number}: ${branch} no longer merges with main, so nothing was verified.`,
-          `Conflicted paths:\n  ${merged.conflicts.join("\n  ") || "(git named none)"}`,
-          `The merge was undone and ${branch} is exactly as it was. Rule or close this proposal and rebuild the slice on top of main.`,
-        ].join("\n");
+        text = mergeFailureText(slice.number, branch, merged);
         throw new Error(text);
       }
       const started = await up(projectDir);

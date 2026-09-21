@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { runSuite } from "../src/testrun/playwright.mjs";
-import { verify, verifyVerdict, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
+import { verify, verifyVerdict, mergeFailureText, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
 import { build } from "../src/stages/build.mjs";
 import { buildProposalBase } from "../src/stages/slices.mjs";
 import { nextProposalName } from "../src/stages/proposals.mjs";
@@ -453,4 +453,24 @@ test("a proposal that no longer merges with main is reported as that, not as a f
   assert.equal(execFileSync("git", ["rev-parse", "proposal/build-slice-1"], { cwd: d, encoding: "utf8" }), branchBefore);
   assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
   assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), "main");
+});
+
+// A stale proposal and a merge git simply declined need different remedies. Reporting the
+// second as the first sends a person to rebuild a slice that has nothing wrong with it, and
+// throws away the one line that would have said so.
+test("verify tells a conflicted merge apart from a merge that failed for another reason", () => {
+  const stale = mergeFailureText(1, "proposal/build-slice-1", {
+    ok: false, conflicts: ["app/index.ts", "app/other.ts"], message: "CONFLICT (content): ...",
+  });
+  assert.match(stale, /no longer merges with main/);
+  assert.match(stale, /app\/index\.ts/);
+  assert.match(stale, /rebuild the slice on top of main/);
+
+  const declined = mergeFailureText(1, "proposal/build-slice-1", {
+    ok: false, conflicts: [], message: "fatal: not something we can merge",
+  });
+  assert.match(declined, /could not be merged/);
+  assert.match(declined, /not a stale proposal/);
+  assert.match(declined, /fatal: not something we can merge/, "git's own reason is carried");
+  assert.ok(!/rebuild the slice/.test(declined), "the wrong remedy is not prescribed");
 });
