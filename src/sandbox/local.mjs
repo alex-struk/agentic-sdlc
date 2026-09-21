@@ -165,17 +165,28 @@ export function stoppedForGood(failures) {
   return failures.filter((f) => f.state === "dead" || f.state === "exited");
 }
 
-// Which host ports this project's containers publish, or `null` when compose named none —
-// an older `ps --format json` that writes no `Publishers` field, or a project whose
-// containers are reached some way this cannot see. `null` is nothing known, and a caller
-// that read it as "this project publishes nothing" would call every address wrong.
-export function publishedPorts(rows) {
+// Which host ports this project publishes, read out of `docker compose config --format
+// json` — the resolved compose file, not the running containers.
+//
+// The live `ps` rows answer a different question. `Publishers` is what a container has
+// bound at this moment, and a container that is crash-looping has bound nothing: compose
+// reports `"Publishers": []` for it throughout the loop. Reading the ports from there
+// would call a provider that is dying behind its own address an address this project never
+// published, which is the one conclusion that must never be drawn about it. What a project
+// publishes is a property of its compose file and is true whether or not anything is up.
+//
+// `published` is written as a string in compose's own JSON and may be a range, of which
+// the first port is the one an address would be asked on. `null` is nothing known — a
+// document this does not read, or a compose file that publishes no host port at all.
+export function declaredPorts(text) {
+  let doc;
+  try { doc = JSON.parse((text ?? "").trim()); } catch { return null; }
+  if (!doc?.services || typeof doc.services !== "object") return null;
   const ports = new Set();
-  for (const row of rows) {
-    if (!Array.isArray(row?.Publishers)) continue;
-    for (const p of row.Publishers) {
-      const n = Number(p?.PublishedPort ?? 0);
-      if (n > 0) ports.add(n);
+  for (const service of Object.values(doc.services)) {
+    for (const p of Array.isArray(service?.ports) ? service.ports : []) {
+      const n = Number(String(p?.published ?? "").split("-")[0]);
+      if (Number.isInteger(n) && n > 0) ports.add(n);
     }
   }
   return ports.size ? ports : null;

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { targetSettings, resetCommandFor, parseComposePs, serviceFailures, stoppedForGood, publishedPorts, portOf, causeOf } from "../src/sandbox/local.mjs";
+import { targetSettings, resetCommandFor, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portOf, causeOf } from "../src/sandbox/local.mjs";
 import { sandboxUp, sandboxReset, sandboxDown, runSandbox, pollAddress } from "../src/commands/sandbox.mjs";
 import { parseConfig } from "../src/config/load.mjs";
 import { COMMANDS } from "../src/cli.mjs";
@@ -339,6 +339,29 @@ test("the CLI hands --from through as the parser produced it, so a bare one is c
 const psLines = (rows) => rows.map((r) => JSON.stringify(r)).join("\n");
 const noSleep = async () => {};
 
+// The shapes below are the ones real compose writes, which is not always the shape this
+// code reads. A running container carries its bound host port in `Publishers`; a container
+// that is looping or stopped carries `"Publishers": []`, because nothing is bound while it
+// is not running. What a project publishes therefore comes from `compose config`, and a
+// fixture that left `Publishers` out would be agreeing with the reader rather than testing
+// it.
+const upRow = (service, port) => ({
+  Service: service, Name: `sdlc-mkt-new-${service}-1`, State: "running", Status: "Up 8 seconds", Health: "", ExitCode: 0,
+  Publishers: [{ URL: "0.0.0.0", TargetPort: 3000, PublishedPort: port, Protocol: "tcp" }],
+});
+const loopingRow = (service) => ({
+  Service: service, Name: `sdlc-mkt-new-${service}-1`, State: "restarting", Status: "Restarting (1) 3 seconds ago", Health: "", ExitCode: 1,
+  Publishers: [],
+});
+const COMPOSE_CONFIG = JSON.stringify({
+  name: "sdlc-mkt-new",
+  services: {
+    web: { image: "mkt-web", ports: [{ mode: "ingress", target: 3000, published: "8080", protocol: "tcp" }] },
+    idp: { image: "sandbox-idp", ports: [{ mode: "ingress", target: 8080, published: "8081", protocol: "tcp" }] },
+    seed: { image: "mkt-seed" },
+  },
+});
+
 test("compose's `ps --format json` is read in both spellings it is written in", () => {
   const rows = [{ Service: "web", State: "running" }, { Service: "seed", State: "exited", ExitCode: 0 }];
   assert.deepEqual(parseComposePs(psLines(rows)), rows, "one JSON object per line");
@@ -610,14 +633,13 @@ test("only a container compose has finished with is certain while the project is
   assert.deepEqual(stoppedForGood([]), []);
 });
 
-test("the ports a project publishes are read from compose's own rows, and an unanswerable question answers null", () => {
-  const rows = [
-    { Service: "web", State: "running", Publishers: [{ PublishedPort: 8080, TargetPort: 3000 }, { PublishedPort: 0, TargetPort: 9229 }] },
-    { Service: "db", State: "running", Publishers: [] },
-  ];
-  assert.deepEqual([...publishedPorts(rows)], [8080], "a port published on 0 is not published");
-  assert.equal(publishedPorts([{ Service: "web", State: "running" }]), null, "a compose version that names no publishers has said nothing");
-  assert.equal(publishedPorts([]), null);
+test("the ports a project publishes are read from its compose file, and an unanswerable question answers null", () => {
+  assert.deepEqual([...declaredPorts(COMPOSE_CONFIG)].sort((a, b) => a - b), [8080, 8081]);
+  assert.deepEqual([...declaredPorts(JSON.stringify({ services: { web: { ports: [{ published: "8080-8090", target: 3000 }] } } }))], [8080],
+    "a range is published from its first port");
+  assert.equal(declaredPorts(JSON.stringify({ services: { web: { image: "x" } } })), null, "a compose file that publishes no host port has said nothing");
+  assert.equal(declaredPorts("services:\n  web: {}\n"), null, "the YAML spelling is not the one this reads");
+  assert.equal(declaredPorts(""), null);
   assert.equal(portOf("http://localhost:8081/realms/sandbox"), 8081);
   assert.equal(portOf("http://localhost/realms/sandbox"), 80);
   assert.equal(portOf("https://idp.test/realms/sandbox"), 443);
@@ -674,7 +696,8 @@ test("a declared dependency that never answers is a sandbox that is not up, what
 test("a provider that crash-loops behind its own address is refused with the container named, at the end of the wait", async (t) => {
   const d = project(t);
   const { calls, exec } = recorder({
-    "ps --all": { status: 0, stdout: psLines([{ Service: "web", State: "running" }, { Service: "idp", State: "restarting" }]), stderr: "" },
+    "ps --all": { status: 0, stdout: psLines([upRow("web", 8080), loopingRow("idp")]), stderr: "" },
+    "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
     logs: { status: 0, stdout: "ERROR: Failed to run import\nERROR: Unrecognized field \"_comment\"\n", stderr: "" },
   });
   let attempts = 0;
@@ -750,30 +773,56 @@ test("a container that exited non-zero while a dependency is still being waited 
 // somebody who can neither see the cause nor fix it.
 test("an address on a port this project does not publish is the configuration's, and nothing is recorded against the build", async (t) => {
   const d = project(t);
-  const rows = [{ Service: "web", State: "running", Publishers: [{ PublishedPort: 8080 }] }, { Service: "idp", State: "running", Publishers: [{ PublishedPort: 8081 }] }];
-  const { calls, exec } = recorder({ "ps --all": { status: 0, stdout: psLines(rows), stderr: "" } });
+  const { calls, exec } = recorder({
+    "ps --all": { status: 0, stdout: psLines([upRow("web", 8080), upRow("idp", 8081)]), stderr: "" },
+    "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
+  });
   const typo = { project: { name: "mkt" }, targets: { new: { ...CONFIG.targets.new, depends_on: { identity: "http://localhost:8181/realms/sandbox" } } } };
   const r = await sandboxUp(d, typo, "new", { exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
   assert.equal(r.ok, false);
   assert.equal(r.cause, "environment", "a line only the operator can fix does not go back to a builder");
-  assert.match(r.messages.join("\n"), /no container of this project publishes port 8181 — the ports it publishes are 8080, 8081/);
+  assert.match(r.messages.join("\n"), /no service in app\/compose\/compose\.yaml publishes port 8181 — the ports it publishes are 8080, 8081/);
   assert.match(r.messages.join("\n"), /targets\.new\.depends_on\.identity names an address this project does not serve/);
   assert.deepEqual(r.failures, [], "there is no service to write a condition about");
   assert.ok(!calls.some((c) => c.includes("run --rm seed")));
 });
 
+// Real compose reports `"Publishers": []` for a container that is crash-looping, so its
+// host port is missing from `ps` for exactly as long as the provider is dying. Reading the
+// ports from there would report the case this whole change exists for as an operator's
+// typo, naming no container and quoting no log, about a configuration line that is right.
+test("a provider crash-looping behind its own declared address is the application's, not a typo", async (t) => {
+  const d = project(t);
+  const { exec } = recorder({
+    "ps --all": { status: 0, stdout: psLines([upRow("web", 8080), loopingRow("idp")]), stderr: "" },
+    "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
+    logs: { status: 0, stdout: "ERROR: Failed to run import\nERROR: Unrecognized field \"_comment\"\n", stderr: "" },
+  });
+  const r = await sandboxUp(d, DEP_CONFIG, "new", { exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
+  assert.equal(r.ok, false);
+  assert.equal(r.cause, "application");
+  assert.deepEqual(r.failures.map((f) => f.service), ["idp"], "the container that is dying is what the builder is told about");
+  assert.match(r.messages[0], /its identity dependency did not answer at http:\/\/localhost:8081\/realms\/sandbox/);
+  assert.match(r.messages.join("\n"), /Unrecognized field/);
+  assert.doesNotMatch(r.messages.join("\n"), /does not serve/, "a port bound by nothing right now is not a port this project never publishes");
+});
+
 test("an address on a port this project does publish is the application's, and so is one where nothing could be told apart", async (t) => {
   const d = project(t);
   const served = recorder({
-    "ps --all": { status: 0, stdout: psLines([{ Service: "idp", State: "running", Publishers: [{ PublishedPort: 8081 }] }]), stderr: "" },
+    "ps --all": { status: 0, stdout: psLines([upRow("web", 8080), upRow("idp", 8081)]), stderr: "" },
+    "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
   });
   const r = await sandboxUp(d, DEP_CONFIG, "new", { exec: served.exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
   assert.equal(r.cause, "application", "the port is published and simply silent: the service is not serving");
   assert.match(r.messages[0], /its identity dependency did not answer/);
 
-  const quiet = recorder({ "ps --all": { status: 0, stdout: psLines([{ Service: "idp", State: "running" }]), stderr: "" } });
-  const older = await sandboxUp(d, DEP_CONFIG, "new", { exec: quiet.exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
-  assert.equal(older.cause, "application", "a compose version that names no publishers has said nothing to decide on");
+  const unreadable = recorder({
+    "ps --all": { status: 0, stdout: psLines([upRow("web", 8080)]), stderr: "" },
+    "config --format json": { status: 1, stdout: "", stderr: "unsupported flag: --format" },
+  });
+  const older = await sandboxUp(d, DEP_CONFIG, "new", { exec: unreadable.exec, health: async (url) => url === "http://localhost:8080", sleep: noSleep });
+  assert.equal(older.cause, "application", "a compose that would not answer what it publishes has said nothing to decide on");
 });
 
 // A wait that ended on a container compose had not started yet would refuse sandboxes that

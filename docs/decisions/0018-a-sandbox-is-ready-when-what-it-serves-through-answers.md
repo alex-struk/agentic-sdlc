@@ -129,22 +129,32 @@ address that never answers because the string is wrong must not return the propo
 that spends one of the slice's three attempts against somebody who can neither see the cause nor fix
 it.
 
-The two are told apart by the ports the project publishes. `docker compose ps --format json` carries
-each container's `Publishers`, so when the declared address asks on a port no container of the
-project publishes, the address is one this project does not serve. That refusal carries the cause
-`environment`, names the key, the port and the ports that are published, and records nothing against
-the build. When the port is published and simply silent, the service behind it is one the build's
-compose file stands up, and the cause is `application` as before.
+The two are told apart by the ports the project publishes, read from `docker compose config
+--format json`. When the declared address asks on a port no service in that file publishes, the
+address is one this project does not serve. That refusal carries the cause `environment`, names the
+key, the port and the ports that are published, and records nothing against the build. When the port
+is published and simply silent, the service behind it is one the build's compose file stands up, and
+the cause is `application` as before.
 
-This reaches a wrong host or port and not a wrong path, and that is the whole of what reaches this
-failure mode anyway: a path that is wrong on a server that is up answers 404, and `up` accepts
-anything short of a server error as an answer, exactly as it does at the base URL. Two cases fall
-outside it and are decided as the application's: a compose version whose `ps` names no publishers at
-all, and a project whose services are reached some way this cannot see. Both are "nothing known",
-and the guess goes the way 0017 settles every other guess here — except in this one direction, where
-concluding wrongly that the configuration is at fault costs a re-run and concluding wrongly that the
-application is at fault costs an attempt, so an unpublished port is called configuration on the
-first reading rather than the second.
+**The ports come from the compose file and not from the running containers**, although `docker
+compose ps --format json` carries a `Publishers` field that looks like the same answer. It is not:
+`Publishers` is what a container has bound at this moment, and compose reports `"Publishers": []`
+for a container while it is looping or stopped. That is precisely the state the identity provider in
+the measurement is in, so reading the ports from there would report the case this decision exists
+for as an operator's typo — no container named, no import error quoted, and a false assertion about
+a configuration line that is correct. What a project publishes is a property of its compose file and
+is true whether or not anything is running.
+
+Three things fall outside this and are decided as the application's. **Only the port is compared**,
+so a wrong host, or a wrong path, on a port the project does publish is not told apart from a
+service failing to serve — and a wrong path is barely a case at all, since a path that is wrong on a
+server that is up answers 404, which `up` accepts as an answer exactly as it does at the base URL.
+**A compose file this could not resolve or could not read** settles nothing. **A compose file that
+publishes no host port anywhere** settles nothing either, since there is then no set to test the
+address against. All three are "nothing known", and the guess goes the way 0017 settles every other
+guess here — except in this one direction, where concluding wrongly that the configuration is at
+fault costs a re-run and concluding wrongly that the application is at fault costs an attempt, so an
+unpublished port is called configuration on the first reading rather than the second.
 
 The rest of the cause split is unchanged. A container that ran and died during a wait is the
 application's because it ran; one that was never created is the machine's. `verify` keeps returning

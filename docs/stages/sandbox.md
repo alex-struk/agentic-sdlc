@@ -79,9 +79,11 @@ there is nothing about a particular run worth recording that the config does not
   of time. A target that signs its tests in through an identity provider of its own is not a usable
   sandbox until that provider answers, and a provider whose realm import failed never answers at all
   while the web tier in front of it serves normally throughout.
-- `up` refuses a declared address on a port no container of the project publishes, with the cause
-  `environment` — `no container of this project publishes port <n>`, naming the key and the ports
-  that are published. `sdlc checks` warns, without failing, where a target signs in through
+- `up` refuses a declared address on a port the target's compose file does not publish, with the
+  cause `environment` — `no service in <compose file> publishes port <n>`, naming the key and the
+  ports that are published. The ports come from `docker compose config`, not from the running
+  containers: compose reports no publisher for a container while it is looping or stopped, which is
+  exactly when this is asked. `sdlc checks` warns, without failing, where a target signs in through
   `sandbox-idp` and declares no `depends_on.identity`, since that is the shape `up` cannot otherwise
   settle.
 - `up` fails when any service of the project is not running once both waits have passed. `--wait`
@@ -169,11 +171,16 @@ executed: a container that reached a state of its own and failed out of it ran a
 produced, and a failure with no such container behind it is the machine.
 
 A missing compose file, nothing answering at the base URL, and a failing seed are the
-application's. A declared address on a port no container of the project publishes is neither: it is
-the configuration, and it is reported as `environment` so that the run halts and nothing is written
-against the build. That discrimination reaches a wrong host or port and not a wrong path, since a
-path that is wrong on a server that is up answers 404, which `up` accepts as an answer the same way
-it accepts one from the base URL. An image that never builds is the machine's, deliberately: compose reports a
+application's. A declared address on a port the target's compose file does not publish is neither:
+it is the configuration, and it is reported as `environment` so that the run halts and nothing is
+written against the build.
+
+That discrimination reaches a wrong port. A wrong host on a port the project does publish is
+attributed to the application, since only the port is compared. A wrong path is too, and that is
+the whole of what a wrong path amounts to here: a path that is wrong on a server that is up answers
+404, which `up` accepts as an answer the same way it accepts one from the base URL. It declines to
+decide at all where the compose file could not be resolved or read, and where it publishes no host
+port anywhere. An image that never builds is the machine's, deliberately: compose reports a
 Dockerfile defect and a registry that would not answer the same way, and no container exists to
 ask. A container the kernel killed for memory exits 137 and is reported as the application's, which
 is the wrong side — `ps --format json` carries no `OOMKilled` field and nothing here can know.
@@ -247,7 +254,7 @@ a fresh `up` leaves behind.
   naming that dependency and the address, with the cause `application` — the service behind that
   port is one the build's own compose file stands up. Whatever containers did start are left
   running, and are not seeded.
-- An address under `depends_on` names a port no container of the project publishes: `up` exits 1
+- An address under `depends_on` names a port the compose file does not publish: `up` exits 1
   with the cause `environment`, naming the key, the port and the ports that are published. That
   address is a string in `.sdlc/config.yaml`, which no build writes or is shown, so returning the
   proposal would spend one of a slice's three attempts against somebody who can neither see the

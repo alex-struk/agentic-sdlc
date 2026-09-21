@@ -74,7 +74,7 @@ Optional. Container of deployment targets.
 
     Each address is polled for up to two minutes, so a target declaring N of them can wait (N+1) × two minutes in the worst case, where nothing answers anywhere. A target that omits the key is waited for exactly as it always was.
 
-    A declared address on a port no container of the project publishes is reported as configuration rather than as the application: it halts the run and records nothing against the build, because that string is in `.sdlc/config.yaml` and no build writes or reads that file.
+    A declared address on a port the target's compose file does not publish is reported as configuration rather than as the application: it halts the run and records nothing against the build, because that string is in `.sdlc/config.yaml` and no build writes or reads that file. Only the port is compared, so a wrong host or path on a port the project does publish is not told apart from a service that is failing to serve.
 
 ## policy
 
