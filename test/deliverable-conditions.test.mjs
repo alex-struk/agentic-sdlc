@@ -17,6 +17,25 @@ test("a condition's path-like tokens are the ones the pipeline owns", () => {
   assert.deepEqual(conditionPaths("The constitution.md glossary is missing the term."), ["constitution.md"]);
 });
 
+// A refusal here writes nothing — no gate file, no commit — so the message is the only
+// place the rest of a paid ruling turn is still visible: the verdict and every condition
+// it carried, not only the one line that sank it.
+test("a refused return still shows the verdict and every condition it carried, not only the bad one", () => {
+  assert.throws(
+    () => assertDeliverableRulable("build-slice-1", "return", [
+      "Give app/routes/list.tsx an accessible name.",
+      "Move the criterion out of plan/tasks.md and into slice 3.",
+    ]),
+    (e) => {
+      assert.match(e.message, /Nothing is recorded/);
+      assert.match(e.message, /verdict: return/);
+      assert.match(e.message, /Give app\/routes\/list\.tsx an accessible name\./);
+      assert.match(e.message, /Move the criterion out of plan\/tasks\.md and into slice 3\./);
+      return true;
+    },
+  );
+});
+
 // "the plan" and "the spec" are how people write about work, and reading either as a path
 // would refuse most of the rulings anyone writes.
 test("a bare word that happens to name a directory is not a path", () => {

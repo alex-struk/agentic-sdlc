@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -140,6 +140,18 @@ function reply(t, verdict, rationale) {
   process.env.SDLC_MOCK_DIR = dir;
 }
 
+// Conditions alongside the verdict, and — via `sequence` — a different reply for the
+// re-prompt turn than for the first one. The mock executor consumes one entry per call and
+// reuses the last once the list runs out, so a single-entry list stands in for a persona
+// that repeats itself when asked again.
+function replyWith(t, entries) {
+  const dir = mkdtempSync(join(tmpdir(), "sdlc-rule-build-mock-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const turn = ({ verdict, rationale, conditions }) => ({ text: `\`\`\`json\n${JSON.stringify({ verdict, rationale, conditions })}\n\`\`\`` });
+  writeFileSync(join(dir, "rule.json"), JSON.stringify({ sequence: entries.map(turn) }));
+  process.env.SDLC_MOCK_DIR = dir;
+}
+
 function withMock(t) {
   const prevEgress = process.env.SDLC_EGRESS_NAMES;
   const names = join(mkdtempSync(join(tmpdir(), "sdlc-rule-build-egress-")), "names.txt");
@@ -261,4 +273,80 @@ test("the batch names the build it is leaving alone, and stays quiet about one v
   const never = await said(() => rulePending(e));
   assert.equal(never.value.length, 0);
   assert.doesNotMatch(never.lines, /build-slice-1/);
+});
+
+// --- a return whose plain condition names a path the stage cannot deliver ---
+//
+// `assertDeliverableRulable` refuses this at the very end of the ruling, after a verdict,
+// a rationale and every other condition have already been produced. The three tests below
+// are the same three the human-facing decision record for this fix describes: a first
+// undeliverable reply is corrected on one re-prompt; a reply that is still undeliverable
+// the second time is refused without losing what it said; and the human seat, which has no
+// turn to re-prompt, is refused the same way and can reuse its own other conditions.
+
+const OK_CONDITION = "Give app/routes/list.tsx an accessible name.";
+const UNDELIVERABLE_CONDITION = "Move the criterion out of plan/tasks.md and into slice 3.";
+const CORRECTED_CONDITION = "addressed-to plan: the slice claims a criterion plan/tasks.md never assigned it; move it to a later slice.";
+
+test("a return whose plain condition names an undeliverable path is re-prompted once, and the corrected reply is recorded", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "pass" });
+  replyWith(t, [
+    { verdict: "return", rationale: "the route is sound; the plan asked this slice for something it cannot show", conditions: [OK_CONDITION, UNDELIVERABLE_CONDITION] },
+    { verdict: "return", rationale: "the route is sound; the plan asked this slice for something it cannot show", conditions: [OK_CONDITION, CORRECTED_CONDITION] },
+  ]);
+  const r = await ruleByAgent(d, "build-slice-1", { persona: "reviewer" });
+  assert.equal(r.verdict, "return");
+  assert.deepEqual(r.addressed, ["plan"], "the corrected condition was filed to the stage it named");
+  const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.equal(gate.verdict, "return");
+  assert.deepEqual(gate.conditions, [OK_CONDITION, CORRECTED_CONDITION], "the kept condition survived; the fixed one is what landed");
+});
+
+test("a plain condition still undeliverable after the re-prompt is refused, and the verdict and every condition are still visible", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "pass" });
+  // One entry: the mock executor repeats it on the re-prompt turn, standing in for a
+  // persona that writes the same line again.
+  replyWith(t, [
+    { verdict: "return", rationale: "the route is sound; the plan asked this slice for something it cannot show", conditions: [OK_CONDITION, UNDELIVERABLE_CONDITION] },
+  ]);
+  let thrown;
+  await assert.rejects(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }), (e) => { thrown = e; return true; });
+  assert.match(thrown.message, /plan\/tasks\.md/);
+  assert.match(thrown.message, /addressed-to plan: /);
+  assert.match(thrown.message, /Nothing is recorded/);
+  assert.match(thrown.message, /verdict: return/);
+  assert.match(thrown.message, new RegExp(OK_CONDITION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the condition that was fine is still shown, not only the bad one");
+  assert.match(thrown.message, new RegExp(UNDELIVERABLE_CONDITION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+  // Nothing was recorded: no gate file on the proposal branch, and the caller is back on
+  // main with a clean tree, exactly as any other refused ruling leaves it (`0025`).
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+  assert.equal(git(["status", "--porcelain"], d), "");
+});
+
+test("a person in the gate seat is refused the same undeliverable condition with the same guidance, and keeps the rest to reuse", (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "pass" });
+  let thrown;
+  assert.throws(
+    () => rule(d, "build-slice-1", "return", { by: "tech-lead", note: "the route is sound; the plan asked for something this slice cannot show", conditions: [OK_CONDITION, UNDELIVERABLE_CONDITION] }),
+    (e) => { thrown = e; return true; },
+  );
+  assert.match(thrown.message, /plan\/tasks\.md/);
+  assert.match(thrown.message, /addressed-to plan: /);
+  assert.match(thrown.message, new RegExp(OK_CONDITION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the condition that was fine is not lost");
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false, "nothing was written before the refusal");
+  assert.equal(git(["status", "--porcelain"], d), "");
+
+  // There is no turn to re-prompt on this seat, so the person simply reuses the condition
+  // that was never in question and rewrites the one that was — nothing of theirs was lost.
+  const r = rule(d, "build-slice-1", "return", { by: "tech-lead", note: "the route is sound; the plan asked for something this slice cannot show", conditions: [OK_CONDITION, CORRECTED_CONDITION] });
+  assert.equal(r.verdict, "return");
+  const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.deepEqual(gate.conditions, [OK_CONDITION, CORRECTED_CONDITION]);
 });

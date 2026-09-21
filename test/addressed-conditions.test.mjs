@@ -124,6 +124,16 @@ function agentReply(verdict, conditions, rationale = "the slice is sound; the pl
   process.env.SDLC_MOCK_DIR = d;
 }
 
+// A different reply per turn, for the re-prompt tests below: the mock executor consumes
+// one `sequence` entry per call to it and reuses the last once the list runs out.
+function agentReplySequence(entries, rationale = "the slice is sound; the plan it was cut from is not") {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-addressed-mock-"));
+  const turn = (conditions) => ({ text: `\`\`\`json\n${JSON.stringify({ verdict: "return", rationale, conditions })}\n\`\`\`` });
+  writeFileSync(join(d, "rule.json"), JSON.stringify({ sequence: entries.map(turn) }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = d;
+}
+
 const requestsOnMain = (dir) => {
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], dir);
   if (branch !== "main") git(["checkout", "-q", "main"], dir);
@@ -303,6 +313,26 @@ test("a form with no reason is refused, and nothing is ruled or filed", async (t
   agentReply("return", ["addressed-to plan:"]);
   await assert.rejects(() => ruleByAgent(dir, "slice-2-review", { persona: "reviewer" }), /carries no reason/);
   assert.deepEqual(requestsOnMain(dir), []);
+});
+
+// The same shape as the undeliverable-plain-condition defect: a line whose verb is right
+// and whose reason is missing is a formatting slip, not a disagreement, so it gets the same
+// one re-prompt before the refusal above is reached.
+test("a form with no reason is re-prompted once, and the corrected reply is what lands", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-reprompt-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  openProposal(dir, "slice-2-review");
+  agentReplySequence([[MINE, "addressed-to plan:"], [MINE, CONDITION]]);
+  const r = await ruleByAgent(dir, "slice-2-review", { persona: "reviewer" });
+  assert.equal(r.verdict, "return");
+  assert.deepEqual(r.addressed, ["plan"]);
+  const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/slice-2-review.yaml"), "utf8"));
+  assert.deepEqual(gate.conditions, [MINE, CONDITION]);
+  assert.deepEqual(requestsOnMain(dir).map(withoutTime), [
+    { stage: "plan", why: WHY, from: "slice-2-review", gate: "G3", by: "agent:reviewer" },
+  ]);
 });
 
 // A closed condition vocabulary is closed on purpose, and this verb is not read out of one.
