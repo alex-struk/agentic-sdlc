@@ -311,6 +311,17 @@ Nothing is materialised into a separate workspace for a ruling.
 - The named gate must exist in `policy.gates`.
 - `by` must equal that gate's `holder` or `escalate_to`; anyone else is rejected, and the error
   names who is allowed.
+- **Approving a `build-slice-<n>` proposal requires a current passing verify result**
+  (`tests/results/new/slice-<n>.json`, for this proposal and for the application tree the branch
+  carries). The refusal names the missing evidence and the `sdlc run verify --slice <n>` that
+  produces it. Returning or escalating the same proposal is held to nothing, so a slice whose suite
+  could not be bound or could not be run is still rulable in the direction that fits it. The check
+  is on the verdict rather than on the seat: a person typing `--by` is refused the same approval as
+  the persona holding the gate, and on the agent path it runs once the persona has answered, before
+  anything about the ruling is written. The one approval that goes through without a passing result
+  is the one made by the target of a standing escalation, on either seat, on an escalation somebody
+  else raised — the escalation and the ruling on top of it are together the record of the override
+  (`docs/decisions/0022-a-guard-that-stopped-the-failure-being-recorded.md`).
 
 For the agent path (`--by agent:<persona>` or `--pending`), the policy check is narrower: `by`
 must equal the gate's `holder` exactly. A persona agent is never allowed to act as the
@@ -322,6 +333,14 @@ only ever rejects a persona ruling a gate it does not hold. An agent-held gate w
 `--pending` rules each open, agent-held proposal in its own try/catch: one proposal's failure (a
 bad verdict block, an escalation with no target) is printed and written to the run record, and the
 loop moves on to the next branch rather than aborting the whole batch.
+
+A batch rules a build proposal on the merits, and the merits are the suite's result, so it leaves
+one without a passing result for the tree on its branch open rather than ruling it. Where the suite
+has not run against that tree at all there is nothing to rule and nothing is printed; where it ran
+and did not pass, the batch prints `<name>: left open — <reason>; rule it by name to return or
+escalate it`, because the ruling that fits such a slice is a return or an escalation and a batch
+making one by itself would send the builder to rebuild an application that may be sound, at the
+cost of one of the three attempts `verify`'s retry ceiling counts.
 
 Once every branch has been considered — whether every proposal ruled cleanly or some failed along
 the way — `--pending` ends the batch back on `main`, regardless of what the last ruling in it was.

@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
-import { git } from "../src/lib/git.mjs";
-import { buildVerified, rulePending, simulatedRole } from "../src/commands/rule.mjs";
+import { git, gitOk } from "../src/lib/git.mjs";
+import { buildVerified, rule, ruleByAgent, rulePending, simulatedRole } from "../src/commands/rule.mjs";
 
 function repo(t) {
   const d = mkdtempSync(join(tmpdir(), "sdlc-rule-build-"));
@@ -25,12 +25,12 @@ const result = (d, over) => {
   writeFileSync(join(d, "tests", "results", "new", "slice-1.json"), JSON.stringify({ slice: 1, proposal: "build-slice-1", app_tree: tree(d), verdict: "pass", ...over }));
 };
 
-test("a build proposal with no verify result may not be ruled", (t) => {
+test("a build proposal with no verify result may not be approved", (t) => {
   const { d } = repo(t);
   assert.match(buildVerified(d, "build-slice-1").reason, /run sdlc run verify --slice 1 first/);
 });
 
-test("a passing result for the application as it stands lets the ruling go ahead", (t) => {
+test("a passing result for the application as it stands lets the approval go ahead", (t) => {
   const { d } = repo(t);
   result(d, {});
   assert.equal(buildVerified(d, "build-slice-1").ok, true);
@@ -46,6 +46,14 @@ test("a result for a different application tree, a different proposal, or a fail
   assert.match(buildVerified(d, "build-slice-1").reason, /for build-slice-1-2/);
   result(d, { verdict: "fail" });
   assert.match(buildVerified(d, "build-slice-1").reason, /did not pass/);
+});
+
+test("a result the suite could not bind is reported as not passed, not as missing", (t) => {
+  const { d } = repo(t);
+  result(d, { verdict: "unbound" });
+  const v = buildVerified(d, "build-slice-1");
+  assert.equal(v.ok, false);
+  assert.equal(v.notPassed, true);
 });
 
 test("names other than a build proposal are not held to a verify", (t) => {
@@ -73,16 +81,56 @@ skills: { packs: [] }
 egress: { rules: [E-2] }
 `;
 
-function project(t) {
+// The same project with a person in the G3 seat, which is the substitution the pipeline
+// promises: whatever an agent holder is held to there, a person typing --by is held to.
+const HUMAN_HELD = SIMULATED.replace(
+  'G3: { holder: "agent:reviewer", escalate_to: tech-lead }',
+  "G3: { holder: tech-lead, escalate_to: delivery-lead }");
+
+function project(t, config = SIMULATED) {
   const d = mkdtempSync(join(tmpdir(), "sdlc-rule-build-escalation-"));
   t.after(() => rmSync(d, { recursive: true, force: true }));
   git(["init", "-q", "-b", "main"], d); git(["config", "user.email", "t@example.org"], d); git(["config", "user.name", "t"], d);
   mkdirSync(join(d, ".sdlc", "personas"), { recursive: true });
-  writeFileSync(join(d, ".sdlc/config.yaml"), SIMULATED);
+  writeFileSync(join(d, ".sdlc/config.yaml"), config);
   writeFileSync(join(d, ".gitattributes"), ".sdlc/runs/*.md merge=union\n");
   for (const p of ["reviewer", "tech-lead"]) writeFileSync(join(d, `.sdlc/personas/${p}.md`), `# Persona: ${p}\n\nRules.\n`);
   writeFileSync(join(d, "README.md"), "x"); git(["add", "-A"], d); git(["commit", "-q", "-m", "init"], d);
   return d;
+}
+
+// Opens `proposal/build-slice-1` the way the pipeline leaves it: an application, a G3
+// proposal page, and then whatever verify wrote about it — a result file carrying the
+// verdict given, and a gate file only where the retry ceiling was reached. `verdict:
+// null` is the slice verify has not run against yet.
+function buildProposal(d, { verdict = "pass", escalatedTo = null } = {}) {
+  const commit = (m) => {
+    git(["add", "-A"], d);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", m], d);
+  };
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], d);
+  mkdirSync(join(d, "app"), { recursive: true });
+  writeFileSync(join(d, "app", "index.ts"), "export {};\n");
+  mkdirSync(join(d, ".sdlc", "proposals"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/proposals/build-slice-1.md"),
+    "---\ngate: G3\nquestion: \"Does it work?\"\nrecommendation: \"Yes.\"\nopened: 2026-09-19T00:00:00.000Z\n---\n\n# Does it work?\n");
+  commit("open build-slice-1");
+  if (verdict) {
+    mkdirSync(join(d, "tests", "results", "new"), { recursive: true });
+    writeFileSync(join(d, "tests/results/new/slice-1.json"), JSON.stringify({
+      slice: 1, proposal: "build-slice-1", app_tree: git(["rev-parse", "HEAD:app"], d),
+      at: "2026-09-19T00:00:00.000Z", verdict, rows: [],
+    }));
+  }
+  if (escalatedTo) {
+    mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+    writeFileSync(join(d, ".sdlc/gates/build-slice-1.yaml"), [
+      "gate: G3", "verdict: escalated", "by: runner:verify", "held_by: runner", `escalate_to: ${escalatedTo}`,
+      "rationale: Slice 1 has failed verify 3 times.", "conditions: []", "at: 2026-09-19T00:00:00.000Z", "",
+    ].join("\n"));
+  }
+  if (verdict || escalatedTo) commit(`verify slice 1: ${verdict ?? "escalated"}`);
+  git(["checkout", "-q", "main"], d);
 }
 
 function reply(t, verdict, rationale) {
@@ -104,33 +152,19 @@ function withMock(t) {
   });
 }
 
+// Collects what a batch printed, so a skip the batch makes silently can be told from one
+// it names.
+async function said(fn) {
+  const lines = [];
+  const log = console.log;
+  console.log = (...a) => lines.push(a.join(" "));
+  try { return { value: await fn(), lines: lines.join("\n") }; } finally { console.log = log; }
+}
+
 test("a build proposal escalated by verify itself is handed to the simulated tech lead, verify's failure notwithstanding", async (t) => {
   withMock(t);
   const d = project(t);
-
-  // Opens the branch by hand, the way `verify --slice 1` would after a build proposal
-  // failed three times running: a failing result file, and a gate file already carrying
-  // an escalation raised by the runner rather than by any persona.
-  git(["checkout", "-q", "-b", "proposal/build-slice-1"], d);
-  mkdirSync(join(d, "app"), { recursive: true });
-  writeFileSync(join(d, "app", "index.ts"), "export {};\n");
-  mkdirSync(join(d, ".sdlc", "proposals"), { recursive: true });
-  writeFileSync(join(d, ".sdlc/proposals/build-slice-1.md"), "---\ngate: G3\nquestion: \"Does it work?\"\nrecommendation: \"Yes.\"\nopened: 2026-09-19T00:00:00.000Z\n---\n\n# Does it work?\n");
-  git(["add", "-A"], d);
-  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "open build-slice-1"], d);
-  const appTree = git(["rev-parse", "HEAD:app"], d);
-  mkdirSync(join(d, "tests", "results", "new"), { recursive: true });
-  writeFileSync(join(d, "tests/results/new/slice-1.json"), JSON.stringify({
-    slice: 1, proposal: "build-slice-1", app_tree: appTree, at: "2026-09-19T00:00:00.000Z", verdict: "fail", rows: [],
-  }));
-  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
-  writeFileSync(join(d, ".sdlc/gates/build-slice-1.yaml"), [
-    "gate: G3", "verdict: escalated", "by: runner:verify", "held_by: runner", "escalate_to: tech-lead",
-    "rationale: Slice 1 has failed verify 3 times.", "conditions: []", "at: 2026-09-19T00:00:00.000Z", "",
-  ].join("\n"));
-  git(["add", "-A"], d);
-  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "verify escalates build-slice-1"], d);
-  git(["checkout", "-q", "main"], d);
+  buildProposal(d, { verdict: "fail", escalatedTo: "tech-lead" });
 
   assert.equal(simulatedRole(parseYaml(git(["show", "HEAD:.sdlc/config.yaml"], d)), "tech-lead"), true);
 
@@ -143,4 +177,88 @@ test("a build proposal escalated by verify itself is handed to the simulated tec
   assert.equal(gate.by, "agent:tech-lead");
   assert.equal(gate.held_by, "agent");
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+});
+
+test("a verdict the suite could not reach is still ruled: its agent holder returns the build", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "unbound" });
+  reply(t, "return", "the criteria this slice claims were never exercised");
+  const r = await ruleByAgent(d, "build-slice-1", { persona: "reviewer" });
+  assert.equal(r.verdict, "return");
+  const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.equal(gate.verdict, "return");
+  assert.equal(gate.by, "agent:reviewer");
+});
+
+test("and escalates it, when that is the ruling the holder reaches", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "unbound" });
+  reply(t, "escalate", "nothing here can be exercised and I cannot tell whether the application is at fault");
+  const r = await ruleByAgent(d, "build-slice-1", { persona: "reviewer" });
+  assert.equal(r.escalated, true);
+  const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.equal(gate.verdict, "escalated");
+  assert.equal(gate.escalate_to, "tech-lead");
+});
+
+test("an approval without a passing result is refused, and leaves the proposal open", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "unbound" });
+  reply(t, "approve", "it looks right to me");
+  await assert.rejects(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }), /did not pass verify/);
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false,
+    "no gate file: nothing was written before the refusal");
+  assert.equal(gitOk(["cat-file", "-e", "main:app/index.ts"], d), false, "and nothing was merged");
+});
+
+test("a passing result lets the agent holder approve and merge as before", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "pass" });
+  reply(t, "approve", "every criterion this slice claims passes against the running application");
+  const r = await ruleByAgent(d, "build-slice-1", { persona: "reviewer" });
+  assert.equal(r.verdict, "approve");
+  assert.equal(gitOk(["cat-file", "-e", "main:app/index.ts"], d), true);
+});
+
+test("a person in the gate seat is refused the same approval, and returns the same build", (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "unbound" });
+  assert.throws(() => rule(d, "build-slice-1", "approve", { by: "tech-lead", note: "looks fine" }), /did not pass verify/);
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false);
+  const r = rule(d, "build-slice-1", "return", { by: "tech-lead", note: "nothing was exercised", conditions: ["bind what the suite could not reach"] });
+  assert.equal(r.verdict, "return");
+  const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.equal(gate.verdict, "return");
+});
+
+test("an escalation's target may approve without one, and the escalation is the record of it", (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "fail", escalatedTo: "delivery-lead" });
+  const r = rule(d, "build-slice-1", "approve", { by: "delivery-lead", note: "the remaining failures are the suite's, not the application's" });
+  assert.equal(r.verdict, "approve");
+  assert.equal(gitOk(["cat-file", "-e", "main:app/index.ts"], d), true);
+  const raised = parseYaml(git(["show", "proposal/build-slice-1~1:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.equal(raised.verdict, "escalated");
+  const gate = parseYaml(git(["show", "main:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.equal(gate.by, "delivery-lead");
+  assert.equal(gate.held_by, "human");
+});
+
+test("the batch names the build it is leaving alone, and stays quiet about one verify has not reached", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "unbound" });
+  const notPassed = await said(() => rulePending(d));
+  assert.equal(notPassed.value.length, 0);
+  assert.match(notPassed.lines, /build-slice-1 did not pass verify; rule it by name/);
+
+  const e = project(t);
+  buildProposal(e, { verdict: null });
+  const never = await said(() => rulePending(e));
+  assert.equal(never.value.length, 0);
+  assert.doesNotMatch(never.lines, /build-slice-1/);
 });

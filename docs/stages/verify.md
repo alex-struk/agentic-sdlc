@@ -4,9 +4,12 @@
 
 Run the acceptance suite for one slice's criteria against a real, running instance of the rebuilt
 application, and record what happened on the build proposal's own branch. A slice's build proposal
-is not answerable to the reviewer until this has run: ruling a `build-slice-<n>` proposal — outside
-an escalation — is refused until `tests/results/new/slice-<n>.json` says `pass` against the exact
-application the proposal branch carries (`buildVerified`, `src/commands/rule.mjs`).
+cannot be *approved* until this has run: an approval on a `build-slice-<n>` proposal is refused
+until `tests/results/new/slice-<n>.json` says `pass` against the exact application the proposal
+branch carries (`buildVerified`, `src/commands/rule.mjs`). Returning or escalating it is held to
+nothing — neither asserts anything about the application — and the target of a standing escalation
+may approve without a passing result, which the escalation on the branch is the record of
+(`docs/decisions/0022-a-guard-that-stopped-the-failure-being-recorded.md`).
 
 There is no agent turn: `verify` carries `agent: false`, the same as `calibrate`. Running a suite
 and writing its own verdict onto a branch needs no judgement; the judgement a failing row still

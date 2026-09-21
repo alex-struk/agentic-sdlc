@@ -248,6 +248,14 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
   if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
   const executable = conditionsAreExecutable(gate, name);
   if (!executable) assertOverreachRulable(name, verdict, conditions ?? []);
+  // The same evidence the seat's persona is held to, so that sitting in the seat is the
+  // whole of what changes when a person takes it. A build with no passing result is
+  // returnable here and unapprovable here, exactly as it is on the agent path; the one
+  // approval that goes through without one is the escalation target's, which the
+  // escalation already on the branch is the record of.
+  const escalation = standingEscalation(projectDir, name);
+  assertApprovalEvidence(projectDir, name, verdict,
+    Boolean(escalation) && by === g.escalate_to && escalation.by !== by);
   const heldBy = by.startsWith("agent:") ? "agent" : "human";
   const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, conditions, executable });
   return { gate, verdict, heldBy, ...requests };
@@ -349,7 +357,11 @@ function verifiedResult(text, name, slice, appTree, next) {
   let r;
   try { r = JSON.parse(text); } catch { return { ok: false, reason: `tests/results/new/slice-${slice}.json does not parse; ${next}` }; }
   if (r.proposal !== name) return { ok: false, reason: `the verify result on this branch is for ${r.proposal}; ${next}` };
-  if (r.verdict !== "pass") return { ok: false, reason: `${name} did not pass verify` };
+  // `notPassed` separates the two ways a build can be short of evidence: the suite ran
+  // against this tree and the result was not a pass, or there is no current result at all.
+  // Both refuse an approval; only the first is a proposal somebody is waiting on a ruling
+  // for, which is what `rulePending` says out loud rather than skipping in silence.
+  if (r.verdict !== "pass") return { ok: false, notPassed: true, reason: `${name} did not pass verify` };
   if (r.app_tree !== appTree) return { ok: false, reason: `the application changed since it was verified; ${next}` };
   return { ok: true, reason: "" };
 }
@@ -380,6 +392,33 @@ function buildVerifiedOnBranch(projectDir, branch, name) {
   return verifiedResult(text, name, m[1], git(["rev-parse", `${branch}:app`], projectDir), next);
 }
 
+// The evidence an approval turns on, checked against the verdict rather than against the
+// seat. A build proposal is approved only where a current verify result says the
+// application on its branch passed; a return or an escalation asserts nothing about the
+// application, needs no evidence to be true, and is held to none — which is what keeps a
+// slice the suite could not bind, or could not run at all, rulable in the one direction
+// that is correct for it.
+//
+// Reading the verdict is the whole of it: a person typing `--by` and the persona holding
+// the gate are refused the same approval, for the same reason, in the same words. A guard
+// that binds a seat instead of a verdict stops the true failure being recorded, and stops
+// it on whichever seat it is enforced on.
+//
+// The exception is the ruling on a standing escalation. There an approval without a
+// passing result is a decision somebody took rather than a check that was skipped, and
+// the branch carries both halves of it: the escalation names who raised it and why, and
+// the ruling commit on top names who overrode it and why. An escalation is also the only
+// way a slice that has exhausted the verify retry ceiling can ever be finished, since a
+// fourth build is exactly what that ceiling exists to stop.
+//
+// Called once the verdict is in hand and before anything about the ruling is written, so
+// a refusal leaves the proposal exactly as open as it was.
+function assertApprovalEvidence(projectDir, name, verdict, onEscalation) {
+  if (verdict !== "approve" || onEscalation) return;
+  const verified = buildVerified(projectDir, name);
+  if (!verified.ok) throw new Error(`rule ${name}: ${verified.reason}`);
+}
+
 // The agent path: no human types --by approve|return. A persona brief is handed to a
 // short-lived agent turn along with the proposal, the diff and the checks, and the
 // verdict it comes back with is trusted the same way a human's --by is trusted — phase 0
@@ -399,13 +438,6 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   if (g.holder !== by && !ruleEscalation) {
     const allowed = [g.holder, simulatedRole(config, g.escalate_to) ? `agent:${g.escalate_to} (on an escalation)` : null].filter(Boolean);
     throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
-  }
-  // Binds the gate's holder only: an escalation raised after three failed builds is ruled
-  // by the tech lead precisely because the result is not a pass, and must not be refused
-  // for it.
-  if (!ruleEscalation) {
-    const verified = buildVerified(projectDir, name);
-    if (!verified.ok) throw new Error(`rule ${name}: ${verified.reason}`);
   }
   // An agent-held gate with nowhere to escalate is a broken policy, not a ruling this
   // agent can be trusted with — checked before the persona brief is even read, since
@@ -522,6 +554,11 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   // committed at this point, and the turn is read-only, so the proposal is left open for
   // a corrected ruling.
   if (!executable) assertOverreachRulable(name, verdict, conditions ?? []);
+  // Here rather than before the persona is asked, because the verdict is what decides
+  // whether it applies at all. By this point the typecheck has run and the ruling turn has
+  // answered, both read-only against a tree asserted clean; no gate file, no proposal page,
+  // no commit and no merge has been written for this ruling.
+  assertApprovalEvidence(projectDir, name, verdict, ruleEscalation);
 
   // The ruling has to land in the proposal page's own commit, not a follow-up one, so
   // it is appended and written before `commitRuling` stages and commits.
@@ -554,11 +591,24 @@ export async function rulePending(projectDir) {
     const escalation = ruled ? escalationOn(projectDir, branch, name) : null;
     if (ruled && !escalation) continue;
     // A build proposal not yet ruled at all (never an escalation, which is already a
-    // ruling of a kind) is skipped quietly when its own branch has no passing verify
-    // result for the application as it stands — no failure line, no run record, since
-    // there is nothing wrong with the proposal itself to report. `ruleByAgent` enforces
-    // the same requirement loudly for a direct `sdlc rule <name>` call.
-    if (!escalation && !buildVerifiedOnBranch(projectDir, branch, name).ok) continue;
+    // ruling of a kind) is left out of the batch when its own branch has no passing verify
+    // result for the application as it stands. A batch rules on the merits, and the merits
+    // are the suite's result: before it exists there is nothing to rule, and the slice is
+    // skipped with no failure line and no run record, since there is nothing wrong with
+    // the proposal itself to report.
+    //
+    // Where the suite did run against this tree and did not pass, the skip is said out
+    // loud. A proposal that never appears in a batch it is eligible for reads as one
+    // nothing is waiting on, and this one is waiting: the ruling that fits it is a return
+    // or an escalation, both of which `sdlc rule <name>` reaches by naming it. What a
+    // batch must not do is reach them by itself — an automatic return sends the builder to
+    // rebuild an application that may be sound, and spends one of the three attempts the
+    // retry ceiling counts.
+    const verified = escalation ? { ok: true } : buildVerifiedOnBranch(projectDir, branch, name);
+    if (!verified.ok) {
+      if (verified.notPassed) console.log(`${name}: left open — ${verified.reason}; rule it by name to return or escalate it`);
+      continue;
+    }
     let proposalText;
     try { proposalText = git(["show", `${branch}:.sdlc/proposals/${name}.md`], projectDir); } catch { continue; }
     const gateMatch = proposalText.match(/^gate:\s*(\S+)/m);
