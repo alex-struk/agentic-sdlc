@@ -127,13 +127,19 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
     // Awaited: `execute` is synchronous for `ratify` and returns a promise for
     // `calibrate`, which has to start the oracle and run a suite before it has anything
     // to report. Awaiting a plain object is the same object back.
-    const { text, changed } = await stage.execute(projectDir, ctx);
+    // `notPassed` is how a stage reports a run that did its own work correctly and found
+    // that the thing it was asked about did not pass — verify's returned, escalated and
+    // unbound verdicts. It is carried out to `COMMANDS.run` below, which is what decides
+    // the trailer and the exit code; it never changes what the stage wrote, and a stage
+    // that leaves it unset is reported exactly as before.
+    const { text, changed, notPassed } = await stage.execute(projectDir, ctx);
     // `text` is carried on the no-op return too — there is no journal entry for this
     // path, so this is the only place `execute`'s account of "already ratified" reaches
     // anyone; `COMMANDS.run` prints it below.
-    const finished = (!changed || changed.length === 0)
+    const outcome = (!changed || changed.length === 0)
       ? finishDeterministicNoOp(projectDir, stage, ctx, text)
       : await finishStage(projectDir, stage, ctx, { text, cost: 0, turns: 0, sessionId: "deterministic" });
+    const finished = notPassed ? { ...outcome, notPassed } : outcome;
     return finished.ok ? followUp(projectDir, stage, ctx, finished) : finished;
   }
 
@@ -259,6 +265,13 @@ COMMANDS.run = async ({ pos, flags }) => {
   if (r.dryRun) return 0;
   if (!r.ok) { console.error(`run ${pos[0]}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }
   if (r.text) console.log(r.text);
+  // A run can be recorded correctly and still not have passed, and the two must not read
+  // alike. `run verify: ok` over a slice whose criteria were never exercised is the one
+  // line a script, a CI step or a person scanning the last line of the output will take
+  // as success, and the exit code said the same thing — the defect decisions 0012 and
+  // 0017 each fixed one instance of. The trailer names the verdict instead, and the exit
+  // is non-zero.
+  if (r.notPassed) { console.error(`run ${pos[0]}: ${r.notPassed}`); return 1; }
   console.log(`run ${pos[0]}: ok${r.proposal ? ` (opened ${r.proposal.branch})` : ""}`);
   return 0;
 };

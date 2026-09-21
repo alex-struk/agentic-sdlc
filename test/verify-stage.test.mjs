@@ -6,13 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { runSuite } from "../src/testrun/playwright.mjs";
-import { verify, verifyVerdict, mergeFailureText, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
+import { verify, verifyVerdict, mergeFailureText, unboundReasons, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
 import { build } from "../src/stages/build.mjs";
 import { buildVerified } from "../src/commands/rule.mjs";
 import { buildProposalBase } from "../src/stages/slices.mjs";
 import { nextProposalName } from "../src/stages/proposals.mjs";
 import { registerStage } from "../src/stages/registry.mjs";
 import { runStage } from "../src/commands/run.mjs";
+import { COMMANDS } from "../src/cli.mjs";
 
 // The fixture's `new` target signs in through the sandbox's own identity provider, and
 // verify refuses to start one of those without `SDLC_SANDBOX_PASSWORD` set. Only that the
@@ -615,4 +616,167 @@ test("a sandbox return overwrites the pass an earlier verify left on the same ap
   assert.equal(verified.ok, false, "a returned build proposal is not rulable as approved");
   assert.match(verified.reason, /did not pass verify/);
   run(["checkout", "-q", "main"]);
+});
+
+// A run that did not pass must not read as one that did. `verify` records its verdict
+// correctly and then resolves, which sends it through `finishDeterministicNoOp` and out
+// of `COMMANDS.run` as `run verify: ok`, exit 0 — over a slice whose criteria failed, or
+// were never exercised at all. That trailer and that exit code are what a script, a CI
+// step and a person scanning the last line all read
+// (docs/decisions/0019-a-run-that-did-not-pass-says-so.md).
+test("only a passing slice leaves verify with nothing to report instead of ok", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  assert.equal((await verify.execute(d, ctx)).notPassed, undefined);
+});
+
+test("a returned, an escalated and an unbound verify each say what happened instead of ok", async (t) => {
+  const failing = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "fail", "Error: expected heading")]);
+  const fctx = ctxFor(failing);
+  verify.preChecks(failing, fctx);
+  const returned = await verify.execute(failing, fctx);
+  assert.match(returned.notPassed, /^returned — 1 of 2 criteria fail against the application$/,
+    "a criterion that was exercised and came out wrong");
+
+  const unbound = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: x.y — nothing there")]);
+  const uctx = ctxFor(unbound);
+  verify.preChecks(unbound, uctx);
+  const u = await verify.execute(unbound, uctx);
+  assert.match(u.notPassed, /^unbound — 1 of 2 criteria could not be exercised at all$/,
+    "a criterion that could not be exercised reads differently from one that failed");
+});
+
+test("the third failing verify reports the escalation rather than ok", async (t) => {
+  const d = buildProject(t, { escalateTo: "principal" });
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  for (const k of [2, 3]) {
+    run(["checkout", "-q", "-b", `proposal/build-slice-1-${k}`, "proposal/build-slice-1"]);
+    run(["checkout", "-q", "main"]);
+  }
+  for (const name of ["build-slice-1", "build-slice-1-2"]) {
+    run(["checkout", "-q", `proposal/${name}`]);
+    mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+    writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), "gate: G3\nverdict: return\nby: runner:verify\nheld_by: runner\n");
+    run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
+    run(["checkout", "-q", "main"]);
+  }
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "fail", "Error: still wrong")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.notPassed, /^escalated to principal — 1 of 2 criteria still fail after 3 builds$/);
+});
+
+test("sdlc run verify prints the verdict instead of ok and exits non-zero when it did not pass", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: x.y — nothing there")]);
+  const sandbox = { up: async () => ({ ok: true, baseUrl: "http://localhost:8080" }), down: () => ({ ok: true }) };
+  registerStage({ ...verify, execute: (dir, c) => verify.execute(dir, { ...c, sandbox }) });
+  t.after(() => registerStage(verify));
+
+  const logs = [];
+  const errs = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  const origCwd = process.cwd();
+  try {
+    process.chdir(d);
+    console.log = (...a) => logs.push(a.join(" "));
+    console.error = (...a) => errs.push(a.join(" "));
+    const code = await COMMANDS.run({ pos: ["verify"], flags: { slice: 1 } });
+    assert.equal(code, 1, "an unbound verdict is not a successful run");
+  } finally {
+    console.log = origLog; console.error = origErr; process.chdir(origCwd);
+  }
+  assert.ok(!logs.some((l) => /^run verify: ok/.test(l)), logs.join(" | "));
+  assert.ok(errs.some((l) => /^run verify: unbound — 1 of 2 criteria could not be exercised at all$/.test(l)), errs.join(" | "));
+});
+
+test("sdlc run verify still reports ok and exits 0 on a slice that passes", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const sandbox = { up: async () => ({ ok: true, baseUrl: "http://localhost:8080" }), down: () => ({ ok: true }) };
+  registerStage({ ...verify, execute: (dir, c) => verify.execute(dir, { ...c, sandbox }) });
+  t.after(() => registerStage(verify));
+
+  const logs = [];
+  const origLog = console.log;
+  const origCwd = process.cwd();
+  try {
+    process.chdir(d);
+    console.log = (...a) => logs.push(a.join(" "));
+    assert.equal(await COMMANDS.run({ pos: ["verify"], flags: { slice: 1 } }), 0);
+  } finally {
+    console.log = origLog; process.chdir(origCwd);
+  }
+  assert.ok(logs.some((l) => /^run verify: ok/.test(l)), logs.join(" | "));
+});
+
+// An unbound verdict has two causes that call for opposite remedies, and the five-step
+// bind sequence is the right answer to only one of them. Printed over the other, it asks
+// for half an hour of sandbox, adapter and ruling that drives the same application again
+// and writes the same reasons back.
+test("an unbound slice whose adapter is already in place is not told to bind again", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  mkdirSync(join(d, "tests", "adapters", "new"), { recursive: true });
+  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = {};\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "adapter"]);
+  mockSuite(t, [
+    row("R-4.1", "pass"),
+    row("R-4.2", "unbound", "Error: unbound: opportunities.withdraw — no control on the page withdraws a published opportunity\n    at Object.withdraw"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.ok(!/sdlc run bind-adapter/.test(r.text), `the bind sequence is not the remedy here:\n${r.text}`);
+  assert.ok(!/sandbox up --target new --from/.test(r.text), r.text);
+  // The adapter's own reason is the evidence for what is missing, and nothing else in the
+  // pipeline writes it down.
+  assert.match(r.text, /R-4\.2: opportunities\.withdraw — no control on the page withdraws a published opportunity/);
+  assert.match(r.text, /plan\/tasks\.md/, "changing what the slice claims is one of the two moves open");
+  assert.match(r.text, /build --slice 1 --revise/, "taking the surface on is the other");
+});
+
+test("an unbound slice with no adapter at all still gets the whole binding sequence", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: tests/adapters/new/index.ts does not exist")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.text, /tests\/adapters\/new\/index\.ts does not exist/);
+  assert.match(r.text, /sdlc sandbox up --target new --from proposal\/build-slice-1/);
+  assert.match(r.text, /sdlc run bind-adapter --target new/);
+});
+
+test("an unbound row whose adapter gave no readable reason is still reported as unbound", () => {
+  assert.deepEqual(
+    unboundReasons([{ id: "R-1", tests: [{ error: "Error: unbound: a.b — gone" }] }, { id: "R-2", tests: [] }], ["R-1", "R-2"]),
+    [{ id: "R-1", reason: "a.b — gone" }, { id: "R-2", reason: "the adapter gave no reason" }]);
+});
+
+// The result file carries each acceptance test's own error, which is a browser's or a
+// runner's stack trace and names the file it was thrown from; the gate file carries a
+// service's own log or that same error, quoted so the builder has the evidence. Both are
+// committed to the proposal branch (rule E-2,
+// docs/decisions/0020-a-published-page-is-scrubbed-where-it-is-written.md). The home path
+// below is assembled from pieces so this file does not itself carry the shape the egress
+// check looks for.
+test("neither the result file nor the gate file verify writes names this machine", async (t) => {
+  const d = buildProject(t);
+  const elsewhere = `/${"home"}/someone/tools`;
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "fail", `Error: expected heading\n    at ${elsewhere}/node_modules/playwright/index.js:1:1\n    at ${d}/tests/acceptance/users/R-4.2.spec.ts:3:1`)]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  for (const path of ["tests/results/new/slice-1.json", ".sdlc/gates/build-slice-1.yaml"]) {
+    const text = onBranch(d, path);
+    assert.ok(!text.includes(elsewhere), `${path} still names a person's home directory`);
+    assert.ok(!text.includes(d), `${path} still carries the project's absolute path`);
+  }
+  assert.match(onBranch(d, "tests/results/new/slice-1.json"), /~\/tools\/node_modules\/playwright/);
 });

@@ -37,6 +37,32 @@ export function verifyVerdict(rows, criteria) {
   return { verdict: failing.length ? "fail" : unbound.length ? "unbound" : "pass", failing, unbound };
 }
 
+// `bind-adapter` throws `unbound: <page>.<member> — <reason>` from any member it could
+// not bind, and the suite carries that text through to the row (`src/testrun/playwright.mjs`).
+// It is the adapter's own account of what the application does not provide, and the only
+// place in the pipeline where that reason is written down, so an unbound verdict quotes it
+// rather than describing it.
+const UNBOUND_LINE = /^(?:Error: )?unbound: (.*)$/m;
+
+export function unboundReasons(rows, ids) {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.map((id) => {
+    const reason = (byId.get(id)?.tests ?? [])
+      .map((t) => UNBOUND_LINE.exec(t.error ?? "")?.[1]?.trim())
+      .find(Boolean);
+    return { id, reason: reason || "the adapter gave no reason" };
+  });
+}
+
+// Whether this target has an adapter at all. Read off the file the suite itself imports
+// rather than matched in the unbound text: a target with no adapter is reported unbound
+// through a reason `runSuite` writes for it, and a target whose adapter ran and found
+// nothing to bind is reported unbound through a reason the adapter wrote. The two call for
+// opposite remedies, and the file either exists or it does not.
+function adapterExists(projectDir, target) {
+  return existsSync(join(projectDir, "tests", "adapters", target, "index.ts"));
+}
+
 function firstError(r) {
   if (r.result === "missing") return "no acceptance test ran for this criterion";
   if (r.result === "stale") return "its test was written for an older version of the criterion";
@@ -234,6 +260,14 @@ export const verify = {
     const start = enterBranch(projectDir, branch, `verify slice ${slice.number}`);
     let text;
     let dirty = false;
+    // What the operator is told instead of `ok`, and what makes the run exit non-zero,
+    // when verify finished its own work correctly and the thing it was asked about did
+    // not pass (`src/commands/run.mjs`). Left unset by exactly one route out — the one
+    // where every criterion the slice claims passed. The three that do set it read
+    // differently on purpose: a criterion that was exercised and came out wrong, a
+    // criterion that could not be exercised at all, and a slice whose third failure goes
+    // to a person are three different things to do next.
+    let notPassed;
     // Held rather than propagated on its own, so the teardown below can run first and
     // then say what the run actually left behind. Rethrown either way: nothing that went
     // wrong here is swallowed.
@@ -290,6 +324,9 @@ export const verify = {
           escalatedRationale: `Slice ${slice.number} has been returned by verify ${MAX_VERIFY_RETURNS} times, this time because the sandbox never came up. What is wrong may not be the application's to fix — the compose file, the stack profile and this machine can each be the cause (spec 7.1) — and a fourth build would not find out which.`,
         });
         commitOnBranch(projectDir, [resultRel, gateRel], `verify(slice ${slice.number}): sandbox`);
+        notPassed = escalate
+          ? `escalated to ${escalateTo} — the sandbox did not start after ${MAX_VERIFY_RETURNS} builds`
+          : "returned — the sandbox did not start, so nothing was verified";
         text = escalate
           ? `verify slice ${slice.number}: the sandbox did not start after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`
           : `verify slice ${slice.number}: returned — the sandbox did not start, so nothing was verified. ${(started.messages[0] ?? "").split("\n")[0]} Next: sdlc run build --slice ${slice.number} --revise`;
@@ -309,27 +346,48 @@ export const verify = {
             escalatedRationale: `Slice ${slice.number} has failed verify ${MAX_VERIFY_RETURNS} times. The failures below may not be the application's: a test, the adapter, the criterion or the sandbox can each be what is wrong (spec 7.1), and a fourth build would not find out which.`,
           });
           paths.push(gateRel);
+          notPassed = escalate
+            ? `escalated to ${escalateTo} — ${v.failing.length} of ${slice.criteria.length} criteria still fail after ${MAX_VERIFY_RETURNS} builds`
+            : `returned — ${v.failing.length} of ${slice.criteria.length} criteria fail against the application`;
           text = escalate
             ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`
             : `verify slice ${slice.number}: returned — ${v.failing.map((r) => r.id).join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`;
         } else if (v.verdict === "unbound") {
-          // Binding needs the application answering, and the application is on this
-          // proposal branch alone until the proposal is ruled — so naming
-          // `bind-adapter` on its own names a step that refuses, every time, for a
-          // target that has nothing running (0016). The whole sequence is printed
-          // instead, branch name filled in, and it ends with the verify that picks the
-          // ruled adapter up — which is a step that runs because this stage merges
-          // `main` in first, and was a step that could not be reached before it did.
-          text = [
-            `verify slice ${slice.number}: ${v.unbound.join(", ")} have no binding on the new target yet.`,
-            `The application they need is on ${branch} and nowhere else until that proposal is ruled, so bind against it from there. From main, with a clean tree:`,
-            `  1. sdlc sandbox up --target new --from ${branch}`,
-            "  2. sdlc run bind-adapter --target new",
-            "  3. rule the bind-adapter proposal at G3, which puts the adapter on main",
-            `  4. sdlc sandbox down --target new --from ${branch}`,
-            `  5. sdlc run verify --slice ${slice.number}`,
-            `Step 5 picks the ruled adapter up: verify merges main into ${branch} before it runs the suite, so the branch carries whatever was ruled onto main after it was cut.`,
-          ].join("\n");
+          const head = `verify slice ${slice.number}: ${v.unbound.length} of the ${slice.criteria.length} criteria this slice claims could not be exercised at all — ${v.unbound.join(", ")}.`;
+          notPassed = `unbound — ${v.unbound.length} of ${slice.criteria.length} criteria could not be exercised at all`;
+          text = adapterExists(projectDir, "new")
+            // The adapter is in place, it drove the application, and it reported the
+            // surface these criteria need as absent. Re-binding is the one remedy that
+            // cannot change that: it would drive the same application again and write the
+            // same reasons. So the reasons are quoted, because they are the evidence, and
+            // what they name is a question about what this slice builds rather than about
+            // how it is driven.
+            ? [
+              head,
+              "tests/adapters/new/index.ts is in place and was exercised. It reports each of these as part of the surface the application does not provide:",
+              ...unboundReasons(claimed, v.unbound).map(({ id, reason }) => `  ${id}: ${reason}`),
+              "Binding again would drive the same application and write the same reasons, so that is not the next step. What is missing is in the application, and the choice is a person's: rule "
+                + `${name} at G3 with those reasons as the conditions, which returns it and lets sdlc run build --slice ${slice.number} --revise take them on; or, if that surface belongs to a later slice, change what slice ${slice.number} claims in plan/tasks.md so its criteria match what it builds.`,
+              "Nothing was written to the gate file, because nothing about the application was tested and there is no verdict on it to record.",
+            ].join("\n")
+            // No adapter for this target yet. Binding needs the application answering, and
+            // the application is on this proposal branch alone until the proposal is ruled
+            // — so naming `bind-adapter` on its own names a step that refuses, every time,
+            // for a target that has nothing running (0016). The whole sequence is printed
+            // instead, branch name filled in, and it ends with the verify that picks the
+            // ruled adapter up — which is a step that runs because this stage merges `main`
+            // in first, and was a step that could not be reached before it did.
+            : [
+              head,
+              "There is no adapter for the new target yet: tests/adapters/new/index.ts does not exist, so nothing on that target can be driven.",
+              `The application it needs is on ${branch} and nowhere else until that proposal is ruled, so bind against it from there. From main, with a clean tree:`,
+              `  1. sdlc sandbox up --target new --from ${branch}`,
+              "  2. sdlc run bind-adapter --target new",
+              "  3. rule the bind-adapter proposal at G3, which puts the adapter on main",
+              `  4. sdlc sandbox down --target new --from ${branch}`,
+              `  5. sdlc run verify --slice ${slice.number}`,
+              `Step 5 picks the ruled adapter up: verify merges main into ${branch} before it runs the suite, so the branch carries whatever was ruled onto main after it was cut.`,
+            ].join("\n");
         } else {
           text = `verify slice ${slice.number} verified: every claimed criterion passes against the application in ${name}. Ready for G3.`;
         }
@@ -371,7 +429,7 @@ export const verify = {
     // quoted in the message rather than replaced by it.
     if (dirty) throw new Error(`${text}\nWhat failed: ${failure?.message ?? "the run left the tree dirty without reporting an error"}`, { cause: failure });
     if (failure) throw failure;
-    return { text, changed: [] };
+    return { text, changed: [], notPassed };
   },
   postChecks() { return []; },
   proposal() { return null; },
