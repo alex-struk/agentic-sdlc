@@ -17,7 +17,8 @@ import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { readRebindFor } from "../spec/rebind.mjs";
-import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId, criterionFingerprint } from "../spec/criteria.mjs";
+import { addRecovery, readRecoveryFor, outstandingRecoveries, recoveryRequestCount } from "../spec/recovery.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
@@ -329,6 +330,48 @@ function checkArchaeologyRevisionScope(projectDir, ctx) {
   return { id, ok: true, messages: [] };
 }
 
+// The re-recovery requests a domain is carrying right now: every `spec/recovery.yaml`
+// entry for it whose criterion is still, field for field, the one the ratification ruling
+// sent back (`outstandingRecoveries`, `src/spec/recovery.mjs`). A domain with no file yet
+// carries none, which is the ordinary case for a first recovery.
+function outstandingFor(projectDir, domain) {
+  if (!projectDir || !domain) return [];
+  const file = join(projectDir, "spec", "domains", `${domain}.md`);
+  if (!existsSync(file)) return [];
+  const { criteria } = parseDomainFile(readText(file), domain);
+  return outstandingRecoveries(readRecoveryFor(projectDir, domain), criteria);
+}
+
+// What an `archaeology` run is told about the criteria it is being asked to recover a
+// second time. Empty — no paragraph at all — for the ordinary run that is discovering a
+// domain rather than correcting one, so a first recovery's prompt reads exactly as it
+// always has.
+function recoveryPromptBlock(ctx) {
+  const outstanding = outstandingFor(ctx.projectDir, ctx.domain);
+  if (!outstanding.length) return [];
+  return [
+    `${outstanding.length} criterion(s) in this domain were sent back by a ratification ruling: what each one records is not what the old application does, so you are recovering it again rather than discovering it. Each is listed with the ruling's own account of what the evidence actually shows, verbatim:`,
+    outstanding.map((e) => `- ${e.id} (as recovered at v${e.version}): ${e.why}`).join("\n"),
+    "For each of those, read the evidence in sources/old again and rewrite that criterion's statement, citations, given/when/then and confidence to match what you find. Keep its id and do not renumber it. If the evidence turns out to support the row exactly as it stands, leave the statement where it is and record in a `- note:` on the row what you read and where — a criterion that comes back with nothing changed at all fails this run's checks, because a re-recovery that leaves no trace cannot be told from one that never happened.",
+  ];
+}
+
+// A criterion sent back for re-recovery has to come back different. `recovery-wrong` is
+// the one ratification verb whose work is done by another stage, and the failure it exists
+// to prevent is that stage quietly re-emitting the row it was asked to correct: the
+// evidence stays wrong, the ruling looks acted on, and the next ratify pass has nothing new
+// to read. So a run for a domain that still carries an outstanding request — the criterion
+// is in the file and every field the request recorded is still identical — fails here,
+// naming the criterion and the reason it was sent back. Amending the row is what answers
+// it, whether that means a corrected statement and citations or a note recording that the
+// evidence was read again and holds.
+function checkArchaeologyRecovery(projectDir, ctx) {
+  const id = "archaeology-recovery";
+  const messages = outstandingFor(projectDir, ctx.domain).map((e) =>
+    `${e.id} was sent back for re-recovery (${e.why}) and came back unchanged; recover it again from sources/old, or record on the row itself what the evidence shows and why it stands`);
+  return { id, ok: messages.length === 0, messages };
+}
+
 // `archaeology` recovers one business domain's behaviour from the old application,
 // checked out read-only at `sources/old` by the `with-sources` workspace before the
 // agent session starts. It holds gate G1: the recovered domain file is not trusted as
@@ -355,6 +398,7 @@ const archaeology = {
         `Revise spec/domains/${d}.md so the criteria this rationale names are correct: rewrite their statement, citations, given/when/then, note and confidence from the evidence you find in sources/old — its code, migrations, docs, README, and any OpenAPI/swagger file it has. Never read sources/old/tests, and never read anything outside sources/old except constitution.md, spec/, and intent/.`,
         `This run changes spec/domains/${d}.md only. Unlike a first recovery, do not touch spec/contract/surface.yaml or spec/contract/personas.yaml, and do not touch any other domain's file — a return names one criterion's evidence as wrong, never a reason to add to the contract surface.`,
         `Leave every R-<n> criterion in the file byte-for-byte unchanged. Leave every other D-<n> criterion unchanged too, unless this rationale's evidence contradicts it. Never renumber any criterion, minted or provisional.`,
+        ...recoveryPromptBlock(ctx),
         `Finish with your journal entry: say which criteria you changed and why, and what the evidence now shows.`,
       ].join("\n\n");
     }
@@ -362,6 +406,7 @@ const archaeology = {
       `Recover what the old application does for the "${d}" domain, reading only sources/old — its code, migrations, docs, README, and any OpenAPI/swagger file it has. Never read sources/old/tests, and never read anything outside sources/old except constitution.md, spec/, and intent/.`,
       `Write spec/domains/${d}.md in the criterion format your skill instructions describe (spec/README.md has the exact grammar): provisional IDs D-${d}-<n>, origin recovered, a confidence graded by the evidence you actually found, at least one cites on every criterion, a reconciliation class, and given/when/then. Mark anything you are not sure of inferred or open, and say in a note why.`,
       `Append any pages you recover to spec/contract/surface.yaml under a "domain: ${d}" entry, and any roles you recover to spec/contract/personas.yaml if they are not already listed there.`,
+      ...recoveryPromptBlock(ctx),
       `Finish with your journal entry: lead with three sentences on what the ${d} domain does, then say what conflicted between your sources, then say what you could not determine.`,
     ].join("\n\n");
   },
@@ -394,6 +439,7 @@ const archaeology = {
       checkCriteria(projectDir, ctx),
       checkDomainFileParses(projectDir, ctx.domain, "archaeology-domain-file"),
       checkArchaeologyNoMintedIds(projectDir),
+      checkArchaeologyRecovery(projectDir, ctx),
       checkArchaeologyRevisionKeepsMinted(projectDir, ctx),
       checkArchaeologyScope(projectDir),
       checkArchaeologyRevisionScope(projectDir, ctx),
@@ -1904,8 +1950,22 @@ const ratify = {
     // target of this sweep — the only way one could carry `inferred`/`open` confidence
     // at all is a stray `spike` condition naming an already-minted id, and that must not
     // force-obsolete a permanent criterion the contract already depends on.
+    // Criteria out for re-recovery are out of the closing loop entirely while they are
+    // out: the question they are waiting on is one for `archaeology` and the evidence in
+    // the old application, not one the product owner can answer by ruling again. They are
+    // therefore neither asked about on a follow-up (`followUp`, below) nor counted toward
+    // the loop's own bound, which would otherwise force-obsolete a row whose correction
+    // is still being recovered. Both the requests already on file and the ones this pass's
+    // own conditions are about to file count.
+    const recoveryEntries = readRecoveryFor(projectDir, domain);
+    const outForRecovery = new Set([
+      ...outstandingRecoveries(recoveryEntries, withConditions).map((e) => e.id),
+      ...withConditions.filter((c) => c.recoveryRequested).map((c) => c.id),
+    ]);
+
     if (followUpRulingsRead(read, domain) >= 2) {
       for (const c of withConditions) {
+        if (outForRecovery.has(c.id)) continue;
         if (c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete") {
           c.state = "obsolete";
           if (!c.notes.includes("unresolved after two rulings")) c.notes.push("unresolved after two rulings");
@@ -1914,6 +1974,16 @@ const ratify = {
     }
 
     const minted = mintIds(withConditions, domainOrdinal, existingMax);
+
+    // Filed after minting rather than while the condition is applied, so the entry names
+    // the id and version the criterion actually ends up with in the file, and fingerprints
+    // the row as it is about to be written. `addRecovery` files nothing when the same
+    // criterion already carries the same request, which is what makes replaying a ruling
+    // that already sent a row back a no-op rather than a second request.
+    const recoveryPath = addRecovery(projectDir, minted.filter((c) => c.recoveryRequested).map((c) => ({
+      id: c.id, domain, version: c.version, why: c.recoveryRequested, fingerprint: criterionFingerprint(c),
+    })));
+
     // The preamble the file arrived with is written straight back: everything above the
     // first criterion block is a person's or an agent's own text, and nothing in this
     // pass has any business rewriting it.
@@ -1939,17 +2009,30 @@ const ratify = {
     writeIndex(projectDir, parsed);
     renderSpecIndex(projectDir, parsed);
 
-    if (!domainChanged) {
+    if (!domainChanged && !recoveryPath) {
       return { text: `ratify ${domain}: nothing to do — already ratified`, changed: [] };
     }
 
     const accepted = minted.filter((c) => c.state === "accepted");
-    const stillOpen = minted.filter((c) => c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete");
+    // Read back from the file `addRecovery` has just written, against the criteria as
+    // minted, so this is every request the domain is carrying — the ones filed on this
+    // pass and any an earlier one filed that archaeology has not answered yet.
+    const entriesNow = readRecoveryFor(projectDir, domain);
+    const awaitingRecovery = outstandingRecoveries(entriesNow, minted);
+    const awaitingIds = new Set(awaitingRecovery.map((e) => e.id));
+    const stillOpen = minted.filter((c) => c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete" && !awaitingIds.has(c.id));
     const obsolete = minted.filter((c) => c.state === "obsolete");
     const replacementsAdded = applied.filter((a) => a.verb === "defect").length;
 
-    const lines = [`ratify ${domain}: ${accepted.length} accepted, ${stillOpen.length} still open, ${obsolete.length} obsolete, ${replacementsAdded} replacement(s) added.`];
+    const lines = [`ratify ${domain}: ${accepted.length} accepted, ${stillOpen.length} still open, ${obsolete.length} obsolete, ${replacementsAdded} replacement(s) added${awaitingRecovery.length ? `, ${awaitingRecovery.length} out for re-recovery` : ""}.`];
     if (contractRead.length) lines.push(`Conditions from: ${contractRead.join(", ")}.`);
+    if (awaitingRecovery.length) {
+      lines.push(`Out for re-recovery — run \`sdlc run archaeology --domain ${domain}\` to recover these again:`);
+      for (const e of awaitingRecovery) {
+        const n = recoveryRequestCount(entriesNow, e.id);
+        lines.push(`- ${e.id}${n > 1 ? ` (sent back ${n} times)` : ""} — ${e.why}`);
+      }
+    }
     if (stillOpen.length) {
       lines.push("Still open:");
       for (const c of stillOpen) lines.push(`- ${c.id} (${c.confidence})${c.notes?.length ? ` — ${c.notes[0]}` : ""}`);
@@ -1963,7 +2046,9 @@ const ratify = {
       for (const u of unknown) lines.push(`- ${u}`);
     }
 
-    return { text: lines.join("\n"), changed: [`spec/domains/${domain}.md`, "spec/criteria-index.json", "spec/spec.md"] };
+    const changed = [`spec/domains/${domain}.md`, "spec/criteria-index.json", "spec/spec.md"];
+    if (recoveryPath) changed.push(recoveryPath);
+    return { text: lines.join("\n"), changed };
   },
   proposal() {
     return null;
@@ -2005,7 +2090,12 @@ const ratify = {
     // `obsolete` is a decision, not an open question: a row the ruling deliberately did
     // not carry forward keeps whatever confidence it was recovered with, and asking about
     // it again every pass would make the loop never close.
-    const unresolved = criteria.filter((c) => (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete");
+    // A criterion out for re-recovery is not an open question for this persona: it is
+    // waiting on `archaeology` reading the old application again, and asking about it on a
+    // follow-up would ask for a ruling on evidence that is known to be wrong. The rest of
+    // the domain closes out around it.
+    const awaiting = new Set(outstandingRecoveries(readRecoveryFor(projectDir, domain), criteria).map((e) => e.id));
+    const unresolved = criteria.filter((c) => (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete" && !awaiting.has(c.id));
     const { answered, unparsed } = readRulings(projectDir, domain);
     if (unresolved.length === 0 && unparsed.length === 0) return null;
 

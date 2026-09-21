@@ -372,6 +372,11 @@ export const CONDITION_GRAMMAR = [
   "  is kept as the record, its confidence rises to `confirmed` (it is a confirmed record of current",
   "  behaviour, marked defect), and the replacement is filed against it.",
   "- `spike <ID>: <question>` — not yet decided; confidence drops to `open` and the question is recorded.",
+  "- `recovery-wrong <ID>: <what the evidence actually shows>` — the row does not record the old system's",
+  "  behaviour at all: its statement, its citations and its given/when/then describe something the old",
+  "  application does not do, so there is no statement to edit and nothing to mark defect or obsolete. The",
+  "  criterion is sent back to `archaeology` to be recovered again, carrying this text; its confidence drops",
+  "  to `open` so it cannot mint while it is out, and every other criterion in the domain ratifies as usual.",
   "- `obsolete <ID>: <why>` or `drop <ID>: <why>` — not to be carried forward at all.",
   "",
   "The ID is the criterion's own id exactly as the domain file spells it. `contract` and `confirm`",
@@ -410,6 +415,7 @@ function parseCondition(line) {
   if ((m = /^obsolete\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "obsolete", id: m[1], text: collapseWhitespace(m[2]) };
   if ((m = /^drop\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "drop", id: m[1], text: collapseWhitespace(m[2]) };
   if ((m = /^spike\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "spike", id: m[1], text: collapseWhitespace(m[2]) };
+  if ((m = /^recovery-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "recovery-wrong", id: m[1], text: collapseWhitespace(m[2]) };
   return null;
 }
 
@@ -570,10 +576,47 @@ export function applyCalibrateRulings(criteria, conditions, today) {
   return { criteria: out, applied, redo };
 }
 
+// The evidence a criterion rests on, as one comparable string: its statement, its
+// citations, its given/when/then, the confidence those fields were graded at, its
+// reconciliation class and its notes. Everything a re-recovery is asked to look at again,
+// and nothing that moves for an unrelated reason — the id (`ratify` may mint it), the
+// version counter and the criterion's line number in the file are all left out.
+//
+// `spec/recovery.yaml` (`src/spec/recovery.mjs`) stores this for a criterion at the moment
+// it was sent back, which is what lets the next `archaeology` run tell a row that was
+// recovered again from one that came back exactly as it went out. Fields are listed
+// explicitly rather than serialised wholesale so two rows that say the same thing
+// fingerprint the same regardless of which pass built them.
+export function criterionFingerprint(c) {
+  return JSON.stringify({
+    statement: c.statement ?? "",
+    cites: (c.cites ?? []).map((cite) => (cite.line !== undefined ? `${cite.path}:${cite.line}` : cite.path)),
+    given: c.given ?? null,
+    when: c.when ?? null,
+    then: c.then ?? null,
+    confidence: c.confidence ?? null,
+    reconciliation: c.reconciliation ?? null,
+    notes: [...(c.notes ?? [])],
+  });
+}
+
+// The note a `recovery-wrong` condition leaves on the row it sends back, so the domain
+// file itself says why the criterion is out for re-recovery rather than that fact living
+// only in `spec/recovery.yaml`.
+export const RECOVERY_NOTE_PREFIX = "sent back for re-recovery: ";
+
 // Applies `ratify`'s gate-file conditions to a domain's parsed criteria. Every condition
 // names an ID the product owner ruled on; a line this cannot parse, or whose ID is not in
 // `criteria`, is reported in `unknown` rather than silently dropped — a persona's typo
 // must surface somewhere a person will read it (the ratify journal), not vanish.
+//
+// `recovery-wrong <ID>: <what the evidence shows>` is the one verb that changes no wording:
+// it marks the row as out for re-recovery (a note, and `recoveryRequested` on the criterion
+// object for `ratify` to read back once ids are minted), drops a provisional row's
+// confidence to `open` so it cannot mint while it is out, and leaves the correction itself
+// to the next `archaeology` run for the domain. Idempotent on a row it has already marked:
+// the note is pushed only when it is not already there, and the confidence it sets is the
+// one the row already carries.
 //
 // `defect <ID>: <replacement>` is the one verb that adds a row rather than editing one:
 // the old behaviour (`<ID>`) is kept, marked `reconciliation: defect`, and a new
@@ -650,6 +693,25 @@ export function applyConditions(criteria, conditions) {
         target.confidence = "open";
         if (!target.notes.includes(text)) target.notes.push(text);
         break;
+      case "recovery-wrong": {
+        // The one verb that changes no wording at all, because there is no wording to
+        // write: the row misreports what the old application does, so the correction has
+        // to come from reading the old application again. What is recorded here is the
+        // request — on the row, as a note, and on the criterion object as
+        // `recoveryRequested`, which `ratify` reads after minting to write the entry
+        // `archaeology` picks the work up from (`src/spec/recovery.mjs`).
+        const note = `${RECOVERY_NOTE_PREFIX}${text}`;
+        if (!target.notes.includes(note)) target.notes.push(note);
+        // A provisional row is dropped to `open` so it cannot mint a permanent id while
+        // its evidence is out for re-recovery; an already-minted `R-` row keeps the
+        // confidence the contract already depends on, since withdrawing a permanent
+        // criterion is `obsolete`'s decision to make and not this verb's.
+        if (target.id.startsWith("D-")) target.confidence = "open";
+        // The last request on a row wins: a second ruling that names it again with a
+        // different reason is a second, more recent account of what is wrong with it.
+        target.recoveryRequested = text;
+        break;
+      }
       case "defect": {
         target.reconciliation = "defect";
         target.confidence = "confirmed";

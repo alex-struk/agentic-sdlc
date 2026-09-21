@@ -15,7 +15,9 @@ a human or the persona bound to G1 rules on it.
 one of the names in `.sdlc/config.yaml`'s `project.domains`. The stage reads `sources/old` — a
 read-only checkout of the old application, cloned and pinned to the commit `config.sources.old`
 names, with every path in its `exclude` list already removed from the working tree before the
-agent session starts — plus `constitution.md`, `spec/`, and `intent/` for context. It never reads
+agent session starts — plus `constitution.md`, `spec/`, and `intent/` for context. It also reads
+`spec/recovery.yaml`, where a ratification ruling records the criteria in this domain that have to
+be recovered again and why (see "Recovering a criterion again" below). It never reads
 `sources/old/tests`, and never reads anything else outside `sources/old`.
 
 ## Outputs
@@ -71,6 +73,11 @@ archaeology reads stays exactly as read-only in practice as it is in name.
     `spec/domains/<d>.md` still matches the one `HEAD` had, compared field by field with each
     criterion's own `line` left out of the comparison. A revision may correct the criterion the
     returning ruling named; it may never alter or remove one already minted permanent.
+  - `archaeology-recovery` — no criterion this domain was told to recover again has come back
+    exactly as it went out. Every outstanding entry in `spec/recovery.yaml` for the domain names a
+    criterion and the evidence fields it held when it was sent back; the check fails, naming each
+    id and the reason it was sent back, if that criterion is still in the file with every one of
+    those fields identical. See "Recovering a criterion again" below.
   - Nothing changed outside `spec/`, checked against `git status --porcelain`.
   - In `--revise` mode only (`archaeology-revise-scope`): nothing changed outside
     `spec/domains/<d>.md` itself — narrower than the scope check above, which still allows a first
@@ -156,6 +163,37 @@ deleted by the pre-flight above or by the ordinary re-run cleanup — with the q
 revised `<d>` domain right where the return said it was wrong?" and a recommendation taken from the
 journal, the same way any other archaeology proposal's is.
 
+## Recovering a criterion again
+
+A ratification ruling can find that one criterion is not a record of the old application at all —
+its statement, its citations and its given/when/then describe behaviour the application does not
+have — while the rest of the domain is sound. That is not a return, which sends the whole proposal
+back and holds up every criterion in it; it is the single condition `recovery-wrong <ID>: <what the
+evidence actually shows>` (`docs/stages/ratify.md`), and `ratify` acts on it by minting the rest of
+the domain as usual and writing the criterion, the ruler's text and a fingerprint of the evidence
+the row held to `spec/recovery.yaml`.
+
+The next `sdlc run archaeology --domain <d>` — an ordinary run or a `--revise` one; both carry the
+same instruction — is given those entries in its prompt, each with the ruling's own words verbatim,
+and is told it is recovering those criteria again rather than discovering them. It reads the
+evidence in `sources/old` again and rewrites that criterion's statement, citations, given/when/then
+and confidence from what it finds, keeping the id. If the evidence turns out to support the row as
+it stands, the run records what was read and where in a `note` on the row rather than leaving it
+untouched.
+
+Untouched is what `archaeology-recovery` refuses. An entry stays outstanding while its criterion is
+still in the file with every recorded field identical, so a run that re-emits the row byte for byte
+fails its post-checks naming the criterion and the reason it was sent back — the stage looks as if
+it acted on the ruling, and nothing downstream would be able to tell that it had not. Any real
+change to the row — a corrected statement, a corrected citation, a note — answers the entry, and the
+criterion rejoins the ratification loop with whatever confidence the fresh recovery graded it. The
+entry itself is never deleted: it is the record that the request was made.
+
+A criterion sent back a second time, because the first re-recovery answered the wrong question, is a
+second entry against the same id. `ratify`'s journal says how many times a criterion has been sent
+back, which is what makes a row that keeps coming back unchanged legible as a problem rather than as
+routine.
+
 ## Failure modes
 
 - The domain's own proposal (`proposal/archaeology-<d>`) is still open: refused before a workspace
@@ -169,6 +207,9 @@ journal, the same way any other archaeology proposal's is.
 - The agent session itself fails to run, or reports failure (turn limit, an error result): handled
   the same way every stage's agent-turn failure is (`docs/stages/run.md`) — no post-checks run,
   the turn's own text becomes the journal entry, and `run` returns `{ ok: false }`.
+- A criterion the domain was told to recover again comes back with every recorded field identical:
+  `archaeology-recovery` fails the run, naming the criterion and the reason it was sent back (see
+  "Recovering a criterion again" above).
 - The agent writes no domain file, a domain file with a parse error or zero criteria, a domain
   file that mints an `R-` ID that is new relative to `HEAD`, touches a path outside `spec/`, or —
   in `--revise` mode — alters or removes an already-minted `R-` criterion, or touches any path
