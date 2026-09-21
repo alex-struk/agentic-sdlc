@@ -11,7 +11,7 @@ import { resume } from "../src/commands/resume.mjs";
 import { ruleByAgent } from "../src/commands/rule.mjs";
 import { stageFor } from "../src/stages/registry.mjs";
 import { applyConditions, conditionParses, parseDomainFile, criterionFingerprint, CONDITION_GRAMMAR } from "../src/spec/criteria.mjs";
-import { addRecovery, outstandingRecoveries, readRecovery, readRecoveryFor, recoveryRequestCount } from "../src/spec/recovery.mjs";
+import { addRecovery, answerRecoveries, outstandingRecoveries, readRecovery, readRecoveryFor, recoveryRequestCount } from "../src/spec/recovery.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -51,7 +51,7 @@ test("applyConditions: `recovery-wrong` marks the row, drops it to open, and lea
   assert.equal(c.statement, "a guard rejects the request", "the statement is untouched: there is nothing to rewrite it to yet");
   assert.equal(c.version, 1, "no version is minted for a row nobody has rewritten");
   assert.equal(c.confidence, "open", "a row whose evidence is under re-recovery cannot mint");
-  assert.equal(c.recoveryRequested, "the guard sits behind a check that is always false");
+  assert.deepEqual(c.recoveryRequests, ["the guard sits behind a check that is always false"]);
   assert.ok(c.notes.some((n) => n.startsWith("sent back for re-recovery: ")), c.notes.join(" | "));
 });
 
@@ -74,10 +74,10 @@ test("applyConditions: `recovery-wrong` on an already-minted criterion records t
   assert.ok(criteria[0].notes.some((n) => n.startsWith("sent back for re-recovery: ")));
 });
 
-test("a recovery request is outstanding until the criterion it names actually changes", () => {
+test("a recovery request is outstanding until an archaeology run answers it", () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-file-"));
   const c = criterion({ confidence: "open" });
-  const entry = { id: c.id, domain: "content", version: c.version, why: "the guard can never run", fingerprint: criterionFingerprint(c) };
+  const entry = { id: c.id, domain: "content", version: c.version, why: "the guard can never run" };
 
   assert.equal(addRecovery(tmp, [entry]), "spec/recovery.yaml");
   assert.equal(addRecovery(tmp, [entry]), null, "the same request is filed once, however often the ruling is replayed");
@@ -86,18 +86,37 @@ test("a recovery request is outstanding until the criterion it names actually ch
 
   const entries = readRecoveryFor(tmp, "content");
   assert.deepEqual(outstandingRecoveries(entries, [c]).map((e) => e.id), ["D-content-1"]);
-  // Any change to the evidence answers it: a corrected statement, a corrected citation, or
-  // a note recording that the evidence was read again and holds.
-  assert.deepEqual(outstandingRecoveries(entries, [{ ...c, notes: ["re-read src/x.js:4; the guard does run on the anonymous path"] }]), []);
-  assert.deepEqual(outstandingRecoveries(entries, [{ ...c, cites: [{ path: "src/y.js", line: 9 }] }]), []);
-  assert.deepEqual(outstandingRecoveries(entries, []), [], "a criterion the recovery removed answers its request by being gone");
 
-  // A second reason on the same row is a second request — the first re-recovery did not
-  // answer it — and only the latest is owed.
+  // Changing the row is not the answer, whoever changed it and for whatever reason: a
+  // `spike`'s note, an `edit`'s new statement and a corrected citation are all things that
+  // happen without anybody going back to the old application.
+  assert.equal(outstandingRecoveries(entries, [{ ...c, notes: ["spiked: is this in scope at all?"] }]).length, 1);
+  assert.equal(outstandingRecoveries(entries, [{ ...c, statement: "something else entirely", version: 2 }]).length, 1);
+  // A criterion the recovery removed is the one thing besides the stamp that ends a
+  // request: there is no row left to recover.
+  assert.deepEqual(outstandingRecoveries(entries, []), []);
+
+  // A second reason on the same row is a second request, and both are owed.
   addRecovery(tmp, [{ ...entry, why: "and the citation points at a file the release never shipped" }]);
   const both = readRecoveryFor(tmp, "content");
   assert.equal(recoveryRequestCount(both, "D-content-1"), 2);
-  assert.deepEqual(outstandingRecoveries(both, [c]).map((e) => e.why), ["and the citation points at a file the release never shipped"]);
+  assert.equal(outstandingRecoveries(both, [c]).length, 2);
+
+  // The stamp an archaeology run writes is what ends them, and it ends every request that
+  // was owed on the row it recovered.
+  const recovered = { ...c, version: 3, statement: "what the route actually does" };
+  assert.equal(answerRecoveries(tmp, ["D-content-1"], new Map([["D-content-1", recovered]])), "spec/recovery.yaml");
+  const after = readRecoveryFor(tmp, "content");
+  assert.deepEqual(after.map((e) => e.answered), [{ version: 3 }, { version: 3 }]);
+  assert.deepEqual(outstandingRecoveries(after, [recovered]), []);
+  assert.equal(recoveryRequestCount(after, "D-content-1"), 2, "an answered request stays on file as the record that it was made");
+  assert.equal(answerRecoveries(tmp, ["D-content-1"], new Map([["D-content-1", recovered]])), null, "nothing is rewritten once there is nothing left to stamp");
+
+  // A recovery that removed the row records that instead of a version.
+  const gone = { id: "D-content-9", domain: "content", version: 1, why: "this behaviour is not in the application at all" };
+  addRecovery(tmp, [gone]);
+  answerRecoveries(tmp, ["D-content-9"], new Map());
+  assert.deepEqual(readRecoveryFor(tmp, "content").find((e) => e.id === "D-content-9").answered, { removed: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -722,7 +741,8 @@ test("applyConditions: a ruling that both confirms and sends back the same crite
   // Contradictory conditions on one id are the persona's mistake, not the reader's, and
   // the last one wins — but whichever way it resolves it has to resolve the same way
   // every pass, or a criterion sent back on one run mints on the next with nothing
-  // changing in between.
+  // changing in between. The request is what decides: it is unanswered, so it still
+  // applies, and it still applies over the `confirm` that shares the ruling with it.
   const lines = ["confirm D-content-1", "recovery-wrong D-content-1: the guard sits behind a check that is always false"];
   const first = applyConditions([criterion()], lines).criteria;
   assert.equal(first[0].confidence, "open");
@@ -734,4 +754,256 @@ test("applyConditions: a ruling that both confirms and sends back the same crite
   const second = applyConditions(first, lines, filed).criteria;
   assert.equal(second[0].confidence, "open", "the request is still outstanding, so the row stays where it was put");
   assert.deepEqual(second[0].notes, first[0].notes);
+});
+
+// ---------------------------------------------------------------------------
+// What answers a request, and what does not. "Archaeology went back to the old
+// application for this row" is the fact; "the row reads differently now" is a
+// different one, and the two come apart the moment any other verb touches the row.
+// ---------------------------------------------------------------------------
+
+test("a criterion out for re-recovery stays out when another ruling edits or spikes it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-spiked-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    assert.equal((await runStage(dir, "archaeology", { domain: "applications" })).ok, true);
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    // One criterion goes back; the other is left unresolved, which is what keeps the
+    // closing loop running so there are follow-ups to rule at all.
+    await rule(dir, "archaeology-applications", "approve", "the fee criterion is not a record of this application; the age minimum is not settled either",
+      [CONDITION, "spike D-applications-1: is the age minimum still the policy, or inherited from the paper form?"]);
+    assert.equal((await runStage(dir, "ratify", { domain: "applications" })).ok, true);
+
+    // Two follow-ups that touch the sent-back row for reasons of their own. A spike adds
+    // its question as a note; an edit rewrites the statement and would ordinarily raise
+    // confidence to `confirmed`. Neither is anybody going back to the old application.
+    await rule(dir, "ratify-applications-1", "approve", "worth asking where the fee belongs, and still waiting on the age policy",
+      ["spike D-applications-2: does the fee belong to this domain or to fees?",
+        "spike D-applications-1: still waiting on the policy owner"]);
+    assert.equal((await runStage(dir, "ratify", { domain: "applications" })).ok, true);
+    await rule(dir, "ratify-applications-2", "approve", "the fee wording was loose either way, and the age minimum is still unanswered",
+      ["edit D-applications-2: When a permit application is accepted, the system shall calculate an intake fee for it.",
+        "spike D-applications-1: still waiting on the policy owner"]);
+    const r = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    const text = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const criteria = parseDomainFile(text, "applications").criteria;
+    const entries = readRecoveryFor(dir, "applications");
+    assert.equal(outstandingRecoveries(entries, criteria).length, 1,
+      "only an archaeology run answers a request; an edit or a spike on the row is not one");
+
+    const sentBack = criteria.find((c) => c.id === "D-applications-2");
+    // The edit's wording stands — the ruler said something true about the sentence — but
+    // the row must not reach the contract while its evidence is known to be wrong.
+    assert.match(sentBack.statement, /shall calculate an intake fee for it\.$/);
+    assert.equal(sentBack.confidence, "open");
+    assert.equal(sentBack.state, "proposed");
+    assert.ok(sentBack.notes.some((n) => n.startsWith("sent back for re-recovery: ")), sentBack.notes.join(" | "));
+    assert.ok(!sentBack.notes.includes("unresolved after two rulings"),
+      "a criterion waiting on archaeology is not answering follow-ups and must not be swept for it");
+
+    // The criterion beside it, asked twice and answered with a non-answer twice, is swept
+    // exactly as it always was: the bound still closes the loop on everything that is
+    // genuinely the ruler's to decide.
+    const spiked = criteria.find((c) => c.id === "D-applications-1");
+    assert.equal(spiked.state, "obsolete");
+    assert.ok(spiked.notes.includes("unresolved after two rulings"), spiked.notes.join(" | "));
+
+    assert.ok(stageFor("archaeology").prompt({ domain: "applications", projectDir: dir }).includes(WHY),
+      "the reason still reaches the stage that has to act on it");
+    assert.match(readFileSync(join(dir, ".sdlc/journal/004-ratify.md"), "utf8"), /out for re-recovery/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ratify: one ruling can send a criterion back for two separate reasons, and both are owed", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-two-reasons-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const whyB = "the citation points at the line that stores the record, not at anything that computes a fee";
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    assert.equal((await runStage(dir, "archaeology", { domain: "applications" })).ok, true);
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    await rule(dir, "archaeology-applications", "approve", "two separate things are wrong with the fee criterion",
+      [CONDITION, `recovery-wrong D-applications-2: ${whyB}`]);
+    assert.equal((await runStage(dir, "ratify", { domain: "applications" })).ok, true);
+
+    const entries = readRecoveryFor(dir, "applications");
+    assert.equal(entries.length, 2, "each reason is its own request; keeping only the last would leave the first unanswerable");
+    assert.deepEqual(entries.map((e) => e.why).sort(), [WHY, whyB].sort());
+    const text = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    assert.ok(text.includes(`- note: sent back for re-recovery: ${WHY}`), text);
+    assert.ok(text.includes(`- note: sent back for re-recovery: ${whyB}`), text);
+
+    const prompt = stageFor("archaeology").prompt({ domain: "applications", projectDir: dir });
+    assert.ok(prompt.includes(WHY) && prompt.includes(whyB), "the stage that has to redo the work is told both things");
+
+    // One recovery answers everything that was owed on the row it recovered, and the
+    // ruling then stops firing entirely — neither reason sends the row back a second time.
+    const recovered = withCriterionRecovered(text, {
+      confidence: "confirmed", note: "re-read src/routes.js:10: the stored fee is the permit type's own, and the README's fee table agrees",
+    });
+    assert.equal((await archaeologyWriting(dir, recovered, "Both readings corrected against the route.")).ok, true);
+    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [{ version: 2 }, { version: 2 }]);
+
+    await rule(dir, "archaeology-applications-2", "approve", "the fee criterion now matches the route and the fee table", []);
+    assert.equal((await runStage(dir, "ratify", { domain: "applications" })).ok, true);
+    const after = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    assert.match(after, /### R-1\.2 · v2 · confirmed · recovered/);
+    assert.ok(!after.includes("sent back for re-recovery"), after);
+    assert.equal(readRecoveryFor(dir, "applications").length, 2, "no third request is filed by a ruling that has been answered");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("archaeology: a run may not write the record of what was sent back", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-ledger-guard-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
+
+    // The session marks its own work done instead of doing it. The ledger is under
+    // `spec/`, which an archaeology run may otherwise write freely.
+    const unchanged = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const stamped = readFileSync(join(dir, "spec/recovery.yaml"), "utf8").replace(/\n$/, "\n    answered:\n      version: 1\n");
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", {
+      text: "## Journal\n\nNothing to change.",
+      files: { "spec/domains/applications.md": unchanged, "spec/recovery.yaml": stamped },
+    });
+
+    const r = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /spec\/recovery\.yaml records what was sent back/.test(m)), r.messages.join(" | "));
+    assert.ok(r.messages.some((m) => /D-applications-2 was sent back for re-recovery/.test(m)),
+      "and the criterion is still judged against HEAD's record, not against the one the run wrote");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("two domains can carry re-recovery requests at once without answering each other's", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-domains-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const feesWhy = "the quote page reads a rate table that this release does not ship; nothing computes a quote here";
+  const feesDomain = [
+    "# fees",
+    "",
+    "### D-fees-1 · v1 · inferred · recovered",
+    "When a visitor asks for a fee quote, the system shall calculate the quote from the applicant's age.",
+    "- cites: src/routes.js:10",
+    "- reconciliation: implemented-only",
+    "- given: a visitor on the fee quote page",
+    "- when: a quote is asked for",
+    "- then: a quote calculated from the applicant's age is shown",
+    "- state: proposed",
+    "",
+  ].join("\n");
+  try {
+    assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
+
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", {
+      text: "## Journal\n\nThe fees domain quotes a fee for a permit type.",
+      files: { "spec/domains/fees.md": feesDomain },
+    });
+    const feesRun = await runStage(dir, "archaeology", { domain: "fees" });
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    assert.equal(feesRun.ok, true, JSON.stringify(feesRun.messages));
+    await rule(dir, "archaeology-fees", "approve", "the quote criterion describes a page this release does not have", [`recovery-wrong D-fees-1: ${feesWhy}`]);
+    assert.equal((await runStage(dir, "ratify", { domain: "fees" })).ok, true);
+
+    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.id), ["D-applications-2"]);
+    assert.deepEqual(readRecoveryFor(dir, "fees").map((e) => e.id), ["D-fees-1"]);
+    assert.ok(!stageFor("archaeology").prompt({ domain: "applications", projectDir: dir }).includes(feesWhy),
+      "one domain's prompt never carries another domain's request");
+    assert.ok(stageFor("archaeology").prompt({ domain: "fees", projectDir: dir }).includes(feesWhy));
+
+    // Answering the fees domain leaves the applications request exactly where it was.
+    const recoveredFees = feesDomain.replace(
+      "When a visitor asks for a fee quote, the system shall calculate the quote from the applicant's age.",
+      "When a visitor asks for a fee quote, the system shall show the fee the chosen permit type carries.");
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", {
+      text: "## Journal\n\nThe quote comes from the permit type.",
+      files: { "spec/domains/fees.md": recoveredFees },
+    });
+    const revised = await runStage(dir, "archaeology", { domain: "fees" });
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    assert.equal(revised.ok, true, JSON.stringify(revised.messages));
+
+    assert.deepEqual(readRecoveryFor(dir, "fees").map((e) => e.answered), [{ version: 1 }]);
+    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [undefined]);
+    assert.ok(stageFor("archaeology").prompt({ domain: "applications", projectDir: dir }).includes(WHY));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("ratify reads a ruling whose gate file records no time, after the ones that do", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-no-at-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
+
+    // A gate file written by hand rather than by `sdlc rule` carries no `at`. It is read
+    // last, and its verdict still applies — a ruling nobody can date is not a ruling
+    // nobody made.
+    writeFileSync(join(dir, ".sdlc/gates/ratify-applications-1.yaml"),
+      "gate: G1\nverdict: approve\nby: product-owner\nheld_by: agent\nrationale: |2-\n  the age minimum is worth stating in full\nconditions:\n  - \"edit R-1.1: When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old on the day of submission.\"\n");
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "record a ruling made by hand"], dir);
+
+    const r = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.match(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), /at least 19 years old on the day of submission/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("archaeology --revise: a sent-back minted criterion may be rewritten, never removed", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-minted-removal-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const whyMinted = "the age comparison in the route is inside a branch the request never reaches, so no application is rejected for age";
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    assert.equal((await runStage(dir, "archaeology", { domain: "applications" })).ok, true);
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    await rule(dir, "archaeology-applications", "approve", "the age minimum is evidenced twice; the fee is not settled", []);
+    assert.equal((await runStage(dir, "ratify", { domain: "applications" })).ok, true);
+    await rule(dir, "ratify-applications-1", "approve", "the age minimum does not survive a second reading of the route", [`recovery-wrong R-1.1: ${whyMinted}`]);
+    assert.equal((await runStage(dir, "ratify", { domain: "applications" })).ok, true);
+    await rule(dir, "ratify-applications-2", "return", "the fee criterion has no evidence behind it either", []);
+
+    const withMinted = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const withoutMinted = withMinted.slice(withMinted.indexOf("### D-applications-2"));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", {
+      text: "## Journal\n\nThe age behaviour is not in the application, so the criterion is gone.",
+      files: { "spec/domains/applications.md": `# applications\n\n${withoutMinted}` },
+    });
+
+    const r = await runStage(dir, "archaeology", { domain: "applications", revise: true });
+    assert.equal(r.ok, false, "a permanent id the contract and its tests point at is not a recovery's to delete");
+    assert.ok(r.messages.some((m) => /R-1\.1 is missing; a revision may not remove an already-minted criterion/.test(m)), r.messages.join(" | "));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
 });

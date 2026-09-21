@@ -72,9 +72,9 @@ that domain's own `ratify --domain <other>` to pick up instead. The journal name
   other's permanent ids, not a provisional one that no longer exists anywhere in the file once the
   pass is done.
 - `spec/recovery.yaml`, when a condition ruled `recovery-wrong <ID>: <text>`: one entry per
-  criterion sent back to be recovered again, carrying the id, the domain, the version the row was
-  at, the ruler's text verbatim, and a fingerprint of the evidence the row held when it went out —
-  its statement, citations, given/when/then, confidence, reconciliation class and notes. The row
+  reason a criterion was sent back to be recovered again, carrying the id, the domain, the version
+  the row was at and the ruler's text verbatim. One ruling naming a criterion twice, for two
+  different things wrong with it, files two entries, and each is owed its own answer. The row
   itself stays in the domain file, keeps its provisional id, gains a `note: sent back for
   re-recovery: <text>`, and — while it is provisional — drops to `open`, so it cannot mint a
   permanent id while the evidence under it is being recovered again. Nothing else in the domain
@@ -84,25 +84,34 @@ that domain's own `ratify --domain <other>` to pick up instead. The journal name
   permanent id, since withdrawing a criterion the contract already depends on is what `obsolete`
   and `defect` are for. `sdlc run archaeology --domain <d>` is what acts on the file
   (`docs/stages/archaeology.md`, "Recovering a criterion again").
-- An entry is never removed. It is *outstanding* — still owed work — only while the criterion it
-  names is still in the domain file and still matches the fingerprint it was sent back with, so a
-  criterion that has been recovered again answers its own entry by no longer being the row that
-  went out.
-- That is also what stops the ruling firing twice. A gate file is never consumed: every approved
-  ruling is read again on every pass, so a `recovery-wrong` condition would otherwise re-push its
-  note, drop the row back to `open` and restore the very fingerprint that says the work is still
-  owed — undoing the recovery that answered it, and failing the next `archaeology` run's
-  `archaeology-recovery` check for work that stage had already done. So the condition applies only
-  while its own request is still outstanding: a request on file whose fingerprint no longer matches
-  the row has been answered, and the condition does nothing from then on. A later ruling naming the
-  same criterion with a *different* reason is a new request and is filed as one.
+- An entry is never removed, and only an `archaeology` run ends one: when a run for the domain
+  passes every check, it stamps each request it was owed with the version the criterion came back
+  at, or with the fact that the recovery removed the row (`docs/stages/archaeology.md`). Until that
+  stamp is there the request is *outstanding*, however the row itself may have changed in the
+  meantime — an `edit`'s new statement or a `spike`'s note is not somebody going back to the old
+  application, and reading a difference as the answer would retire a request whose work was never
+  done. The one other way a request stops being outstanding is the criterion leaving the domain
+  file altogether: there is then no row to recover.
+- The stamp is also what stops the ruling firing twice. A gate file is never consumed: every
+  approved ruling is read again on every pass, so a `recovery-wrong` condition would otherwise
+  re-push its note onto a row that had already been recovered and drop it back to `open`, putting a
+  criterion back in a queue it had left. A condition whose own request carries a stamp does nothing
+  at all. A later ruling naming the same criterion with a *different* reason is a new request and
+  is filed as one.
+- A provisional criterion with an outstanding request against it is not promoted, whatever else a
+  ruling says about it. `confirm` and `edit` both raise confidence to `confirmed`, which is what
+  makes a row eligible to mint, so a ruling that reworded a row somebody else had already sent back
+  would otherwise put a criterion whose evidence is known to be wrong into the permanent contract.
+  The wording change stands; the promotion waits for the recovery, which is the only thing that can
+  settle whether there is anything there to promote. An already-minted `R-` criterion is untouched
+  by this: taking a permanent criterion out of the contract is `obsolete`'s ruling to make.
 - Applying the same gate-file conditions again, on a domain that still has some other `D-`
   criterion left in it (see "Re-run behaviour"), changes nothing further: every verb `applyConditions`
   applies checks the row it targets before acting — a note is pushed only if the row does not
   already carry it, `edit` bumps the version only when the statement actually differs, `defect`
   appends a replacement only when no criterion already carries `replaces` naming that target with
   that exact corrected text, and `recovery-wrong` files nothing and touches nothing once the
-  criterion it named has stopped matching the request already on file.
+  request it carries has been answered.
 - `spec/criteria-index.json` and `spec/spec.md`, regenerated from every domain file in the project
   (`writeIndex`, `renderSpecIndex`), not only the one this run touched — and regenerated on every
   run, including one that finds this domain already ratified, since both are derived from files
@@ -242,8 +251,11 @@ A criterion out for re-recovery is outside the loop while it is out. It is not l
 follow-up — the question it is waiting on is one for the old application's source, not one this
 persona can answer by ruling again — and it is not counted toward the loop bound below, which would
 otherwise mark it `obsolete` for failing to resolve through two follow-ups it was never asked about.
-Once `archaeology` has recovered it again, it is an ordinary criterion with whatever confidence that
-recovery graded it, and the next pass asks about it like any other.
+The exemption is exactly as wide as the outstanding request: it ends when an `archaeology` run
+answers that request, and nothing else ends it. Once the row has been recovered again it is an
+ordinary criterion with whatever confidence that recovery graded it, the next pass asks about it
+like any other, and the bound reaches it like any other. Every criterion beside it in the same
+domain is swept, asked and minted exactly as it would be if nothing had ever been sent back.
 
 **The loop bound.** `contract` and `spike` both answer a follow-up without ever resolving it —
 `contract` changes nothing at all, and `spike` only records a question — so a persona that keeps

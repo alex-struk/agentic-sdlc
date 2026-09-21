@@ -26,9 +26,9 @@ criteria frozen behind one, for as long as the one takes.
 
 **Decision.** The ratification grammar gains `recovery-wrong <ID>: <what the evidence actually
 shows>`. `ratify` applies it by recording the request — on the row as a note, and in
-`spec/recovery.yaml` as an entry carrying the id, the domain, the version, the ruler's text verbatim
-and a fingerprint of the evidence the row held — and by dropping a provisional row to `open` so it
-cannot mint a permanent id while it is out. Everything else in the domain ratifies in the same pass.
+`spec/recovery.yaml` as an entry carrying the id, the domain, the version and the ruler's text
+verbatim — and by dropping a provisional row to `open` so it cannot mint a permanent id while it is
+out. Everything else in the domain ratifies in the same pass.
 The next `archaeology` run for the domain is given the entries and the reasons in its prompt and
 recovers those criteria again.
 
@@ -56,33 +56,42 @@ sound. A return is still right when the recovery is wrong broadly — the wrong 
 several criteria have no evidence, what came back is not usable — because then there is no sound
 remainder to release and a whole-domain revision is what is actually needed.
 
-## 2 — An entry is answered by the criterion changing, not by anything clearing it
+## 2 — Only an archaeology run answers a request, and it records that it did
 
-**Decision.** Nothing removes an entry from `spec/recovery.yaml`. An entry is outstanding — still
-owed work — only while the criterion it names is still in the domain file and still matches the
-fingerprint it was sent back with: its statement, citations, given/when/then, confidence,
-reconciliation class and notes.
+**Decision.** A request on `spec/recovery.yaml` is outstanding until an `archaeology` run for its
+domain passes every check and stamps it with the version the criterion came back at — or with the
+fact that the recovery removed the row. The stamp is written by the runner, after the checks have
+judged the tree, in the same place and for the same reason `derive-tests` clears the redo entries it
+has answered. Nothing is ever removed from the ledger: an answered request stays on it as the record
+that it was made.
 
-**Why not a bookkeeping pass.** Any stage that clears entries can fail to clear one, clear one
-early, or be skipped, and every such bug is silent. Deriving the state from the criterion itself
-cannot drift from the criterion.
+**Why the stage records it rather than the criterion implying it.** The fact that matters is
+"somebody went back to the old application for this row". The nearest thing a criterion can show is
+"this row reads differently from when it was sent back", and the two come apart the moment any other
+verb touches the row. A `spike` adds its question as a note; an `edit` rewrites the statement;
+either changes the row without anyone having read a line of the old application. Treat that as the
+answer and the request disappears: the reason stops reaching the stage that has to act on it, the
+criterion rejoins the closing loop, and the loop's own bound then marks it `obsolete` for failing to
+resolve. A criterion known to be wrongly recovered would leave the contract, its correction never
+made, with no error anywhere — the worst outcome this verb can produce, reached by an ordinary
+ruling.
 
-**The same rule decides whether the condition still applies at all.** A gate file is never
-consumed: `ratify` re-reads every approved ruling on every pass, so a condition is an instruction
-that fires again each time. For every other verb that is harmless, because each one checks the row
-before acting and a second application is a no-op. `recovery-wrong` is not like them, because the
-work it asks for is done somewhere else and lands after the ruling: re-applying it would push its
-note back onto a row that had been recovered again, drop that row to `open`, and restore the exact
-fingerprint that says the work is still owed — which would then fail the next recovery run's own
-check for work that run had already done. So the condition applies only while its own request is
-still outstanding. Once the criterion has stopped matching the request filed with it, the condition
-does nothing, for good. A later ruling naming the same criterion with a different reason is a
-different request and is filed as one; the same reason twice is the same request and is filed once.
+**Why the session cannot write it.** The ledger is under `spec/`, which an archaeology run may
+otherwise write freely, so a run could stamp its own requests and skip the work. It is refused:
+changing `spec/recovery.yaml` fails `archaeology-recovery`, the requests a run is judged against are
+read from the ledger as `HEAD` holds it, and whether a criterion came back changed is decided by
+comparing `HEAD`'s row with the working tree's. Like `tests/acceptance/redo.yaml`, this file is the
+pipeline's bookkeeping and not part of what the agent is judged on.
 
-**Why the whole evidence set and not just the statement.** A re-recovery can conclude that the row
-was right — rarely, but it happens, and it must be able to say so. Fingerprinting the notes as well
-means "I read the migration again and it does say this; here is the line" is a real answer that
-resolves the entry, while changing nothing at all is not.
+**Why the stamp rather than deleting the entry.** A criterion sent back twice is the signal that a
+re-recovery did not answer the question, and a ledger that forgets cannot show it. Keeping every
+request, answered or not, is also what makes a replayed ruling free: a `recovery-wrong` line read
+again on a later pass finds its own request already filed, and a request already answered does
+nothing at all.
+
+**Why a request is per reason.** One ruling can name the same criterion twice for two different
+things wrong with it. Each reason is its own request: the stage that has to redo the work is told
+both, and one recovery answers everything that was owed on the row it recovered.
 
 ## 3 — A criterion out for re-recovery leaves the closing loop while it is out
 
@@ -98,17 +107,29 @@ wave-through the persona's brief forbids. Worse, the bound would eventually mark
 answer questions nobody asked it.
 
 The exemption is exactly as wide as the outstanding request and no wider. It is computed from the
-entries the criteria still match, plus whatever this pass is filing, so it lifts the moment the
-recovery comes back: the criterion is then an ordinary unresolved row, the follow-up asks about it,
-and the bound can reach it. An exemption keyed to "was ever sent back" instead would disable the
-pipeline's only termination guarantee for that criterion permanently, and a loop that cannot close
-is a worse failure than the one this route exists to fix.
+unanswered entries plus whatever this pass is filing, so it lifts when the recovery comes back and
+at no other moment: the criterion is then an ordinary unresolved row, the follow-up asks about it,
+and the bound can reach it. An exemption keyed to "was ever sent back" would disable the pipeline's
+only termination guarantee for that criterion permanently, and a loop that cannot close is a worse
+failure than the one this route exists to fix.
+
+**A criterion is not promoted while it is out, either.** `confirm` and `edit` both raise confidence
+to `confirmed`, which is what makes a row eligible for a permanent id, so a ruling that reworded a
+row already sent back would put evidence known to be wrong into the contract. The wording change
+stands and the promotion waits: whether there is anything here to promote is exactly what the
+recovery is being asked.
 
 ## 4 — A criterion that comes back unchanged fails the run that returned it
 
-**Decision.** `archaeology`'s post-checks include `archaeology-recovery`: a run for a domain that
-still carries an outstanding entry — the criterion is in the file, and every recorded field is
-identical — fails, naming the criterion and the reason it was sent back.
+**Decision.** `archaeology`'s post-checks include `archaeology-recovery`: a run that leaves a
+criterion it was asked to recover exactly as `HEAD` had it — same statement, citations,
+given/when/then, confidence, reconciliation class and notes — fails, naming the criterion and every
+reason it was sent back.
+
+**Why against `HEAD` rather than against the row as the request recorded it.** The question is
+whether *this run* went back to the old application for the criterion. A row that some later `edit`
+or `spike` has moved is still a row nobody has recovered, and judging it against what the request
+recorded would let such a run pass without the session touching it.
 
 **Why a failure rather than a note.** The failure this route exists to prevent has already happened
 once by another road: a stage was told to redo a criterion, re-emitted the domain file byte for

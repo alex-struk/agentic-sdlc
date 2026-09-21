@@ -1,26 +1,31 @@
-// `spec/recovery.yaml` — `{ recovery: [{ id, domain, version, why, fingerprint }] }`, the
-// list of criteria a ratification ruling sent back to be recovered again. `ratify` adds an
-// entry when the product owner rules `recovery-wrong <ID>` (the row does not record what
-// the old application does, so there is no statement to edit), and the next `archaeology`
-// run for that domain reads the entries into its prompt and is judged against them. Both
-// sides go through this module so the file's shape is written and read in one place.
+// `spec/recovery.yaml` — `{ recovery: [{ id, domain, version, why, answered? }] }`, the
+// ledger of criteria a ratification ruling sent back to be recovered again. `ratify` adds
+// an entry when the product owner rules `recovery-wrong <ID>` (the row does not record
+// what the old application does, so there is no statement to edit), and the next
+// `archaeology` run for that domain reads the entries into its prompt, is judged against
+// them, and — once every one of its checks has passed — records on each one that it
+// answered it. Both sides go through this module so the file's shape is written and read
+// in one place.
 //
 // It sits beside `tests/acceptance/redo.yaml` (`src/spec/redo.mjs`) and
 // `tests/adapters/rebind.yaml` (`src/spec/rebind.mjs`) in kind: a ruling that has to be
 // carried out by a stage other than the one that received it, handed over as a file rather
-// than as a condition the receiving stage cannot execute. It lives under `spec/` because
-// the stage that acts on it may write nowhere else.
+// than as a condition the receiving stage cannot execute. Like those two it is the
+// pipeline's own bookkeeping and never an agent's to write — `archaeology` refuses a run
+// that touched it, and the entry an `archaeology` run answers is stamped by the runner
+// after the checks have judged the tree.
 //
-// Nothing ever removes an entry. An entry is *outstanding* — still owed work — only while
-// the criterion it names is still exactly the criterion that was sent back, measured by
-// `criterionFingerprint`. Once archaeology has recovered the row again, the fingerprint no
-// longer matches and the entry is answered by that fact alone, with no bookkeeping pass to
-// forget and no window in which a replayed ruling could file the same request twice.
+// Nothing is ever removed. A request is outstanding — still owed work — until an
+// archaeology run has answered it, and the stamp saying so is the only thing that ends
+// that. "The row is different from when it was sent back" is a weaker fact that is easy to
+// mistake for this one and comes apart from it: an ordinary `spike` or `edit` changes the
+// row without anybody having gone back to the old application, and a request retired that
+// way would take a criterion known to be wrongly recovered out of the queue with its
+// correction never made and nothing reporting it.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
-import { criterionFingerprint } from "./criteria.mjs";
 
 export const RECOVERY_PATH = "spec/recovery.yaml";
 
@@ -34,8 +39,14 @@ function recoveryFile(projectDir) {
 export function readRecovery(projectDir) {
   const p = recoveryFile(projectDir);
   if (!existsSync(p)) return [];
+  return entriesIn(readText(p));
+}
+
+// The ledger as one text holds it — the working tree's, or `HEAD`'s, read with `git show`
+// by a caller that needs to know what the run it is judging actually started from.
+export function entriesIn(text) {
   let parsed;
-  try { parsed = parseYaml(readText(p)); } catch { return []; }
+  try { parsed = parseYaml(text); } catch { return []; }
   return Array.isArray(parsed?.recovery) ? parsed.recovery : [];
 }
 
@@ -54,13 +65,12 @@ export function readRecoveryFor(projectDir, domain) {
 export function addRecovery(projectDir, entries) {
   if (!entries.length) return null;
   const list = readRecovery(projectDir);
-  const seen = new Set(list.map((e) => `${e?.id}\n${e?.why}`));
+  const seen = new Set(list.map(keyOf));
   let added = false;
   for (const entry of entries) {
-    const key = `${entry.id}\n${entry.why}`;
-    if (seen.has(key)) continue;
+    if (seen.has(keyOf(entry))) continue;
     list.push(entry);
-    seen.add(key);
+    seen.add(keyOf(entry));
     added = true;
   }
   if (!added) return null;
@@ -68,27 +78,53 @@ export function addRecovery(projectDir, entries) {
   return RECOVERY_PATH;
 }
 
-// The entries still owed work, given the criteria as they stand now: the criterion is still
-// in the domain file and is still, field for field, the one that was sent back. A criterion
-// recovered again answers its entry by being different; one the recovery removed entirely
-// answers it by being gone. At most one entry per id is returned — the most recently filed
-// one — since a criterion sent back twice is one criterion out for re-recovery, and the
-// latest reason is the one that describes what is wrong with it now.
+// An entry's identity: the criterion it names and the reason it was sent back for. Two
+// reasons filed against one criterion are two requests, and each one is owed its own
+// answer.
+export function keyOf(entry) {
+  return `${entry?.id}\n${entry?.why}`;
+}
+
+// True when this request has been answered — an archaeology run carried it out and stamped
+// it. Nothing else sets this, and no amount of change to the criterion itself does.
+export function isAnswered(entry) {
+  return entry?.answered !== undefined && entry?.answered !== null;
+}
+
+// The requests still owed work, given the criteria as they stand: unanswered, and naming a
+// criterion that is still in the domain file. A criterion a recovery removed altogether is
+// not owed a re-recovery — there is no row to recover and nothing to ask the stage for —
+// which is the one way besides the stamp that a request stops being outstanding, and it is
+// a fact about the domain file rather than about any one field in it.
 export function outstandingRecoveries(entries, criteria) {
-  const byId = new Map(criteria.map((c) => [c.id, c]));
-  const latest = new Map();
-  for (const entry of entries) {
-    const c = byId.get(entry?.id);
-    if (!c || criterionFingerprint(c) !== entry.fingerprint) continue;
-    latest.set(entry.id, entry);
+  const ids = new Set(criteria.map((c) => c.id));
+  return entries.filter((e) => !isAnswered(e) && ids.has(e?.id));
+}
+
+// Records, on every request `ids` names, that an archaeology run answered it: the version
+// the criterion came back at, or that the recovery removed the row. Called by the
+// `archaeology` stage itself once every one of its checks has passed — the runner writes
+// this, never the agent, and only for a run that has already been judged to have recovered
+// the rows it was asked about. Returns the project-relative path when the file was written.
+export function answerRecoveries(projectDir, ids, criteriaById) {
+  const wanted = new Set(ids);
+  if (!wanted.size || !existsSync(recoveryFile(projectDir))) return null;
+  const list = readRecovery(projectDir);
+  let stamped = false;
+  for (const entry of list) {
+    if (isAnswered(entry) || !wanted.has(entry?.id)) continue;
+    const c = criteriaById.get(entry.id);
+    entry.answered = c ? { version: c.version } : { removed: true };
+    stamped = true;
   }
-  return [...latest.values()];
+  if (!stamped) return null;
+  writeText(recoveryFile(projectDir), stringifyYaml({ recovery: list }));
+  return RECOVERY_PATH;
 }
 
 // How many times a criterion has been sent back, counting every request ever filed for it
-// rather than only the outstanding one. A second request on the same row is what says a
-// re-recovery did not answer the first, so it is worth reporting even though only the
-// latest one is owed.
+// rather than only the outstanding ones. A second request on the same row is what says a
+// re-recovery did not answer the first, so it is worth reporting even after it is answered.
 export function recoveryRequestCount(entries, id) {
   return entries.filter((e) => e?.id === id).length;
 }

@@ -582,9 +582,9 @@ export function applyCalibrateRulings(criteria, conditions, today) {
 // and nothing that moves for an unrelated reason — the id (`ratify` may mint it), the
 // version counter and the criterion's line number in the file are all left out.
 //
-// `spec/recovery.yaml` (`src/spec/recovery.mjs`) stores this for a criterion at the moment
-// it was sent back, which is what lets the next `archaeology` run tell a row that was
-// recovered again from one that came back exactly as it went out. Fields are listed
+// `archaeology` compares this across a run — the row as `HEAD` had it against the row the
+// run leaves behind — which is what tells a criterion that was recovered again from one
+// that came back exactly as it went out. Fields are listed
 // explicitly rather than serialised wholesale so two rows that say the same thing
 // fingerprint the same regardless of which pass built them.
 export function criterionFingerprint(c) {
@@ -645,18 +645,12 @@ export const RECOVERY_NOTE_PREFIX = "sent back for re-recovery: ";
 // value, or changing nothing, twice is still just that value); the rest check first.
 // `filed` is every re-recovery request already on `spec/recovery.yaml` for this domain
 // (`readRecovery`), which is what tells a `recovery-wrong` condition that has already been
-// carried out from one still waiting. A caller with none — every caller but `ratify`, and
-// every domain nothing has ever been sent back from — passes nothing and the verb behaves
-// as it does the first time it is read.
+// carried out from one still waiting: a request carries a stamp once an archaeology run has
+// answered it, and nothing else sets that. A caller with none — every caller but `ratify`,
+// and every domain nothing has ever been sent back from — passes nothing and the verb
+// behaves as it does the first time it is read.
 export function applyConditions(criteria, conditions, filed = []) {
   const out = criteria.map((c) => ({ ...c, notes: [...(c.notes ?? [])] }));
-  // Each criterion as it arrived, before any condition in this pass touched it — which is
-  // the state a filed re-recovery request is comparing against, since a request records
-  // the row as it was written to the domain file at the end of the pass that filed it.
-  // Taken here rather than read off the row when the condition is applied, so another
-  // condition in the same ruling cannot change the answer to "is this still the row that
-  // was sent back?" and make the verb behave differently on two passes over one ruling.
-  const arrivedAs = new Map(out.map((c) => [c.id, criterionFingerprint(c)]));
   const byId = new Map(out.map((c) => [c.id, c]));
   const additions = [];
   const applied = [];
@@ -714,17 +708,15 @@ export function applyConditions(criteria, conditions, filed = []) {
         // `archaeology` picks the work up from (`src/spec/recovery.mjs`).
         //
         // A ruling is read again on every pass — a gate file is never consumed — so this
-        // verb has to know when its own work is done. It is done exactly when the request
-        // has been filed and the criterion is no longer the one that was filed with it:
-        // archaeology has recovered the row again, and re-applying the condition would
-        // undo that recovery, push the note back on, drop the row to `open` again and
-        // restore the very fingerprint that says the work is still owed. So a request
-        // already on file whose fingerprint no longer matches the row is answered, and the
-        // condition does nothing at all from then on. A request on file that still matches
-        // is still outstanding, and re-applying it is the no-op it was the first time.
-        const requests = filed.filter((e) => e?.id === target.id && e?.why === text);
-        const answered = requests.length > 0 && !requests.some((e) => e.fingerprint === arrivedAs.get(target.id));
-        if (answered) break;
+        // verb has to know when its own work is done. It is done when an archaeology run
+        // has answered the request and stamped it (`answerRecoveries`,
+        // `src/spec/recovery.mjs`): re-applying the condition then would push the note back
+        // onto a row that had been recovered again, drop it to `open`, and put it back in a
+        // queue it has already left. Anything short of that stamp leaves the request
+        // outstanding, including a row some other verb has since changed — an `edit` or a
+        // `spike` on this criterion is not somebody going back to the old application, and
+        // reading it as the answer would retire a request whose work was never done.
+        if (filed.some((e) => e?.id === target.id && e?.why === text && e?.answered != null)) break;
         const note = `${RECOVERY_NOTE_PREFIX}${text}`;
         if (!target.notes.includes(note)) target.notes.push(note);
         // A provisional row is dropped to `open` so it cannot mint a permanent id while
@@ -732,9 +724,11 @@ export function applyConditions(criteria, conditions, filed = []) {
         // confidence the contract already depends on, since withdrawing a permanent
         // criterion is `obsolete`'s decision to make and not this verb's.
         if (target.id.startsWith("D-")) target.confidence = "open";
-        // The last request on a row wins: a second ruling that names it again with a
-        // different reason is a second, more recent account of what is wrong with it.
-        target.recoveryRequested = text;
+        // A list, not a field: one ruling may name the same criterion twice, for two
+        // different things wrong with it, and each reason is its own request owed its own
+        // answer. Keeping only the last would leave the first filed nowhere, unanswerable,
+        // and able to send the row back again after a recovery had already dealt with it.
+        target.recoveryRequests = [...(target.recoveryRequests ?? []), text].filter((t, i, all) => all.indexOf(t) === i);
         break;
       }
       case "defect": {

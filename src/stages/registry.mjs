@@ -18,7 +18,7 @@ import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, ch
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { readRebindFor } from "../spec/rebind.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId, criterionFingerprint } from "../spec/criteria.mjs";
-import { addRecovery, readRecoveryFor, outstandingRecoveries, recoveryRequestCount } from "../spec/recovery.mjs";
+import { RECOVERY_PATH, addRecovery, answerRecoveries, entriesIn, outstandingRecoveries, readRecoveryFor, recoveryRequestCount } from "../spec/recovery.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
@@ -300,7 +300,7 @@ function checkArchaeologyRevisionKeepsMinted(projectDir, ctx) {
   // below: the contract, its tests and any criterion that replaces it all point at that
   // permanent id, and re-recovering a behaviour is not the same as deciding it should not
   // be carried forward, which is `obsolete`'s ruling to make.
-  const sentBack = new Set(outstandingRecoveries(readRecoveryFor(projectDir, ctx.domain), before).map((e) => e.id));
+  const sentBack = new Set(recoveryAtHead(projectDir, ctx.domain).outstanding.map((e) => e.id));
   const strip = (c) => JSON.stringify({ ...c, line: undefined });
   const beforeById = new Map(before.filter((c) => c.id.startsWith("R-")).map((c) => [c.id, strip(c)]));
   const afterIds = new Set(after.filter((c) => c.id.startsWith("R-")).map((c) => c.id));
@@ -368,20 +368,83 @@ function recoveryPromptBlock(ctx) {
   ];
 }
 
+// What this run was told to recover, read as the run started rather than as it ends: the
+// ledger and the domain file as `HEAD` holds them. Every judgement about a re-recovery is
+// made against this — which requests were owed, and what the rows looked like before the
+// session touched anything — so neither the agent's own edits nor the stamp the runner
+// writes afterwards can change the answer to a question about what this run was asked for.
+// A project with no ledger, or a domain file `HEAD` does not have yet, is owed nothing.
+function recoveryAtHead(projectDir, domain) {
+  if (!domain) return { outstanding: [], byId: new Map() };
+  let ledger = [];
+  try { ledger = entriesIn(git(["show", `HEAD:${RECOVERY_PATH}`], projectDir)); } catch { ledger = []; }
+  let criteria = [];
+  try { ({ criteria } = parseDomainFile(git(["show", `HEAD:spec/domains/${domain}.md`], projectDir), domain)); } catch { criteria = []; }
+  return {
+    outstanding: outstandingRecoveries(ledger.filter((e) => e?.domain === domain), criteria),
+    byId: new Map(criteria.map((c) => [c.id, c])),
+  };
+}
+
+// The criteria in the domain file as it stands now, by id.
+function criteriaNow(projectDir, domain) {
+  const file = join(projectDir, "spec", "domains", `${domain}.md`);
+  if (!existsSync(file)) return new Map();
+  return new Map(parseDomainFile(readText(file), domain).criteria.map((c) => [c.id, c]));
+}
+
 // A criterion sent back for re-recovery has to come back different. `recovery-wrong` is
 // the one ratification verb whose work is done by another stage, and the failure it exists
 // to prevent is that stage quietly re-emitting the row it was asked to correct: the
 // evidence stays wrong, the ruling looks acted on, and the next ratify pass has nothing new
-// to read. So a run for a domain that still carries an outstanding request — the criterion
-// is in the file and every field the request recorded is still identical — fails here,
-// naming the criterion and the reason it was sent back. Amending the row is what answers
-// it, whether that means a corrected statement and citations or a note recording that the
-// evidence was read again and holds.
+// to read. So a run that leaves a criterion it was asked to recover exactly as `HEAD` had
+// it fails here, naming the criterion and every reason it was sent back. Amending the row
+// is what answers it, whether that means a corrected statement and citations or a note
+// recording that the evidence was read again and holds; removing the row answers it too,
+// since there is then nothing left to recover.
+//
+// Measured against `HEAD` rather than against the row as the request recorded it, because
+// the question is whether THIS run recovered the criterion — a row some later `spike` or
+// `edit` moved is still a row nobody has been back to the old application for.
+//
+// The ledger itself is the pipeline's own bookkeeping, like `tests/acceptance/redo.yaml`,
+// and a run that wrote to it is refused: the stamp that answers a request is the runner's
+// to write, after these checks have judged the tree, and a session that could write it
+// itself could mark its own work done without doing it.
 function checkArchaeologyRecovery(projectDir, ctx) {
   const id = "archaeology-recovery";
-  const messages = outstandingFor(projectDir, ctx.domain).map((e) =>
-    `${e.id} was sent back for re-recovery (${e.why}) and came back unchanged; recover it again from sources/old, or record on the row itself what the evidence shows and why it stands`);
+  if (!ctx.domain) return { id, ok: true, messages: [] };
+  const messages = [];
+  if (changedPaths(projectDir).includes(RECOVERY_PATH))
+    messages.push(`${RECOVERY_PATH} records what was sent back for re-recovery and is not a run's to write; recover the criteria it names instead`);
+  const { outstanding, byId } = recoveryAtHead(projectDir, ctx.domain);
+  const now = criteriaNow(projectDir, ctx.domain);
+  const whysById = new Map();
+  for (const e of outstanding) whysById.set(e.id, [...(whysById.get(e.id) ?? []), e.why]);
+  for (const [cid, whys] of whysById) {
+    const was = byId.get(cid);
+    const is = now.get(cid);
+    if (!was || !is || criterionFingerprint(was) !== criterionFingerprint(is)) continue;
+    messages.push(`${cid} was sent back for re-recovery (${whys.join("; ")}) and came back unchanged; recover it again from sources/old, or record on the row itself what the evidence shows and why it stands`);
+  }
   return { id, ok: messages.length === 0, messages };
+}
+
+// Records on every request this run was owed that it answered it, and at what version the
+// criterion came back — or that the recovery removed the row. This is the only thing that
+// ends a request, and it is written by the stage rather than inferred from the criterion,
+// because "archaeology has been back to the old application for this row" is a fact about a
+// run and not about how the row happens to read now.
+//
+// Runs only when every check passed, for the reason `clearDeriveTestsRedo` runs where it
+// does: a failing run commits nothing of the agent's work, and a request it did not answer
+// has to still be owed on the next attempt. `checkArchaeologyRecovery` has already refused
+// a run that left any of these rows untouched, so a stamp is only ever written over work
+// that was actually done.
+function answerArchaeologyRecoveries(projectDir, domain) {
+  const { outstanding } = recoveryAtHead(projectDir, domain);
+  if (!outstanding.length) return;
+  answerRecoveries(projectDir, outstanding.map((e) => e.id), criteriaNow(projectDir, domain));
 }
 
 // `archaeology` recovers one business domain's behaviour from the old application,
@@ -447,7 +510,7 @@ const archaeology = {
     return [...cheap, checkRevisionSource(projectDir, ctx)];
   },
   postChecks(projectDir, ctx) {
-    return [
+    const checks = [
       checkCriteria(projectDir, ctx),
       checkDomainFileParses(projectDir, ctx.domain, "archaeology-domain-file"),
       checkArchaeologyNoMintedIds(projectDir),
@@ -456,6 +519,13 @@ const archaeology = {
       checkArchaeologyScope(projectDir),
       checkArchaeologyRevisionScope(projectDir, ctx),
     ];
+    // Written after the checks have judged the tree, and only when they all passed — the
+    // same place and the same reasoning as `derive-tests`' own clearing of the requests it
+    // has answered. Doing it here rather than in a check keeps every check a judgement on
+    // what the run produced, and keeps the record of what was answered out of the reach of
+    // the session whose work it describes.
+    if (checks.every((c) => c.ok)) answerArchaeologyRecoveries(projectDir, ctx.domain);
+    return checks;
   },
 };
 
@@ -2018,14 +2088,25 @@ const ratify = {
     // the loop's own bound, which would otherwise force-obsolete a row whose correction
     // is still being recovered. Two sets, and only two: the requests on file that the
     // criteria still match, and the ones this pass's own conditions are filing now. A
-    // criterion that was sent back and has since been recovered again is in neither — its
-    // entry no longer matches the row, and `applyConditions` leaves `recoveryRequested`
-    // unset for a request it can see has been answered — so the exemption lifts the moment
-    // the work comes back, and the bound reaches it like any other unresolved criterion.
+    // criterion whose re-recovery has come back is in neither — its entry is stamped
+    // answered, and `applyConditions` files no request for one it can see has been answered
+    // — so the exemption lifts when the work comes back, and only then. A row some other
+    // verb changed while it was out is still out.
     const outForRecovery = new Set([
       ...outstandingRecoveries(recoveryEntries, withConditions).map((e) => e.id),
-      ...withConditions.filter((c) => c.recoveryRequested).map((c) => c.id),
+      ...withConditions.filter((c) => c.recoveryRequests?.length).map((c) => c.id),
     ]);
+
+    // And a criterion cannot be promoted while it is out. `edit` and `confirm` both raise
+    // confidence to `confirmed`, which is what makes a row eligible to mint — so a ruling
+    // that reworded a row somebody else had already sent back would put a criterion whose
+    // evidence is known to be wrong into the permanent contract. The wording change stands;
+    // the promotion waits for the recovery, which is the only thing that can settle whether
+    // there is anything here to promote. Provisional rows only: an `R-` row is already
+    // minted, and taking a permanent criterion out of the contract is `obsolete`'s ruling.
+    for (const c of withConditions) {
+      if (outForRecovery.has(c.id) && c.id.startsWith("D-") && c.confidence === "confirmed") c.confidence = "open";
+    }
 
     if (followUpRulingsRead(read, domain) >= 2) {
       for (const c of withConditions) {
@@ -2044,9 +2125,8 @@ const ratify = {
     // the row as it is about to be written. `addRecovery` files nothing when the same
     // criterion already carries the same request, which is what makes replaying a ruling
     // that already sent a row back a no-op rather than a second request.
-    const recoveryPath = addRecovery(projectDir, minted.filter((c) => c.recoveryRequested).map((c) => ({
-      id: c.id, domain, version: c.version, why: c.recoveryRequested, fingerprint: criterionFingerprint(c),
-    })));
+    const recoveryPath = addRecovery(projectDir, minted.flatMap((c) =>
+      (c.recoveryRequests ?? []).map((why) => ({ id: c.id, domain, version: c.version, why }))));
 
     // The preamble the file arrived with is written straight back: everything above the
     // first criterion block is a person's or an agent's own text, and nothing in this
