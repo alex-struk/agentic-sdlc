@@ -85,8 +85,13 @@ archaeology reads stays exactly as read-only in practice as it is in name.
     working tree: same statement, citations, given/when/then, confidence, reconciliation class and
     notes means the run left it alone, and the check fails naming the criterion and every reason it
     was sent back. `spec/recovery.yaml` itself is the pipeline's own bookkeeping, like
-    `tests/acceptance/redo.yaml`; a run that changed it fails here too, since a session that could
-    write that file could mark its own work done without doing it. See "Recovering a criterion
+    `tests/acceptance/redo.yaml`. The runner stamps a request there once every check has passed, so
+    the only change a run may leave in that file is `answered` appearing on a request it was
+    itself asked to recover; anything else — an entry added, removed or reworded, an answer
+    rewritten, or an answer on a request this run was not owed — fails the check, since a session
+    that could write that file freely could mark its own work done without doing it. Marking the
+    right request without doing the work is caught by the unchanged-row rule above, because what a
+    run is owed and whether its row moved are both read from `HEAD`. See "Recovering a criterion
     again" below.
   - Nothing changed outside `spec/`, checked against `git status --porcelain`.
   - In `--revise` mode only (`archaeology-revise-scope`): nothing changed outside
@@ -233,8 +238,9 @@ routine.
 - A `--revise` run alters a minted criterion nobody sent back: `archaeology-revise-keeps-minted`
   fails, naming the criterion, exactly as it always has.
 - A criterion the domain was told to recover again comes back exactly as `HEAD` had it, or the run
-  wrote `spec/recovery.yaml` itself: `archaeology-recovery` fails the run, naming the criterion and
-  every reason it was sent back (see "Recovering a criterion again" above).
+  left a change in `spec/recovery.yaml` other than the answer it was owed: `archaeology-recovery`
+  fails the run, naming the criterion and every reason it was sent back (see "Recovering a
+  criterion again" above).
 - The agent writes no domain file, a domain file with a parse error or zero criteria, a domain
   file that mints an `R-` ID that is new relative to `HEAD`, touches a path outside `spec/`, or —
   in `--revise` mode — alters or removes an already-minted `R-` criterion, or touches any path

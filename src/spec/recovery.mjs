@@ -122,9 +122,20 @@ export function answerRecoveries(projectDir, domain, ids, criteriaById) {
     // The domain as well as the id: a run recovers one domain, and an id is only
     // domain-scoped by convention, which is not a thing to stake another domain's
     // outstanding work on.
-    if (isAnswered(entry) || entry?.domain !== domain || !wanted.has(entry?.id)) continue;
+    //
+    // An entry this run was owed is unanswered at `HEAD` by construction — that is what
+    // `wanted` is read from — so whatever it carries now was written during the run, and
+    // overwriting it is always right. Skipping an already-answered entry here would let a
+    // session author its own answer and keep it: the ledger is read by a person, and the
+    // version a criterion came back at is not the agent's to assert.
+    if (entry?.domain !== domain || !wanted.has(entry?.id)) continue;
     const c = criteriaById.get(entry.id);
-    entry.answered = c ? { version: c.version } : { removed: true };
+    const answer = c ? { version: c.version } : { removed: true };
+    // Written when it differs from what is there, which is both halves of what this needs:
+    // a second call over a ledger this run already stamped changes nothing, and an answer
+    // the run did not write — a session authoring its own — is replaced by the runner's.
+    if (JSON.stringify(entry.answered ?? null) === JSON.stringify(answer)) continue;
+    entry.answered = answer;
     stamped = true;
   }
   if (!stamped) return null;

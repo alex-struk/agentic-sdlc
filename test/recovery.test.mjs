@@ -1179,3 +1179,41 @@ test("a recovery that finds the behaviour is not there at all removes the row, a
     restoreEgress(prevEgress);
   }
 });
+
+// The ledger is the record of what was sent back, and a run may leave exactly one mark in
+// it: the answer it was itself owed. Every other shape of change is a session writing the
+// record of its own work, which is how a recovery gets marked done without being done.
+test("the ledger guard permits only the answer this run was owed", async () => {
+  const { unexpectedLedgerChange, keyOf } = await import("../src/spec/recovery.mjs");
+  const head = [
+    { id: "D-a-1", domain: "a", version: 1, why: "the guard cannot fire" },
+    { id: "D-a-2", domain: "a", version: 1, why: "the citation is dead code" },
+  ];
+  const owed = new Set(head.map(keyOf));
+  const clone = () => JSON.parse(JSON.stringify(head));
+
+  assert.equal(unexpectedLedgerChange(head, clone(), owed), null, "an untouched ledger is fine");
+
+  const answered = clone();
+  answered[0].answered = { version: 2 };
+  assert.equal(unexpectedLedgerChange(head, answered, owed), null, "the answer it was owed is the one permitted change");
+
+  // An answer already recorded is not this run's to revise: a request is answered once, by
+  // the run that did the work.
+  const already = clone();
+  already[0].answered = { version: 2 };
+  const revised = JSON.parse(JSON.stringify(already));
+  revised[0].answered = { version: 7 };
+  assert.match(unexpectedLedgerChange(already, revised, owed), /changes an answer already recorded for D-a-1/);
+
+  // An answer on a request this run was never asked to recover.
+  const notOwed = clone();
+  notOwed[1].answered = { version: 2 };
+  assert.match(unexpectedLedgerChange(head, notOwed, new Set([keyOf(head[0])])), /marks D-a-2 answered, which this run was not asked to recover/);
+
+  // The shapes that are never a run's to make.
+  const reworded = clone();
+  reworded[1].why = "a reason the run preferred";
+  assert.match(unexpectedLedgerChange(head, reworded, owed), /entry 2 was rewritten/);
+  assert.match(unexpectedLedgerChange(head, [head[0]], owed), /gained or lost entries/);
+});
