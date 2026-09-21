@@ -21,6 +21,31 @@ by `sdlc oracle up` and never committed. Any other `--target <t>` must be a key 
 `config.targets`, and its base URL comes straight from `targets.<t>.base_url` — a real target has
 no local file and no mail catcher of its own for this stage to point at.
 
+### Binding a target whose application is still in an unmerged proposal
+
+A `build` slice writes the application under `app/` on `proposal/build-slice-<n>` and opens it at
+G3; `main` has none of it until a reviewer approves. This stage runs from `main` and pre-checks
+that the target answers HTTP, so for target `new` the application has to be started from that
+proposal branch first. `sdlc sandbox --from <branch>` is what does it
+(`docs/decisions/0016-a-sandbox-starts-from-a-branch.md`): it builds and starts the branch's
+compose stack and puts HEAD back where it found it, so this stage still begins on `main` with a
+clean tree, as it requires.
+
+```
+sdlc sandbox up --target new --from proposal/build-slice-<n>
+sdlc run bind-adapter --target new
+# rule the bind-adapter proposal at G3 — the adapter lands on main
+sdlc sandbox down --target new --from proposal/build-slice-<n>
+```
+
+The `--from` on the last line is not a flourish: compose resolves the target's compose file against
+the tree it is run in, and on `main` there is nothing to read, so tearing the stack down needs the
+branch just as starting it did.
+
+This is not only the first slice's problem. Every slice's new screens exist on that slice's
+proposal branch alone until it merges, so binding an adapter to them always runs against a tree
+that is not `main`.
+
 ## Outputs
 
 - `tests/adapters/<t>/index.ts`, exporting `default function create(page, { baseURL, persona }):

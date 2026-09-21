@@ -17,7 +17,7 @@ const HELP = `sdlc <command> [args] [--flags]
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails
   oracle up|down|status [--target <t>]   start/stop/inspect the old application via Docker Compose
-  sandbox up|down|reset|status [--target new]   start/stop/reseed the rebuilt application via its own compose file
+  sandbox up|down|reset|status [--target new] [--from <branch>]   start/stop/reseed the rebuilt application via its own compose file, optionally the one a branch carries
 `;
 
 // Command modules (new.mjs, init.mjs, ...) import `COMMANDS` back from this module to

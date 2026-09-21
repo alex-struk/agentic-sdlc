@@ -248,13 +248,20 @@ test("three real fail-then-revise cycles escalate only on the third verify", asy
   assert.equal(gate.escalate_to, "tech-lead");
 });
 
-test("an unbound slice is neither returned nor passed, and names the binding it needs", async (t) => {
+test("an unbound slice is neither returned nor passed, and names the whole sequence the binding needs", async (t) => {
   const d = buildProject(t);
   mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound")]);
   const ctx = ctxFor(d);
   verify.preChecks(d, ctx);
   const r = await verify.execute(d, ctx);
   assert.match(r.text, /bind-adapter --target new/);
+  // bind-adapter refuses a target that is not answering, and the only tree the
+  // application exists in is the proposal's, so the step before it has to be there and
+  // has to name that branch — a reader given `bind-adapter` alone runs a command that
+  // cannot work (docs/decisions/0016-a-sandbox-starts-from-a-branch.md).
+  assert.match(r.text, /sdlc sandbox up --target new --from proposal\/build-slice-1/);
+  assert.match(r.text, /sdlc sandbox down --target new --from proposal\/build-slice-1/);
+  assert.match(r.text, /rule the bind-adapter proposal/);
   assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
 });
 

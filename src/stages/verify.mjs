@@ -12,7 +12,7 @@ import { join, relative } from "node:path";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
-import { git, gitOk, porcelainStatus, stagePaths, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, stagePaths, enterBranch, leaveBranch, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { runSuite } from "../testrun/playwright.mjs";
 import { resetCommandFor, targetSettings } from "../sandbox/local.mjs";
@@ -155,8 +155,10 @@ export const verify = {
     // otherwise read a gate file naming a role that never gets the question.
     const escalateTo = config?.policy?.gates?.G3?.escalate_to ?? "tech-lead";
     const branch = `proposal/${name}`;
-    const start = currentBranch(projectDir);
-    git(["checkout", "-q", branch], projectDir);
+    // The tree goes to the proposal the slice was built on and comes back afterwards, the
+    // same borrow `sdlc sandbox --from` makes (`enterBranch`/`leaveBranch`,
+    // `src/lib/git.mjs`, and docs/decisions/0016-a-sandbox-starts-from-a-branch.md).
+    const start = enterBranch(projectDir, branch, `verify slice ${slice.number}`);
     let text;
     let dirty = false;
     // Held rather than propagated on its own, so the teardown below can run first and
@@ -205,7 +207,23 @@ export const verify = {
             ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`
             : `verify slice ${slice.number}: returned — ${v.failing.map((r) => r.id).join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`;
         } else if (v.verdict === "unbound") {
-          text = `verify slice ${slice.number}: ${v.unbound.join(", ")} have no binding on the new target yet. Next: sdlc run bind-adapter --target new, then verify again.`;
+          // Binding needs the application answering, and the application is on this
+          // proposal branch alone until the proposal is ruled — so naming
+          // `bind-adapter` on its own names a step that refuses, every time, for a
+          // target that has nothing running (0016). The whole sequence is printed
+          // instead, branch name filled in, ending where the reader has to act rather
+          // than run something: an adapter ruled onto `main` is not on a proposal branch
+          // that was opened before the ruling, and verify reads this slice's adapter off
+          // the branch it checks out.
+          text = [
+            `verify slice ${slice.number}: ${v.unbound.join(", ")} have no binding on the new target yet.`,
+            `The application they need is on ${branch} and nowhere else until that proposal is ruled, so bind against it from there. From main, with a clean tree:`,
+            `  1. sdlc sandbox up --target new --from ${branch}`,
+            "  2. sdlc run bind-adapter --target new",
+            "  3. rule the bind-adapter proposal at G3, which puts the adapter on main",
+            `  4. sdlc sandbox down --target new --from ${branch}`,
+            `Then verify slice ${slice.number} again once its build proposal carries that adapter: a proposal branch opened before the adapter was ruled does not have it, and verify runs the suite on the branch, not on main.`,
+          ].join("\n");
         } else {
           text = `verify slice ${slice.number} verified: every claimed criterion passes against the application in ${name}. Ready for G3.`;
         }
@@ -220,18 +238,14 @@ export const verify = {
       try { await down(projectDir); } catch (err) { failure ??= err; }
       // A throw between the first working-tree write and the commit landing (the
       // gate-file write, `stringifyYaml`, or the commit itself) can leave the proposal
-      // branch holding a staged or untracked file. `git checkout` succeeds even with
-      // that residue present, and would carry it onto `main`, where `assertCleanTree`
-      // then blocks every later `sdlc run` until a person cleans it up by hand — the
-      // same hazard `rule.mjs`'s `rulePending` guards against for the same reason. So
-      // the checkout back to `start` only happens once the branch is actually clean: a
-      // dirty tree stays exactly where it was made, visible on the branch that produced
-      // it, rather than riding onto `main` silently.
-      dirty = Boolean(porcelainStatus(projectDir));
+      // branch holding a staged or untracked file, which a checkout would carry onto
+      // `main` — where `assertCleanTree` then blocks every later `sdlc run` until a
+      // person cleans it up by hand, the same hazard `rule.mjs`'s `rulePending` guards
+      // against. `leaveBranch` goes back only once the branch is clean, so residue stays
+      // visible on the branch that produced it, and hands back what it refused to leave.
+      dirty = Boolean(leaveBranch(projectDir, start));
       if (dirty) {
         text = `verify slice ${slice.number}: the working tree was left dirty on ${branch} after a failure; HEAD is still on ${branch}. Inspect and clean it before running verify again.`;
-      } else if (currentBranch(projectDir) !== start) {
-        git(["checkout", "-q", start], projectDir);
       }
       // Every attempt says what became of it, including the ones that failed: a run with
       // no line in the record is indistinguishable from a run nobody made.

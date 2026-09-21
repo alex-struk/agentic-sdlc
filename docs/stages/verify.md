@@ -57,8 +57,16 @@ asks for happens at the gate it is returned to, not here.
    failures below may not even be the application's to fix. Only verify's own returns
    (`by: runner:verify`) count toward that third strike; a reviewer's return of the same proposal
    does not.
-7. **On `unbound`, report and stop.** Nothing is written to a gate file; the next step is
-   `sdlc run bind-adapter --target new`, then verifying again.
+7. **On `unbound`, report and stop.** Nothing is written to a gate file. What is printed is the
+   whole sequence binding takes, with the proposal branch's name filled in: `sdlc sandbox up
+   --target new --from proposal/<name>`, `sdlc run bind-adapter --target new`, the G3 ruling that
+   puts the adapter on `main`, and `sdlc sandbox down --target new --from proposal/<name>`. The
+   application exists on that branch alone until the build proposal is ruled, and `bind-adapter`
+   refuses a target that is not answering, so `bind-adapter` named on its own is a step that
+   cannot run (`docs/decisions/0016-a-sandbox-starts-from-a-branch.md`). The report ends by saying
+   what the reader then needs for verify itself: the slice's build proposal has to carry the ruled
+   adapter, and a proposal branch opened before the ruling does not — verify runs the suite on the
+   branch, not on `main`.
 8. **On `pass`, report ready for G3.** Nothing else is written; the reviewer can now rule the build
    proposal.
 9. **Commit the result** — and the gate file, on a `fail` — onto the proposal branch, then tear the
@@ -87,7 +95,7 @@ the proposal branch.
 | `pass` | Ready for G3 — the reviewer can now rule the build proposal. | None. |
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
-| `unbound` | `sdlc run bind-adapter --target new`, then verify again. | None. |
+| `unbound` | The binding sequence above: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`. | None. |
 
 ## Checks
 

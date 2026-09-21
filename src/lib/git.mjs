@@ -93,6 +93,41 @@ export function assertOnMain(projectDir, command) {
   if (branch !== "main") throw new Error(`${command} must start on main; you are on ${branch}`);
 }
 
+// Puts the working tree on `branch` for a caller that means to put it back afterwards,
+// and refuses before it touches anything when that cannot be done safely. Two refusals:
+// a branch name nothing resolves to, and a dirty tree, whose changes `git checkout`
+// carries onto the branch and then back again — a command that borrows a branch must
+// return the tree exactly as it found it, and it cannot promise that for changes it did
+// not make. `leaveBranch` below is the other half; every caller of one calls the other.
+//
+// The value returned is what HEAD was pointing at, which is a branch name normally and a
+// commit hash when HEAD was already detached — `git checkout HEAD` means something else
+// entirely, so the name `git rev-parse --abbrev-ref` prints for a detached HEAD is never
+// what gets checked out again.
+export function enterBranch(projectDir, branch, command) {
+  if (!gitOk(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], projectDir))
+    throw new Error(`${command}: there is no branch ${branch} in this repository`);
+  assertCleanTree(projectDir, command);
+  const name = currentBranch(projectDir);
+  const start = name === "HEAD" ? git(["rev-parse", "HEAD"], projectDir) : name;
+  if (name !== branch) git(["checkout", "-q", branch], projectDir);
+  return start;
+}
+
+// The other half of `enterBranch`: back to where HEAD was, but only once the branch it is
+// leaving is clean. Work that throws part-way can leave a staged or untracked file behind,
+// and `git checkout` succeeds with that residue present and carries it across — onto
+// `main`, usually, where every command that needs a clean tree then refuses on files
+// nobody there touched. So a dirty tree stays on the branch that produced it, visible
+// where it was made, and the porcelain status is handed back rather than an empty string
+// so the caller can name the residue and say where HEAD was left.
+export function leaveBranch(projectDir, start) {
+  const dirty = porcelainStatus(projectDir);
+  if (dirty) return dirty;
+  if (currentBranch(projectDir) !== start) git(["checkout", "-q", start], projectDir);
+  return "";
+}
+
 // Stages exactly the given project-relative paths, skipping any that do not exist on
 // disk — a path a command did not end up writing (a run record on a command that wrote
 // none, say) is skipped rather than making `git add` fail. This cannot represent a
