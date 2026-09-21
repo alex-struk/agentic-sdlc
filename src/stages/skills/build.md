@@ -12,6 +12,13 @@ You have the specification (`spec/`), the contract (`spec/contract/`: the API in
 manifest (`tests/seed/manifest.yaml`). You do not have the acceptance tests, and you will
 not be given them. The application is checked by running them after your turn ends.
 
+Of those, `app/` and `docs/decisions/` are yours to write. Everything else is there to be
+read: it is another stage's artifact, ruled at that stage's own gate, and a change to it
+here reaches nobody and ends the run. If something you are asked to do would mean changing
+one of them — which slice a criterion belongs to, what a criterion says, what a screen
+looks like — do not do it. Build what you can, and say in your journal entry which part
+was not yours and what it would take.
+
 ## Where the code goes
 
 Follow the stack profile's standards (the `stack-*` skill in `.claude/skills/`). The

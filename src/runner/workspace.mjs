@@ -11,7 +11,7 @@ import { git, gitOk } from "../lib/git.mjs";
 
 // The pipeline-owned acceptance harness (its config, the `surface`/`mail` fixtures, and
 // the generated types they re-export) — every blind workspace that runs the suite or
-// writes against it needs all of this, so it is named once here and appended to both
+// writes against it needs all of this, so it is named once here and reached by both
 // `spec-only` and `blind-adapter` below rather than repeated.
 export const HARNESS = [
   "tests/package.json",
