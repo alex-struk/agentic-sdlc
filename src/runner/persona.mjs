@@ -8,6 +8,7 @@ import { runChecks } from "../checks/index.mjs";
 import { formatChecks } from "../commands/checks.mjs";
 import { formatTypecheckEvidence } from "./typecheck.mjs";
 import { buildSliceOf, readVerifyResult, verifyResultPath, formatVerifyEvidence } from "./verify-evidence.mjs";
+import { criteriaEvidenceFor } from "./criteria-evidence.mjs";
 
 // The diff of files outside app/ is the reviewer's evidence, not a transcript to
 // reproduce in full: a proposal that touches a lot of generated or vendored text would
@@ -194,6 +195,15 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
 
   const outside = orderedDiff(projectDir, branch, gate, [...bulk, ...(slice ? [verifyResultPath(slice)] : [])]);
 
+  // The text of the criteria this proposal touches, resolved from the proposal rather than
+  // from the gate it sits at. Which gates get it is decided by the proposals themselves and
+  // is not a list kept anywhere: a proposal that derives, assigns or claims criteria names
+  // them, and one that does not — an intent, a policy article — names none and gets no
+  // section at all. In practice that is the plan gate and the gates that hold the derived
+  // suite, the adapters and the build, which are exactly the rulings made by comparing
+  // something against a criterion nobody quoted.
+  const criteria = criteriaEvidenceFor(projectDir, branch, proposal);
+
   // `criteria-index` is skipped here: it compares the live domain files on this
   // proposal's own branch against `spec/criteria-index.json`, which only `ratify`
   // regenerates. An archaeology proposal legitimately adds fresh `D-` criteria no
@@ -244,6 +254,9 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
       formatVerifyEvidence({ result: verify, slice, branchAppTree: git(["rev-parse", `${branch}:app`], projectDir) }),
       "",
     ] : []),
+    // On the same grounds and in the same place: what the work is judged against belongs in
+    // front of the ruler, not inside a budget that decides whether it arrives.
+    ...(criteria ? [criteria, ""] : []),
     `## Diff summary (main...${branch})`,
     "",
     stat || "(no changes)",

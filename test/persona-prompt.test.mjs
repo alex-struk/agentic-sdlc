@@ -379,3 +379,136 @@ test("a verify result far larger than its section is summarised rather than allo
   assert.match(section, /100 criteria did not pass|did not pass/);
   assert.match(prompt, /export const findPage/, "the application is still shown after it");
 });
+
+// A ruling on work derived from the criteria is a comparison against what each criterion
+// says, and the criterion's text is in none of the derived work. A rewritten test rescues
+// itself by accident — its title quotes its criterion — and a deleted one does not.
+
+const STATEMENT_KEPT = "A billing statement is issued on the day the period closes.";
+const STATEMENT_GONE = "A refund reverses the charge it names and nothing else.";
+
+// A project whose criteria are ratified: the domain file and the compiled index both on
+// `main`, with two spec files derived from them.
+function projectWithCriteria() {
+  const dir = microProject();
+  write(dir, "spec/domains/billing.md",
+    "# billing\n\n"
+    + `### R-2.1 · v1 · confirmed · recovered\n${STATEMENT_KEPT}\n- when: the period closes\n- then: a statement exists\n- state: accepted\n\n`
+    + `### R-2.2 · v2 · inferred · authored\n${STATEMENT_GONE}\n- state: accepted\n`);
+  write(dir, "spec/criteria-index.json", `${JSON.stringify({
+    generated_from: "0".repeat(40),
+    criteria: [
+      { id: "R-2.1", version: 1, confidence: "confirmed", state: "accepted", statement: STATEMENT_KEPT, when: "the period closes", then: "a statement exists", domain: "billing", file: "spec/domains/billing.md" },
+      { id: "R-2.2", version: 2, confidence: "inferred", state: "accepted", statement: STATEMENT_GONE, domain: "billing", file: "spec/domains/billing.md" },
+    ],
+  }, null, 2)}\n`);
+  write(dir, "tests/acceptance/billing/R-2.1.spec.ts", "// criterion: @R-2.1 v1\n// old body\n");
+  write(dir, "tests/acceptance/billing/R-2.2.spec.ts", "// criterion: @R-2.2 v2\n// old body\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "ratified billing"], dir);
+  return dir;
+}
+
+test("a ruling prompt carries the criteria text for a spec it deletes as well as one it rewrites", async () => {
+  const dir = projectWithCriteria();
+  const name = "derive-tests-billing-stale-1";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "tests/acceptance/billing/R-2.1.spec.ts", "// criterion: @R-2.1 v1\n// a rewritten body\n");
+  git(["rm", "-q", "tests/acceptance/billing/R-2.2.spec.ts"], dir);
+  // A criterion recorded as untestable names itself nowhere but in the list it is added to.
+  write(dir, "tests/acceptance/not-testable.yaml", "criteria:\n  - id: R-2.2\n    reason: nothing the application exposes can demonstrate it\n");
+  write(dir, `.sdlc/proposals/${name}.md`, "---\ngate: G3\n---\n\n# Do these tests still follow?\n\nOne test was written again and one criterion is now recorded as untestable.\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "derive tests again"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.match(prompt, /## The criteria this proposal touches/);
+  assert.ok(prompt.includes(STATEMENT_KEPT), "the rewritten spec's criterion is quoted");
+  // The defect: the deleted spec reaches the ruler as an id and a line of prose, and the
+  // reviewer is asked whether the criterion may be recorded as untestable without ever
+  // being shown what it says.
+  assert.ok(prompt.includes(STATEMENT_GONE), "the deleted spec's criterion is quoted");
+  assert.match(prompt, /R-2\.1.*v1.*accepted/);
+  assert.match(prompt, /- when: the period closes/);
+  // Outside the diff and ahead of it, the same treatment the verify evidence received.
+  assert.ok(prompt.indexOf("## The criteria this proposal touches") < prompt.indexOf("## Diff summary"));
+});
+
+test("a criterion named only by the proposal's own page is carried too", async () => {
+  const dir = projectWithCriteria();
+  const name = "plan-v1";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "plan/tasks.md", "# Slices\n\n## Slice 1\n\nClaims: R-2.2\n");
+  write(dir, `.sdlc/proposals/${name}.md`, "---\ngate: G2\n---\n\n# Is this the plan?\n\nSlice 1 claims R-2.2.\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "plan"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G2" });
+  assert.ok(prompt.includes(STATEMENT_GONE), "a criterion a plan assigns is quoted where the plan is ruled");
+});
+
+test("a criterion whose text cannot be resolved is named as missing rather than left out", async () => {
+  const dir = projectWithCriteria();
+  const name = "derive-tests-billing";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "tests/acceptance/billing/R-2.9.spec.ts", "// criterion: @R-2.9 v1\n");
+  write(dir, `.sdlc/proposals/${name}.md`, "---\ngate: G3\n---\n\n# Do these tests follow?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "a test for an id nothing holds"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.match(prompt, /could not be resolved to any criterion text/);
+  assert.match(prompt, /R-2\.9/);
+  assert.match(prompt, /not a statement that\n?these criteria do not exist/);
+});
+
+test("a criterion defined in a file the proposal itself changes is named there, not quoted twice", async () => {
+  const dir = projectWithCriteria();
+  const name = "calibrate-billing";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "spec/domains/billing.md",
+    "# billing\n\n"
+    + `### R-2.1 · v2 · confirmed · recovered\n${STATEMENT_KEPT}\n- state: accepted\n`);
+  write(dir, `.sdlc/proposals/${name}.md`, "---\ngate: G1\n---\n\n# Is R-2.1 right now?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "calibrate billing"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G1" });
+  const section = prompt.slice(prompt.indexOf("## The criteria this proposal touches"), prompt.indexOf("## Diff summary"));
+  assert.match(section, /defined in files this proposal itself changes/);
+  assert.match(section, /R-2\.1/);
+  assert.ok(!section.includes(STATEMENT_KEPT), "the domain file's own text is the diff, not a second copy of it");
+});
+
+test("a proposal that names no criterion gets no criteria section at all", async () => {
+  const dir = projectWithCriteria();
+  const name = "intent-permit-intake";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "intent/brief.md", "# Brief\n\nWhat the rebuild is for.\n");
+  write(dir, `.sdlc/proposals/${name}.md`, "---\ngate: G0\n---\n\n# Is this the right problem?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "intent"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G0" });
+  assert.ok(!prompt.includes("## The criteria this proposal touches"));
+});
+
+test("a proposal touching many criteria is capped, and says what it capped", async () => {
+  const dir = microProject();
+  const criteria = [];
+  const blocks = [];
+  for (let i = 1; i <= 90; i++) {
+    const statement = `Criterion ${i}: ${"a long sentence about what the system does ".repeat(40)}`;
+    criteria.push({ id: `R-2.${i}`, version: 1, confidence: "confirmed", state: "accepted", statement, domain: "billing", file: "spec/domains/billing.md" });
+    blocks.push(`### R-2.${i} · v1 · confirmed · recovered\n${statement}\n- state: accepted\n`);
+  }
+  write(dir, "spec/domains/billing.md", `# billing\n\n${blocks.join("\n")}`);
+  write(dir, "spec/criteria-index.json", `${JSON.stringify({ generated_from: "0".repeat(40), criteria }, null, 2)}\n`);
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "ratified"], dir);
+
+  const name = "derive-tests-billing";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  for (let i = 1; i <= 90; i++) write(dir, `tests/acceptance/billing/R-2.${i}.spec.ts`, `// criterion: @R-2.${i} v1\n`);
+  write(dir, `.sdlc/proposals/${name}.md`, "---\ngate: G3\n---\n\n# Do these tests follow?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "a suite"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G3" });
+  const section = prompt.slice(prompt.indexOf("## The criteria this proposal touches"), prompt.indexOf("## Diff summary"));
+  assert.ok(section.length < 20000, `the section is bounded (was ${section.length})`);
+  assert.match(section, /further criterion\(s\) are named by this proposal and not quoted here/);
+  assert.match(section, /R-2\.90/, "what was left out is named, so the ruler can go and read it");
+});

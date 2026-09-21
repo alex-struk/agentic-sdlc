@@ -16,7 +16,14 @@ const DOT = "·";
 // matching; the format is written with single spaces around the separator and nothing
 // looser is a valid heading.
 const SEP = `(?:\\s${DOT}\\s|\\s-\\s)`;
-const HEADING_RE = new RegExp(`^### (D-[a-z0-9-]+-\\d+|R-\\d+\\.\\d+)${SEP}v(\\d+)${SEP}(confirmed|inferred|open)${SEP}(recovered|authored)\\s*$`);
+// The two shapes a criterion id takes: `D-<domain>-<n>` while it is provisional and
+// `R-<domain ordinal>.<n>` once ratify has minted it. Exported as a pattern rather than a
+// compiled regex because it is used two ways — anchored in the heading below, and scanned
+// out of running prose (a proposal page, a diff, a path) by anything that has to work out
+// which criteria a piece of work is about. One grammar, so the two readings cannot drift.
+export const CRITERION_ID_PATTERN = "D-[a-z0-9-]+-\\d+|R-\\d+\\.\\d+";
+
+const HEADING_RE = new RegExp(`^### (${CRITERION_ID_PATTERN})${SEP}v(\\d+)${SEP}(confirmed|inferred|open)${SEP}(recovered|authored)\\s*$`);
 const BULLET_RE = /^- ([a-z-]+):\s*(.*)$/;
 const CITE_RE = /^([^:]+)(?::(\d+))?$/;
 
