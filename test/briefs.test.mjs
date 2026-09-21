@@ -149,7 +149,7 @@ test("the reviewer's brief does not promise a passing suite, and says what each 
   const section = brief.slice(brief.indexOf("## Ruling a build proposal"));
   assert.ok(!/have already passed/.test(section), "no claim that the suite already passed");
   assert.ok(!/would not have asked you otherwise/.test(section), "no claim about what the runner would not ask");
-  for (const verdict of ["`pass`", "`fail`", "`unbound`"]) {
+  for (const verdict of ["`pass`", "`pass-unasserted`", "`fail`", "`unbound`"]) {
     assert.ok(section.includes(verdict), `the brief says what ${verdict} means`);
   }
   assert.match(section, /return or an escalation/, "and that both are open whatever the result says");

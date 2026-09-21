@@ -337,6 +337,44 @@ test("a build ruling prompt carries the verify verdict, its rows and its reasons
   assert.match(prompt, /return or an escalation/);
 });
 
+// A criterion recorded not-testable, or attested to by a person, was never put to the
+// application. The reviewer approving the build is the one who decides whether the slice
+// can be accepted on that footing, and cannot decide it from a list of ids alone: the
+// reason each one carries is the whole of what there is to judge.
+test("a build ruling prompt names the criteria nobody asserted and quotes the reason each carries", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], dir);
+  write(dir, "app/backend/src/content.ts", "export const findPage = (slug: string) => slug;\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "the application"], dir);
+  const appTree = git(["rev-parse", "HEAD:app"], dir).trim();
+  write(dir, "tests/results/new/slice-1.json", `${JSON.stringify({
+    slice: 1, proposal: "build-slice-1", app_tree: appTree, at: "2026-09-08T00:00:00.000Z",
+    verdict: "pass-unasserted",
+    unasserted: [
+      { id: "R-1.2", result: "not-testable", reason: "the contract surface offers no way to observe it" },
+      { id: "R-1.3", result: "attested", reason: "a person vouched for it in place of a test" },
+    ],
+    rows: [
+      { id: "R-1.1", result: "pass", tests: [{ title: "a criterion that was met", status: "passed" }] },
+      { id: "R-1.2", result: "not-testable", reason: "the contract surface offers no way to observe it", tests: [] },
+      { id: "R-1.3", result: "attested", reason: "a person vouched for it in place of a test", tests: [] },
+    ],
+  }, null, 2)}\n`);
+  write(dir, ".sdlc/proposals/build-slice-1.md", "---\ngate: G3\n---\n\n# Does slice 1 hold?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, "build-slice-1", "product-owner", { tier: "STANDARD", gate: "G3" });
+  const section = prompt.slice(prompt.indexOf("## Verify result"), prompt.indexOf("## Diff summary"));
+  assert.ok(!/every criterion the slice claims was exercised and met/.test(section),
+    "the verdict is not glossed as one where everything was exercised");
+  assert.match(section, /2 .*(never asserted|not asserted)/, "the count reaches the ruler");
+  assert.match(section, /R-1\.2/);
+  assert.match(section, /R-1\.3/);
+  assert.match(section, /the contract surface offers no way to observe it/);
+  assert.match(section, /a person vouched for it in place of a test/);
+  assert.ok(!/changed since/.test(section), "this result is current for the tree on the branch");
+});
+
 test("a build proposal with no verify result on its branch says so, and a spec proposal has no such section", async () => {
   const dir = microProject();
   git(["checkout", "-q", "-b", "proposal/build-slice-2"], dir);
