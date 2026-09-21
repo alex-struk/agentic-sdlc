@@ -17,9 +17,9 @@ instead of the formatted text.
 
 ## Outputs
 
-To stdout: one line per check id (`config`, `layout`, `constitution`, `egress`, `criteria`,
-`criteria-index`, `separation`, `generated`, `tests`, or just `egress` under `--self`) marked `ok` or
-`FAIL`, with any messages and warnings indented beneath — or the same data as a JSON array under
+To stdout: one line per check id (`config`, `layout`, `constitution`, `egress`, `briefs`,
+`criteria`, `criteria-index`, `separation`, `generated`, `tests`, or just `egress` under
+`--self`) marked `ok` or `FAIL`, with any messages and warnings indented beneath — or the same data as a JSON array under
 `--json`. Nothing is written to disk.
 
 ## Workspace the agent sees
@@ -56,6 +56,15 @@ No agent.
   not part of `criteria` itself: `archaeology` legitimately leaves the index behind, since
   recovering a domain is exactly the act of adding criteria the index does not have yet, and
   ratify is the stage that catches it up.
+- **briefs** — the one check here that never blocks. Runs whenever `.sdlc/personas` exists, and
+  warns for each persona brief that is not the text the pipeline now ships: `behind` for one that
+  matches the digest `init` recorded and would be brought current by `sdlc init`, `local` for one
+  the project has edited, which `init` leaves alone (see `docs/stages/init.md`). Neither is a
+  fault in the project — a stale brief is the pipeline's own text going out of date, and an
+  edited one is a choice the project made — but a brief that is behind rules by instructions the
+  pipeline has since corrected, and it reads exactly like a current one. Its warnings appear in
+  every ruling prompt too, since the same checks run there. A persona the project never installed
+  is not reported: a gate no agent holds needs no brief.
 - **separation** — runs whenever `tests/` exists. Keeps the acceptance suite blind to the
   implementation. Over `tests/adapters/**/*.ts`: fails on `expect(` (an adapter drives the page, it
   never asserts), on an import whose path contains `../acceptance` or `app/`, and on a `test(` call

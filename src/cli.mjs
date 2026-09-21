@@ -7,7 +7,8 @@ const HELP = `sdlc <command> [args] [--flags]
   new <dir> --from <config.yaml>   create a project repo from a saved config
   new <dir> --interactive          create a project repo via the onboarding interview
   new <dir> --answers <brief.md>   run the interview against a written stakeholder brief (no person needed)
-  init [dir]                       install the pipeline into a project (lockfile, packs, callers)
+  init [dir] [--adopt-briefs]      install the pipeline into a project (lockfile, packs, callers);
+                                   --adopt-briefs replaces a locally edited persona brief with the template
   checks [dir] [--self] [--json]   run the structural checks
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."] [--tier HIGH]
   rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>

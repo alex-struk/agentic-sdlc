@@ -8,6 +8,7 @@ import { checkCriteria, checkCriteriaIndex } from "./criteria.mjs";
 import { checkSeparation } from "./separation.mjs";
 import { checkGenerated } from "./generated.mjs";
 import { checkTests } from "./tests.mjs";
+import { checkBriefs } from "./briefs.mjs";
 
 // `opts.skip` names check ids to leave out of the result entirely — not run and not
 // reported, as distinct from a check that ran and passed. `buildPersonaPrompt` is the
@@ -26,7 +27,7 @@ export async function runChecks(projectDir, opts = {}) {
   const skip = new Set(opts.skip ?? []);
   const cfg = checkConfig(projectDir);
   const ctx = { config: cfg.config };
-  const checks = [cfg, checkLayout(projectDir, ctx), checkConstitution(projectDir, ctx), checkEgress(projectDir, ctx)];
+  const checks = [cfg, checkLayout(projectDir, ctx), checkConstitution(projectDir, ctx), checkEgress(projectDir, ctx), checkBriefs(projectDir)];
   // `spec/domains` is only meaningful once a project has run archaeology (or has hand-
   // authored criteria in it); a project that has not reached that stage yet has nothing
   // for this check to read and is not penalised for it.

@@ -20,13 +20,14 @@ allows 22 or later.
 
 - `sdlc new <dir> --from <config.yaml> | --interactive | --answers <brief.md>` — create a project
   repository from a saved configuration or an onboarding interview, then run `init`.
-- `sdlc init [dir]` — pin the lockfile, install the configured skill packs, and generate the CI
-  caller workflow for an existing project.
+- `sdlc init [dir] [--adopt-briefs]` — pin the lockfile, install the configured skill packs,
+  reconcile the persona briefs against the pipeline's templates, and generate the CI caller
+  workflow for an existing project.
 - `sdlc checks [dir] [--self] [--json]` — run the structural checks (config, layout, constitution,
-  egress, plus criteria and criteria-index once `spec/domains` exists); `--self` checks this
-  pipeline repository itself.
+  egress, briefs, plus criteria and criteria-index once `spec/domains` exists); `--self` checks
+  this pipeline repository itself.
 - `sdlc doctor [dir]` — check that required and optional tools, the agent deny list, the egress
-  name list, and the project configuration are all in place.
+  name list, the persona briefs and the project configuration are all in place.
 - `sdlc propose <name> --gate G<n> --question "..." --recommendation "..." [--tier HIGH]` — open a
   decision as a `proposal/<name>` branch with a decision page. `--tier` records the proposal's risk
   tier on that page; `HIGH` and `CRITICAL` make the gate's persona agent escalate to a human

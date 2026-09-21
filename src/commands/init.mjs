@@ -2,8 +2,9 @@ import { existsSync, chmodSync, rmSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { git, gitOk, stagePaths, stageSite, reconcileGitignore, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
-import { parse as parseYaml } from "yaml";
 import { loadConfig } from "../config/load.mjs";
+import { stackIgnores } from "../lib/stack.mjs";
+import { reconcileBriefs, briefWarning, BRIEF_DIR } from "../lib/briefs.mjs";
 import { resolvePacks, installPacks } from "./packs.mjs";
 import { buildSite } from "./status.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -13,17 +14,15 @@ import { PIPELINE_ROOT } from "./new.mjs";
 
 // Files copied verbatim out of the pipeline's templates into the project. Each is
 // written when it is missing or differs, so a project picks up a template change on
-// the next `sdlc init` without an upgrade step of its own.
+// the next `sdlc init` without an upgrade step of its own. The persona briefs are not
+// among them: a project may have written its own instructions into one, so they are
+// reconciled against a record of what was installed rather than overwritten
+// (`src/lib/briefs.mjs`).
 const TEMPLATE_FILES = [
   { src: ["templates", "project", ".claude", "settings.json"], dst: [".claude", "settings.json"] },
   { src: ["templates", "hooks", "implement-guard.sh"], dst: [".sdlc", "hooks", "implement-guard.sh"], mode: 0o755 },
   { src: ["templates", "project", ".gitattributes"], dst: [".gitattributes"] },
   { src: ["templates", "project", ".github", "workflows", "pages.yml"], dst: [".github", "workflows", "pages.yml"] },
-  { src: ["templates", "project", ".sdlc", "personas", "ux-reviewer.md"], dst: [".sdlc", "personas", "ux-reviewer.md"] },
-  { src: ["templates", "project", ".sdlc", "personas", "tech-lead.md"], dst: [".sdlc", "personas", "tech-lead.md"] },
-  { src: ["templates", "project", ".sdlc", "personas", "product-owner.md"], dst: [".sdlc", "personas", "product-owner.md"] },
-  { src: ["templates", "project", ".sdlc", "personas", "architect.md"], dst: [".sdlc", "personas", "architect.md"] },
-  { src: ["templates", "project", ".sdlc", "personas", "reviewer.md"], dst: [".sdlc", "personas", "reviewer.md"] },
   // The acceptance harness: config, fixtures and generated-type re-exports are refreshed
   // like every file above. The three `onlyIfAbsent` entries below are different — a
   // starting copy is written once and then belongs to the project, so `derive-tests`'
@@ -70,20 +69,6 @@ function installTemplateFiles(projectDir) {
 // skills in `.claude/skills/`, which every workspace that plans or builds already carries,
 // so the planner and the builder work from the stack the project's config names rather than
 // one they chose. Refreshed like a template file: the pipeline owns its text.
-// What the project's stack profile declares as its toolchain's own output, from the
-// `ignore:` list in its front matter. Empty for a project with no stack, or a stack that
-// generates nothing outside `node_modules`.
-export function stackIgnores(config) {
-  if (!config.stack) return [];
-  const src = join(PIPELINE_ROOT, "stacks", config.stack, "SKILL.md");
-  if (!existsSync(src)) return [];
-  const m = readText(src).match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
-  if (!m) return [];
-  let front;
-  try { front = parseYaml(m[1]); } catch { return []; }
-  return Array.isArray(front?.ignore) ? front.ignore.map(String) : [];
-}
-
 function installStackSkill(projectDir, config) {
   if (!config.stack) return false;
   const src = join(PIPELINE_ROOT, "stacks", config.stack, "SKILL.md");
@@ -148,7 +133,7 @@ function fillProjectPlaceholders(projectDir, config) {
   return filled;
 }
 
-export async function init(projectDir = process.cwd()) {
+export async function init(projectDir = process.cwd(), { adoptBriefs = false } = {}) {
   projectDir = resolve(projectDir);
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
@@ -169,9 +154,18 @@ export async function init(projectDir = process.cwd()) {
 
   const pipelineCommit = gitOk(["rev-parse", "HEAD"], PIPELINE_ROOT) ? git(["rev-parse", "HEAD"], PIPELINE_ROOT) : config.pipeline.ref;
   const packs = resolvePacks(config.skills.packs, projectDir);
-  const lock = { pipeline: { ...config.pipeline, commit: pipelineCommit }, packs, created: new Date().toISOString() };
   const lockPath = join(projectDir, ".sdlc", "lock.json");
   const prev = existsSync(lockPath) ? JSON.parse(readText(lockPath)) : null;
+
+  // The briefs go first, because the digests this returns are part of the lockfile
+  // written below: the record of what the pipeline last installed is what tells a brief
+  // nobody has touched apart from one a project wrote into, and without it every project
+  // would either lose its own edits or never receive a correction.
+  const briefs = reconcileBriefs(projectDir, prev?.briefs ?? {}, { adopt: adoptBriefs });
+  if (briefs.changed) changed = true;
+  for (const file of briefs.local) console.warn(`warning: ${briefWarning({ file, state: "local" })}`);
+
+  const lock = { pipeline: { ...config.pipeline, commit: pipelineCommit }, packs, briefs: briefs.digests, created: new Date().toISOString() };
   if (!prev || JSON.stringify({ ...prev, created: 0 }) !== JSON.stringify({ ...lock, created: 0 })) {
     writeText(lockPath, JSON.stringify(lock, null, 2) + "\n");
     changed = true;
@@ -208,7 +202,7 @@ export async function init(projectDir = process.cwd()) {
   for (const s of r.skipped) console.warn(`warning: ${s}`);
 
   if (changed) {
-    const runPath = appendRun(projectDir, `init: pipeline ${pipelineCommit.slice(0, 7)}, packs ${packs.length}, skills installed ${r.installed.length}, skipped ${r.skipped.length}`);
+    const runPath = appendRun(projectDir, `init: pipeline ${pipelineCommit.slice(0, 7)}, packs ${packs.length}, skills installed ${r.installed.length}, skipped ${r.skipped.length}, briefs ${briefs.written.length + briefs.updated.length + briefs.adopted.length} written, ${briefs.local.length} left as the project has them`);
     // The state site is only rebuilt here when something else already made this init a
     // commit — never on a genuine no-op re-run, which must stay a no-op (see
     // test/new-init.test.mjs).
@@ -245,7 +239,14 @@ export async function init(projectDir = process.cwd()) {
       git([...SDLC_AUTHOR, "commit", "-q", "-m", "chore(sdlc): init"], projectDir);
     }
   }
-  return { lock, ...r, changed };
+  return { lock, ...r, briefs, changed };
 }
 
-COMMANDS.init = async ({ pos }) => { const r = await init(pos[0]); console.log(`init ok: ${r.installed.length} skills installed`); return 0; };
+COMMANDS.init = async ({ pos, flags }) => {
+  const r = await init(pos[0], { adoptBriefs: !!flags["adopt-briefs"] });
+  const b = r.briefs;
+  const moved = [...b.written, ...b.updated, ...b.adopted];
+  console.log(`init ok: ${r.installed.length} skills installed`);
+  if (moved.length) console.log(`briefs brought to the template: ${moved.map((f) => join(BRIEF_DIR, f)).join(", ")}`);
+  return 0;
+};

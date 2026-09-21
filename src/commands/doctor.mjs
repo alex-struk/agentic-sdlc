@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkConfig } from "../checks/config.mjs";
+import { checkBriefs } from "../checks/briefs.mjs";
 import { defaultNamesPath } from "../checks/egress.mjs";
 import { composeVersion } from "../oracle/compose.mjs";
 import { COMMANDS } from "../cli.mjs";
@@ -50,6 +51,12 @@ COMMANDS.doctor = async ({ pos }) => {
   console.log(`${sandbox ? "ok  " : "warn"} SDLC_SANDBOX_PASSWORD ${sandbox ? "set" : "not set (needed only for a sandbox-idp target)"}`);
   const cfg = checkConfig(dir);
   console.log(`${cfg.ok ? "ok  " : "FAIL"} config ${cfg.messages.join("; ")}`);
+  // A persona brief that is behind the pipeline's own copy rules by instructions the
+  // pipeline has since corrected, and reads as a complete brief while it does it. Never
+  // a failure — a project may have written its own text into one on purpose — and never
+  // silent either.
+  const briefs = checkBriefs(dir);
+  console.log(`${briefs.warnings.length ? "warn" : "ok  "} persona briefs ${briefs.warnings.length ? briefs.warnings.join("; ") : "current with the pipeline's templates"}`);
   const required = tools.filter((t) => ["node", "git"].includes(t.name)).every((t) => t.found);
   return required && cfg.ok ? 0 : 1;
 };

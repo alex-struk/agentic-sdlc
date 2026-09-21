@@ -25,6 +25,10 @@ To stdout, one line each for:
   without it; a project with no `sandbox-idp` target never needs it, so an unset variable is a
   warning rather than a failure.
 - The result of `checkConfig(dir)` (see `docs/stages/checks.md`).
+- Whether the project's persona briefs are current with the pipeline's templates, naming each one
+  that is behind or carries local edits (`docs/stages/init.md`). A brief that is behind rules by
+  instructions the pipeline has since corrected while reading as a complete brief, so it is
+  reported here; it is a warning, never a failure.
 
 ## Workspace the agent sees
 
@@ -33,8 +37,8 @@ No agent.
 ## Checks that block
 
 For the exit code only: `node` and `git` must both be found, and the config check must be `ok`.
-The deny-list line, the egress-name-list line, the sandbox-password line, and the optional tools
-(`gh`, `claude`, `docker`) are reported but do not affect the exit code.
+The deny-list line, the egress-name-list line, the sandbox-password line, the persona-briefs line,
+and the optional tools (`gh`, `claude`, `docker`) are reported but do not affect the exit code.
 
 ## Exit criterion
 

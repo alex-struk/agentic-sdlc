@@ -9,7 +9,9 @@ reconcile the project's `.gitignore`, and seed the machine-local egress name lis
 
 ## Inputs
 
-`sdlc init [dir]`, defaulting to the current directory. Reads `<dir>/.sdlc/config.yaml`.
+`sdlc init [dir] [--adopt-briefs]`, defaulting to the current directory. Reads
+`<dir>/.sdlc/config.yaml`. `--adopt-briefs` replaces a persona brief the project has edited with
+the pipeline's template ("Persona briefs" below); without it, such a brief is never rewritten.
 
 ## Outputs
 
@@ -25,10 +27,10 @@ reconcile the project's `.gitignore`, and seed the machine-local egress name lis
   `.sdlc/hooks/implement-guard.sh` (made executable) and `.gitattributes` (which marks
   `.sdlc/runs/*.md` as `merge=union`), each written from the pipeline's templates when missing or
   different.
-- The five persona briefs a gate's agent holder rules from — `.sdlc/personas/ux-reviewer.md`,
-  `tech-lead.md`, `product-owner.md`, `architect.md` and `reviewer.md` — copied from the pipeline's
-  own templates the same way: written when missing, rewritten when the pipeline's copy has changed.
-  `sdlc rule <name> --by agent:<persona>` reads whichever of these matches the gate's `holder`.
+- The persona briefs a gate's agent holder rules from — `.sdlc/personas/ux-reviewer.md`,
+  `tech-lead.md`, `product-owner.md`, `architect.md` and `reviewer.md` — reconciled against the
+  pipeline's templates rather than copied over them; see "Persona briefs" below. `sdlc rule
+  <name> --by agent:<persona>` reads whichever of these matches the gate's `holder`.
 - The pipeline-owned acceptance harness under `tests/` — see "The acceptance harness" below for
   which files are refreshed on every run and which are written once.
 - `.github/workflows/sdlc-checkpoint.yml`, generated from the template with the pipeline repo
@@ -41,8 +43,8 @@ reconcile the project's `.gitignore`, and seed the machine-local egress name lis
 - The regenerated state site, staged through the same helper every other command uses, so a
   project whose `.gitignore` used to hide `site/` starts tracking it here.
 - An appended `.sdlc/runs/<date>.md` entry and a commit — but only when the lockfile, the caller
-  workflow, the guardrail files, the ignore file, the tracked state of `.sdlc/run-state.json`, or
-  the installed skills actually changed. A re-run against
+  workflow, the guardrail files, the ignore file, the tracked state of `.sdlc/run-state.json`, a
+  persona brief, or the installed skills actually changed. A re-run against
   unchanged inputs writes nothing and commits nothing.
 - The machine's egress name list (see "Egress name list" below for how its path resolves),
   created once if it does not already exist. This file lives outside every project directory, so it never affects whether `init`
@@ -111,6 +113,31 @@ with `git rm --cached --ignore-unmatch` and stages that removal, leaving the fil
 case a run is using it right now. And `sdlc run`'s own commit filters `.sdlc/run-state.json` out
 by name regardless of what any ignore file says, so a half-finished run's bookkeeping can never
 land in a stage's record.
+
+## Persona briefs
+
+A brief is the pipeline's text living in a project's repository, and a project may have written
+its own instructions into one. Copying the template over it on every `init` would silently
+discard that; never copying it means a paragraph added to a brief in the pipeline — a condition
+form a persona may now use, a ruling it may now make — reaches only projects scaffolded
+afterwards, while the stale brief still reads as a complete one.
+
+So `init` compares each brief with the template it came from, and tells the two apart with a
+digest of the text it last wrote, recorded per brief in `.sdlc/lock.json` under `briefs`:
+
+- **current** — the same text as the template. Nothing happens.
+- **behind** — different from the template and identical to what `init` last wrote, so nobody in
+  the project has touched it. The template is written, and the file is named in the init commit's
+  run-record line.
+- **local** — different from the template and different from what `init` last wrote. Somebody
+  changed it on purpose, or it predates the record. Nothing is written; `init` prints a warning
+  naming the file and the flag that would replace it, and the `briefs` check and `sdlc doctor`
+  keep saying so until it is resolved.
+- **missing** — installed from the template, as any other template file is.
+
+`--adopt-briefs` moves a `local` brief to the template's text; it is the operator saying, in so
+many words, that the edits are to be discarded. A project with no `briefs` record yet reads every
+differing brief as `local`, which is the safe way to be wrong: it asks rather than overwrites.
 
 ## The acceptance harness
 
