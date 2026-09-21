@@ -141,7 +141,7 @@ test("design holds gate G-DESIGN, is implemented, and sees neither an applicatio
   const stage = stageFor("design");
   assert.equal(stage.implemented, true);
   assert.equal(stage.gate, "G-DESIGN");
-  assert.equal(stage.workspace, "spec-and-design");
+  assert.equal(stage.workspace, "design");
   assert.deepEqual(stage.collect, ["design", "spec/contract/surface.yaml"]);
   assert.deepEqual(stage.allowedTools, ["Read", "Write", "Edit", "Glob", "Grep"]);
   assert.equal(stage.title({ domain: "opportunities" }), "design opportunities");
@@ -155,7 +155,7 @@ test("design holds gate G-DESIGN, is implemented, and sees neither an applicatio
 // nothing in particular, and the packs a project installs are exactly that guidance.
 test("the design workspace carries the project's installed skills", async () => {
   const { MODES } = await import("../src/runner/workspace.mjs");
-  assert.ok(MODES["spec-and-design"].includes(".claude/skills"));
+  assert.ok(MODES.design.includes(".claude/skills"));
   assert.ok(!MODES["spec-only"].includes("app"), "and still no application anywhere near it");
 });
 

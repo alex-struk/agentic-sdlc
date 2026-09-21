@@ -82,7 +82,28 @@ the run-state a crashed session leaves for `sdlc resume` to read, the dry run's 
 line — reads this same resolved value. `resume` resolves it the same way, against the config it
 loads itself, so a resumed run and a fresh one always agree on which mode a stage used.
 
-`src/runner/workspace.mjs` materialises one of four modes, named by the stage:
+A workspace is built from two declarations, and the pair is the whole of what a stage may touch:
+
+- **The mode (`stage.workspace`) is read-only context.** The committed material the agent needs in
+  front of it, and nothing it is expected to produce.
+- **`stage.collect` is what it produces.** Those paths are archived in alongside the context, so a
+  stage always starts from whatever the project already holds where it is about to write, and they
+  are the only part of the workspace copied back when the session ends.
+
+A path is named in one place or the other and never in both. Everything the workspace carries that
+this run will not collect is **sealed**: digested as the session first sees it and read again after
+the turn, so work written where the stage cannot deliver it is reported by name instead of being
+discarded with the temporary directory
+(`docs/decisions/0027-a-run-that-fabricated-success.md`). `runStage` refuses a declaration it
+cannot honour — a path claimed as both, a context path inside a collected tree, a collect list on a
+stage that works in place — before any of a turn is spent.
+
+A stage may add context for one run with `stage.context(ctx)`. That is how a run which narrows what
+it delivers keeps the rest of the tree in front of the agent: `derive-tests --revise` reads a whole
+acceptance suite and delivers one domain out of it, and the siblings and shared bookkeeping files
+come in this way, sealed.
+
+`src/runner/workspace.mjs` materialises one of these modes, named by the stage:
 
 - **`project`** — the agent runs directly in the project's own working tree (`ws.dir ===
   projectDir`); nothing is copied and nothing is collected back. `probe`, `intent`, `ratify` and
@@ -95,22 +116,32 @@ loads itself, so a resumed run and a fresh one always agree on which mode a stag
   `contract` uses it too, when the project configures `sources.old` (`registry.mjs`'s `workspace:
   (config) => config?.sources?.old ? "with-sources" : "project"`).
 - **`spec-only`** — a fresh temporary directory populated by `git archive HEAD` over `spec/`,
-  `tests/seed/`, `constitution.md`, the harness (`tests/package.json`, `tests/tsconfig.json`,
-  `tests/playwright.config.ts`, `tests/README.md`, `tests/fixtures/`, `tests/generated/`) and
-  `tests/acceptance/` (only the paths that exist), plus `tests/acceptance/`, created empty when
-  nothing is committed there. `.sdlc/config.yaml` is not among them: it names the old
-  application's repository and commit, and nothing on this path reads it from the workspace. The
-  archive reads committed content only, so an uncommitted edit in the project neither leaks into
-  the workspace nor is visible there.
-- **`blind-adapter`** — the same archive mechanism over `spec/contract`, `tests/adapters`,
-  `tests/seed`, `constitution.md` and the same harness.
+  `tests/seed/`, `constitution.md` and the harness (`tests/package.json`, `tests/tsconfig.json`,
+  `tests/playwright.config.ts`, `tests/README.md`, `tests/fixtures/`) — only the paths that exist —
+  plus `derive-tests`'s own output, `tests/acceptance/` and `tests/generated/`;
+  `tests/acceptance/` is created empty when nothing is committed there. `.sdlc/config.yaml` is not
+  among them: it names the old application's repository and commit, and nothing on this path reads
+  it from the workspace. The archive reads committed content only, so an uncommitted edit in the
+  project neither leaks into the workspace nor is visible there.
+- **`blind-adapter`** — the same archive mechanism over `spec/contract`, `tests/seed`,
+  `constitution.md` and the whole harness, `tests/generated/` included, plus `bind-adapter`'s own
+  output, `tests/adapters/`.
+- **`design`** — `spec/`, `constitution.md` and `.claude/skills/`, plus `design`'s own output,
+  `design/` and `spec/contract/surface.yaml`.
+- **`plan`** — `spec/`, `design/`, `constitution.md` and `.claude/skills/`, plus `plan`'s own
+  output, `plan/` and `docs/decisions/`.
+- **`build`** — `plan/`, `spec/`, `design/`, `tests/seed/`, `constitution.md` and
+  `.claude/skills/`, plus `build`'s own output, `app/` and `docs/decisions/`. The one ephemeral
+  mode that carries the application.
 
-Materialising either temporary mode throws `blindness violated: app/ present in <mode> workspace`
-if `app/` somehow ended up in the workspace — the check that a blind stage never sees the
-application it is meant to be blind to. For those two modes, whatever the stage's `collect` list
-names is copied back into the project directory after the session ends, and the temporary
-directory is removed either way (`ws.cleanup()`, in a `finally`, whether the stage succeeded or
-threw). `derive-tests` uses `spec-only`; `bind-adapter` uses `blind-adapter`.
+Materialising an ephemeral mode other than `build` throws `blindness violated: app/ present in
+<mode> workspace` if `app/` somehow ended up in the workspace — the check that a blind stage never
+sees the application it is meant to be blind to. The temporary directory is removed either way
+(`ws.cleanup()`, in a `finally`, whether the stage succeeded or threw).
+
+The prompt says the same thing. `runStage` appends a scope note generated from these two
+declarations, naming what travels back and what is there to be read, so a stage's own prompt and
+what the runner enforces cannot come apart.
 
 Inside the workspace, the agent session is isolated from the operator's own Claude Code
 configuration — see `docs/decisions/0004-isolated-stage-sessions.md` for what that means and why.
@@ -304,6 +335,16 @@ the second, post-run check exists to catch.
   account of how the session ended instead — "hit the turn cap", read from the result's `subtype`
   rather than inferred by comparing the turn count against the ceiling, which is wrong in both
   directions.
+- **The agent wrote where the stage does not collect**: read after the collect, so whatever the
+  stage CAN deliver is already in the working tree. The rest is work that would have been torn down
+  with the workspace while the journal and the proposal page went on describing it as done. `run`
+  writes a journal entry titled `<stage>: work written where it is not collected` holding the
+  turn's own text, the paths, what the stage does deliver and what its workspace carries only for
+  reading; appends the same line to the run record; commits `stage(<stage>): work written where it
+  is not collected` with only those two staged; and returns `{ ok: false, journal, dropped, messages
+  }`. No proposal is opened and no fix turn is offered — the work is in a workspace about to be
+  removed, and there is nothing in the project to repair
+  (`docs/decisions/0027-a-run-that-fabricated-success.md`).
 - **A post-check fails, and the stage is `spec-only` or `blind-adapter`, or the stage is
   `agent: false`**: `finishStage`'s post-checks always read `projectDir`, whatever the workspace
   mode — but for `spec-only`/`blind-adapter` only the paths named in `stage.collect` were copied

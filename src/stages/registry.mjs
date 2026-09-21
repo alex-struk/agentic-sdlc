@@ -1272,6 +1272,15 @@ const deriveTests = {
   collect(ctx) {
     return ctx.revise ? [...deriveTestsRevisionScope(ctx.domain), "tests/generated"] : ["tests/acceptance", "tests/generated"];
   },
+  // A revise run reads the whole suite and delivers one domain out of it, so the rest of
+  // `tests/acceptance` — the sibling domains, `redo.yaml`, `attestations.yaml` — is context
+  // for that run rather than output. It is in the workspace for the same reason it always
+  // was, and now it is sealed there: a revise run that edited a sibling's tests would have
+  // had them dropped at collect time with nothing said. A full run collects the whole
+  // directory and declares it there instead.
+  context(ctx) {
+    return ctx.revise ? ["tests/acceptance"] : [];
+  },
   implemented: true,
   // No Bash and no MCP server: a blind test-writing session reads the generated contract
   // and writes spec files, and a shell is the one tool that could reach past the
@@ -2416,7 +2425,7 @@ const design = {
   name: "design",
   title: (ctx) => `design ${ctx.domain}`,
   skill: skillPath("design"),
-  workspace: "spec-and-design",
+  workspace: "design",
   gate: "G-DESIGN",
   collect: ["design", "spec/contract/surface.yaml"],
   // A design run writes one story per page per state — ninety-odd files for a domain of
@@ -2557,7 +2566,7 @@ const plan = {
   name: "plan",
   title: "plan",
   skill: skillPath("plan"),
-  workspace: "spec-and-design",
+  workspace: "plan",
   gate: "G2",
   collect: ["plan", "docs/decisions"],
   // The planner reads every accepted criterion and the whole design before it cuts a

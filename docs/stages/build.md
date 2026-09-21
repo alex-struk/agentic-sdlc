@@ -44,7 +44,13 @@ to satisfy them rather than the criteria. This is the one ephemeral workspace mo
 `app/` at all — every other mode is refused it, on pain of `blindness violated: app/ present in
 <mode> workspace`.
 
-Only `app` and `docs/decisions` are collected back into the project once the turn ends.
+Only `app` and `docs/decisions` are collected back into the project once the turn ends, and they
+are the only paths a build may write at all. The rest of the workspace — `plan/`, `spec/`,
+`design/`, `tests/seed/`, `constitution.md`, `.claude/skills/` — is sealed: it is there to be read,
+and a change to any of it ends the run with the paths named rather than being dropped when the
+workspace is torn down (`docs/decisions/0027-a-run-that-fabricated-success.md`). A condition asking
+a build to move a criterion between slices is asking it to write `plan/`, which is the plan stage's
+to deliver; `sdlc rule` refuses such a condition when the ruling is made.
 
 ## Outputs
 

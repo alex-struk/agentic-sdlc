@@ -58,7 +58,7 @@ test("the spec files for a slice's criteria are found wherever their domain keep
 // A builder that can read the acceptance suite writes code to pass the tests instead of code
 // that does what the criteria say (spec §5.10).
 test("the build workspace carries the spec, the design and the app, and never the suite or its bindings", () => {
-  const paths = MODES.build;
+  const paths = [...MODES.build, ...build.collect];
   for (const p of ["app", "plan", "spec", "design", "docs/decisions", "tests/seed", "constitution.md", ".claude/skills"])
     assert.ok(paths.includes(p), p);
   for (const p of paths) assert.ok(!/^tests\/(acceptance|adapters|results)|^sources/.test(p), `${p} must not be in a build workspace`);

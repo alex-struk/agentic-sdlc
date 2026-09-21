@@ -6,6 +6,13 @@ import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { materialise, collect, HARNESS } from "../src/runner/workspace.mjs";
 
+// The output sets the real stages declare. A workspace is built from its mode's read-only
+// context plus the stage's own collect list, so a test that wants the workspace a stage
+// actually gets has to name the same list the stage does.
+const DERIVE_TESTS_COLLECT = ["tests/acceptance", "tests/generated"];
+const BIND_ADAPTER_COLLECT = ["tests/adapters"];
+const BUILD_COLLECT = ["app", "docs/decisions"];
+
 function makeOldRepo() {
   const d = mkdtempSync(join(tmpdir(), "sdlc-old-repo-"));
   git(["init", "-q", "-b", "main"], d);
@@ -62,7 +69,7 @@ test("materialise overlay: an overlaid path comes from the given ref, everything
   git(["add", "-A"], d);
   git(["commit", "-q", "-m", "head moves on"], d);
 
-  const ws = materialise(d, "spec-only", { overlay: { ref: proposedSha, paths: ["tests/acceptance/applications"] } });
+  const ws = materialise(d, "spec-only", { collect: DERIVE_TESTS_COLLECT, overlay: { ref: proposedSha, paths: ["tests/acceptance/applications"] } });
   // The overlaid domain comes from the given ref, not from HEAD.
   assert.equal(readFileSync(join(ws.dir, "tests/acceptance/applications/a.spec.ts"), "utf8"), "test('proposed version');\n");
   // A sibling domain, never named in `paths`, still comes from HEAD, exactly as an
@@ -81,7 +88,7 @@ test("materialise overlay reaches a path the given ref carries even when HEAD ne
   const branchSha = git(["rev-parse", "HEAD"], d);
   git(["checkout", "-q", "main"], d);
 
-  const ws = materialise(d, "spec-only", { overlay: { ref: branchSha, paths: ["tests/acceptance/not-testable.yaml"] } });
+  const ws = materialise(d, "spec-only", { collect: DERIVE_TESTS_COLLECT, overlay: { ref: branchSha, paths: ["tests/acceptance/not-testable.yaml"] } });
   assert.equal(
     readFileSync(join(ws.dir, "tests/acceptance/not-testable.yaml"), "utf8"),
     "criteria:\n  - { id: R-1.3, reason: x }\n",
@@ -92,7 +99,7 @@ test("materialise overlay reaches a path the given ref carries even when HEAD ne
 test("materialise overlay skips a path absent from the given ref rather than failing the whole archive", () => {
   const d = makeProject();
   assert.doesNotThrow(() => {
-    const ws = materialise(d, "spec-only", { overlay: { ref: "HEAD", paths: ["tests/acceptance/does-not-exist"] } });
+    const ws = materialise(d, "spec-only", { collect: DERIVE_TESTS_COLLECT, overlay: { ref: "HEAD", paths: ["tests/acceptance/does-not-exist"] } });
     // The rest of the workspace still comes together normally — an absent overlay path
     // is skipped, not fatal.
     assert.ok(existsSync(join(ws.dir, "spec/spec.md")));
@@ -185,7 +192,7 @@ function makeBlindAdapterProject() {
 
 test("materialise blind-adapter yields spec/contract and tests/adapters, not spec.md or app", () => {
   const d = makeBlindAdapterProject();
-  const ws = materialise(d, "blind-adapter");
+  const ws = materialise(d, "blind-adapter", { collect: BIND_ADAPTER_COLLECT });
   assert.ok(existsSync(join(ws.dir, "spec/contract/c.md")));
   assert.ok(existsSync(join(ws.dir, "tests/adapters/a.mjs")));
   assert.ok(!existsSync(join(ws.dir, "spec/spec.md")));
@@ -223,9 +230,9 @@ function makeHarnessProject() {
   return d;
 }
 
-test("materialise spec-only carries the harness (tests/fixtures, tests/generated) but not tests/adapters", () => {
+test("materialise spec-only carries the harness (tests/fixtures) and, as its own output, tests/generated — but not tests/adapters", () => {
   const d = makeHarnessProject();
-  const ws = materialise(d, "spec-only");
+  const ws = materialise(d, "spec-only", { collect: DERIVE_TESTS_COLLECT });
   assert.ok(existsSync(join(ws.dir, "tests/fixtures/index.ts")));
   assert.ok(existsSync(join(ws.dir, "tests/generated/seed.ts")));
   assert.ok(!existsSync(join(ws.dir, "tests/adapters")));
@@ -234,7 +241,7 @@ test("materialise spec-only carries the harness (tests/fixtures, tests/generated
 
 test("materialise blind-adapter carries the harness (tests/fixtures) and tests/adapters but not tests/acceptance", () => {
   const d = makeHarnessProject();
-  const ws = materialise(d, "blind-adapter");
+  const ws = materialise(d, "blind-adapter", { collect: BIND_ADAPTER_COLLECT });
   assert.ok(existsSync(join(ws.dir, "tests/fixtures/index.ts")));
   assert.ok(existsSync(join(ws.dir, "tests/adapters/new/index.ts")));
   assert.ok(!existsSync(join(ws.dir, "tests/acceptance")));
@@ -311,7 +318,7 @@ test("materialise blind-adapter never carries .sdlc/config.yaml either", () => {
 
 test("materialise build includes app/ when it exists, but not tests/acceptance", () => {
   const d = makeProject();
-  const ws = materialise(d, "build");
+  const ws = materialise(d, "build", { collect: BUILD_COLLECT });
   assert.ok(existsSync(join(ws.dir, "app/secret.ts")));
   assert.ok(!existsSync(join(ws.dir, "tests/acceptance")));
   ws.cleanup();

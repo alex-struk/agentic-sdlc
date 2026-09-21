@@ -6,7 +6,7 @@ import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
-import { materialise, collect } from "../runner/workspace.mjs";
+import { materialise, collect, workspaceScopeNote, workspaceScopeViolations } from "../runner/workspace.mjs";
 import { runAgent, endedBecause, turnsFor, writeMcpConfig } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
@@ -43,6 +43,43 @@ function agentTurnFailed(projectDir, stage, r) {
   stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): agent turn failed`], projectDir);
   return { ok: false, journal, messages: [reason] };
+}
+
+// How many discarded paths a message names before it stops counting. Long enough that a
+// real edit — a file or two, or a directory's worth — is named in full, short enough that
+// a session which rewrote a whole tree does not bury the sentence that says what happened.
+const DROPPED_SHOWN = 20;
+
+// A turn that produced work the stage has no way to deliver. The agent did what it was
+// asked, said so in its journal text, and the paths it wrote are ones the workspace takes
+// back from nobody: torn down with the workspace, absent from the branch, and described as
+// done by every page downstream. The run stops here and names them.
+//
+// Recorded the way a post-check failure is — a journal entry carrying the agent's own text
+// and this account, plus a run-record line, both committed, with whatever the stage COULD
+// deliver left in the working tree for a person to look at. No fix turn: the work is in a
+// workspace that is about to be removed and there is nothing in the project to repair.
+function workOutsideCollect(projectDir, stage, r, ws, collectPaths, dropped) {
+  const shown = dropped.slice(0, DROPPED_SHOWN);
+  const more = dropped.length - shown.length;
+  const out = collectPaths.length ? collectPaths.join(", ") : "nothing";
+  const message = [
+    `${stage.name} wrote ${dropped.length} path(s) its workspace does not collect, so the work would have been discarded:`,
+    ...shown.map((p) => `  ${p}`),
+    more > 0 ? `  … and ${more} more` : null,
+    `This stage delivers ${out}; everything else its ${ws.mode} workspace carries is there to be read.`,
+    "Nothing was proposed. Either the work belongs to a stage that does deliver those paths, or this stage's collect list is wrong.",
+  ].filter(Boolean).join("\n");
+  const journal = writeJournal(projectDir, {
+    stage: stage.name,
+    title: `${stage.name}: work written where it is not collected`,
+    body: [r.text, message].filter(Boolean).join("\n\n"),
+    metrics: { cost: r.cost, turns: r.turns, session: r.sessionId },
+  });
+  const runPath = appendRun(projectDir, `run ${stage.name}: work written where it is not collected`);
+  stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): work written where it is not collected`], projectDir);
+  return { ok: false, journal, dropped, messages: [message] };
 }
 
 // A stage may have one more thing to do once its own work is committed: `ratify`'s
@@ -82,6 +119,27 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // `resume` to read, the dry-run print below) sees the same resolved mode rather than
   // each re-deriving it from a possibly-impure function.
   const wsMode = typeof stage.workspace === "function" ? stage.workspace(config) : stage.workspace;
+  // `stage.collect` may be a plain array or, like `stage.workspace` above, a function —
+  // `derive-tests` narrows it on a revise run to the same paths its workspace overlaid
+  // (plus `tests/generated`, always regenerated from `HEAD`'s own contract by `prepare`),
+  // so a revise run's writeback can never carry another domain's tests or the shared
+  // bookkeeping files back out of the workspace. Resolved here, before anything is spent,
+  // because the workspace is built around it: what a stage collects is the only part of
+  // its workspace that is writable, and everything else the mode carries is sealed
+  // against the difference this pair used to be free to express.
+  const collectPaths = typeof stage.collect === "function" ? stage.collect(ctx) : (stage.collect ?? []);
+  // A stage may add read-only context for one run on top of its mode's standing list. It is
+  // how a run that narrows its collect set keeps the rest of the tree in front of the agent:
+  // `derive-tests --revise` delivers one domain out of a suite it has to read whole, and the
+  // siblings and shared bookkeeping files it must not change come in here.
+  const contextPaths = stage.context?.(ctx) ?? [];
+
+  // Checked on every run rather than only in the suite, because the stage that gets this
+  // wrong is the one somebody adds later without running the tests. It reads two
+  // declarations and touches nothing, so it costs a run that is about to spend an agent
+  // turn nothing at all, and it refuses before any of it is spent.
+  const scope = workspaceScopeViolations(name, wsMode, collectPaths, contextPaths);
+  if (scope.length) throw new Error(scope.join("\n"));
 
   const pre = stage.preChecks(projectDir, ctx);
   // A pre-check can pass and still have something to say — a turn ceiling that looks too
@@ -163,7 +221,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       merge: stage.revisionOverlayMerge?.(projectDir, ctx.domain),
     }
     : undefined;
-  const ws = materialise(projectDir, wsMode, overlay ? { overlay } : {});
+  const ws = materialise(projectDir, wsMode, { collect: collectPaths, context: contextPaths, ...(overlay ? { overlay } : {}) });
   try {
     const skillDir = mkdtempSync(join(tmpdir(), `sdlc-skill-${name}-`));
     try {
@@ -172,7 +230,13 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       const skillPath = join(skillDir, "SKILL.md");
       writeText(skillPath, skillText(name));
 
-      const prompt = stage.prompt(ctx);
+      // The scope note is appended by the runner rather than written into any stage's own
+      // prompt, so it is generated from the same two declarations the runner enforces and
+      // one cannot drift from the other. A stage prompt that lists something read out of a
+      // read-only path — the criteria a slice claims, read from the plan — is then followed
+      // by the statement that the path is not this stage's to change.
+      const scopeNote = workspaceScopeNote(wsMode, collectPaths, contextPaths);
+      const prompt = [stage.prompt(ctx), scopeNote].filter(Boolean).join("\n\n");
       const mcpServers = stage.mcp?.(ctx, config);
       const envVars = stage.env?.(ctx, config);
       if (dryRun) {
@@ -220,21 +284,28 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       const state = { stage: name, ctx: { slice, domain, target, stale, revise }, startedAt: new Date().toISOString(), phase: "agent" };
       writeRunState(projectDir, state);
 
+      // The workspace as the session first sees it, after `prepare` has generated whatever
+      // it generates and before the agent has touched anything. Everything the mode carries
+      // that this run will not collect is digested here and read again below.
+      ws.seal();
+
       const r = await runAgent({
         cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name, stage.defaultTurns),
         mcpConfig, allowedTools: stage.allowedTools, env: envVars,
       });
       if (!r.ok) return agentTurnFailed(projectDir, stage, r);
 
-      // `stage.collect` may be a plain array or, like `stage.workspace` above, a function
-      // — `derive-tests` narrows it on a revise run to the same paths its workspace
-      // overlaid (plus `tests/generated`, always regenerated from `HEAD`'s own contract by
-      // `prepare`), so a revise run's writeback can never carry another domain's tests or
-      // the shared bookkeeping files back out of the workspace, even before
-      // `derive-tests-scope` gets a chance to judge the tree.
-      const collectPaths = typeof stage.collect === "function" ? stage.collect(ctx) : stage.collect;
       const recollect = () => collect(projectDir, ws.dir, collectPaths);
       if (ws.mode !== "project") recollect();
+
+      // Read after the collect, so whatever the agent produced that this stage CAN deliver
+      // is already in the working tree for a person to look at, exactly as a post-check
+      // failure leaves it. What is reported here is the rest: work the agent wrote where
+      // the stage has no way to deliver it, which would otherwise be dropped by the
+      // workspace's teardown while the journal and the proposal page went on describing it
+      // as done. The run stops and names the paths.
+      const dropped = ws.drift();
+      if (dropped.length) return workOutsideCollect(projectDir, stage, r, ws, collectPaths, dropped);
 
       // `workspaceDir` and `recollect` are what let a post-check failure in a workspace
       // stage earn the same one repair turn an in-place stage gets: the turn runs in the

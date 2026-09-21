@@ -18,10 +18,16 @@ one slice delivers is exactly what the design settles.
 
 ## Workspace
 
-`spec-and-design`: `spec/`, `design/` and `constitution.md`, archived from `HEAD`. The same
-workspace the design gate gets, and absent for the same reasons — no application, and no
-acceptance suite. A plan that can see which criteria already have tests will cut its slices around
-the tests rather than around the work.
+`plan`: `spec/`, `design/`, `constitution.md` and `.claude/skills/` as read-only context, plus
+`plan/` and `docs/decisions/` — what this stage delivers — archived from `HEAD` alongside them. No
+application and no acceptance suite: a plan that can see which criteria already have tests will
+cut its slices around the tests rather than around the work.
+
+The plan and the decision records are in the workspace because they are what a revision starts
+from, and because a stage that writes over a directory it never read leaves behind whatever it did
+not happen to rewrite. Everything else the workspace carries is sealed: a change to `spec/` or
+`design/` here is not this stage's to deliver, and the run ends naming the paths rather than
+dropping them (`docs/decisions/0027-a-run-that-fabricated-success.md`).
 
 ## Outputs
 

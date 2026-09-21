@@ -246,11 +246,11 @@ belonging to another domain to still match it exactly, naming whichever id chang
 
 Once the session ends, `stage.collect` (`registry.mjs`) narrows what is copied back out of the
 workspace to the same two overlaid paths plus `tests/generated` — never the whole `tests/acceptance`
-tree a full run collects. A sibling domain's tests, and the shared bookkeeping files, are present in
-the workspace only because the base archive always includes them; they are never written back over
-the project's own copy, even if an agent turn strayed and touched one (`derive-tests-scope`, below,
-would fail that run anyway, but the write never reaches the project tree to be judged in the first
-place).
+tree a full run collects. A sibling domain's tests, and the shared bookkeeping files, are context
+for a revise run rather than its output: `stage.context` declares them so, they are in the
+workspace for the reading exactly as they always were, and a turn that strays and edits one ends
+the run with that path named instead of having the edit dropped in silence
+(`docs/decisions/0027-a-run-that-fabricated-success.md`).
 
 The proposal it opens is `derive-tests-<d>-<n>`, `n` being how many rulings this domain's test
 proposal has already been through, the one that returned it included — so the first `--revise`

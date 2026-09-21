@@ -27,8 +27,14 @@ The pages a run covers are the ones the surface marks with this domain, read fro
 
 ## Workspace
 
-`spec-and-design`: `spec/`, `design/` and `constitution.md`, archived from `HEAD`. No `app/`, no
-`sources/`, and no `tests/acceptance/`.
+`design`: `spec/`, `constitution.md` and `.claude/skills/` as read-only context, plus `design/`
+and `spec/contract/surface.yaml` — what this stage delivers — archived from `HEAD` alongside them.
+No `app/`, no `sources/`, and no `tests/acceptance/`.
+
+The rest of `spec/` is sealed. The contract's `surface.yaml` is the one file in it this stage
+writes, and it is declared as output for exactly that reason; a change anywhere else under `spec/`
+ends the run naming the path, since nothing here could deliver it
+(`docs/decisions/0027-a-run-that-fabricated-success.md`).
 
 The absent acceptance suite is deliberate and is the same argument the blind stages rest on. A
 design that can read the assertions waiting for it is a design drawn to satisfy them rather than

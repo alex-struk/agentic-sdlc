@@ -88,7 +88,7 @@ test("plan holds gate G2, is not per-domain, and refuses to run before the scree
   const stage = stageFor("plan");
   assert.equal(stage.implemented, true);
   assert.equal(stage.gate, "G2");
-  assert.equal(stage.workspace, "spec-and-design");
+  assert.equal(stage.workspace, "plan");
   assert.deepEqual(stage.collect, ["plan", "docs/decisions"]);
   assert.equal(stage.title, "plan");
   const checks = stage.preChecks(".", { config: {} });
