@@ -108,7 +108,14 @@ export async function resume(projectDir, { again = false } = {}) {
   const agentResult = recoverAgentTurn(projectDir, state.stage)
     ?? { text: "(resumed; agent output unavailable)", cost: 0, turns: 0, sessionId: "" };
   const r = await finishStage(projectDir, stage, ctx, agentResult);
-  return r.ok ? 0 : 1;
+  // `finishStage` is where every real outcome of a resumed run is decided — a post-check
+  // failure, a proposal opened, a plain commit — and until here nothing said which. `sdlc
+  // run` reports exactly this shape through `COMMANDS.run`; a run continued through `sdlc
+  // resume` is told the same way, not left to a caller who has to diff the tree to find
+  // out what a supposedly finished resume actually did.
+  if (!r.ok) { console.error(`resume ${state.stage}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }
+  console.log(`resume ${state.stage}: ok${r.proposal ? ` (opened ${r.proposal.branch})` : ""}`);
+  return 0;
 }
 
 COMMANDS.resume = async ({ flags }) => resume(process.cwd(), { again: !!flags.again });
