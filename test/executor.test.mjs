@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync, lstatSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync, lstatSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureConfigHome } from "../src/runner/config-home.mjs";
@@ -91,18 +91,61 @@ test("ensureConfigHome leaves the credentials file alone when the source already
   } finally { delete process.env.SDLC_CLAUDE_HOME; delete process.env.SDLC_CREDENTIALS; }
 });
 
-test("ensureConfigHome replaces whatever is already at the credentials path", () => {
+// Seconds since the epoch, for `utimesSync`: these tests turn on which of two files is
+// the newer one, and a test that wrote both in the same millisecond would be asserting
+// on the scheduler rather than on the rule.
+function setMtime(path, secondsAgo) {
+  const t = Date.now() / 1000 - secondsAgo;
+  utimesSync(path, t, t);
+}
+
+test("ensureConfigHome replaces a credentials file the source has overtaken", () => {
   const root = mkdtempSync(join(tmpdir(), "sdlc-home-replace-"));
   const cred = join(root, "creds.json"); writeFileSync(cred, "{\"real\":true}");
   const home = join(root, "home"); mkdirSync(home, { recursive: true });
-  // A plain file, not a symlink: the previous version left it alone and the session
-  // would have authenticated with it instead of the operator's own credentials.
-  writeFileSync(join(home, ".credentials.json"), "{\"stale\":true}");
+  // A plain file, not a symlink, and older than the source: an operator who signs in
+  // again writes a newer credential at the source, and that sign-in is the way back
+  // from anything this directory holds that can no longer be refreshed.
+  const link = join(home, ".credentials.json");
+  writeFileSync(link, "{\"stale\":true}");
+  setMtime(link, 600); setMtime(cred, 60);
   process.env.SDLC_CLAUDE_HOME = home; process.env.SDLC_CREDENTIALS = cred;
   try {
     const p = ensureConfigHome();
     assert.ok(lstatSync(join(p, ".credentials.json")).isSymbolicLink());
     assert.equal(readFileSync(join(p, ".credentials.json"), "utf8"), "{\"real\":true}");
+  } finally { delete process.env.SDLC_CLAUDE_HOME; delete process.env.SDLC_CREDENTIALS; }
+});
+
+test("ensureConfigHome keeps a credential a session refreshed into the config home", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-home-refreshed-"));
+  const cred = join(root, "creds.json"); writeFileSync(cred, "{\"seed\":true}");
+  const home = join(root, "home"); mkdirSync(home, { recursive: true });
+  // What a refresh leaves behind: the session writes a new file and renames it over
+  // `.credentials.json`, which replaces the name and so replaces the symlink with a
+  // regular file. The refreshed credential exists here and nowhere else — relinking
+  // over it throws the refresh away and hands the next session the older credential
+  // again.
+  const link = join(home, ".credentials.json");
+  writeFileSync(link, "{\"refreshed\":true}");
+  setMtime(cred, 600); setMtime(link, 60);
+  process.env.SDLC_CLAUDE_HOME = home; process.env.SDLC_CREDENTIALS = cred;
+  try {
+    const p = ensureConfigHome();
+    assert.ok(!lstatSync(join(p, ".credentials.json")).isSymbolicLink());
+    assert.equal(readFileSync(join(p, ".credentials.json"), "utf8"), "{\"refreshed\":true}");
+  } finally { delete process.env.SDLC_CLAUDE_HOME; delete process.env.SDLC_CREDENTIALS; }
+});
+
+test("the config home is private to the account that owns it", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-home-mode-"));
+  const cred = join(root, "creds.json"); writeFileSync(cred, "{}");
+  const home = join(root, "home"); mkdirSync(home, { recursive: true, mode: 0o755 });
+  process.env.SDLC_CLAUDE_HOME = home; process.env.SDLC_CREDENTIALS = cred;
+  try {
+    // The directory holds a live credential, so no other account on the machine has any
+    // business listing it — including one that already existed under a looser umask.
+    assert.equal(statSync(ensureConfigHome()).mode & 0o777, 0o700);
   } finally { delete process.env.SDLC_CLAUDE_HOME; delete process.env.SDLC_CREDENTIALS; }
 });
 
