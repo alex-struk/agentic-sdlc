@@ -9,6 +9,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { escapeRe } from "./shared.mjs";
 import { conditionsAreExecutable, splitConditionsByAddressee } from "../spec/criteria.mjs";
+import { REVISION_REQUESTS_PATH, openRevisionRequestsFor, takeRevisionRequest } from "../spec/revisions.mjs";
 
 // One sentence off the front of `text`, plus whatever is left after it. The terminator
 // has to be followed by whitespace or the end of the string, so a dot inside a filename
@@ -192,4 +193,47 @@ export function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", 
   git([...SDLC_AUTHOR, "commit", "-q", "-m", subject], projectDir);
   if (keepBranch) git(["branch", "-m", branch, `returned/${name}`], projectDir);
   else git(["branch", "-D", branch], projectDir);
+}
+
+// The other thing a `--revise` run can start from: a request filed by a ruling elsewhere
+// that named this stage (`addressed-to <stage>: <why>`). What that stage last produced was
+// approved and merged, so there is no returned proposal to revise from and, until this,
+// no way to open the artifact at all — which left a pipeline whose gates only move forward
+// unable to record what the work downstream of a decision discovers about it.
+//
+// Reopening is not accepting. The request makes the stage runnable again and nothing else:
+// the revision it produces is a fresh proposal at that stage's own gate, ruled by the
+// holder of that gate, so an upstream artifact is never changed on the say-so of a
+// downstream reviewer alone.
+//
+// Taken up on a real run only, in a commit of its own on `main` — a dry run is asking what
+// would happen, and taking the request would be an answer that changed the question. The
+// entry is marked rather than removed, so what was asked for, by whom and from which
+// proposal stays readable long after the revision is merged.
+export function requestedRevision(projectDir, stage, ctx) {
+  const [request] = openRevisionRequestsFor(projectDir, stage);
+  if (!request) return null;
+  if (!ctx.dryRun && takeRevisionRequest(projectDir, request)) {
+    stagePaths(projectDir, [REVISION_REQUESTS_PATH]);
+    git([...SDLC_AUTHOR, "commit", "-q", "-m", `record(${stage}): ${request.from} asks ${stage} to revise`], projectDir);
+  }
+  return { name: null, branch: null, request, rationale: "", conditions: [], addressedElsewhere: [] };
+}
+
+// Where a revision came from, in the prompt's own words: ordinarily the ruling that
+// returned this stage's own proposal, and for a reopening the ruling at another gate that
+// asked for it. Both carry the ruler's text verbatim, because a stage sent back to work
+// with no account of what was wrong does the same work again.
+//
+// The reopening block says which proposal, which gate and which seat, since none of that
+// is anywhere the stage can see, and it says where the result goes: a stage told only to
+// change something could otherwise read the request as the decision it is not.
+export function revisionRulingBlock(ctx) {
+  const r = ctx.revision?.request;
+  if (!r) return `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`;
+  return [
+    `This revision was not asked for by a ruling on a proposal of your own. What this stage last produced was approved, and ${r.from} — ruled at ${r.gate} by ${r.by} — carried a condition addressed to this stage: the work downstream of yours showed something about it that could not have been known when it was ruled.`,
+    `What that ruling asked for, in its own words:\n\n${r.why}`,
+    "Change only what it names and leave everything else exactly as you found it. What you produce is a fresh proposal at this stage's own gate, and that gate decides whether the change is accepted — the ruling that asked for it does not.",
+  ].join("\n\n");
 }

@@ -36,7 +36,7 @@ import { calibrate } from "./calibrate.mjs";
 // them without importing the registry itself, which imports every stage and would make
 // that a cycle. Re-exported below so every existing caller of these four names from
 // `registry.mjs` keeps working unchanged.
-import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, returnedRulingOn, revisionConditionList, highestRulingNumber } from "./proposals.mjs";
+import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, highestRulingNumber } from "./proposals.mjs";
 import { build } from "./build.mjs";
 import { verify } from "./verify.mjs";
 
@@ -471,9 +471,11 @@ const archaeology = {
     const d = ctx.domain;
     if (ctx.revise) {
       const rationale = ctx.revision?.rationale ?? "";
+      const reopened = Boolean(ctx.revision?.request);
       return [
-        `The "${d}" domain was recovered before and partly ratified. A ruling returned it: one criterion's evidence — its citations, or its given/when/then — is wrong in a way no ratification condition can repair. Here is the rationale, verbatim:`,
-        `\`\`\`\n${rationale}\n\`\`\``,
+        reopened ? null
+          : `The "${d}" domain was recovered before and partly ratified. A ruling returned it: one criterion's evidence — its citations, or its given/when/then — is wrong in a way no ratification condition can repair. Here is the rationale, verbatim:`,
+        reopened ? revisionRulingBlock(ctx) : `\`\`\`\n${rationale}\n\`\`\``,
         `Revise spec/domains/${d}.md so the criteria this rationale names are correct: rewrite their statement, citations, given/when/then, note and confidence from the evidence you find in sources/old — its code, migrations, docs, README, and any OpenAPI/swagger file it has. Never read sources/old/tests, and never read anything outside sources/old except constitution.md, spec/, and intent/.`,
         `This run changes spec/domains/${d}.md only. Unlike a first recovery, do not touch spec/contract/surface.yaml or spec/contract/personas.yaml, and do not touch any other domain's file — a return names one criterion's evidence as wrong, never a reason to add to the contract surface.`,
         `Leave every R-<n> criterion in the file byte-for-byte unchanged. Leave every other D-<n> criterion unchanged too, unless this rationale's evidence contradicts it. Never renumber any criterion, minted or provisional.`,
@@ -1024,7 +1026,12 @@ function checkDeriveTestsRevisionSource(projectDir, ctx) {
   const id = "derive-tests-revise-source";
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
   const found = findReturnedDeriveTestsRuling(projectDir, ctx.domain);
-  if (!found) return { id, ok: false, messages: [`derive-tests --revise: no returned ruling for ${ctx.domain} to revise from`] };
+  if (!found) {
+    const requested = requestedRevision(projectDir, "derive-tests", ctx);
+    if (!requested) return { id, ok: false, messages: [`derive-tests --revise: no returned ruling for ${ctx.domain} to revise from`] };
+    ctx.revision = requested;
+    return { id, ok: true, messages: [] };
+  }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
   ctx.revision = { ...found, branchCommit };
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
@@ -1286,9 +1293,11 @@ const deriveTests = {
         ? conditions.map((c, i) => `${i + 1}. ${c}`).join("\n")
         : "(the ruling recorded no separate conditions; act on the rationale alone.)";
       const elsewhere = addressedElsewhereNote(ctx);
+      const reopened = Boolean(ctx.revision?.request);
       return [
-        `These tests for the "${d}" domain were proposed and returned, not approved. Here is the reviewer's rationale, verbatim:\n\n\`\`\`\n${rationale}\n\`\`\``,
-        `And each condition it attached, verbatim:\n\n${condLines}`,
+        reopened ? revisionRulingBlock(ctx)
+          : `These tests for the "${d}" domain were proposed and returned, not approved. Here is the reviewer's rationale, verbatim:\n\n\`\`\`\n${rationale}\n\`\`\``,
+        reopened ? null : `And each condition it attached, verbatim:\n\n${condLines}`,
         `Change only what these conditions name — a spec file, a not-testable entry, or one assertion inside a file. Every other file already in tests/acceptance/${d}/ and every other entry in tests/acceptance/not-testable.yaml stays byte-for-byte as you found it: re-derive nothing, and never rewrite a header's "derived" date on a file whose content you did not actually change.`,
         `A criterion nothing in surface reaches — no page, action or observation gets you there — still gets an entry in tests/acceptance/not-testable.yaml instead of a file, exactly as a first derivation would.`,
         elsewhere,
@@ -1578,7 +1587,12 @@ function checkBindAdapterRevisionSource(projectDir, ctx) {
   const id = "bind-adapter-revise-source";
   if (!ctx.revise || !ctx.target) return { id, ok: true, messages: [] };
   const found = findReturnedBindAdapterRuling(projectDir, ctx.target);
-  if (!found) return { id, ok: false, messages: [`bind-adapter --revise: no returned ruling for ${ctx.target} to revise from`] };
+  if (!found) {
+    const requested = requestedRevision(projectDir, "bind-adapter", ctx);
+    if (!requested) return { id, ok: false, messages: [`bind-adapter --revise: no returned ruling for ${ctx.target} to revise from`] };
+    ctx.revision = requested;
+    return { id, ok: true, messages: [] };
+  }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
   ctx.revision = { ...found, branchCommit };
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
@@ -1602,7 +1616,7 @@ function bindAdapterRevisionInstructions(ctx) {
   const conditions = revisionConditionList(ctx);
   return [
     `This is a revision. The binding you are correcting is already at tests/adapters/${ctx.target}/ — open it and change only what the conditions below name. Do not rebind what was accepted, and do not start the target's walk over.`,
-    `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`,
+    revisionRulingBlock(ctx),
     conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
     addressedElsewhereNote(ctx),
   ].filter(Boolean).join("\n\n");
@@ -1926,7 +1940,12 @@ function checkRevisionSource(projectDir, ctx) {
   const id = "archaeology-revise-source";
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
   const found = findReturnedRuling(projectDir, ctx.domain);
-  if (!found) return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
+  if (!found) {
+    const requested = requestedRevision(projectDir, "archaeology", ctx);
+    if (!requested) return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
+    ctx.revision = requested;
+    return { id, ok: true, messages: [] };
+  }
   ctx.revision = found;
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G1" });
   return { id, ok: true, messages: [] };
@@ -2366,7 +2385,12 @@ function checkDesignRevisionSource(projectDir, ctx) {
   const id = "design-revise-source";
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
   const found = findReturnedDesignRuling(projectDir, ctx.domain);
-  if (!found) return { id, ok: false, messages: [`design --revise: no returned ruling for ${ctx.domain} to revise from`] };
+  if (!found) {
+    const requested = requestedRevision(projectDir, "design", ctx);
+    if (!requested) return { id, ok: false, messages: [`design --revise: no returned ruling for ${ctx.domain} to revise from`] };
+    ctx.revision = requested;
+    return { id, ok: true, messages: [] };
+  }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
   ctx.revision = { ...found, branchCommit };
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G-DESIGN", keepBranch: true });
@@ -2380,7 +2404,7 @@ function designRevisionInstructions(ctx) {
   const conditions = revisionConditionList(ctx);
   return [
     `This is a revision. The screens you are correcting are already under design/ — open them and change only what the conditions below name. Do not redraw a screen nobody asked about.`,
-    `The ruling that returned them:\n\n${ctx.revision?.rationale ?? ""}`,
+    revisionRulingBlock(ctx),
     conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
     addressedElsewhereNote(ctx),
     `A condition addressed to a person rather than a stage — the runner, the tech lead — is not yours to carry out either. Say in your journal which ones you left, and to whom.`,
@@ -2618,14 +2642,16 @@ function checkPlanRevisionSource(projectDir, ctx) {
       return { id, ok: true, messages: [] };
     }
   }
+  const requested = requestedRevision(projectDir, "plan", ctx);
+  if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }
   return { id, ok: false, messages: ["plan --revise: no returned plan ruling to revise from"] };
 }
 
 function planRevisionInstructions(ctx) {
   const conditions = revisionConditionList(ctx);
   return [
-    "This is a revision. The plan the architect returned is already under plan/ and docs/decisions/ — change what the conditions below name and keep every slice the ruling did not question.",
-    `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`,
+    "This is a revision. The plan you are correcting is already under plan/ and docs/decisions/ — change what the conditions below name and keep every slice the ruling did not question.",
+    revisionRulingBlock(ctx),
     conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
     addressedElsewhereNote(ctx),
     "A condition addressed to a person rather than a stage — the runner, the tech lead — is not yours to carry out either. Say in your journal which ones you left, and to whom.",

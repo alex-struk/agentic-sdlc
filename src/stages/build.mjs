@@ -10,7 +10,7 @@ import { readText } from "../lib/fsx.mjs";
 import { changedPaths, git } from "../lib/git.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { readSlice, buildProposalBase, buildProposals } from "./slices.mjs";
-import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, returnedRulingOn, revisionConditionList } from "./proposals.mjs";
+import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock } from "./proposals.mjs";
 import { skillPath } from "./shared.mjs";
 import { targetSettings } from "../sandbox/local.mjs";
 
@@ -63,14 +63,16 @@ function checkBuildRevisionSource(projectDir, ctx) {
     if (!ctx.dryRun) recordReturnOnMain(projectDir, ctx.revision, { gate: "G3", keepBranch: true });
     return { id, ok: true, messages: [] };
   }
+  const requested = requestedRevision(projectDir, "build", ctx);
+  if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }
   return { id, ok: false, messages: [`build --revise: no returned ruling for slice ${ctx.slice} to revise from`] };
 }
 
 function revisionInstructions(ctx) {
   const conditions = revisionConditionList(ctx);
   return [
-    "This is a revision. The application as the returned proposal left it is already under app/; change what the ruling below names and leave the rest.",
-    `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`,
+    "This is a revision. The application you are correcting is already under app/; change what the ruling below names and leave the rest.",
+    revisionRulingBlock(ctx),
     conditions ? `What it must now do:\n\n${conditions}` : "",
     addressedElsewhereNote(ctx),
     "A failing criterion is described by what the running application did, never by the test's code, which you will not see. Read the criterion again and find where the application departs from it.",

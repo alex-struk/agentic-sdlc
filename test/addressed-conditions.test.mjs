@@ -326,7 +326,7 @@ test("a line in this form at a gate with a closed grammar is left to that gramma
 // reach a prompt, which needs a ruling and a stage and nothing else.
 import { mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { returnedRulingOn } from "../src/stages/proposals.mjs";
+import { requestedRevision, returnedRulingOn } from "../src/stages/proposals.mjs";
 import { openRevisionRequestsFor } from "../src/spec/revisions.mjs";
 
 const OVERREACH = "test-overreaches R-1.3: the test signs in as a reviewer and reads an audit log the criterion never names";
@@ -416,4 +416,105 @@ test("a build revise prompt reports the same way", (t) => {
   assert.ok(!prompt.includes("- addressed-to plan:"));
   assert.match(prompt, /1 condition/);
   assert.match(prompt, /to plan: slice 2 claims a criterion about a fee/);
+});
+
+// --- an approved artifact, reopened by a condition raised against it ---
+
+// One request on file, addressed to `stage`, the way a ruling elsewhere leaves it.
+function requestOnMain(d, run, stage, why) {
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "revision-requests.yaml"),
+    `requests:\n  - stage: ${stage}\n    why: ${JSON.stringify(why)}\n    from: build-slice-2\n    gate: G3\n    by: agent:reviewer\n    at: 2026-01-01T00:00:00.000Z\n`);
+  run(["add", "-A"]);
+  run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "filed"]);
+}
+
+test("a stage with nothing returned is revisable by a request addressed to it, and is handed the reason verbatim", (t) => {
+  const { d, run } = repo(t);
+  requestOnMain(d, run, "plan", WHY);
+  const stage = stageFor("plan");
+  const ctx = { revise: true, dryRun: true };
+  const check = stage.preChecks(d, ctx).find((c) => c.id === "plan-revise-source");
+  assert.equal(check.ok, true, JSON.stringify(check));
+  assert.equal(ctx.revision.name, null, "there is no returned proposal behind this one");
+  assert.equal(ctx.revision.request.from, "build-slice-2");
+
+  const prompt = stage.prompt(ctx);
+  assert.ok(prompt.includes(WHY), "the reason reaches the stage that has to do the work");
+  assert.match(prompt, /build-slice-2/, "with the proposal it was raised on");
+  assert.match(prompt, /G3/, "the gate it was raised at");
+  assert.match(prompt, /agent:reviewer/, "and who raised it");
+  assert.match(prompt, /own gate/, "and that its own gate is what accepts the result");
+
+  // No overlay: what is being revised is on main, already approved, not on a branch.
+  assert.equal(ctx.revision.branchCommit, undefined);
+});
+
+test("a revision run takes the request up, and what it said stays on file", (t) => {
+  const { d, run } = repo(t);
+  requestOnMain(d, run, "plan", WHY);
+  const ctx = { revise: true };
+  assert.equal(stageFor("plan").preChecks(d, ctx).find((c) => c.id === "plan-revise-source").ok, true);
+
+  assert.deepEqual(openRevisionRequestsFor(d, "plan"), [], "nothing is left open for a second run to take again");
+  const [taken] = readRevisionRequests(d);
+  assert.equal(taken.why, WHY, "the reason an approved artifact was opened again survives being acted on");
+  assert.equal(taken.from, "build-slice-2");
+  assert.match(taken.taken, /^\d{4}-\d{2}-\d{2}T/);
+
+  // Taken up means taken up, not answered: the next run has nothing to start from again.
+  const second = { revise: true };
+  const again = stageFor("plan").preChecks(d, second).find((c) => c.id === "plan-revise-source");
+  assert.equal(again.ok, false);
+  assert.match(again.messages[0], /no returned plan ruling/);
+});
+
+// The guard the whole route turns on: a request asks for work, and asks for nothing else.
+test("taking a request rules nothing, approves nothing and changes no artifact", (t) => {
+  const { d, run } = repo(t);
+  mkdirSync(join(d, "plan"), { recursive: true });
+  writeFileSync(join(d, "plan", "tasks.md"), "# slices\n");
+  run(["add", "-A"]);
+  run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "plan"]);
+  requestOnMain(d, run, "plan", WHY);
+  const before = execFileSync("git", ["rev-parse", "HEAD:plan"], { cwd: d, encoding: "utf8" }).trim();
+
+  const ctx = { revise: true };
+  stageFor("plan").preChecks(d, ctx);
+
+  assert.equal(execFileSync("git", ["rev-parse", "HEAD:plan"], { cwd: d, encoding: "utf8" }).trim(), before,
+    "the artifact the request names is not touched by the request");
+  const files = execFileSync("git", ["show", "--name-only", "--format=", "HEAD"], { cwd: d, encoding: "utf8" });
+  assert.deepEqual(files.split("\n").filter(Boolean), [".sdlc/revision-requests.yaml"]);
+  assert.ok(!existsSync(join(d, ".sdlc", "gates")), "and no gate has been ruled");
+  assert.equal(readRevisionRequests(d).length, 1, "the request itself was taken up, so this is what taking one does");
+  assert.ok(readRevisionRequests(d)[0].taken);
+});
+
+// The mechanism is keyed on a stage having a revision mode, not on a list of stage names.
+test("a request reaches any stage that can be asked to revise", (t) => {
+  const { d, run } = repo(t);
+  requestOnMain(d, run, "design", "the screen the second slice delivers is not drawn anywhere");
+  const ctx = { revise: true, domain: "applications", dryRun: true };
+  const check = stageFor("design").preChecks(d, ctx).find((c) => c.id === "design-revise-source");
+  assert.equal(check.ok, true, JSON.stringify(check));
+  assert.ok(stageFor("design").prompt(ctx).includes("the screen the second slice delivers is not drawn anywhere"));
+
+  // Including a stage that writes its revise prompt itself rather than through the shared
+  // renderer, and which must not tell the writer its own proposal was returned.
+  const { d: d2, run: run2 } = repo(t);
+  requestOnMain(d2, run2, "derive-tests", "the applications suite asserts a total no criterion states");
+  const testsCtx = { revise: true, domain: "applications", dryRun: true };
+  testsCtx.revision = requestedRevision(d2, "derive-tests", testsCtx);
+  const testsPrompt = stageFor("derive-tests").prompt(testsCtx);
+  assert.ok(testsPrompt.includes("the applications suite asserts a total no criterion states"));
+  assert.ok(!testsPrompt.includes("proposed and returned"), "a reopening is not a return");
+});
+
+test("a dry run reads the request and does not take it", (t) => {
+  const { d, run } = repo(t);
+  requestOnMain(d, run, "plan", WHY);
+  const ctx = { revise: true, dryRun: true };
+  stageFor("plan").preChecks(d, ctx);
+  assert.equal(openRevisionRequestsFor(d, "plan").length, 1);
 });
