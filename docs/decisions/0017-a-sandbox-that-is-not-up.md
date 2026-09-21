@@ -55,27 +55,55 @@ exited non-zero has failed, whether it was meant to run once or for ever. Compos
 question the same way: `service_completed_successfully`, the condition a dependant declares on a
 one-shot, is satisfied by exit 0 and by nothing else.
 
-**The services are watched rather than glanced at.** A crash loop spends part of every cycle
-running, so a single `ps` can catch the container in the half of the cycle that looks healthy. The
-project is sampled up to three times, two seconds apart, and the first sample that reports a failed
-service is the answer. Sampling stops as soon as a failure is found, and stops immediately when
-compose names no container at all, so nothing that is actually healthy pays for the wait.
+**The services are watched rather than glanced at.** A container caught in a crash loop is reported
+`restarting` for the whole of its backoff and `running` for the seconds between, so a single `ps` can
+catch it in the half that looks healthy. The project is sampled up to three times, two seconds apart,
+and the first sample that reports a failed service is the answer. A longer backoff widens the window
+rather than narrowing it, so the loops hardest to catch are the fast ones. What sampling does not
+reach is a container that outlives the watch and dies after it — no number of samples would, and the
+acceptance suite that runs next is what finds that one. Sampling stops as soon as a failure is found,
+and stops immediately when compose names no container at all, so nothing that is actually healthy
+pays for the wait.
 
-Anything quoted out of a container — a compose tail, a service's own log — passes through a
-redaction of `SDLC_SANDBOX_PASSWORD` first. The password reaches compose through the environment and
-never through an argument or a file, and a container is free to print what it was handed; a log that
-is about to be written into a gate file and a commit must not be where it lands.
+Both of the fields compose reports about a container's state are read: `State`, the machine-readable
+one, and `Status`, the sentence written for a person — `Up 3 seconds`, `Restarting (1) 3 seconds
+ago`. Reading both means a version that spells one of them differently, or reports `running` while
+its own sentence says otherwise, is still caught. (The number in `Restarting (1)` is the exit code,
+not a count of restarts.)
+
+**An answer that cannot be read is not an answer that nothing is wrong.** `ps` is the only thing that
+knows whether the services are running. If it exits non-zero, or answers in a spelling this version
+does not parse, or answers with records that name no container, the sandbox is not reported up and
+the cause is the machine. The two empty answers are kept apart to make that possible: compose
+printing nothing, or an empty array, means the project has no containers and is something known;
+anything else means nothing is known, and reading the two alike would print `sandbox up` over exactly
+the crash loop this check exists to catch. A re-run costs nothing, which is the same asymmetry every
+other guess here is settled by.
+
+Anything quoted out of a container — a compose tail, a service's own log, a `ps` this could not read,
+`status`'s own output — passes through a redaction of `SDLC_SANDBOX_PASSWORD` first. The password
+reaches compose through the environment and never through an argument or a file, and a container is
+free to print what it was handed; a log that is about to be written into a gate file and a commit
+must not be where it lands. The redaction knows only the value in the environment, so a compose file
+that hard-codes a password of its own is a path this does not cover: a service that printed it would
+have it quoted into a gate file and committed. The way to not have that happen is to not write one
+into a compose file.
 
 ### The result says whether the application or the machine is at fault
 
 `sandboxUp` returns `cause` on every refusal, one of `application` or `environment`, and `failures`,
 the same answer in parts so a caller can write one condition per service.
 
-**The discriminator is whether a container of the project ran its own process.** A container that
-started and then died, restarted, or went unhealthy ran something this build wrote: the fault is the
-application's. A failure with no such container behind it is the machine's — a port already bound,
-an image that would not pull, a daemon that is not there — and nothing the builder produced ever
-executed, so there is nothing to tell a builder to fix.
+**The discriminator is the container's state, not whether its process executed.** A container that
+reached a state of its own and failed out of it — restarting, dead, exited non-zero, running and
+unhealthy — is the application's: the image it was built from and the files it read are this build's
+output. A failure with no such container behind it is the machine's — a port already bound, an image
+that would not pull, a daemon that is not there — and there is no container to tell a builder
+anything about.
+
+State rather than execution is the deliberate half. An image whose entrypoint does not exist reports
+`exited` with code 127, and nothing of the build ever ran; it is still the application's, because the
+entrypoint is named in a file this build wrote and a builder can fix it.
 
 Three cases are decided directly rather than by that rule:
 
@@ -94,14 +122,26 @@ pipeline cannot tell the two apart. Halting on a build failure costs a re-run; r
 spends one of the three attempts a slice has before a person is asked, so the guess goes the safe
 way.
 
+A container the kernel killed for memory goes the other way, and wrongly: an out-of-memory kill
+exits 137, which reads as the application's when the machine is what ran out. `docker compose ps
+--format json` carries no `OOMKilled` field, so the exit code is all there is to read and nothing
+here can know. The cost is one of the slice's three attempts spent on a machine problem, and the
+escalation at the third is what a person sees.
+
 ### Verify returns the build when the cause is the application, and halts when it is the machine
 
 An `application` cause is written to the proposal's gate file exactly as a failing criterion is: the
 same file, `by: runner:verify`, `held_by: runner`, one condition per failed service carrying the
 service, what became of it and the end of its log. `build --slice <n> --revise` picks it up like any
-other return. No verify result is written, because no suite ran, so `buildVerified` still refuses a
-ruling on that proposal — the return is the only thing that moves, which is the whole of what was
-missing.
+other return.
+
+`tests/results/new/slice-<n>.json` is written alongside it, with no rows, `verdict: fail` and a
+`not_verified` line saying the sandbox did not start. No test ran, and the file is written anyway
+because it is what `buildVerified` (`src/commands/rule.mjs`) reads to decide whether this proposal
+may be ruled at all — and it judges an earlier result current by the application tree, which a commit
+carrying only a gate file does not change. Left alone, a `pass` recorded before the sandbox broke
+would still read as current and the proposal this run just returned would still be rulable as
+approved.
 
 An `environment` cause halts the run, non-zero, with nothing recorded against the build.
 
@@ -125,6 +165,12 @@ collision.
 denied` or `failed to solve` would classify a build failure correctly and would also classify a
 registry timeout as a Dockerfile defect, because buildkit reports both with the same phrase. Container
 state is a fact compose reports about the project; the text is prose that changes between versions.
+
+**Relaxing `buildVerified` instead of writing a result.** Having it reject whenever the proposal's
+gate file is a `runner:verify` return would also close the stale-pass hole, and it would put the
+answer in two places: a ruling would then be refused by the gate file and permitted by the result
+file at the same time. One file says whether this application has been verified, and every route out
+of verify writes it.
 
 **Requiring every service to declare a healthcheck.** It would make `--wait` sufficient, and it puts
 the pipeline in the business of dictating the contents of a compose file the project owns — and a

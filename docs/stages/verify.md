@@ -143,8 +143,14 @@ cannot pass, `rule.mjs` refuses a ruling on a build proposal with no passing ver
 `build --revise` needs a returned ruling to start from. So `cause: application` is written to the
 proposal's gate file exactly as a failing criterion is — the same file, `by: runner:verify`, one
 condition per failed service naming the service, what became of it and the end of its own log — and
-`build --slice <n> --revise` picks it up like any other return. No verify result is written, since
-no suite ran, so a ruling on that proposal is still refused.
+`build --slice <n> --revise` picks it up like any other return.
+
+`tests/results/new/slice-<n>.json` is written alongside it, with no rows, `verdict: fail` and a
+`not_verified` line. No test ran, and the file is written anyway because it is what `rule.mjs` reads
+to decide whether the proposal may be ruled — and it judges an earlier result current by the
+application tree, which a commit carrying only a gate file does not change. Left alone, a `pass` from
+a verify before the sandbox broke would still read as current and the proposal this run just returned
+would still be rulable as approved.
 
 `cause: environment` halts the run, non-zero, with nothing recorded. A result that names no cause at
 all is treated as the machine's: halting costs a re-run, and returning a build wrongly spends one of

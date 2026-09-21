@@ -107,6 +107,24 @@ function returnsByVerify(projectDir, slice) {
   return count;
 }
 
+// What this run established about the application on this branch, written where
+// `buildVerified` (`src/commands/rule.mjs`) reads it to decide whether a G3 ruling may be
+// given at all. Every route out of `execute` that ends with a verdict writes one, including
+// the routes where no test ran: currency is judged by `app_tree`, so a run that left this
+// file alone would leave an earlier `pass` on the same tree standing and the proposal
+// rulable as approved. `not_verified` says, for a reader, why there are no rows.
+function writeVerifyResult(projectDir, { slice, name, verdict, rows, notVerified = "" }) {
+  const resultRel = `tests/results/new/slice-${slice}.json`;
+  mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
+  writeText(join(projectDir, resultRel), `${JSON.stringify({
+    slice, proposal: name, app_tree: git(["rev-parse", "HEAD:app"], projectDir),
+    at: new Date().toISOString(), verdict,
+    ...(notVerified ? { not_verified: notVerified } : {}),
+    rows,
+  }, null, 2)}\n`);
+  return resultRel;
+}
+
 // One return by verify, written the one way. `by: "runner:verify"` is what makes
 // `returnsByVerify` count it, and the count is read here so the third return escalates
 // instead of asking for a fourth build — the same ceiling whether the slice failed its
@@ -248,13 +266,22 @@ export const verify = {
         // be handed. It goes back to the builder the same way a failing criterion does —
         // the same gate file, the same author, the same three-strike ceiling — with the
         // failed service and the end of its own log as the conditions.
+        // No test ran, so there are no rows — and the file is still written, because
+        // `buildVerified` judges an earlier result current by the application tree, and a
+        // gate-only commit does not change `HEAD:app`. Left alone, a `pass` from a verify
+        // before the sandbox broke would still be reading as current and this proposal
+        // would still be rulable as approved.
+        const resultRel = writeVerifyResult(projectDir, {
+          slice: slice.number, name, verdict: "fail", rows: [],
+          notVerified: "the sandbox did not start, so no acceptance test ran",
+        });
         const { escalate, gateRel } = writeVerifyReturn(projectDir, {
           name, slice: slice.number, escalateTo,
           conditions: sandboxConditions(started),
           rationale: `Slice ${slice.number} builds an application that does not start, so none of its criteria could be tested. The compose file, the images it builds and the configuration they read are all part of this build, and each condition names a service, what became of it and what it said on the way down.`,
           escalatedRationale: `Slice ${slice.number} has been returned by verify ${MAX_VERIFY_RETURNS} times, this time because the sandbox never came up. What is wrong may not be the application's to fix — the compose file, the stack profile and this machine can each be the cause (spec 7.1) — and a fourth build would not find out which.`,
         });
-        commitOnBranch(projectDir, [gateRel], `verify(slice ${slice.number}): sandbox`);
+        commitOnBranch(projectDir, [resultRel, gateRel], `verify(slice ${slice.number}): sandbox`);
         text = escalate
           ? `verify slice ${slice.number}: the sandbox did not start after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`
           : `verify slice ${slice.number}: returned — the sandbox did not start, so nothing was verified. ${(started.messages[0] ?? "").split("\n")[0]} Next: sdlc run build --slice ${slice.number} --revise`;
@@ -265,13 +292,7 @@ export const verify = {
         });
         const claimed = rows.filter((r) => slice.criteria.includes(r.id));
         const v = verifyVerdict(claimed, slice.criteria);
-        const resultRel = `tests/results/new/slice-${slice.number}.json`;
-        mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
-        writeText(join(projectDir, resultRel), `${JSON.stringify({
-          slice: slice.number, proposal: name, app_tree: git(["rev-parse", "HEAD:app"], projectDir),
-          at: new Date().toISOString(), verdict: v.verdict, rows: claimed,
-        }, null, 2)}\n`);
-        const paths = [resultRel];
+        const paths = [writeVerifyResult(projectDir, { slice: slice.number, name, verdict: v.verdict, rows: claimed })];
         if (v.verdict === "fail") {
           const { escalate, gateRel } = writeVerifyReturn(projectDir, {
             name, slice: slice.number, escalateTo,

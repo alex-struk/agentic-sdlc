@@ -8,6 +8,7 @@ import { parse as parseYaml } from "yaml";
 import { runSuite } from "../src/testrun/playwright.mjs";
 import { verify, verifyVerdict, mergeFailureText, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
 import { build } from "../src/stages/build.mjs";
+import { buildVerified } from "../src/commands/rule.mjs";
 import { buildProposalBase } from "../src/stages/slices.mjs";
 import { nextProposalName } from "../src/stages/proposals.mjs";
 import { registerStage } from "../src/stages/registry.mjs";
@@ -509,9 +510,12 @@ test("a sandbox the application brought down returns the build, with the failed 
   assert.equal(gate.held_by, "runner");
   assert.match(gate.conditions.join("\n"), /sandbox sandbox-idp: is restarting/);
   assert.match(gate.conditions.join("\n"), /Unrecognized field/, "the builder is told what the service it wrote actually said");
-  // No suite ran, so nothing claims one did — and `rule.mjs` still refuses a ruling on a
-  // build proposal with no passing verify result behind it.
-  assert.throws(() => onBranch(d, "tests/results/new/slice-1.json"));
+  // No suite ran, so no row claims one did — and the file is still written, because it is
+  // what `rule.mjs` reads to decide whether this proposal may be ruled at all.
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "fail");
+  assert.deepEqual(result.rows, []);
+  assert.match(result.not_verified, /the sandbox did not start/);
   // The whole point: the builder can now be told.
   const pre = build.preChecks(d, { slice: 1, revise: true });
   assert.ok(pre.every((c) => c.ok), JSON.stringify(pre));
@@ -550,17 +554,22 @@ test("a sandbox failure that names no cause halts rather than guessing at the bu
 // not started three times running is the strongest case there is for a person to look at
 // it: what is wrong may be the compose file, the stack profile or the machine, and a
 // fourth build would not find out which.
-test("a sandbox return counts toward the three-strikes ceiling like any other verify return", async (t) => {
+test("a third sandbox return escalates rather than asking for a fourth build", async (t) => {
   const d = buildProject(t);
   const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
   for (const k of [2, 3]) {
     run(["checkout", "-q", "-b", `proposal/build-slice-1-${k}`, "proposal/build-slice-1"]);
     run(["checkout", "-q", "main"]);
   }
+  // Both earlier attempts were returned for the same reason this one is about to be: the
+  // sandbox never came up. Nothing distinguishes a sandbox return from a criteria return
+  // in the count — `by: runner:verify` is what is read — and this is the case where all
+  // three are the sandbox's.
   for (const name of ["build-slice-1", "build-slice-1-2"]) {
     run(["checkout", "-q", `proposal/${name}`]);
     mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
-    writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), "gate: G3\nverdict: return\nby: runner:verify\nheld_by: runner\n");
+    writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`),
+      "gate: G3\nverdict: return\nby: runner:verify\nheld_by: runner\nconditions:\n  - \"sandbox sandbox-idp: is restarting, so it starts, dies and starts again.\"\n");
     run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
     run(["checkout", "-q", "main"]);
   }
@@ -573,4 +582,37 @@ test("a sandbox return counts toward the three-strikes ceiling like any other ve
   assert.equal(gate.verdict, "escalated");
   assert.equal(gate.escalate_to, "tech-lead");
   assert.match(r.text, /escalated to tech-lead/);
+});
+
+// `buildVerified` judges an earlier verify result current by the application tree, and a
+// commit that writes only a gate file does not change `HEAD:app`. So a `pass` recorded
+// before the sandbox broke stays current unless this run overwrites it — and the proposal
+// this run just returned would still be rulable as approved.
+test("a sandbox return overwrites the pass an earlier verify left on the same application tree", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const appTree = execFileSync("git", ["rev-parse", "proposal/build-slice-1:app"], { cwd: d, encoding: "utf8" }).trim();
+  run(["checkout", "-q", "proposal/build-slice-1"]);
+  mkdirSync(join(d, "tests", "results", "new"), { recursive: true });
+  writeFileSync(join(d, "tests", "results", "new", "slice-1.json"), `${JSON.stringify({
+    slice: 1, proposal: "build-slice-1", app_tree: appTree, at: "2026-09-19T00:00:00.000Z", verdict: "pass",
+    rows: [{ id: "R-4.1", result: "pass" }, { id: "R-4.2", result: "pass" }],
+  }, null, 2)}\n`);
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "an earlier verify"]);
+  run(["checkout", "-q", "main"]);
+  // The application is untouched, so the stale result is still current by `app_tree`.
+  run(["checkout", "-q", "proposal/build-slice-1"]);
+  assert.equal(buildVerified(d, "build-slice-1").ok, true, "the fixture really does leave a standing pass");
+  run(["checkout", "-q", "main"]);
+
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const ctx = { ...ctxFor(d), sandbox: sandboxThat(crashLoop()) };
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+
+  run(["checkout", "-q", "proposal/build-slice-1"]);
+  const verified = buildVerified(d, "build-slice-1");
+  assert.equal(verified.ok, false, "a returned build proposal is not rulable as approved");
+  assert.match(verified.reason, /did not pass verify/);
+  run(["checkout", "-q", "main"]);
 });

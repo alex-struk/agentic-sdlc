@@ -335,8 +335,18 @@ test("compose's `ps --format json` is read in both spellings it is written in", 
   const rows = [{ Service: "web", State: "running" }, { Service: "seed", State: "exited", ExitCode: 0 }];
   assert.deepEqual(parseComposePs(psLines(rows)), rows, "one JSON object per line");
   assert.deepEqual(parseComposePs(JSON.stringify(rows)), rows, "a single JSON array");
-  assert.deepEqual(parseComposePs(""), []);
-  assert.deepEqual(parseComposePs("Name  Command  State\nweb   node     Up"), [], "a table is not a record, and says nothing either way");
+});
+
+// The two empty answers are different answers. "This project has no containers" is
+// something known; "this is not a spelling I read" is nothing known at all, and a caller
+// that could not tell them apart would report a sandbox up on an answer it never parsed.
+test("an answer compose's `ps` could not have written is not read as an empty one", () => {
+  assert.deepEqual(parseComposePs(""), [], "compose printed nothing: no containers");
+  assert.deepEqual(parseComposePs("[]"), [], "an empty array: no containers");
+  assert.equal(parseComposePs("NAME  COMMAND  STATE\nweb   node     Up"), null, "a table is not a record");
+  assert.equal(parseComposePs("{\"Service\":\"web\"}\nnot json"), null, "one unreadable line makes the whole answer unreadable");
+  assert.equal(parseComposePs("[{\"Service\":"), null, "a truncated array");
+  assert.equal(parseComposePs("{\"services\": []}"), null, "a JSON object is not the list of rows this reads");
 });
 
 // The discriminator is the exit code, not the service's name: a compose file the pipeline
@@ -469,4 +479,95 @@ test("a container's own log is quoted back without the sandbox password in it", 
   assert.ok(!JSON.stringify(r).includes("not-a-real-one"), "nothing the result carries repeats the password");
   assert.match(r.messages.join("\n"), /\[redacted\]/);
   assert.match(r.messages.join("\n"), /Failed to run import/, "and the rest of the log survives");
+});
+
+// `ps` is the only thing that knows whether the services are running. An unreadable answer
+// is not a clean bill of health: read as one, `up` prints `sandbox up` over the crash loop
+// this whole check exists to catch.
+test("a `ps` that will not run leaves the sandbox not reported up, and it is the machine's", async (t) => {
+  const d = project(t);
+  const { calls, exec } = recorder({ "ps --all": { status: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" } });
+  const r = await sandboxUp(d, CONFIG, "new", { exec, health: async () => true, sleep: noSleep });
+  assert.equal(r.ok, false, "nothing established about the services is not the same as nothing wrong with them");
+  assert.equal(r.cause, "environment");
+  assert.match(r.messages.join("\n"), /could not be established/);
+  assert.match(r.messages.join("\n"), /Cannot connect to the Docker daemon/);
+  assert.ok(!calls.some((c) => c.includes("run --rm seed")));
+});
+
+test("a `ps` answering in a spelling this version does not read is treated the same way", async (t) => {
+  const d = project(t);
+  const { exec } = recorder({ "ps --all": { status: 0, stdout: "NAME      IMAGE   STATUS\nmkt-web   web     Up 3 seconds\n", stderr: "" } });
+  const r = await sandboxUp(d, CONFIG, "new", { exec, health: async () => true, sleep: noSleep });
+  assert.equal(r.ok, false);
+  assert.equal(r.cause, "environment");
+  assert.match(r.messages.join("\n"), /does not read/);
+});
+
+test("a `ps` that names no container at all is an answer, and the sandbox is up", async (t) => {
+  const d = project(t);
+  const { calls, exec } = recorder({ "ps --all": { status: 0, stdout: "[]", stderr: "" } });
+  const r = await sandboxUp(d, CONFIG, "new", { exec, health: async () => true, sleep: noSleep });
+  assert.equal(r.ok, true);
+  assert.match(calls.at(-1), /run --rm seed$/);
+});
+
+// `State` is the machine-readable field and `Status` is the sentence compose writes for a
+// person. Both are read, so a version that spells one of them differently is still caught.
+test("a restart is caught from compose's own sentence as well as from its state field", () => {
+  const bad = serviceFailures([{ Service: "idp", State: "running", Status: "Restarting (1) 3 seconds ago" }]);
+  assert.equal(bad.length, 1);
+  assert.equal(bad[0].state, "restarting");
+  assert.equal(causeOf(bad), "application");
+  assert.deepEqual(serviceFailures([{ Service: "idp", State: "running", Status: "Up 3 seconds" }]), []);
+});
+
+// An out-of-memory kill exits 137 and is reported here as the application's, which is the
+// wrong side: the machine ran out of memory. `compose ps --format json` carries no
+// `OOMKilled` field, so nothing here can know, and the exit code is all there is to read.
+test("a container the kernel killed for memory is reported as the application's, which is the wrong side", () => {
+  const bad = serviceFailures([{ Service: "api", State: "exited", ExitCode: 137 }]);
+  assert.equal(causeOf(bad), "application");
+  assert.match(bad[0].reason, /exited with code 137/);
+});
+
+test("the compose tail and the seed's own output are quoted without the password in them", async (t) => {
+  const d = project(t);
+  process.env.SDLC_SANDBOX_PASSWORD = "not-a-real-one";
+  t.after(() => delete process.env.SDLC_SANDBOX_PASSWORD);
+  const upFailed = recorder({
+    "up -d": { status: 1, stdout: "", stderr: "invalid interpolation: SDLC_SANDBOX_PASSWORD=not-a-real-one\ncompose: exit 1" },
+    "ps --all": { status: 0, stdout: "[]", stderr: "" },
+  });
+  const failedUp = await sandboxUp(d, CONFIG, "new", { exec: upFailed.exec, health: async () => true, sleep: noSleep });
+  assert.ok(!JSON.stringify(failedUp).includes("not-a-real-one"));
+  assert.match(failedUp.messages.join("\n"), /\[redacted\]/);
+
+  const seedFailed = recorder({
+    "ps --all": { status: 0, stdout: "[]", stderr: "" },
+    "run --rm seed": { status: 1, stdout: "", stderr: "psql: connection refused for password not-a-real-one" },
+  });
+  const failedSeed = await sandboxUp(d, CONFIG, "new", { exec: seedFailed.exec, health: async () => true, sleep: noSleep });
+  assert.equal(failedSeed.cause, "application");
+  assert.ok(!JSON.stringify(failedSeed).includes("not-a-real-one"));
+  assert.match(failedSeed.messages.join("\n"), /connection refused for password \[redacted\]/);
+});
+
+test("status passes compose its environment and prints what it says redacted", async (t) => {
+  const d = branchProject(t);
+  process.env.SDLC_SANDBOX_PASSWORD = "not-a-real-one";
+  t.after(() => delete process.env.SDLC_SANDBOX_PASSWORD);
+  const said = [];
+  const log = console.log;
+  console.log = (m) => said.push(String(m));
+  t.after(() => { console.log = log; });
+  const seen = [];
+  const exec = (cmd, args, opts) => {
+    seen.push({ line: [cmd, ...args].join(" "), env: opts?.env ?? {} });
+    return { status: 0, stdout: "mkt-idp  Up 3 seconds  SDLC_SANDBOX_PASSWORD=not-a-real-one\n", stderr: "" };
+  };
+  assert.equal(await runSandbox(d, "status", { target: "new", from: "proposal/build-slice-1" }, { exec }), 0);
+  assert.equal(seen[0].env.SDLC_SANDBOX_PASSWORD, "not-a-real-one", "compose gets the variable its file interpolates");
+  assert.ok(!said.join("\n").includes("not-a-real-one"));
+  assert.match(said.join("\n"), /\[redacted\]/);
 });

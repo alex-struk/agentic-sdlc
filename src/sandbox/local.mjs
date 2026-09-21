@@ -41,22 +41,38 @@ export const APPLICATION = "application";
 export const ENVIRONMENT = "environment";
 
 // `docker compose ps --format json` writes one JSON object per line in some versions and a
-// single JSON array in others, and both spellings are in the field. Anything that is
-// neither is read as "compose said nothing about this project's containers", which the
-// caller treats as no evidence rather than as evidence of health.
+// single JSON array in others, and both spellings are in the field.
+//
+// The two empty answers are different answers and are returned differently. `[]` — compose
+// printed nothing, or printed an empty array — means this project has no containers, which
+// is something known. `null` means the text is a spelling this does not read, which is
+// nothing known at all, and a caller that treated the two alike would report a sandbox up
+// on the strength of an answer it could not parse.
 export function parseComposePs(text) {
   const t = (text ?? "").trim();
   if (!t) return [];
   if (t.startsWith("[")) {
-    try { const a = JSON.parse(t); return Array.isArray(a) ? a : []; } catch { return []; }
+    let a;
+    try { a = JSON.parse(t); } catch { return null; }
+    return Array.isArray(a) ? containerRows(a) : null;
   }
+  if (!t.startsWith("{")) return null;
   const rows = [];
   for (const line of t.split("\n")) {
     const l = line.trim();
-    if (!l.startsWith("{")) continue;
-    try { rows.push(JSON.parse(l)); } catch { /* not a record compose wrote */ }
+    if (!l) continue;
+    if (!l.startsWith("{")) return null;
+    try { rows.push(JSON.parse(l)); } catch { return null; }
   }
-  return rows;
+  return containerRows(rows);
+}
+
+// Well-formed JSON is not yet an answer to the question asked. Every row compose writes for
+// a container names it, so a document that parses but describes something else — a wrapper
+// object, a different report — is `null` rather than a list of containers with nothing
+// wrong with them.
+function containerRows(rows) {
+  return rows.every((r) => r && typeof r === "object" && (r.Name || r.Service)) ? rows : null;
 }
 
 // What one container's row says has become of it, or `null` when nothing has.
@@ -80,7 +96,13 @@ export function serviceFailure(row) {
   const state = String(row?.State ?? "").toLowerCase();
   const exitCode = Number(row?.ExitCode ?? 0);
   const health = String(row?.Health ?? "").toLowerCase();
-  if (state === "restarting") return { service, state, ran: true, reason: "is restarting, so it starts, dies and starts again" };
+  // `Status` is the sentence compose writes for a person — `Up 3 seconds`,
+  // `Restarting (1) 3 seconds ago`, `Exited (0) 2 minutes ago`. It is read alongside
+  // `State` rather than instead of it, so a version that spells the machine-readable field
+  // differently, or reports `running` while its own sentence says otherwise, is still
+  // caught. The `(1)` in `Restarting (1)` is the exit code, not a restart count.
+  const status = String(row?.Status ?? "").trim();
+  if (state === "restarting" || /^restarting\b/i.test(status)) return { service, state: "restarting", ran: true, reason: "is restarting, so it starts, dies and starts again" };
   if (state === "dead") return { service, state, ran: true, reason: "is dead" };
   if (state === "exited") {
     return exitCode === 0 ? null : { service, state, exitCode, ran: true, reason: `exited with code ${exitCode}` };
@@ -103,10 +125,16 @@ export function serviceFailures(rows) {
   return out;
 }
 
-// A container that started and then failed is the application: the process it ran is the
-// build's own output. A failure with no such container behind it is the machine — a port
-// already bound, an image that would not pull, a daemon that is not there — and nothing of
-// what the builder wrote ever executed, so there is nothing to tell a builder to fix.
+// A container that reached a state of its own and failed out of it — restarting, dead,
+// exited, unhealthy — is the application: the image it was built from and the files it read
+// are this build's output. A failure with no such container behind it is the machine — a
+// port already bound, an image that would not pull, a daemon that is not there — and there
+// is no container to tell a builder anything about.
+//
+// The test is the container's state, not whether its process executed. An image whose
+// entrypoint does not exist reports `exited` with code 127, and that is the application's
+// even though nothing of the build ever ran: the entrypoint is named in a file this build
+// wrote, and a builder can fix it.
 export function causeOf(failures) {
   return failures.some((f) => f.ran) ? APPLICATION : ENVIRONMENT;
 }

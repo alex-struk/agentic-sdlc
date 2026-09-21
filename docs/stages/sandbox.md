@@ -92,28 +92,43 @@ service that died, rather than the service's name: the file is the project's own
 which of its services are transient would survive the next slice. Compose draws the line in the
 same place, since `service_completed_successfully` is satisfied by exit 0 and by nothing else.
 
-The project is sampled up to three times, two seconds apart, because a crash loop spends part of
-every cycle running and a single `ps` can catch the container in the half that looks healthy.
-Sampling stops at the first failure found, and stops immediately when compose names no container,
-so a healthy stack does not pay for the wait.
+Both of compose's state fields are read: `State`, the machine-readable one, and `Status`, the
+sentence written for a person (`Up 3 seconds`, `Restarting (1) 3 seconds ago`). A version that
+spells one differently, or reports `running` while its own sentence says otherwise, is still caught.
 
-Anything quoted out of a container passes through a redaction of `SDLC_SANDBOX_PASSWORD` first: it
-reaches compose through the environment and nowhere else, and a log that is about to be printed —
-and, from `verify`, written into a gate file and a commit — must not be where it lands.
+The project is sampled up to three times, two seconds apart, because a crash-looping container is
+reported `restarting` for the whole of its backoff and `running` for the seconds between, so a
+single `ps` can catch it in the half that looks healthy. A longer backoff widens the window rather
+than narrowing it. What sampling does not reach is a container that outlives the watch and dies
+after it; the acceptance suite is what finds that one. Sampling stops at the first failure found,
+and stops immediately when compose names no container, so a healthy stack does not pay for the wait.
+
+**An unreadable `ps` is not a clean bill of health.** If `docker compose ps` exits non-zero, answers
+in a spelling this version does not parse, or answers with records that name no container, the
+sandbox is not reported up and the cause is the machine. Compose printing nothing, or an empty
+array, is a different answer: it means the project has no containers, and the sandbox is up.
+
+Anything quoted out of a container passes through a redaction of `SDLC_SANDBOX_PASSWORD` first — the
+compose tail, a service's log, an unreadable `ps`, and `status`'s own output: it reaches compose
+through the environment and nowhere else, and a log that is about to be printed — and, from
+`verify`, written into a gate file and a commit — must not be where it lands. The redaction knows
+only the value in the environment, so a password hard-coded into a project's own compose file is not
+covered.
 
 ## Whose fault a failed `up` is
 
 Every refusal carries a `cause`, one of `application` or `environment`, and `failures`, one entry
-per service that failed. The discriminator is whether a container of the project ran its own
-process: a container that started and then died, restarted or went unhealthy ran something this
-build wrote, and a failure with no such container behind it is the machine — a port already bound,
-an image that would not pull, a daemon that is not there.
+per service that failed. The discriminator is the container's state rather than whether its process
+executed: a container that reached a state of its own and failed out of it ran an image this build
+produced, and a failure with no such container behind it is the machine.
 
 A missing compose file, nothing answering at the base URL, and a failing seed are the
 application's. An image that never builds is the machine's, deliberately: compose reports a
 Dockerfile defect and a registry that would not answer the same way, and no container exists to
-ask. `docs/decisions/0017-a-sandbox-that-is-not-up.md` has the reasoning, and
-`docs/stages/verify.md` has what `verify` does with each.
+ask. A container the kernel killed for memory exits 137 and is reported as the application's, which
+is the wrong side — `ps --format json` carries no `OOMKilled` field and nothing here can know.
+`docs/decisions/0017-a-sandbox-that-is-not-up.md` has the reasoning, and `docs/stages/verify.md`
+has what `verify` does with each.
 
 ## Exit criterion
 
@@ -174,5 +189,8 @@ a fresh `up` leaves behind.
 - A service of the project is restarting, dead, exited non-zero or unhealthy: `up` exits 1 naming
   it and quoting the end of its own log, and does not seed. The containers are left running for
   the same reason.
+- `docker compose ps` will not run, or answers in a form this does not read: `up` exits 1 saying
+  whether the services are running could not be established, with the cause `environment`. Nothing
+  is claimed about the application on an answer nothing could parse.
 - The seed service fails: `up` exits 1 naming the service and its own tail; the application is left
   running unseeded.
