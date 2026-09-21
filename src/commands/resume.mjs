@@ -68,7 +68,10 @@ export async function resume(projectDir, { again = false } = {}) {
     return 1;
   }
 
-  const ctx = { ...state.ctx, config };
+  // `projectDir` rides on `ctx` here for the same reason `runStage` puts it there: a
+  // stage's `prompt` reads what the project already knows before any workspace exists,
+  // and a repair turn builds its prompt from this `ctx`.
+  const ctx = { ...state.ctx, config, projectDir };
 
   // The stage's own pre-checks are what populate `ctx` beyond the flags the run was
   // started with — the slice read out of `plan/tasks.md`, the branch a revision starts

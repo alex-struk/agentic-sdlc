@@ -290,12 +290,24 @@ function checkArchaeologyRevisionKeepsMinted(projectDir, ctx) {
   try { beforeText = git(["show", `HEAD:${file}`], projectDir); } catch { return { id, ok: true, messages: [] }; }
   const { criteria: before } = parseDomainFile(beforeText, ctx.domain);
   const { criteria: after } = parseDomainFile(readText(full), ctx.domain);
+  // A minted criterion a ratification ruling sent back for re-recovery is the one
+  // exception, and it is the whole reason the run was asked to touch it: rewriting it is
+  // the instruction, so refusing the change here would leave the run unable to satisfy
+  // both this check and `archaeology-recovery`, which fails if the row comes back
+  // unchanged. Measured against `HEAD` — the state the run started from — because by the
+  // time this check reads the working tree the row it is asking about has, if all went
+  // well, already stopped matching its request. Removing such a row is still refused
+  // below: the contract, its tests and any criterion that replaces it all point at that
+  // permanent id, and re-recovering a behaviour is not the same as deciding it should not
+  // be carried forward, which is `obsolete`'s ruling to make.
+  const sentBack = new Set(outstandingRecoveries(readRecoveryFor(projectDir, ctx.domain), before).map((e) => e.id));
   const strip = (c) => JSON.stringify({ ...c, line: undefined });
   const beforeById = new Map(before.filter((c) => c.id.startsWith("R-")).map((c) => [c.id, strip(c)]));
   const afterIds = new Set(after.filter((c) => c.id.startsWith("R-")).map((c) => c.id));
   const messages = [];
   for (const c of after) {
     if (!c.id.startsWith("R-")) continue;
+    if (sentBack.has(c.id)) continue;
     const was = beforeById.get(c.id);
     if (was !== undefined && was !== strip(c)) messages.push(`${file}: ${c.id} changed; a revision may not alter an already-minted criterion`);
   }
@@ -1638,6 +1650,58 @@ function domainOwnsId(projectDir, domain) {
   return (id) => typeof id === "string" && (dOwnId.test(id) || (rOwnId !== null && rOwnId.test(id)));
 }
 
+// The moment a gate file records its ruling being made — `at`, written by `sdlc rule` on
+// every verdict it writes. `undefined` for a file that has none (hand-written, or a gate
+// format older than the field), which `domainRulingNames` sorts last rather than guessing
+// a position for it.
+function gateRuledAt(path) {
+  try {
+    const at = (parseYaml(readText(path)) ?? {}).at;
+    return typeof at === "string" && at ? at : undefined;
+  } catch { return undefined; }
+}
+
+// Every ruling on this domain, oldest first, across all three families that carry
+// ratification conditions for it: the first archaeology proposal (`archaeology-<d>`), the
+// closing loop's follow-ups (`ratify-<d>-<n>`), and the numbered archaeology proposals a
+// re-run opens (`archaeology-<d>-<n>`). The last of those is the proposal a re-recovery is
+// ruled on — the route `recovery-wrong` sends a criterion down — and a `confirm` filed
+// there is the ordinary way that criterion closes out, so a reading that skipped it would
+// drop the ruling that answers the request.
+//
+// Ordered by when each ruling was actually made rather than by name, because the two
+// families number independently: `archaeology-<d>-3` and `ratify-<d>-3` say nothing about
+// which came first, and the order decides which verdict on a criterion applies over which.
+// An ISO timestamp compares chronologically as plain text. A gate file with no `at` sorts last, on
+// the reading that a file without the field was added by hand after the rest; ties break on
+// family and then number, so the order is total and stable whatever the clock did.
+function domainRulingNames(projectDir, domain) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return [ratifyGateName(domain)];
+  const archRe = new RegExp(`^archaeology-${escapeRe(domain)}(?:-(\\d+))?\\.yaml$`);
+  const followRe = new RegExp(`^ratify-${escapeRe(domain)}-(\\d+)\\.yaml$`);
+  const rows = [];
+  for (const f of readdirSync(dir)) {
+    const arch = archRe.exec(f);
+    const follow = arch ? null : followRe.exec(f);
+    if (!arch && !follow) continue;
+    rows.push({
+      name: f.replace(/\.yaml$/, ""),
+      family: arch ? 0 : 1,
+      number: arch ? (arch[1] ? Number(arch[1]) : 1) : Number(follow[1]),
+      at: gateRuledAt(join(dir, f)),
+    });
+  }
+  rows.sort((a, b) =>
+    (a.at ?? "\uffff").localeCompare(b.at ?? "\uffff") || a.family - b.family || a.number - b.number);
+  const names = rows.map((r) => r.name);
+  // The first archaeology ruling is always read, even before it exists on disk: every
+  // other reader of this list (`checkArchaeologyApproved`, and `readGate`'s own
+  // existence check) treats a missing gate file as nothing to read, and naming it keeps
+  // that the single answer rather than two different ones.
+  return names.includes(ratifyGateName(domain)) ? names : [ratifyGateName(domain), ...names];
+}
+
 // Every ruling this domain's ratification is built from, in the order it was made: the
 // archaeology proposal first, then each follow-up (`ratify-<d>-1`, `-2`, …) by number,
 // then every approved `contract-v<n>` gate, oldest first. Only approved rulings
@@ -1667,16 +1731,7 @@ function domainOwnsId(projectDir, domain) {
 // loop if a persona repeats it anyway.
 function readRulings(projectDir, domain) {
   const dir = join(projectDir, ".sdlc", "gates");
-  const names = [ratifyGateName(domain)];
-  if (existsSync(dir)) {
-    const re = new RegExp(`^ratify-${escapeRe(domain)}-(\\d+)\\.yaml$`);
-    const follow = readdirSync(dir)
-      .map((f) => [f, re.exec(f)])
-      .filter(([, m]) => m)
-      .sort((a, b) => Number(a[1][1]) - Number(b[1][1]))
-      .map(([f]) => f.replace(/\.yaml$/, ""));
-    names.push(...follow);
-  }
+  const names = domainRulingNames(projectDir, domain);
 
   const conditions = [];
   const unparsed = [];
@@ -1932,8 +1987,14 @@ const ratify = {
     const { domains: allDomains } = parseAll(projectDir);
     const existingMax = maxRNumber(allDomains, domainOrdinal);
 
+    // Read before the conditions are applied: a `recovery-wrong` condition needs to know
+    // whether the request it names has already been filed and already answered, which is
+    // the only thing that stops a ruling — read again on every pass, since a gate file is
+    // never consumed — from undoing the recovery that answered it.
+    const recoveryEntries = readRecoveryFor(projectDir, domain);
+
     const { criteria: before, preamble } = parseDomainFile(originalText, domain, domainOrdinal);
-    const { criteria: withConditions, applied, unknown } = applyConditions(before, conditions);
+    const { criteria: withConditions, applied, unknown } = applyConditions(before, conditions, recoveryEntries);
 
     // The closing loop's bound: `contract` and `spike` are the two verbs that answer a
     // follow-up without ever raising a criterion's confidence (see `readRulings`'s own
@@ -1955,9 +2016,12 @@ const ratify = {
     // the old application, not one the product owner can answer by ruling again. They are
     // therefore neither asked about on a follow-up (`followUp`, below) nor counted toward
     // the loop's own bound, which would otherwise force-obsolete a row whose correction
-    // is still being recovered. Both the requests already on file and the ones this pass's
-    // own conditions are about to file count.
-    const recoveryEntries = readRecoveryFor(projectDir, domain);
+    // is still being recovered. Two sets, and only two: the requests on file that the
+    // criteria still match, and the ones this pass's own conditions are filing now. A
+    // criterion that was sent back and has since been recovered again is in neither — its
+    // entry no longer matches the row, and `applyConditions` leaves `recoveryRequested`
+    // unset for a request it can see has been answered — so the exemption lifts the moment
+    // the work comes back, and the bound reaches it like any other unresolved criterion.
     const outForRecovery = new Set([
       ...outstandingRecoveries(recoveryEntries, withConditions).map((e) => e.id),
       ...withConditions.filter((c) => c.recoveryRequested).map((c) => c.id),

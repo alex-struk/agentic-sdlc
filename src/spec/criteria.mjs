@@ -643,7 +643,12 @@ export const RECOVERY_NOTE_PREFIX = "sent back for re-recovery: ";
 // left it, not duplicate the note, bump the version again, or mint a second replacement.
 // `confirm` and `contract` are naturally idempotent (setting `confidence` to the same
 // value, or changing nothing, twice is still just that value); the rest check first.
-export function applyConditions(criteria, conditions) {
+// `filed` is every re-recovery request already on `spec/recovery.yaml` for this domain
+// (`readRecovery`), which is what tells a `recovery-wrong` condition that has already been
+// carried out from one still waiting. A caller with none — every caller but `ratify`, and
+// every domain nothing has ever been sent back from — passes nothing and the verb behaves
+// as it does the first time it is read.
+export function applyConditions(criteria, conditions, filed = []) {
   const out = criteria.map((c) => ({ ...c, notes: [...(c.notes ?? [])] }));
   const byId = new Map(out.map((c) => [c.id, c]));
   const additions = [];
@@ -700,6 +705,19 @@ export function applyConditions(criteria, conditions) {
         // request — on the row, as a note, and on the criterion object as
         // `recoveryRequested`, which `ratify` reads after minting to write the entry
         // `archaeology` picks the work up from (`src/spec/recovery.mjs`).
+        //
+        // A ruling is read again on every pass — a gate file is never consumed — so this
+        // verb has to know when its own work is done. It is done exactly when the request
+        // has been filed and the criterion is no longer the one that was filed with it:
+        // archaeology has recovered the row again, and re-applying the condition would
+        // undo that recovery, push the note back on, drop the row to `open` again and
+        // restore the very fingerprint that says the work is still owed. So a request
+        // already on file whose fingerprint no longer matches the row is answered, and the
+        // condition does nothing at all from then on. A request on file that still matches
+        // is still outstanding, and re-applying it is the no-op it was the first time.
+        const answered = filed.some((e) => e?.id === target.id && e?.why === text)
+          && !filed.some((e) => e?.id === target.id && e?.why === text && e?.fingerprint === criterionFingerprint(target));
+        if (answered) break;
         const note = `${RECOVERY_NOTE_PREFIX}${text}`;
         if (!target.notes.includes(note)) target.notes.push(note);
         // A provisional row is dropped to `open` so it cannot mint a permanent id while

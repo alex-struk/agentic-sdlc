@@ -72,7 +72,12 @@ archaeology reads stays exactly as read-only in practice as it is in name.
   - In `--revise` mode only (`archaeology-revise-keeps-minted`): every `R-` criterion in
     `spec/domains/<d>.md` still matches the one `HEAD` had, compared field by field with each
     criterion's own `line` left out of the comparison. A revision may correct the criterion the
-    returning ruling named; it may never alter or remove one already minted permanent.
+    returning ruling named; it may never alter or remove one already minted permanent. The one
+    exception is a minted criterion with an outstanding re-recovery request against it, measured
+    against `HEAD`: rewriting that row is the instruction, and refusing it here would leave the run
+    unable to satisfy both this check and `archaeology-recovery`. Removing it is still refused —
+    the contract, its tests and anything that replaces it all point at that permanent id, and
+    deciding a behaviour should not be carried forward is `obsolete`'s ruling, not a recovery's.
   - `archaeology-recovery` — no criterion this domain was told to recover again has come back
     exactly as it went out. Every outstanding entry in `spec/recovery.yaml` for the domain names a
     criterion and the evidence fields it held when it was sent back; the check fails, naming each
@@ -189,6 +194,11 @@ change to the row — a corrected statement, a corrected citation, a note — an
 criterion rejoins the ratification loop with whatever confidence the fresh recovery graded it. The
 entry itself is never deleted: it is the record that the request was made.
 
+The ruling on the re-recovery is made on the proposal that run opens, `archaeology-<d>-<n>`, and
+`ratify` reads that proposal's conditions alongside the first proposal's and the closing loop's
+(`docs/stages/ratify.md`, "Inputs"). A `confirm` there is how a criterion that went back reaches the
+contract.
+
 A criterion sent back a second time, because the first re-recovery answered the wrong question, is a
 second entry against the same id. `ratify`'s journal says how many times a criterion has been sent
 back, which is what makes a row that keeps coming back unchanged legible as a problem rather than as
@@ -207,6 +217,8 @@ routine.
 - The agent session itself fails to run, or reports failure (turn limit, an error result): handled
   the same way every stage's agent-turn failure is (`docs/stages/run.md`) — no post-checks run,
   the turn's own text becomes the journal entry, and `run` returns `{ ok: false }`.
+- A `--revise` run alters a minted criterion nobody sent back: `archaeology-revise-keeps-minted`
+  fails, naming the criterion, exactly as it always has.
 - A criterion the domain was told to recover again comes back with every recorded field identical:
   `archaeology-recovery` fails the run, naming the criterion and the reason it was sent back (see
   "Recovering a criterion again" above).

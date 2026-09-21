@@ -65,10 +65,19 @@ reconciliation class and notes.
 
 **Why not a bookkeeping pass.** Any stage that clears entries can fail to clear one, clear one
 early, or be skipped, and every such bug is silent. Deriving the state from the criterion itself
-cannot drift from the criterion, and it makes replay free: `ratify` re-applies every gate file's
-conditions on every run, so a `recovery-wrong` line is read again on each pass, and filing the same
-request twice would otherwise reopen work that was already done. An entry with the same id and the
-same reason is filed once.
+cannot drift from the criterion.
+
+**The same rule decides whether the condition still applies at all.** A gate file is never
+consumed: `ratify` re-reads every approved ruling on every pass, so a condition is an instruction
+that fires again each time. For every other verb that is harmless, because each one checks the row
+before acting and a second application is a no-op. `recovery-wrong` is not like them, because the
+work it asks for is done somewhere else and lands after the ruling: re-applying it would push its
+note back onto a row that had been recovered again, drop that row to `open`, and restore the exact
+fingerprint that says the work is still owed — which would then fail the next recovery run's own
+check for work that run had already done. So the condition applies only while its own request is
+still outstanding. Once the criterion has stopped matching the request filed with it, the condition
+does nothing, for good. A later ruling naming the same criterion with a different reason is a
+different request and is filed as one; the same reason twice is the same request and is filed once.
 
 **Why the whole evidence set and not just the statement.** A re-recovery can conclude that the row
 was right — rarely, but it happens, and it must be able to say so. Fingerprinting the notes as well
@@ -80,13 +89,20 @@ resolves the entry, while changing nothing at all is not.
 **Decision.** `ratify`'s follow-up proposal does not list a criterion with an outstanding entry, and
 the loop's two-ruling bound does not count it.
 
-**Why.** The follow-up asks the product owner which still-unresolved criteria become the contract.
+**Why, and why "while it is out" is the whole of the rule.** The follow-up asks the product owner
+which still-unresolved criteria become the contract.
 A criterion out for re-recovery has no answer to give: it is waiting on the old application's source,
 not on a ruling, and asking for a verdict on evidence known to be wrong invites exactly the
 wave-through the persona's brief forbids. Worse, the bound would eventually mark it `obsolete`
 "unresolved after two rulings" — a recovered behaviour dropped from the contract for failing to
-answer questions nobody asked it. It rejoins the loop the moment it has been recovered again, with
-whatever confidence that recovery graded it.
+answer questions nobody asked it.
+
+The exemption is exactly as wide as the outstanding request and no wider. It is computed from the
+entries the criteria still match, plus whatever this pass is filing, so it lifts the moment the
+recovery comes back: the criterion is then an ordinary unresolved row, the follow-up asks about it,
+and the bound can reach it. An exemption keyed to "was ever sent back" instead would disable the
+pipeline's only termination guarantee for that criterion permanently, and a loop that cannot close
+is a worse failure than the one this route exists to fix.
 
 ## 4 — A criterion that comes back unchanged fails the run that returned it
 
@@ -105,3 +121,29 @@ row, or record on it what was read and why it stands.
 genuinely unchanged, often enough that the note the check asks for reads as a formality rather than
 as evidence. The count of how many times a criterion has been sent back, which `ratify` reports, is
 where that would show up first.
+
+## 5 — The ruling on a re-recovery is read, and the row it corrects may be rewritten
+
+**Decision.** `ratify` reads three families of ruling for a domain, oldest first by the `at` each
+gate file records: the first archaeology proposal, the closing loop's follow-ups, and the numbered
+archaeology proposals a re-run opens. And `archaeology --revise` may rewrite an already-minted
+criterion when, and only when, that criterion has an outstanding re-recovery request against it.
+
+**Why the numbered proposal has to be read.** A re-recovery is a fresh archaeology run, and a fresh
+run opens `archaeology-<d>-<n>`. That proposal is where the persona rules on the work the request
+asked for, so a `confirm` closing the criterion out is filed there. Read only the first proposal and
+the follow-ups, and that ruling is dropped: the criterion stays short of the contract, and the only
+route left to it is a follow-up asking a question the persona has already answered.
+
+**Why ordered by time rather than by name.** The families number independently, so
+`archaeology-<d>-3` and `ratify-<d>-3` say nothing about which came first — and the order decides
+which verdict on a criterion applies over which. Every gate file `sdlc rule` writes records when the
+ruling was made, which is the only total order that is also true.
+
+**Why the permanent record opens for exactly one row.** A minted criterion can be recovered wrongly
+too, and a ruling can say so. In a revision, the check that refuses any change to a minted criterion
+and the check that refuses an unchanged re-recovery would then contradict each other, and the run
+could satisfy neither. The narrow exemption — this row, because a ruling sent it back — leaves the
+rest of the permanent record exactly as closed as it was. Removing such a row stays refused: the
+contract, its tests and anything that replaces it point at that id, and deciding a behaviour should
+not be carried forward is `obsolete`'s ruling to make, not a recovery's.

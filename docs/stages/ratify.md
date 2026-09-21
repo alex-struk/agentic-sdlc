@@ -20,10 +20,19 @@ judgement call.
 names in `.sdlc/config.yaml`'s `project.domains` — the same domain archaeology just recovered.
 `ratify` reads every approved ruling on the domain for the `conditions` it attached (see
 `docs/stages/rule.md`, "Ratification conditions") and `spec/domains/<d>.md` for the criteria those
-conditions apply to. That is `.sdlc/gates/archaeology-<d>.yaml` plus every follow-up the closing
-loop opened and the persona approved — `ratify-<d>-1.yaml`, `ratify-<d>-2.yaml`, and so on — read in
-that order, so a later ruling's condition on a criterion is applied after (and therefore over) an
-earlier one's. A follow-up that was returned or escalated decided nothing and is skipped.
+conditions apply to. That is `.sdlc/gates/archaeology-<d>.yaml`, every follow-up the closing loop
+opened and the persona approved — `ratify-<d>-1.yaml`, `ratify-<d>-2.yaml`, and so on — and every
+numbered archaeology proposal a re-run of the stage opened and the persona approved —
+`archaeology-<d>-2.yaml`, `archaeology-<d>-3.yaml`. The last of those is where a re-recovery is
+ruled, so a `confirm` that closes out a criterion which went back through `recovery-wrong` is filed
+there and has to be read from there.
+
+The three families are read oldest first, by the `at` each gate file records, so a later ruling's
+condition on a criterion is applied after (and therefore over) an earlier one's. Ordering by name
+would not do it: the families number independently, and `archaeology-<d>-3` says nothing about
+whether it came before or after `ratify-<d>-3`. A gate file carrying no `at` is read last, and ties
+break on family and then number, so the order is total whatever the clock did. A ruling that was
+returned or escalated decided nothing and is skipped.
 
 It also reads every approved `.sdlc/gates/contract-v<n>.yaml`, oldest first, after the domain's own
 rulings — so a contract ruling's condition on a criterion applies over an earlier follow-up's, the
@@ -78,14 +87,22 @@ that domain's own `ratify --domain <other>` to pick up instead. The journal name
 - An entry is never removed. It is *outstanding* — still owed work — only while the criterion it
   names is still in the domain file and still matches the fingerprint it was sent back with, so a
   criterion that has been recovered again answers its own entry by no longer being the row that
-  went out. That is also what makes a replayed ruling harmless: a `recovery-wrong` condition read a
-  second time files nothing, because an entry with that id and that text is already there.
+  went out.
+- That is also what stops the ruling firing twice. A gate file is never consumed: every approved
+  ruling is read again on every pass, so a `recovery-wrong` condition would otherwise re-push its
+  note, drop the row back to `open` and restore the very fingerprint that says the work is still
+  owed — undoing the recovery that answered it, and failing the next `archaeology` run's
+  `archaeology-recovery` check for work that stage had already done. So the condition applies only
+  while its own request is still outstanding: a request on file whose fingerprint no longer matches
+  the row has been answered, and the condition does nothing from then on. A later ruling naming the
+  same criterion with a *different* reason is a new request and is filed as one.
 - Applying the same gate-file conditions again, on a domain that still has some other `D-`
   criterion left in it (see "Re-run behaviour"), changes nothing further: every verb `applyConditions`
   applies checks the row it targets before acting — a note is pushed only if the row does not
-  already carry it, `edit` bumps the version only when the statement actually differs, and `defect`
+  already carry it, `edit` bumps the version only when the statement actually differs, `defect`
   appends a replacement only when no criterion already carries `replaces` naming that target with
-  that exact corrected text.
+  that exact corrected text, and `recovery-wrong` files nothing and touches nothing once the
+  criterion it named has stopped matching the request already on file.
 - `spec/criteria-index.json` and `spec/spec.md`, regenerated from every domain file in the project
   (`writeIndex`, `renderSpecIndex`), not only the one this run touched — and regenerated on every
   run, including one that finds this domain already ratified, since both are derived from files
