@@ -122,6 +122,47 @@ function regenerateSiteOnMain(projectDir, reason) {
   }
 }
 
+// The words for each of the three fixable line defects below, shared between the throw
+// that refuses a ruling over one and the re-prompt in `ruleByAgent` that tries to head the
+// throw off first: the persona reads the identical sentence either way, whether it is
+// being asked to fix the line before anything is spent on refusing it, or being told why
+// it was refused after a second try still had it wrong.
+function overreachGuidance(line) {
+  return `${JSON.stringify(line)} carries no reason. Write it as \`${OVERREACH_CONDITION_FORM}\`:`
+    + " the reason is what the next derive-tests run is given in place of the test it is replacing, and a request without one produces the same test again.";
+}
+function addressedGuidance(line) {
+  return `${JSON.stringify(line)} carries no reason. Write it as \`${ADDRESSED_CONDITION_FORM}\`:`
+    + " the stage it is addressed to sees none of the evidence this ruling was made on, so the reason is the whole of what reaches it.";
+}
+function deliverableGuidance(found) {
+  const delivers = found.delivers.length ? found.delivers.join(", ") : "nothing";
+  const remedy = found.deliverableBy.length
+    ? `${found.deliverableBy.join(" or ")} delivers it. Address the condition there instead:\n`
+      + `  ${ADDRESSED_VERB} ${found.deliverableBy[0]}: <what that stage has to change, and what showed it>`
+    : "no stage in this pipeline delivers it, so no ruling can ask for it; say what this proposal must do instead,"
+      + " and take the rest up outside the pipeline.";
+  return `${JSON.stringify(found.line)} asks for ${found.path}, which ${found.stage} cannot deliver —`
+    + ` ${found.stage} delivers ${delivers}, and everything else its workspace carries is there to be read.`
+    + ` A condition it cannot carry out is one it either fails at or finds a way round, and the second is reported as done.`
+    + ` ${remedy}`;
+}
+
+// What a refusal here must not cost a second time. None of the three throws below has
+// written anything by the time it fires — no gate file, no proposal section, no commit —
+// so this message is the only place left holding a ruling that may have cost a full agent
+// turn (two, where a re-prompt was already tried and the line still came back wrong). The
+// verdict and every condition it carried are appended, not only the one line that sank it,
+// so a person reading the refusal can act on the rest of the ruling by hand rather than
+// paying for the turn again to find out what it said.
+function withRulingPreserved(message, verdict, conditions) {
+  const list = (conditions ?? []).length
+    ? conditions.map((c) => `  - ${JSON.stringify(c)}`).join("\n")
+    : "  (none)";
+  return `${message}\n\nNothing is recorded — the guard refuses before anything is written. What this ruling produced:\n`
+    + `  verdict: ${verdict}\n  conditions:\n${list}`;
+}
+
 // The two things a `test-overreaches` condition may never be, checked before a ruling
 // writes anything at all — no gate file, no commit, nothing filed — so a refused line
 // leaves the proposal exactly as open as it was.
@@ -138,11 +179,10 @@ function regenerateSiteOnMain(projectDir, reason) {
 export function assertOverreachRulable(name, verdict, conditions) {
   const bad = malformedOverreachConditions(conditions);
   if (bad.length)
-    throw new Error(`rule ${name}: ${JSON.stringify(bad[0])} carries no reason. Write it as \`${OVERREACH_CONDITION_FORM}\`:`
-      + " the reason is what the next derive-tests run is given in place of the test it is replacing, and a request without one produces the same test again.");
+    throw new Error(withRulingPreserved(`rule ${name}: ${overreachGuidance(bad[0])}`, verdict, conditions));
   if (verdict === "approve" && overreachConditions(conditions).length)
-    throw new Error(`rule ${name}: a \`${OVERREACH_VERB}\` condition asks for a criterion's test to be written again, which an approval cannot carry —`
-      + " the criterion stays unverified until a regenerated test binds and passes; return the proposal instead.");
+    throw new Error(withRulingPreserved(`rule ${name}: a \`${OVERREACH_VERB}\` condition asks for a criterion's test to be written again, which an approval cannot carry —`
+      + " the criterion stays unverified until a regenerated test binds and passes; return the proposal instead.", verdict, conditions));
 }
 
 // The two things an `addressed-to` condition may never be, checked in the same place and
@@ -160,11 +200,10 @@ export function assertOverreachRulable(name, verdict, conditions) {
 export function assertAddressedRulable(name, verdict, conditions) {
   const bad = malformedAddressedConditions(conditions);
   if (bad.length)
-    throw new Error(`rule ${name}: ${JSON.stringify(bad[0])} carries no reason. Write it as \`${ADDRESSED_CONDITION_FORM}\`:`
-      + " the stage it is addressed to sees none of the evidence this ruling was made on, so the reason is the whole of what reaches it.");
+    throw new Error(withRulingPreserved(`rule ${name}: ${addressedGuidance(bad[0])}`, verdict, conditions));
   if (verdict === "approve" && addressedConditions(conditions).length)
-    throw new Error(`rule ${name}: an \`${ADDRESSED_VERB}\` condition asks another stage to produce its artifact again, which an approval cannot carry —`
-      + " it says the work being ruled was built against something that has to change; return the proposal instead.");
+    throw new Error(withRulingPreserved(`rule ${name}: an \`${ADDRESSED_VERB}\` condition asks another stage to produce its artifact again, which an approval cannot carry —`
+      + " it says the work being ruled was built against something that has to change; return the proposal instead.", verdict, conditions));
 }
 
 // The one thing a plain condition may never be: an instruction to change a path the stage
@@ -184,16 +223,52 @@ export function assertDeliverableRulable(name, verdict, conditions) {
   if (verdict !== "return") return;
   const [first] = undeliverableConditions(name, conditions ?? []);
   if (!first) return;
-  const delivers = first.delivers.length ? first.delivers.join(", ") : "nothing";
-  const remedy = first.deliverableBy.length
-    ? `${first.deliverableBy.join(" or ")} delivers it. Address the condition there instead:\n`
-      + `  ${ADDRESSED_VERB} ${first.deliverableBy[0]}: <what that stage has to change, and what showed it>`
-    : "no stage in this pipeline delivers it, so no ruling can ask for it; say what this proposal must do instead,"
-      + " and take the rest up outside the pipeline.";
-  throw new Error(`rule ${name}: ${JSON.stringify(first.line)} asks for ${first.path}, which ${first.stage} cannot deliver —`
-    + ` ${first.stage} delivers ${delivers}, and everything else its workspace carries is there to be read.`
-    + ` A condition it cannot carry out is one it either fails at or finds a way round, and the second is reported as done.`
-    + ` ${remedy}`);
+  throw new Error(withRulingPreserved(`rule ${name}: ${deliverableGuidance(first)}`, verdict, conditions));
+}
+
+// The first of the three defects above that a re-prompt can fix mechanically, checked in
+// the same order the hard asserts above apply them and reporting only the first: one
+// re-prompt turn, the same as the unparsed-conditions path in `ruleByAgent`, is what the
+// ordinary case needs, because these are formatting slips — a verb used without its
+// reason, a plain line naming a path outside the stage's workspace — rather than a
+// disagreement with the ruling itself.
+//
+// What is deliberately not read here is the other half of `assertOverreachRulable` and
+// `assertAddressedRulable`: an approval carrying a condition that says the work belongs to
+// another verdict entirely. That is not a line with the wrong shape a rewrite can fix; it
+// is the verdict and the condition disagreeing about what was just ruled, and asking the
+// persona to reword the line would really be asking it to pick a different verdict — a
+// second bite at the ruling itself, not a correction. It is left to the hard asserts,
+// unprompted, exactly as it always was.
+function firstFixableConditionDefect(name, verdict, conditions) {
+  const overreach = malformedOverreachConditions(conditions)[0];
+  if (overreach) return { kind: "overreach", line: overreach };
+  const addressed = malformedAddressedConditions(conditions)[0];
+  if (addressed) return { kind: "addressed", line: addressed };
+  if (verdict === "return") {
+    const [undeliverable] = undeliverableConditions(name, conditions);
+    if (undeliverable) return { kind: "deliverable", ...undeliverable };
+  }
+  return null;
+}
+
+// The re-prompt itself, built the same way the unparsed-conditions one above is: the
+// original prompt, the persona's own verdict quoted back, the offending line, and the form
+// that would have been read.
+function conditionDefectReprompt(prompt, verdict, defect) {
+  const guidance = defect.kind === "overreach" ? overreachGuidance(defect.line)
+    : defect.kind === "addressed" ? addressedGuidance(defect.line)
+      : deliverableGuidance(defect);
+  return [
+    prompt,
+    "",
+    "## Your previous reply had a condition this stage cannot carry out",
+    "",
+    `You ruled ${verdict}. ${guidance}`,
+    "",
+    "Rule again. Keep the conditions that were fine exactly as they were, rewrite this one as shown above,",
+    "and finish with the JSON block as before.",
+  ].join("\n");
 }
 
 // Files the revisions a ruling's `addressed-to` conditions ask for onto
@@ -664,7 +739,29 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // that would file an unactionable request refuses the ruling instead. Nothing has been
     // committed at this point, and the turn is read-only, so the proposal is left open for
     // a corrected ruling.
+    //
+    // Before the refusal, one more turn: the same three checks below read a fixable
+    // defect — a verb with no reason, a plain line naming a path the returned-to stage
+    // cannot deliver — the same way `grammar.unparsed` above reads an unreadable G1
+    // condition, and get the same one re-prompt. The persona was already told, in its own
+    // prompt, which paths this proposal's stage delivers (`deliverabilityNote`,
+    // `src/runner/persona.mjs`) and wrote the wrong form anyway; refusing outright throws
+    // away a verdict, a rationale and every other condition over one line a second turn
+    // fixes in the ordinary case. A reply that rules `escalate` this time is handled the
+    // same way it would have been had it done so first.
     if (!executable) {
+      const defect = firstFixableConditionDefect(name, verdict, conditions ?? []);
+      if (defect) {
+        ({ verdict, rationale, conditions, metrics } = await askOnce(conditionDefectReprompt(prompt, verdict, defect)));
+        if (verdict === "escalate") {
+          writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics });
+          return { verdict, rationale, escalated: true };
+        }
+      }
+      // The final word, whether or not a re-prompt was tried: a defect still present here
+      // — the same one, or a different one the rewrite introduced — refuses the ruling,
+      // exactly as it always did. Nothing about what these three refuse has changed; only
+      // the chance to fix the one line that sinks a ruling has been added in front of it.
       assertOverreachRulable(name, verdict, conditions ?? []);
       assertAddressedRulable(name, verdict, conditions ?? []);
       assertDeliverableRulable(name, verdict, conditions ?? []);
