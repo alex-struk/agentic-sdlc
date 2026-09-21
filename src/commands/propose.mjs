@@ -55,6 +55,18 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   // dropping a path here would silently leave a change out of the proposal it belongs to.
   stageAll(projectDir, [proposalPath, relative(projectDir, runPath), ...(paths ?? [])]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `propose(${gate}): ${name}`], projectDir);
+  // The branch is where the proposal lives; the checkout is not the proposal's to keep.
+  // Every command that starts a run refuses anywhere but `main` (`assertOnMain`), so a
+  // caller left standing on the branch this just opened is stopped at the next step of
+  // the sequence it is in the middle of — a `build --revise` followed by the `verify`
+  // that judges it being the one the sequence is documented for. The commit above is the
+  // whole of what this command had to keep, and the tree is clean by the time it lands,
+  // so there is nothing here to carry across.
+  //
+  // Whatever the stage produced is read off `${branch}` from here on, not off the working
+  // tree: a gated stage's output is on its branch and `main` does not carry it until a
+  // ruling merges it.
+  git(["checkout", "-q", "main"], projectDir);
   return { branch };
 }
 

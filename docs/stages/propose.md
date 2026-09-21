@@ -46,8 +46,11 @@ conflict on all of them (`docs/stages/run.md`).
   in the working tree. Staging goes through `stageAll`, so a path the caller deleted or renamed is
   committed as gone rather than silently left behind.
 
-The command leaves the working tree checked out on the new proposal branch. Nothing is merged;
-`main` is untouched until someone rules on the proposal (`docs/stages/rule.md`).
+The command gives the checkout back to `main` once the commit is on the branch. Nothing is
+merged; `main` is untouched until someone rules on the proposal (`docs/stages/rule.md`), and what
+the proposal carries is read off `proposal/<name>` until then. Every command that starts a run
+refuses anywhere but `main`, so a caller left standing on a branch it did not ask for would be
+stopped at the next step of the sequence that opened it.
 
 ## Workspace the agent sees
 

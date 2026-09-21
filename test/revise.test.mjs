@@ -331,12 +331,13 @@ test("archaeology --revise: a mock that rewrites the named D- criterion opens pr
     assert.equal(r.ok, true, JSON.stringify(r.messages));
     assert.equal(r.proposal?.name, "archaeology-applications");
     assert.equal(r.proposal?.branch, "proposal/archaeology-applications");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
-    const proposalText = readFileSync(join(dir, ".sdlc/proposals/archaeology-applications.md"), "utf8");
+    const branch = r.proposal.branch;
+    const proposalText = git(["show", `${branch}:.sdlc/proposals/archaeology-applications.md`], dir);
     assert.match(proposalText, /Is the revised applications domain right where the return said it was wrong\?/);
 
-    const domainText = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const domainText = git(["show", `${branch}:spec/domains/applications.md`], dir);
     assert.match(domainText, /### R-1\.1 · v1 · confirmed · recovered/, "the already-minted criterion is untouched");
     assert.match(domainText, /recalculate it whenever the application is later edited/, "the named criterion was revised");
   } finally {

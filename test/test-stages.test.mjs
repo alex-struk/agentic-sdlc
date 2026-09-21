@@ -9,13 +9,18 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
-import { git } from "../src/lib/git.mjs";
+import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule } from "../src/commands/rule.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { writeLocal } from "../src/oracle/ports.mjs";
 import { STAGES, PROFILES } from "../src/profiles.mjs";
+
+// A gated stage's work is committed to its proposal branch and the checkout is left on
+// `main`, so what the stage produced is read out of the branch rather than off disk.
+const onBranch = (dir, branch, path) => git(["show", `${branch}:${path}`], dir);
+const existsOnBranch = (dir, branch, path) => gitOk(["cat-file", "-e", `${branch}:${path}`], dir);
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -68,26 +73,27 @@ test("sdlc run contract: the mock run opens proposal/contract-v1 at G1 carrying 
     assert.equal(r.proposal.name, "contract-v1");
     assert.equal(r.proposal.gate, "G1");
     assert.equal(r.proposal.branch, "proposal/contract-v1");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/contract-v1");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.equal(git(["status", "--porcelain"], dir), "");
 
-    const proposalText = readFileSync(join(dir, ".sdlc/proposals/contract-v1.md"), "utf8");
+    const branch = r.proposal.branch;
+    const proposalText = onBranch(dir, branch, ".sdlc/proposals/contract-v1.md");
     assert.match(proposalText, /gate: G1/);
     assert.match(proposalText, /"Is this the contract the tests will act through\?"/);
 
-    const surfaceText = readFileSync(join(dir, "spec/contract/surface.yaml"), "utf8");
+    const surfaceText = onBranch(dir, branch, "spec/contract/surface.yaml");
     assert.match(surfaceText, /applications-new/);
     assert.match(surfaceText, /fees-quote/);
 
-    const personasText = readFileSync(join(dir, "spec/contract/personas.yaml"), "utf8");
+    const personasText = onBranch(dir, branch, "spec/contract/personas.yaml");
     assert.match(personasText, /applicant/);
     assert.match(personasText, /anonymous-visitor/);
 
-    assert.ok(existsSync(join(dir, "tests/seed/001-users.sql")));
-    const manifestText = readFileSync(join(dir, "tests/seed/manifest.yaml"), "utf8");
+    assert.ok(existsOnBranch(dir, branch, "tests/seed/001-users.sql"));
+    const manifestText = onBranch(dir, branch, "tests/seed/manifest.yaml");
     assert.match(manifestText, /applicantOne/);
 
-    assert.ok(existsSync(join(dir, ".sdlc/journal/001-contract.md")));
+    assert.ok(existsOnBranch(dir, branch, ".sdlc/journal/001-contract.md"));
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -156,7 +162,7 @@ test("sdlc run contract: a persona may mark an identity unavailable with a reaso
     const r = await runStage(dir, "contract");
     assert.equal(r.ok, true, JSON.stringify(r.messages));
     assert.equal(r.proposal.name, "contract-v1");
-    const personasText = readFileSync(join(dir, "spec/contract/personas.yaml"), "utf8");
+    const personasText = onBranch(dir, r.proposal.branch, "spec/contract/personas.yaml");
     assert.match(personasText, /unavailable: "the sandbox seeds only one applicant account"/);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
@@ -321,20 +327,21 @@ test("sdlc run derive-tests --domain applications: the mock run opens proposal/d
     assert.equal(r.proposal.name, "derive-tests-applications");
     assert.equal(r.proposal.gate, "G3");
     assert.equal(r.proposal.branch, "proposal/derive-tests-applications");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/derive-tests-applications");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.equal(git(["status", "--porcelain"], dir), "");
 
-    const proposalText = readFileSync(join(dir, ".sdlc/proposals/derive-tests-applications.md"), "utf8");
+    const branch = r.proposal.branch;
+    const proposalText = onBranch(dir, branch, ".sdlc/proposals/derive-tests-applications.md");
     assert.match(proposalText, /gate: G3/);
     assert.match(proposalText, /"Do these tests follow from the applications criteria and from nothing else\?"/);
 
-    assert.ok(existsSync(join(dir, "tests/acceptance/applications/R-1.1.spec.ts")));
-    assert.ok(existsSync(join(dir, "tests/acceptance/applications/R-1.2.spec.ts")));
-    const notTestable = readFileSync(join(dir, "tests/acceptance/not-testable.yaml"), "utf8");
+    assert.ok(existsOnBranch(dir, branch, "tests/acceptance/applications/R-1.1.spec.ts"));
+    assert.ok(existsOnBranch(dir, branch, "tests/acceptance/applications/R-1.2.spec.ts"));
+    const notTestable = onBranch(dir, branch, "tests/acceptance/not-testable.yaml");
     assert.match(notTestable, /R-1\.3/);
-    assert.ok(existsSync(join(dir, "tests/generated/surface.d.ts")));
+    assert.ok(existsOnBranch(dir, branch, "tests/generated/surface.d.ts"));
 
-    const committed = git(["show", "--name-only", "--format=", "HEAD"], dir);
+    const committed = git(["show", "--name-only", "--format=", branch], dir);
     assert.match(committed, /tests\/acceptance\/applications\/R-1\.1\.spec\.ts/);
     assert.match(committed, /tests\/acceptance\/not-testable\.yaml/);
     assert.match(committed, /tests\/generated\/surface\.d\.ts/);
@@ -581,19 +588,20 @@ test("sdlc run bind-adapter --target old: the mock run opens proposal/bind-adapt
     assert.equal(r.proposal.name, "bind-adapter-old");
     assert.equal(r.proposal.gate, "G3");
     assert.equal(r.proposal.branch, "proposal/bind-adapter-old");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/bind-adapter-old");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.equal(git(["status", "--porcelain"], dir), "");
 
-    const proposalText = readFileSync(join(dir, ".sdlc/proposals/bind-adapter-old.md"), "utf8");
+    const branch = r.proposal.branch;
+    const proposalText = onBranch(dir, branch, ".sdlc/proposals/bind-adapter-old.md");
     assert.match(proposalText, /gate: G3/);
     assert.match(proposalText, /"Does this adapter bind every surface action and observation on old, and nothing else\?"/);
 
-    assert.ok(existsSync(join(dir, "tests/adapters/old/index.ts")));
-    const bindings = readFileSync(join(dir, "tests/adapters/old/bindings.yaml"), "utf8");
+    assert.ok(existsOnBranch(dir, branch, "tests/adapters/old/index.ts"));
+    const bindings = onBranch(dir, branch, "tests/adapters/old/bindings.yaml");
     assert.match(bindings, /applications-new/);
     assert.match(bindings, /fees-quote/);
 
-    const committed = git(["show", "--name-only", "--format=", "HEAD"], dir);
+    const committed = git(["show", "--name-only", "--format=", branch], dir);
     assert.match(committed, /tests\/adapters\/old\/index\.ts/);
     assert.match(committed, /tests\/adapters\/old\/bindings\.yaml/);
     // Derived from the contract already on main, not part of this stage's own collect

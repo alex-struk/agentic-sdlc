@@ -524,10 +524,10 @@ test("ruleByAgent: an agent turn that reports failure throws with the turn's own
       /ruling agent turn failed after one retry: the session ended before a verdict/);
     // One retry was attempted, and said so.
     assert.equal(warnings.filter((w) => /retrying once/.test(w)).length, 1, warnings.join(" | "));
-    // Nothing was ruled and nothing was written: no gate file, tree clean, still on the
-    // proposal branch.
+    // Nothing was ruled and nothing was written: no gate file, tree clean, and HEAD back
+    // where the caller was standing when it asked for the ruling.
     assert.ok(!existsSync(join(dir, ".sdlc/gates/p12.yaml")));
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/p12");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
     console.warn = origWarn;

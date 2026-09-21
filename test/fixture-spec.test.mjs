@@ -136,7 +136,7 @@ test("fixture project: intent, archaeology and ratify chain end to end on the mo
     assert.equal(intentRun.ok, true, JSON.stringify(intentRun.messages));
     assert.equal(intentRun.proposal.name, "intent-permit-intake");
     assert.equal(intentRun.proposal.gate, "G0");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
     const intentRulings = await rulePending(dir);
     assert.equal(intentRulings.length, 1, JSON.stringify(intentRulings));
@@ -154,7 +154,7 @@ test("fixture project: intent, archaeology and ratify chain end to end on the mo
     assert.equal(archRun.ok, true, JSON.stringify(archRun.messages));
     assert.equal(archRun.proposal.name, "archaeology-applications");
     assert.equal(archRun.proposal.gate, "G1");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
     const ownerMockDir = mockOwnerApproveArchaeology();
     process.env.SDLC_MOCK_DIR = ownerMockDir;

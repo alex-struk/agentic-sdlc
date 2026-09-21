@@ -72,7 +72,10 @@ test("the escalation's target is shown the escalating persona's own account", as
   const c = join(dir, "constitution.md");
   writeFileSync(c, readFileSync(c, "utf8").replace(/\{\{[A-Z_]+\}\}/g, "filled"));
   commit(dir, "fill constitution");
-  propose(dir, "p1", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  const { branch } = propose(dir, "p1", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  // A ruling reads the proposal off the branch it was opened on, which `openGate` checks
+  // out before it builds the prompt; this calls the builder directly, so it does the same.
+  git(["checkout", "-q", branch], dir);
   const prompt = await buildPersonaPrompt(dir, "p1", "product-owner", {
     tier: "STANDARD", gate: "G0",
     escalation: { by: "agent:ux-reviewer", rationale: "a card the design system does not provide" },

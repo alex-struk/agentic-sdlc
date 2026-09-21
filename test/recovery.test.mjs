@@ -13,6 +13,15 @@ import { stageFor } from "../src/stages/registry.mjs";
 import { applyConditions, conditionParses, parseDomainFile, criterionFingerprint, CONDITION_GRAMMAR } from "../src/spec/criteria.mjs";
 import { addRecovery, answerRecoveries, outstandingRecoveries, readRecovery, readRecoveryFor, recoveryRequestCount } from "../src/spec/recovery.mjs";
 
+// A gated stage commits its work to its proposal branch and leaves the checkout on
+// `main`, so reading what the stage produced means reading that branch. `read` is run
+// with the branch checked out and HEAD is put back wherever it was.
+function onBranch(dir, branch, read) {
+  const start = git(["rev-parse", "--abbrev-ref", "HEAD"], dir);
+  git(["checkout", "-q", branch], dir);
+  try { return read(); } finally { git(["checkout", "-q", start], dir); }
+}
+
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
 const OLD_DIR = new URL("../fixture-project/old", import.meta.url).pathname;
@@ -334,10 +343,12 @@ test("archaeology: recovering the criterion again answers the request and passes
     const r = await runStage(dir, "archaeology", { domain: "applications" });
     assert.equal(r.ok, true, JSON.stringify(r.messages));
 
-    const { criteria } = parseDomainFile(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), "applications");
-    const entries = readRecoveryFor(dir, "applications");
-    assert.equal(entries.length, 1, "the request stays on file as the record that it was made");
-    assert.deepEqual(outstandingRecoveries(entries, criteria), [], "and is answered by the criterion no longer being the one that went out");
+    onBranch(dir, r.proposal.branch, () => {
+      const { criteria } = parseDomainFile(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), "applications");
+      const entries = readRecoveryFor(dir, "applications");
+      assert.equal(entries.length, 1, "the request stays on file as the record that it was made");
+      assert.deepEqual(outstandingRecoveries(entries, criteria), [], "and is answered by the criterion no longer being the one that went out");
+    });
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -631,9 +642,11 @@ test("archaeology --revise: a minted criterion that was sent back may be rewritt
     const r = await runStage(dir, "archaeology", { domain: "applications", revise: true });
     assert.equal(r.ok, true, JSON.stringify(r.messages));
 
-    const text = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
-    assert.match(text, /record the applicant's stated age without rejecting the application/);
-    assert.deepEqual(outstandingRecoveries(readRecoveryFor(dir, "applications"), parseDomainFile(text, "applications").criteria), []);
+    onBranch(dir, r.proposal.branch, () => {
+      const text = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+      assert.match(text, /record the applicant's stated age without rejecting the application/);
+      assert.deepEqual(outstandingRecoveries(readRecoveryFor(dir, "applications"), parseDomainFile(text, "applications").criteria), []);
+    });
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -853,8 +866,10 @@ test("ratify: one ruling can send a criterion back for two separate reasons, and
     const recovered = withCriterionRecovered(text, {
       confidence: "confirmed", note: "re-read src/routes.js:10: the stored fee is the permit type's own, and the README's fee table agrees",
     });
-    assert.equal((await archaeologyWriting(dir, recovered, "Both readings corrected against the route.")).ok, true);
-    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [{ version: 2 }, { version: 2 }]);
+    const redone = await archaeologyWriting(dir, recovered, "Both readings corrected against the route.");
+    assert.equal(redone.ok, true);
+    assert.deepEqual(onBranch(dir, redone.proposal.branch, () => readRecoveryFor(dir, "applications").map((e) => e.answered)),
+      [{ version: 2 }, { version: 2 }]);
 
     await rule(dir, "archaeology-applications-2", "approve", "the fee criterion now matches the route and the fee table", []);
     assert.equal((await runStage(dir, "ratify", { domain: "applications" })).ok, true);
@@ -977,8 +992,10 @@ test("two domains can carry re-recovery requests at once without answering each 
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     assert.equal(revised.ok, true, JSON.stringify(revised.messages));
 
-    assert.deepEqual(readRecoveryFor(dir, "fees").map((e) => e.answered), [{ version: 1 }]);
-    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [undefined]);
+    onBranch(dir, revised.proposal.branch, () => {
+      assert.deepEqual(readRecoveryFor(dir, "fees").map((e) => e.answered), [{ version: 1 }]);
+      assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [undefined]);
+    });
     assert.ok(stageFor("archaeology").prompt({ domain: "applications", projectDir: dir }).includes(WHY));
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
@@ -1080,7 +1097,8 @@ test("resume: a run that died between the stamp and its commit finishes, and is 
     // And nothing is left dirty, so the next run is not wedged behind a ledger somebody
     // has to hand-revert.
     assert.equal(git(["status", "--porcelain"], dir), "");
-    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [{ version: 2 }]);
+    assert.deepEqual(onBranch(dir, "proposal/archaeology-applications-2", () => readRecoveryFor(dir, "applications").map((e) => e.answered)),
+      [{ version: 2 }]);
   } finally {
     console.log = origLog;
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
@@ -1097,9 +1115,11 @@ test("a re-recovery nobody approved answers nothing: the stamp lands on the prop
     const recovered = withCriterionRecovered(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), {
       confidence: "inferred", note: "the stored fee follows the permit type",
     });
-    assert.equal((await archaeologyWriting(dir, recovered, "Re-read the intake route.")).ok, true);
+    const redone = await archaeologyWriting(dir, recovered, "Re-read the intake route.");
+    assert.equal(redone.ok, true);
     // On the proposal branch the work is done and the request is stamped.
-    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [{ version: 2 }]);
+    assert.deepEqual(onBranch(dir, redone.proposal.branch, () => readRecoveryFor(dir, "applications").map((e) => e.answered)),
+      [{ version: 2 }]);
 
     await rule(dir, "archaeology-applications-2", "return", "the fee schedule is documented in the README and this still does not cite it", []);
 
@@ -1170,10 +1190,12 @@ test("a recovery that finds the behaviour is not there at all removes the row, a
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     assert.equal(r.ok, true, JSON.stringify(r.messages));
 
-    const text = readFileSync(join(dir, "spec/domains/fees.md"), "utf8");
-    assert.ok(!text.includes("D-fees-1"), text);
-    assert.deepEqual(readRecoveryFor(dir, "fees").map((e) => e.answered), [{ removed: true }]);
-    assert.deepEqual(outstandingRecoveries(readRecoveryFor(dir, "fees"), parseDomainFile(text, "fees").criteria), []);
+    onBranch(dir, r.proposal.branch, () => {
+      const text = readFileSync(join(dir, "spec/domains/fees.md"), "utf8");
+      assert.ok(!text.includes("D-fees-1"), text);
+      assert.deepEqual(readRecoveryFor(dir, "fees").map((e) => e.answered), [{ removed: true }]);
+      assert.deepEqual(outstandingRecoveries(readRecoveryFor(dir, "fees"), parseDomainFile(text, "fees").criteria), []);
+    });
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

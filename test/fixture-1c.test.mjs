@@ -216,11 +216,13 @@ test("fixture project: archaeology through calibrate on the mock executor, oracl
     // and the bindings check is what holds them apart: `bindings.yaml` names it exactly
     // as `surface.yaml` does, while the generated type and the adapter implement the
     // camel-cased member.
-    const bindings = readFileSync(join(dir, "tests/adapters/old/bindings.yaml"), "utf8");
+    const bindings = git(["show", `${bound.proposal.branch}:tests/adapters/old/bindings.yaml`], dir);
     assert.match(bindings, /submit_proposal: bound/);
     assert.ok(!bindings.includes("submitProposal"), "bindings.yaml carries surface names, not TypeScript members");
+    // Generated from the contract already on `main`, so it is read there rather than off
+    // the adapter's own branch, which never carries it.
     assert.match(readFileSync(join(dir, "tests/generated/surface.d.ts"), "utf8"), /submitProposal\(input\?: unknown\): Promise<void>;/);
-    assert.match(readFileSync(join(dir, "tests/adapters/old/index.ts"), "utf8"), /async submitProposal\(/);
+    assert.match(git(["show", `${bound.proposal.branch}:tests/adapters/old/index.ts`], dir), /async submitProposal\(/);
 
     rule(dir, "bind-adapter-old", "approve", { by: "tech-lead" });
 
@@ -246,7 +248,7 @@ test("fixture project: archaeology through calibrate on the mock executor, oracl
     assert.equal(calibrated.proposal.name, "calibrate-triage-old-1");
     assert.equal(calibrated.proposal.gate, "G3");
     assert.equal(calibrated.proposal.branch, "proposal/calibrate-triage-old-1");
-    const proposalPage = readFileSync(join(dir, ".sdlc/proposals/calibrate-triage-old-1.md"), "utf8");
+    const proposalPage = git(["show", `${calibrated.proposal.branch}:.sdlc/proposals/calibrate-triage-old-1.md`], dir);
     assert.match(proposalPage, /R-1\.2/);
     assert.ok(!proposalPage.includes("R-1.1"), "a passing criterion is not asked about");
     assert.match(proposalPage, /Received: "submitted"/);
@@ -265,6 +267,12 @@ test("fixture project: archaeology through calibrate on the mock executor, oracl
 
     const domainPage = readFileSync(join(dir, "site/criteria/applications.md"), "utf8");
     assert.match(domainPage, /^\| R-1\.2 \| .* \| fail \|$/m);
+
+    // The site is generated from the tree it is built in, and an open proposal's page
+    // lives on its own branch until a ruling merges it, so that is where the published
+    // page is read.
+    git(["checkout", "-q", calibrated.proposal.branch], dir);
+    buildSite(dir);
     assert.match(readFileSync(join(dir, "site/proposals/calibrate-triage-old-1.md"), "utf8"), /R-1\.2/);
   } finally {
     delete process.env.SDLC_ORACLE;

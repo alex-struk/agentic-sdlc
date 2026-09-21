@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, cpSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git } from "../src/lib/git.mjs";
+import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule } from "../src/commands/rule.mjs";
@@ -11,6 +11,11 @@ import { propose } from "../src/commands/propose.mjs";
 import { loadConfig } from "../src/config/load.mjs";
 import { finishStage } from "../src/runner/finish-stage.mjs";
 import { stageFor } from "../src/stages/registry.mjs";
+
+// A gated stage's work is committed to its proposal branch and the checkout is left on
+// `main`, so what the stage produced is read out of the branch rather than off disk.
+const onBranch = (dir, branch, path) => git(["show", `${branch}:${path}`], dir);
+const existsOnBranch = (dir, branch, path) => gitOk(["cat-file", "-e", `${branch}:${path}`], dir);
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -113,28 +118,27 @@ test("sdlc run intent: with a brief, the mock run opens proposal/intent-permit-i
     assert.equal(r.proposal.name, "intent-permit-intake");
     assert.equal(r.proposal.gate, "G0");
     assert.equal(r.proposal.branch, "proposal/intent-permit-intake");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.equal(git(["status", "--porcelain"], dir), "");
 
-    const proposalPath = join(dir, ".sdlc/proposals/intent-permit-intake.md");
-    assert.ok(existsSync(proposalPath));
-    const proposalText = readFileSync(proposalPath, "utf8");
+    const branch = r.proposal.branch;
+    assert.ok(existsOnBranch(dir, branch, ".sdlc/proposals/intent-permit-intake.md"));
+    const proposalText = onBranch(dir, branch, ".sdlc/proposals/intent-permit-intake.md");
     assert.match(proposalText, /gate: G0/);
     assert.match(proposalText, /"Is this the right problem and outcome\?"/);
     // The recommendation is the agent's own first sentence, not a re-derivation of it.
     assert.match(proposalText, /Interviewed the stakeholder brief against the intent template, one section at a time, and answered only what the brief itself says\./);
 
-    assert.ok(existsSync(join(dir, ".sdlc/journal/001-intent.md")));
-    const journal = readFileSync(join(dir, ".sdlc/journal/001-intent.md"), "utf8");
+    assert.ok(existsOnBranch(dir, branch, ".sdlc/journal/001-intent.md"));
+    const journal = onBranch(dir, branch, ".sdlc/journal/001-intent.md");
     assert.match(journal, /Interviewed the stakeholder brief/);
 
-    const intentPath = join(dir, "intent/permit-intake.md");
-    assert.ok(existsSync(intentPath));
-    const intentText = readFileSync(intentPath, "utf8");
+    assert.ok(existsOnBranch(dir, branch, "intent/permit-intake.md"));
+    const intentText = onBranch(dir, branch, "intent/permit-intake.md");
     assert.match(intentText, /## Open questions/);
     assert.ok(!intentText.includes("{{"));
 
-    assert.match(git(["show", "--name-only", "--format=", "HEAD"], dir), /intent\/permit-intake\.md/);
+    assert.match(git(["show", "--name-only", "--format=", branch], dir), /intent\/permit-intake\.md/);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -209,14 +213,12 @@ test("sdlc run intent: a second run while the proposal is open is refused before
   try {
     const first = await runStage(dir, "intent");
     assert.equal(first.ok, true, JSON.stringify(first.messages));
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
-    // A run starts on main, so that is where a person stands to try this again.
     // `intent.proposal` derives the same slug the agent itself builds its filename from
     // straight out of `intent/brief.md`'s own heading, so the pre-flight catches the open
     // proposal the same way any other gated stage's does: before a workspace is even
     // materialised, no agent turn, tree left exactly as it was.
-    git(["checkout", "-q", "main"], dir);
     const second = await runStage(dir, "intent");
     assert.equal(second.ok, false);
     assert.deepEqual(second.messages, [
@@ -248,8 +250,7 @@ test("finishStage: a proposal collision the pre-flight could not have known abou
     propose(dir, "intent-permit-intake", {
       gate: "G0", question: "Is this the right problem and outcome?", recommendation: "placeholder",
     });
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/intent-permit-intake");
-    git(["checkout", "-q", "main"], dir);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
     // Stand in for what a real agent turn would have left behind: a valid intent
     // document, uncommitted, in the working tree.
@@ -292,12 +293,12 @@ test("sdlc run archaeology --domain applications: the mock run opens proposal/ar
     assert.equal(r.proposal.name, "archaeology-applications");
     assert.equal(r.proposal.gate, "G1");
     assert.equal(r.proposal.branch, "proposal/archaeology-applications");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
     assert.equal(git(["status", "--porcelain"], dir), "");
 
-    const domainPath = join(dir, "spec/domains/applications.md");
-    assert.ok(existsSync(domainPath));
-    const domainText = readFileSync(domainPath, "utf8");
+    const branch = r.proposal.branch;
+    assert.ok(existsOnBranch(dir, branch, "spec/domains/applications.md"));
+    const domainText = onBranch(dir, branch, "spec/domains/applications.md");
     assert.match(domainText, /D-applications-1/);
     assert.match(domainText, /D-applications-2/);
 
@@ -307,11 +308,10 @@ test("sdlc run archaeology --domain applications: the mock run opens proposal/ar
     assert.ok(existsSync(join(dir, "sources/old/src/routes.js")));
     assert.ok(!existsSync(join(dir, "sources/old/tests")));
 
-    const journalPath = join(dir, ".sdlc/journal/001-archaeology.md");
-    assert.ok(existsSync(journalPath));
-    assert.match(readFileSync(journalPath, "utf8"), /applications domain/);
+    assert.ok(existsOnBranch(dir, branch, ".sdlc/journal/001-archaeology.md"));
+    assert.match(onBranch(dir, branch, ".sdlc/journal/001-archaeology.md"), /applications domain/);
 
-    const proposalText = readFileSync(join(dir, ".sdlc/proposals/archaeology-applications.md"), "utf8");
+    const proposalText = onBranch(dir, branch, ".sdlc/proposals/archaeology-applications.md");
     assert.match(proposalText, /gate: G1/);
     assert.match(proposalText, /Is this what the applications domain does, and which of it is the contract\?/);
   } finally {
@@ -328,11 +328,10 @@ test("sdlc run archaeology --domain applications: a second run while the proposa
   try {
     const first = await runStage(dir, "archaeology", { domain: "applications" });
     assert.equal(first.ok, true, JSON.stringify(first.messages));
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
     // The proposal is still open: a second run from main must not touch the workspace or
     // run an agent turn at all, only report the block and leave the tree exactly as it was.
-    git(["checkout", "-q", "main"], dir);
     const second = await runStage(dir, "archaeology", { domain: "applications" });
     assert.equal(second.ok, false);
     assert.deepEqual(second.messages, [

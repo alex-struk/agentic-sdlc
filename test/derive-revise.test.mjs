@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { git, gitOk } from "../src/lib/git.mjs";
+import { git, gitOk, gitRaw } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule, ruleByAgent } from "../src/commands/rule.mjs";
@@ -322,17 +322,18 @@ test("derive-tests --revise: a real run records the return on main, renames the 
     assert.equal(r.proposal?.name, "derive-tests-applications-2");
     assert.equal(r.proposal?.gate, "G3");
     assert.equal(r.proposal?.branch, "proposal/derive-tests-applications-2");
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/derive-tests-applications-2");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
-    const proposalText = readFileSync(join(dir, ".sdlc/proposals/derive-tests-applications-2.md"), "utf8");
+    const branch = r.proposal.branch;
+    const proposalText = git(["show", `${branch}:.sdlc/proposals/derive-tests-applications-2.md`], dir);
     assert.match(proposalText, /"Do the revised applications tests now follow from their criteria and from nothing else\?"/);
 
-    const r11 = readFileSync(join(dir, "tests/acceptance/applications/R-1.1.spec.ts"), "utf8");
+    const r11 = git(["show", `${branch}:tests/acceptance/applications/R-1.1.spec.ts`], dir);
     assert.ok(!r11.includes("toBe(\"rejected\")") || !r11.toLowerCase().includes("message"), "R-1.1 no longer asserts the error message text");
-    const notTestable = readFileSync(join(dir, "tests/acceptance/not-testable.yaml"), "utf8");
+    const notTestable = git(["show", `${branch}:tests/acceptance/not-testable.yaml`], dir);
     assert.match(notTestable, /no page on the surface observes/);
     // R-1.2's spec file — named by neither condition — survived the revision unchanged.
-    assert.ok(existsSync(join(dir, "tests/acceptance/applications/R-1.2.spec.ts")));
+    assert.equal(gitOk(["cat-file", "-e", `${branch}:tests/acceptance/applications/R-1.2.spec.ts`], dir), true);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -450,11 +451,12 @@ test("derive-tests --revise: tests/generated reflects HEAD's own contract, not t
     // — always archived from `HEAD`, never from the returned branch's own commit — so
     // what lands back in the project matches a fresh `generateTypes(loadContract(...))`
     // read off the commit this run just made, fee-clerk included.
+    const branch = r.proposal.branch;
     const expected = generateTypes(loadContract(dir));
     for (const [relPath, text] of Object.entries(expected)) {
-      assert.equal(readFileSync(join(dir, relPath), "utf8"), text, relPath);
+      assert.equal(gitRaw(["show", `${branch}:${relPath}`], dir), text, relPath);
     }
-    assert.match(readFileSync(join(dir, "tests/generated/personas.ts"), "utf8"), /fee-clerk/);
+    assert.match(git(["show", `${branch}:tests/generated/personas.ts`], dir), /fee-clerk/);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -544,7 +546,7 @@ test("derive-tests --revise: the workspace's not-testable.yaml merges HEAD's oth
     const r = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
     assert.equal(r.ok, true, JSON.stringify(r.messages));
 
-    const criteria = parseYaml(readFileSync(join(dir, "tests/acceptance/not-testable.yaml"), "utf8")).criteria;
+    const criteria = parseYaml(git(["show", `${r.proposal.branch}:tests/acceptance/not-testable.yaml`], dir)).criteria;
     const byId = new Map(criteria.map((c) => [c.id, c]));
     assert.deepEqual([...byId.keys()].sort(), ["R-1.3", "R-2.1"]);
     // R-2.1 (fees, domain B) is untouched — the entry HEAD carried, byte for byte.

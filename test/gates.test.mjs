@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, existsSync, mkdirSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { git } from "../src/lib/git.mjs";
+import { git, assertOnMain } from "../src/lib/git.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { rule } from "../src/commands/rule.mjs";
 import { newProject } from "../src/commands/new.mjs";
@@ -40,13 +40,29 @@ test("propose then approve merges into main with a gate record", () => {
   const d = project();
   const { branch } = propose(d, "harness-ready", { gate: "G1", question: "Is the harness ready?", recommendation: "Yes." });
   assert.equal(branch, "proposal/harness-ready");
-  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), branch);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
   assert.throws(() => rule(d, "harness-ready", "approve", { by: "ux-reviewer" }), /not a holder/);
   rule(d, "harness-ready", "approve", { by: "tech-lead", note: "checks green" });
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
   assert.ok(existsSync(join(d, ".sdlc/gates/harness-ready.yaml")));
   assert.match(readFileSync(join(d, ".sdlc/gates/harness-ready.yaml"), "utf8"), /verdict: approve/);
   assert.match(git(["log", "--oneline", "-3"], d), /harness-ready/);
+});
+
+// A stage that opens a proposal and the command that runs next disagree about the
+// checkout unless `propose` gives it back. `sdlc run` refuses anywhere but `main`
+// (`assertOnMain`), and so does the `verify` that follows a `build --revise` in its own
+// documented sequence, so a proposal left checked out stops the next step of the work
+// the stage that opened it is in the middle of.
+test("propose gives the checkout back to main, with its work on the branch", () => {
+  const d = project();
+  const { branch } = propose(d, "hands-back", { gate: "G1", question: "?", recommendation: "?" });
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "main");
+  assert.equal(git(["status", "--porcelain"], d), "");
+  // `main` does not carry the proposal; the branch that was opened for it does.
+  assert.equal(existsSync(join(d, ".sdlc/proposals/hands-back.md")), false);
+  assert.match(git(["show", `${branch}:.sdlc/proposals/hands-back.md`], d), /gate: G1/);
+  assertOnMain(d, "run");
 });
 
 test("return keeps the branch open and records the verdict", () => {
@@ -97,9 +113,9 @@ test("an agent-held gate records held_by agent and can escalate to the human", (
 
 test("propose leaves the working tree clean and commits the run record on its own branch", () => {
   const d = project();
-  propose(d, "clean-tree", { gate: "G1", question: "Clean?", recommendation: "Yes." });
+  const { branch } = propose(d, "clean-tree", { gate: "G1", question: "Clean?", recommendation: "Yes." });
   assert.equal(git(["status", "--porcelain"], d), "");
-  const files = git(["log", "-1", "--name-only"], d);
+  const files = git(["log", "-1", "--name-only", branch], d);
   assert.match(files, /\.sdlc\/runs\//);
 });
 
@@ -114,8 +130,8 @@ test("rule approve leaves main's working tree clean", () => {
 test("two proposals in sequence keep separate run-record entries in their own commits", () => {
   const d = project();
   propose(d, "first-one", { gate: "G1", question: "First?", recommendation: "Yes." });
-  propose(d, "second-one", { gate: "G2", question: "Second?", recommendation: "Yes." });
-  const added = git(["show", "HEAD", "--format=", "--", ".sdlc/runs/"], d);
+  const { branch } = propose(d, "second-one", { gate: "G2", question: "Second?", recommendation: "Yes." });
+  const added = git(["show", branch, "--format=", "--", ".sdlc/runs/"], d);
   const addedLines = added.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
   assert.ok(addedLines.some((l) => l.includes("second-one")));
   assert.ok(!addedLines.some((l) => l.includes("first-one")));
@@ -136,8 +152,8 @@ test("the proposal commit contains the proposal and the run record and nothing e
   writeFileSync(join(d, ".gitignore"), "scratch.txt\n");
   git(["add", "-A"], d); git(["commit", "-q", "-m", "ignore scratch"], d);
   writeFileSync(join(d, "scratch.txt"), "an agent's working file\n");
-  propose(d, "only-mine", { gate: "G1", question: "?", recommendation: "?" });
-  const files = git(["show", "HEAD", "--name-only", "--format="], d).split("\n").filter(Boolean).sort();
+  const { branch } = propose(d, "only-mine", { gate: "G1", question: "?", recommendation: "?" });
+  const files = git(["show", branch, "--name-only", "--format="], d).split("\n").filter(Boolean).sort();
   assert.deepEqual(files.filter((f) => !f.startsWith(".sdlc/runs/")), [".sdlc/proposals/only-mine.md"]);
   assert.ok(files.some((f) => f.startsWith(".sdlc/runs/")));
   assert.ok(!files.includes("scratch.txt"));
@@ -204,7 +220,7 @@ test("two proposals opened the same day both merge into main", async () => {
 test("a proposal page carries no path that names this machine", () => {
   const d = project();
   const elsewhere = `/${"home"}/someone/tools`;
-  propose(d, "build-slice-1", {
+  const { branch } = propose(d, "build-slice-1", {
     gate: "G3",
     question: `Does ${d}/app do what slice 1 says?`,
     recommendation: `npm error path ${d}/app/backend`,
@@ -215,7 +231,7 @@ test("a proposal page carries no path that names this machine", () => {
       "The route at opportunities/home/default is unaffected.",
     ].join("\n"),
   });
-  const text = readFileSync(join(d, ".sdlc/proposals/build-slice-1.md"), "utf8");
+  const text = git(["show", `${branch}:.sdlc/proposals/build-slice-1.md`], d);
   assert.ok(!text.includes(d), "the project's own absolute path is relative on the page");
   assert.ok(!text.includes(elsewhere), "a home path outside the project loses the root that names a person");
   assert.match(text, /npm error path \.\/app\/backend/);

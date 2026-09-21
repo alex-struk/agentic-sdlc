@@ -64,8 +64,8 @@ is the only place a re-run decision is made.
 - **If the stage holds a gate** (`intent` at G0, `archaeology` and `contract` at G1, `derive-tests`
   and `bind-adapter` at G3): the same files minus the site, handed to `sdlc propose` as the paths a
   proposal is allowed to find already dirty, so they land in the proposal's own commit on a new
-  `proposal/<name>` branch instead of on `main` (`docs/stages/propose.md`). The run leaves the
-  working tree checked out on that branch.
+  `proposal/<name>` branch instead of on `main` (`docs/stages/propose.md`). The run gives the
+  checkout back to `main`, and what it produced is read off `proposal/<name>` from then on.
 
   **A gated stage builds no state site.** Every page of the site is regenerated whole from the
   whole project, so a copy carried on a proposal branch would differ from every other open
@@ -219,9 +219,8 @@ In the order they are reached:
 2. **The checkout must be on `main`** (`assertOnMain`), or the run throws `run must start on main;
    you are on <branch>`. Everything downstream assumes it: `propose` branches off `main`, the
    ruling persona's diff is `main...proposal/<name>`, and the open-proposal check reads `git
-   branch --merged main`. A run started on a leftover proposal branch — which is the state a gated
-   run itself leaves the tree in — would branch off that branch and carry the previous proposal's
-   changes as if they were its own.
+   branch --merged main`. A run started on a leftover proposal branch would branch off that branch
+   and carry the previous proposal's changes as if they were its own.
 3. **`<stage>` must be in the registry, and `stage.implemented` must be `true`.**
 4. **`.sdlc/config.yaml` must load and validate.**
 5. **The stage's own `preChecks(projectDir, ctx)` must all pass**, before a workspace is
@@ -283,9 +282,9 @@ stable (`docs/stages/calibrate.md`).
 before `run` returns, so the working tree is clean again for the next attempt.
 
 **A gated stage** can only be re-run once its previous proposal has been ruled. A successful gated
-run leaves the tree checked out on the proposal branch, so the next run starts by checking `main`
-out — and is then refused by the open-proposal check above, before a workspace is materialised or
-a session started, rather than failing partway through `propose`. Once the proposal is approved and
+run ends on `main`, so the next run starts where it needs to and is refused by the open-proposal
+check above, before a workspace is materialised or a session started, rather than failing partway
+through `propose`. Once the proposal is approved and
 merged, running the stage again under the same name is safe: the same check deletes the spent
 branch so `propose` can recreate it. A returned or escalated proposal's branch is left in place and
 keeps blocking the stage until a person deletes it.

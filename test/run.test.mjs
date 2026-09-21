@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git } from "../src/lib/git.mjs";
+import { git, assertOnMain } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage, turnsFor } from "../src/commands/run.mjs";
 import { resume } from "../src/commands/resume.mjs";
@@ -134,6 +134,52 @@ test("sdlc run probe: a mock with no files fails post-checks, takes its one fix 
     assert.match(journal, /## Fix turn/);
     const messageCount = journal.match(/app\/PROBE\.md is missing/g) ?? [];
     assert.equal(messageCount.length, 2);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// ---- a gated stage hands the checkout back ----
+
+// The stage that opens a proposal and the command that runs next disagree about the
+// checkout unless the run gives it back. Every command that starts a run refuses
+// anywhere but `main`, so a run left standing on the proposal it opened stops the next
+// step of the very sequence it is in the middle of — `build --revise` followed by
+// `verify` being the case the sequence is documented for.
+test("a gated stage's run ends on main, so the command documented to follow it can start", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-gated-checkout-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "gated-handback",
+    title: "gated-handback title",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: "G3",
+    collect: [],
+    implemented: true,
+    prompt: () => "write app/HANDBACK.md",
+    proposal: () => ({ name: "gated-handback-1", question: "Does it?", recommendation: "Yes." }),
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-gated-checkout-mock-"));
+  writeFileSync(join(mockDir, "gated-handback.json"), JSON.stringify({
+    text: "wrote the file", files: { "app/HANDBACK.md": "here\n" },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "gated-handback");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(r.proposal.branch, "proposal/gated-handback-1");
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    // The work is on the branch and nowhere else, and the next run is not refused for
+    // standing somewhere it never chose to stand.
+    assert.equal(existsSync(join(dir, "app/HANDBACK.md")), false);
+    assert.match(git(["show", "proposal/gated-handback-1:app/HANDBACK.md"], dir), /here/);
+    assert.doesNotThrow(() => assertOnMain(dir, "run"));
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -1403,14 +1449,15 @@ test("resume rebuilds ctx and gives the proposal the interrupted run's own accou
     assert.equal(code, 0);
     assert.equal(sawTitle, "the seeded pages", "pre-checks ran, so ctx carries what the proposal needs");
 
-    const page = readFileSync(join(dir, ".sdlc/proposals/resume-account-1.md"), "utf8");
+    const branch = "proposal/resume-account-1";
+    const page = git(["show", `${branch}:.sdlc/proposals/resume-account-1.md`], dir);
     assert.match(page, /Built the seeded pages and tested them\./);
     assert.match(page, /Detail the ruler needs\./);
     assert.ok(!/agent output unavailable/.test(page), page);
 
     // This run's own journal entry says what this run did, and points at the account
     // rather than copying it — a run resumed twice must not duplicate it.
-    const mine = readFileSync(join(dir, ".sdlc/journal/002-resume-account-stage.md"), "utf8");
+    const mine = git(["show", `${branch}:.sdlc/journal/002-resume-account-stage.md`], dir);
     assert.match(mine, /001-resume-account-stage\.md/);
     assert.ok(!/Detail the ruler needs/.test(mine), mine);
     assert.match(mine, /^turns: 0$/m);

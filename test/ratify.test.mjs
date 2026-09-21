@@ -307,10 +307,9 @@ test("sdlc run ratify: fails pre-checks when archaeology has not been approved y
   try {
     const archaeologyRun = await runStage(dir, "archaeology", { domain: "applications" });
     assert.equal(archaeologyRun.ok, true, JSON.stringify(archaeologyRun.messages));
-    // Still on the open proposal branch: nothing has ruled it yet. A run starts on main,
-    // so that is where a person would be standing when they tried this.
-    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/archaeology-applications");
-    git(["checkout", "-q", "main"], dir);
+    // The proposal is open and nothing has ruled it yet, and the run that opened it left
+    // the checkout on main, which is where a person would be standing to try this.
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
 
     const r = await runStage(dir, "ratify", { domain: "applications" });
     assert.equal(r.ok, false);
@@ -403,6 +402,8 @@ test("sdlc run ratify: the preamble above the first criterion block survives the
     // the same merge the domain file itself does: prose an agent (or a person) put above
     // the first `### ` block, which is not part of the criterion format and which
     // nothing in ratify has any business rewriting.
+    const branch = archaeologyRun.proposal.branch;
+    git(["checkout", "-q", branch], dir);
     const domainPath = join(dir, "spec/domains/applications.md");
     const preamble = [
       "# applications",
@@ -419,6 +420,7 @@ test("sdlc run ratify: the preamble above the first criterion block survives the
     writeFileSync(domainPath, preamble + body.slice(body.indexOf("### ")));
     git(["add", "-A"], dir);
     git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "add a preamble"], dir);
+    git(["checkout", "-q", "main"], dir);
 
     const ownerMockDir = mockOwnerApprove();
     process.env.SDLC_MOCK_DIR = ownerMockDir;
@@ -548,7 +550,7 @@ test("the closing loop: ratify opens a follow-up over what it could not mint, an
 
     // The page carries what the persona needs to rule without opening the domain file,
     // says which criterion has already been answered once, and restates the grammar.
-    const page = readFileSync(join(dir, ".sdlc/proposals/ratify-applications-1.md"), "utf8");
+    const page = git(["show", `${pass1.proposal.branch}:.sdlc/proposals/ratify-applications-1.md`], dir);
     assert.match(page, /### D-applications-1 · v1 · open · recovered/);
     assert.match(page, /### D-applications-2 · v1 · inferred · recovered/);
     assert.match(page, /already answered once/);

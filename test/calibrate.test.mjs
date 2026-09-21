@@ -242,7 +242,7 @@ test("sdlc run calibrate --target old: writes a dated result set and latest.json
     // question for the reviewer, and the product owner is not asked it.
     assert.equal(r.proposal.name, "calibrate-triage-old-1");
     assert.equal(r.proposal.gate, "G3");
-    const triagePage = readFileSync(join(dir, ".sdlc/proposals/calibrate-triage-old-1.md"), "utf8");
+    const triagePage = git(["show", `${r.proposal.branch}:.sdlc/proposals/calibrate-triage-old-1.md`], dir);
     assert.match(triagePage, /R-1\.2/);
     assert.ok(!triagePage.includes("R-1.1"), "a passing criterion is not asked about");
     assert.match(triagePage, /Received: "submitted"/);
@@ -254,7 +254,7 @@ test("sdlc run calibrate --target old: writes a dated result set and latest.json
     assert.equal(sorted.proposal.name, "calibrate-old-1");
     assert.equal(sorted.proposal.gate, "G1");
     assert.ok(!existsSync(join(dir, `tests/results/old/${today}-2.json`)), "applying a ruling runs no suite, so it writes no second dated record");
-    const page = readFileSync(join(dir, ".sdlc/proposals/calibrate-old-1.md"), "utf8");
+    const page = git(["show", `${sorted.proposal.branch}:.sdlc/proposals/calibrate-old-1.md`], dir);
     assert.match(page, /R-1\.2/);
     assert.ok(!page.includes("R-1.1"), "a passing criterion is not asked about");
     assert.match(page, /Received: "submitted"/);
@@ -781,7 +781,7 @@ test("derive-tests --stale takes the ids it has just derived off redo.yaml", asy
     const derived = await runStage(dir, "derive-tests", { domain: "applications", stale: true });
     assert.equal(derived.ok, true, JSON.stringify(derived.messages));
 
-    const after = parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8"));
+    const after = parseYaml(git(["show", `${derived.proposal.branch}:tests/acceptance/redo.yaml`], dir));
     assert.deepEqual(after.redo, [], "the request has been answered, so it is off the list");
   } finally {
     clearCalibrateEnv();
@@ -881,7 +881,7 @@ test("sdlc run calibrate: a page of failures is capped at 40, and says how many 
     const r = await runStage(dir, "calibrate", { target: "old" });
     assert.equal(r.ok, true, JSON.stringify(r.messages));
     assert.equal(r.proposal.name, "calibrate-triage-old-1");
-    const page = readFileSync(join(dir, ".sdlc/proposals/calibrate-triage-old-1.md"), "utf8");
+    const page = git(["show", `${r.proposal.branch}:.sdlc/proposals/calibrate-triage-old-1.md`], dir);
     assert.match(page, /^45 criterion\(s\) failed against the \*\*old\*\* target at .*, and nobody has sorted them yet\.$/m);
     assert.match(page, /^The 40 below are the ones to sort now; the remaining 5 come back on the next run\.$/m);
     assert.equal((page.match(/^### /gm) ?? []).length, 40, "exactly 40 criteria are laid out");
