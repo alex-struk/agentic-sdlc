@@ -512,3 +512,35 @@ test("a proposal touching many criteria is capped, and says what it capped", asy
   assert.match(section, /further criterion\(s\) are named by this proposal and not quoted here/);
   assert.match(section, /R-2\.90/, "what was left out is named, so the ruler can go and read it");
 });
+
+// A condition naming a path the stage cannot write is refused when the verdict is recorded,
+// and by then the ruling turn has been paid for. The ruler is told first instead.
+test("a prompt for a proposal that goes back to a stage says what that stage can deliver", async () => {
+  const dir = microProject();
+  const name = "build-slice-1";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "app/routes/list.tsx", "export const List = () => null;\n");
+  write(dir, ".sdlc/proposals/" + name + ".md", `---\ngate: G3\nquestion: "Does slice 1 do what its criteria say?"\nrecommendation: "yes"\nopened: 2026-09-06T00:00:00.000Z\n---\n\n# Does slice 1 do what its criteria say?\n`);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.match(prompt, /## What a condition may ask for/);
+  assert.match(prompt, /it delivers app, docs\/decisions and nothing else/);
+  assert.match(prompt, /addressed-to <stage>: /);
+});
+
+// An ordinary ruling prompt is unchanged: a proposal whose conditions are read in a closed
+// grammar goes back to no `--revise` run at all.
+test("a prompt for a proposal that goes back to no stage carries no deliverability section", async () => {
+  const dir = microProject();
+  const name = "ratify-zeta-2";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "spec/domains/zeta.md", "# zeta\n");
+  write(dir, ".sdlc/proposals/" + name + ".md", `---\ngate: G1\nquestion: "Which become the contract?"\nrecommendation: "rule each"\nopened: 2026-09-06T00:00:00.000Z\n---\n\n# Which become the contract?\n`);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "ratify follow-up"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G1" });
+  assert.ok(!prompt.includes("## What a condition may ask for"));
+});

@@ -86,6 +86,10 @@ export const build = {
   workspace: "build",
   gate: "G3",
   collect: ["app", "docs/decisions"],
+  // The stem this stage's proposals are named from. It is what lets a ruling being written
+  // at a gate find the stage its conditions will reach, so a condition naming a path this
+  // stage cannot deliver is refused while the ruler is still there to re-address it.
+  proposalPrefix: "build-slice-",
   // A slice is a feature end to end — pages, API, data — and a first slice also stands the
   // application up, which alone runs past any smaller ceiling.
   defaultTurns: 400,
@@ -110,7 +114,15 @@ export const build = {
     const deps = Object.entries(dependsOn ?? {});
     return [
       `Build slice ${s.number} of plan/tasks.md. Its entry in the plan:\n\n${s.body}`,
-      `The criteria it is answerable for: ${s.criteria.join(", ")}.`,
+      // Read from `plan/tasks.md`, which this workspace carries as context and does not
+      // collect, and said so here. The list and any condition attached to a revision used to
+      // be free to contradict each other — one saying a criterion is this slice's, the other
+      // asking for it to be moved off the slice — and a builder handed both did the work in
+      // `plan/` and had it dropped. Naming the source says which of the two can move.
+      `The criteria it is answerable for, as plan/tasks.md assigns them to slice ${s.number}: ${s.criteria.join(", ")}. `
+        + "That assignment is the plan's, not this build's: which slice a criterion belongs to is settled in "
+        + "plan/tasks.md, which this workspace carries for reading and does not deliver. Build every criterion "
+        + "on that list, and if one of them cannot be built here, say which and why in your journal entry.",
       `The application must answer at ${baseUrl}: that is this project's \`targets.new.base_url\`, `
         + `it is the address the acceptance suite drives, and app/compose/compose.yaml must publish `
         + `it there. No other service in that file may take that port.`,

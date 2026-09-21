@@ -140,3 +140,18 @@ test("an application with no check script fails, naming the script the stack req
   assert.equal(r.ok, false);
   assert.match(r.messages[0], /app\/package\.json has no "check" script/);
 });
+
+// A prompt that lists the criteria a slice is answerable for and then, lower down, carries a
+// condition asking for one of them to be moved off the slice, asks the builder for two
+// incompatible things. It did the second — in `plan/`, which no build collects — and the
+// work was dropped while the proposal page reported it done.
+test("the criteria a build is answerable for are named with the file that assigns them, and that file is not the build's", () => {
+  const prompt = build.prompt({
+    slice: 2,
+    buildSlice: { number: 2, title: "Second", body: "### Slice 2\n", criteria: ["R-1.1", "R-2.4"] },
+    config: { project: { name: "permit-intake" }, targets: { new: { base_url: "http://localhost:3000" } } },
+  });
+  assert.match(prompt, /as plan\/tasks\.md assigns them to slice 2: R-1\.1, R-2\.4/);
+  assert.match(prompt, /which this workspace carries for reading and does not deliver/);
+  assert.match(prompt, /say which and why in your journal entry/);
+});

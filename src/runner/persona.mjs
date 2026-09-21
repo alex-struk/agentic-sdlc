@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
+import { deliveredBy, stageForProposal } from "../stages/registry.mjs";
+import { ADDRESSED_CONDITION_FORM } from "../spec/criteria.mjs";
 import { stackBulk } from "../lib/stack.mjs";
 import { runChecks } from "../checks/index.mjs";
 import { formatChecks } from "../commands/checks.mjs";
@@ -171,6 +173,34 @@ export function briefBody(brief) {
   return brief.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
 }
 
+// What the stage this proposal goes back to can actually change, put in front of the ruler
+// before the ruling is written rather than after. A condition naming anything else is
+// refused when the verdict is recorded, and a refusal is a worse way to learn this than a
+// sentence: the ruling turn has already been paid for by then.
+//
+// Left out entirely for a proposal that goes back to no stage — its conditions are read in a
+// closed grammar, or its return is a person's to take up — so an ordinary ruling prompt
+// reads exactly as it always has.
+function deliverabilityNote(name) {
+  const stage = stageForProposal(name);
+  if (!stage) return [];
+  const delivers = deliveredBy(stage);
+  if (!delivers.length) return [];
+  return [
+    "## What a condition may ask for",
+    "",
+    `A return sends this proposal back to \`${stage}\`, whose workspace is writable only where it is `
+      + `collected: it delivers ${delivers.join(", ")} and nothing else. Every other path it is given is `
+      + "there to be read.",
+    "",
+    `A condition naming a path outside that list is refused when the verdict is recorded. Where the work `
+      + `belongs to another stage, say so in the condition itself: \`${ADDRESSED_CONDITION_FORM}\`. That files a `
+      + "request the named stage reads on its own next revision, and this proposal is ruled on what it is "
+      + "answerable for.",
+    "",
+  ];
+}
+
 export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null, escalation = null }) {
   const brief = readPersonaBrief(projectDir, persona);
   const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
@@ -295,6 +325,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
       "The writer can fix reported TypeScript errors; the runner owns executing the check.",
       "",
     ] : []),
+    ...deliverabilityNote(name),
     `Finish with one fenced \`\`\`json block: {"verdict": "approve"|"return"|"escalate", "rationale": "...", "conditions": [...]}. Nothing after the block.`,
   ].join("\n");
 }

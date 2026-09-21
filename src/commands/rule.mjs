@@ -13,7 +13,7 @@ import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, OVERREACH_CONDITION_FORM, OVERREACH_VERB, addressedConditions, conditionGrammarFor, conditionsAreExecutable, malformedAddressedConditions, malformedOverreachConditions, overreachConditions } from "../spec/criteria.mjs";
 import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo.mjs";
 import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } from "../spec/revisions.mjs";
-import { revisableStages } from "../stages/registry.mjs";
+import { revisableStages, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 // Which grammar a proposal's conditions are read in is a property of the conditions, so it
@@ -165,6 +165,35 @@ export function assertAddressedRulable(name, verdict, conditions) {
   if (verdict === "approve" && addressedConditions(conditions).length)
     throw new Error(`rule ${name}: an \`${ADDRESSED_VERB}\` condition asks another stage to produce its artifact again, which an approval cannot carry —`
       + " it says the work being ruled was built against something that has to change; return the proposal instead.");
+}
+
+// The one thing a plain condition may never be: an instruction to change a path the stage
+// receiving it has no way to deliver. Checked in the same place and for the same reasons as
+// the two above, before a ruling writes anything at all.
+//
+// A stage's workspace is writable only where it is collected, so a condition naming anything
+// else asks for work that is either refused mid-run or done and then dropped. The ruler is
+// the only person who can put it right — by the time a `--revise` run reads the condition the
+// ruling is history, and the stage reading it has no standing to re-address it — so the
+// refusal happens here, while the ruler is still at the keyboard and the correction is one
+// line. `addressed-to <stage>` is that line, and the message hands it over ready to paste.
+//
+// Only a return is checked. An approval's conditions are commentary that no `--revise` run
+// reads, and the verdicts that may not carry a cross-stage request at all are refused above.
+export function assertDeliverableRulable(name, verdict, conditions) {
+  if (verdict !== "return") return;
+  const [first] = undeliverableConditions(name, conditions ?? []);
+  if (!first) return;
+  const delivers = first.delivers.length ? first.delivers.join(", ") : "nothing";
+  const remedy = first.deliverableBy.length
+    ? `${first.deliverableBy.join(" or ")} delivers it. Address the condition there instead:\n`
+      + `  ${ADDRESSED_VERB} ${first.deliverableBy[0]}: <what that stage has to change, and what showed it>`
+    : "no stage in this pipeline delivers it, so no ruling can ask for it; say what this proposal must do instead,"
+      + " and take the rest up outside the pipeline.";
+  throw new Error(`rule ${name}: ${JSON.stringify(first.line)} asks for ${first.path}, which ${first.stage} cannot deliver —`
+    + ` ${first.stage} delivers ${delivers}, and everything else its workspace carries is there to be read.`
+    + ` A condition it cannot carry out is one it either fails at or finds a way round, and the second is reported as done.`
+    + ` ${remedy}`);
 }
 
 // Files the revisions a ruling's `addressed-to` conditions ask for onto
@@ -359,6 +388,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
     if (!executable) {
       assertOverreachRulable(name, verdict, conditions ?? []);
       assertAddressedRulable(name, verdict, conditions ?? []);
+      assertDeliverableRulable(name, verdict, conditions ?? []);
     }
     // The same evidence the seat's persona is held to, so that sitting in the seat is the
     // whole of what changes when a person takes it. A build with no passing result is
@@ -637,6 +667,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     if (!executable) {
       assertOverreachRulable(name, verdict, conditions ?? []);
       assertAddressedRulable(name, verdict, conditions ?? []);
+      assertDeliverableRulable(name, verdict, conditions ?? []);
     }
     // Here rather than before the persona is asked, because the verdict is what decides
     // whether it applies at all. By this point the typecheck has run and the ruling turn has

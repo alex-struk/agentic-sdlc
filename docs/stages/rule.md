@@ -324,6 +324,29 @@ the filing commit touches the request file and nothing else, and the change itse
 gate the addressed stage holds rather than by the ruler who asked for it
 (`docs/decisions/0024-a-gate-that-only-moves-forward.md`).
 
+### A condition asking for a path the stage cannot deliver
+
+A stage's workspace is writable only where it is collected
+(`docs/decisions/0027-a-run-that-fabricated-success.md`), so a plain condition naming any other
+path is a ruling nobody can carry out. `sdlc rule` refuses the return before anything is written,
+naming the path, what the stage being returned does deliver, and the `addressed-to` line to use
+instead.
+
+It is caught here because here is the only place it can be put right. By the time a `--revise` run
+reads the condition the ruling is history and the stage reading it has no standing to re-address
+it; the ruler is at the keyboard now, and the correction is one line. The same refusal is reached
+from both seats: a person typing `--by <role>` is shown it, and a persona is told, before it rules,
+which paths the stage this proposal goes back to can change and what to write when the work belongs
+elsewhere.
+
+A path is read out of a condition when it looks like one — it carries a separator or an extension —
+and only when this pipeline has some say over it. "Rework the plan so the second slice stands
+alone" names no file; `plan/tasks.md` does. A path no stage of this pipeline delivers is refused
+too, and says so rather than naming a stage.
+
+Only a return is checked. An approval's conditions are commentary no `--revise` run reads, and the
+verdicts that may not carry a cross-stage request at all are refused by the two guards above.
+
 ## Mandatory escalation
 
 Some proposals never reach the persona at all. Before asking, `sdlc rule` escalates on its own

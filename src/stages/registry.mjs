@@ -12,12 +12,13 @@ const SDLC_BIN = resolve(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs"
 import { readText, writeText } from "../lib/fsx.mjs";
 import { changedPaths, git, gitOk } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
+import { MODES, coveredBy } from "../runner/workspace.mjs";
 import { runCatalogueScan } from "../runner/catalogue.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { readRebindFor } from "../spec/rebind.mjs";
-import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, domainOrdinal, conditionTargetId, criterionFingerprint } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { RECOVERY_PATH, addRecovery, answerRecoveries, entriesIn, keyOf, outstandingRecoveries, readRecovery, readRecoveryFor, recoveryRequestCount, unexpectedLedgerChange } from "../spec/recovery.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
@@ -1248,6 +1249,10 @@ const deriveTests = {
   // domain starts from exactly what was proposed and returned.
   workspace: "spec-only",
   gate: "G3",
+  // The stem this stage's proposals are named from. It is what lets a ruling being written
+  // at a gate find the stage its conditions will reach, so a condition naming a path this
+  // stage cannot deliver is refused while the ruler is still there to re-address it.
+  proposalPrefix: "derive-tests-",
   // The paths a `--revise` run's own workspace was overlaid with — see
   // `deriveTestsRevisionScope` above.
   revisionOverlayPaths: (ctx) => deriveTestsRevisionScope(ctx.domain),
@@ -1655,6 +1660,10 @@ const bindAdapter = {
   skill: skillPath("bind-adapter"),
   workspace: "blind-adapter",
   gate: "G3",
+  // The stem this stage's proposals are named from. It is what lets a ruling being written
+  // at a gate find the stage its conditions will reach, so a condition naming a path this
+  // stage cannot deliver is refused while the ruler is still there to re-address it.
+  proposalPrefix: "bind-adapter-",
   // On a `--revise` run the returned branch's own adapter is overlaid into the workspace,
   // so the agent opens the binding it wrote rather than an empty directory. Nothing else
   // is overlaid: `tests/generated` is regenerated from `HEAD`'s contract by `prepare`, and
@@ -2427,6 +2436,10 @@ const design = {
   skill: skillPath("design"),
   workspace: "design",
   gate: "G-DESIGN",
+  // The stem this stage's proposals are named from. It is what lets a ruling being written
+  // at a gate find the stage its conditions will reach, so a condition naming a path this
+  // stage cannot deliver is refused while the ruler is still there to re-address it.
+  proposalPrefix: "design-",
   collect: ["design", "spec/contract/surface.yaml"],
   // A design run writes one story per page per state — ninety-odd files for a domain of
   // fourteen pages — and a session's default ceiling ends it a third of the way through,
@@ -2568,6 +2581,10 @@ const plan = {
   skill: skillPath("plan"),
   workspace: "plan",
   gate: "G2",
+  // The stem this stage's proposals are named from. It is what lets a ruling being written
+  // at a gate find the stage its conditions will reach, so a condition naming a path this
+  // stage cannot deliver is refused while the ruler is still there to re-address it.
+  proposalPrefix: "plan",
   collect: ["plan", "docs/decisions"],
   // The planner reads every accepted criterion and the whole design before it cuts a
   // slice, which alone outruns the default ceiling on a project of any size.
@@ -2718,6 +2735,82 @@ STAGES_BY_NAME.verify = verify;
 // work it has no way to do.
 export function revisableStages() {
   return Object.entries(STAGES_BY_NAME).filter(([, stage]) => stage?.revisionOverlayPaths).map(([name]) => name).sort();
+}
+
+// What a stage delivers, for a full run of it. `collect` may be narrowed per run, and the
+// question these three answer — which stage can be asked for a path at all — is about the
+// stage rather than about one run of it.
+function collectOf(stage) {
+  try {
+    return typeof stage?.collect === "function" ? stage.collect({}) : (stage?.collect ?? []);
+  } catch {
+    return [];
+  }
+}
+
+// Whether this pipeline has any say over a path. The union of every path any stage reads or
+// writes, so a condition naming something in the project that no stage of this pipeline
+// produces — a file the team maintains by hand — is left where it is rather than refused.
+export function pipelineOwns(path) {
+  const owned = [];
+  for (const stage of Object.values(STAGES_BY_NAME)) {
+    const mode = typeof stage?.workspace === "function" ? null : stage?.workspace;
+    if (mode && MODES[mode]) owned.push(...MODES[mode]);
+    owned.push(...collectOf(stage));
+  }
+  return coveredBy(owned, path);
+}
+
+// What one stage delivers, by name — the same list `deliverableBy` matches paths against,
+// and what a ruler is shown before a condition is written.
+export function deliveredBy(stage) {
+  return collectOf(STAGES_BY_NAME[stage]);
+}
+
+// Every stage that could deliver a path, sorted, read off the registry rather than listed a
+// second time: a stage that gains or loses a collect path changes this answer with it.
+export function deliverableBy(path) {
+  return Object.entries(STAGES_BY_NAME)
+    .filter(([, stage]) => stage?.implemented && coveredBy(collectOf(stage), path))
+    .map(([name]) => name).sort();
+}
+
+// The stage a returned proposal's conditions will reach. A stage declares the stem its
+// proposals are named from (`proposalPrefix`); the longest one that matches wins, so a
+// family whose names begin with another's is still read as its own. A proposal belonging to
+// no revisable stage answers `null` — its conditions are read in a closed grammar, or its
+// return is taken up by a person rather than by a `--revise` run, and neither is this
+// function's business.
+export function stageForProposal(name) {
+  let best = null;
+  for (const [stage, def] of Object.entries(STAGES_BY_NAME)) {
+    const prefix = def?.proposalPrefix;
+    if (!prefix || !String(name).startsWith(prefix)) continue;
+    if (!best || prefix.length > best.prefix.length) best = { stage, prefix };
+  }
+  return best?.stage ?? null;
+}
+
+// The plain conditions on a ruling that name a path the stage receiving them cannot write.
+// Each comes back with the path, the line it was read from, and which stages could deliver
+// it — `[]` where none can, which is a different answer and reads differently.
+//
+// Only plain lines are read. `addressed-to` and `test-overreaches` already say, in the
+// condition itself, that the work belongs to another stage, and reading them here as well
+// would refuse a ruling for being explicit about exactly this.
+export function undeliverableConditions(name, lines) {
+  const stage = stageForProposal(name);
+  if (!stage) return [];
+  const delivers = collectOf(STAGES_BY_NAME[stage]);
+  const { mine } = splitConditionsByAddressee(lines ?? []);
+  const found = [];
+  for (const line of mine) {
+    for (const path of conditionPaths(line, pipelineOwns)) {
+      if (coveredBy(delivers, path)) continue;
+      found.push({ line, path, stage, delivers, deliverableBy: deliverableBy(path) });
+    }
+  }
+  return found;
 }
 
 export function stageFor(name) {

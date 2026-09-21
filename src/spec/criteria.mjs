@@ -621,6 +621,30 @@ export function malformedAddressedConditions(lines) {
   return (lines ?? []).filter((l) => new RegExp(`^${ADDRESSED_VERB}\\b`).test(String(l).trim()) && !parseAddressedCondition(l));
 }
 
+// Every path-like token in a free-text condition line. A ruler writes a condition as prose
+// and names a file in it the way anyone does, in backticks or bare, so the tokens are read
+// out of the sentence rather than required in a form.
+//
+// A token counts only when it looks like a path rather than like a word: it either carries
+// a separator or an extension. "Rework the plan so the second slice stands alone" names no
+// file, and reading `plan` out of it as one would refuse most of the rulings anyone writes.
+// Trailing sentence punctuation is dropped, since a path at the end of a sentence has some.
+//
+// `owned` decides which of those tokens this pipeline has any say over; the caller supplies
+// it, and a token outside it belongs to the project and is left alone. The default is every
+// token, which is what a caller testing the reading itself wants.
+export function conditionPaths(line, owned = null) {
+  const found = [];
+  for (const raw of String(line ?? "").match(/[A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)*/g) ?? []) {
+    const token = raw.replace(/[.,;:!?)\]}'"`]+$/, "");
+    if (!token.includes("/") && !token.includes(".")) continue;
+    if (/^\d+(\.\d+)*$/.test(token)) continue;
+    if (owned && !owned(token)) continue;
+    if (!found.includes(token)) found.push(token);
+  }
+  return found;
+}
+
 // A ruling's conditions split into the ones the stage being asked to revise is to act on
 // and the ones addressed to some other stage. Both cross-stage forms are read here, since
 // both leave the same hole in a revise prompt: `test-overreaches` names a criterion whose
