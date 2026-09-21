@@ -194,6 +194,10 @@ function notTestableRows(projectDir, domain) {
     domain: byId.get(entry.id)?.domain ?? null,
     file: null,
     result: "not-testable",
+    // The entry's own reason, carried onto the row. `not-testable.yaml` is the only place
+    // it is written down, and a reader of the result file — a verdict, a terminal line, a
+    // ruling prompt — has no other way to know why the application was never asked.
+    ...(entry.reason ? { reason: String(entry.reason).trim() } : {}),
     tests: [],
   }));
 }

@@ -53,12 +53,18 @@ asks for happens at the gate it is returned to, not here.
 5. **Classify the result** (`verifyVerdict`): every claimed criterion is looked up by id.
    - `unbound` — every criterion whose adapter binding does not exist on `new` is set aside
      separately.
-   - Anything else that is not `pass`, `not-testable` or `attested` — a `fail`, a `stale` test, or
-     a criterion missing from the run altogether — counts as failing.
+   - `not-testable` and `attested` — the two results that settle a criterion without the
+     application being asked anything (`src/testrun/results.mjs`) — are set aside as never
+     asserted, with the reason each carries.
+   - Anything else that is not `pass` — a `fail`, a `stale` test, or a criterion missing from the
+     run altogether — counts as failing.
    - The verdict is `fail` if anything failed, `unbound` if nothing failed but something is
-     unbound, otherwise `pass`.
+     unbound, `pass-unasserted` if nothing failed and something was never asserted, and `pass`
+     only where every criterion the slice claims was put to the application and met.
 6. **Write the result file**, `tests/results/new/slice-<n>.json` —
-   `{ slice, proposal, app_tree, at, verdict, rows }`. `app_tree` is the commit the branch's `app/`
+   `{ slice, proposal, app_tree, at, verdict, rows }`, plus `unasserted` — one
+   `{ id, result, reason }` per criterion nobody asserted — whenever there is one.
+   `app_tree` is the commit the branch's `app/`
    tree hashes to, which is what `buildVerified` compares against later, so a ruling cannot be given
    on the strength of verify evidence about a version of the application the proposal no longer
    carries.
@@ -102,7 +108,11 @@ asks for happens at the gate it is returned to, not here.
    step that cannot run. The last line picks the ruled adapter up because of step 2 above
    (`docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md`).
 9. **On `pass`, report ready for G3.** Nothing else is written; the reviewer can now rule the build
-   proposal.
+   proposal. On `pass-unasserted` the same is true of the route, and what is printed says how many
+   of the slice's claimed criteria were asserted and met, names the ones that were never asserted
+   at all, and quotes the reason recorded for each. The sentence reserved for `pass` — every
+   claimed criterion passes against the application — is printed only where that is true of every
+   row.
 10. **Commit the result** — and the gate file, on a `fail` — onto the proposal branch, then tear the
    sandbox down and check back out to the branch verify started from.
 
@@ -120,14 +130,16 @@ the proposal branch.
 - A merge commit on the proposal's branch, whenever `main` has moved since the branch was cut.
 - A run-record line, on every attempt — including one that failed part-way and one that left the
   branch dirty.
-- No gate of its own on `pass` or `unbound`: nothing is asked of a person until either the reviewer
-  rules the proposal, or the third failure's escalation reaches G3's `escalate_to`.
+- No gate of its own on `pass`, `pass-unasserted` or `unbound`: nothing is asked of a person until
+  either the reviewer rules the proposal, or the third failure's escalation reaches G3's
+  `escalate_to`.
 
 ## The verdict table
 
 | Result | Route | Gate file written |
 | --- | --- | --- |
 | `pass` | Ready for G3 — the reviewer can now rule the build proposal. | None. |
+| `pass-unasserted` | Ready for G3, saying which criteria were never asserted against the application and why. Whether the slice may be approved on that footing is the reviewer's, and the ruling prompt carries the same rows and reasons. | None. |
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
 | `unbound`, no adapter for `new` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |

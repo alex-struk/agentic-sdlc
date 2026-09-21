@@ -21,10 +21,18 @@ import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./slices.mjs";
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
 import { ADDRESSED_CONDITION_FORM, OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
+import { isNotAsserted, notAssertedEntries } from "../testrun/results.mjs";
 
 export const MAX_VERIFY_RETURNS = 3;
-const NEEDS_NO_TEST = new Set(["pass", "not-testable", "attested"]);
 
+// Four outcomes, because a slice's claims come apart four ways and a reader has to be able
+// to tell them apart. `fail` and `unbound` are what they were. `pass` is reserved for the
+// slice whose every claimed criterion was put to the running application and met — the one
+// outcome the trailer's universal is true of. `pass-unasserted` is the slice where nothing
+// failed and something was never asserted against the application at all: a `not-testable`
+// criterion the contract surface offers no way to exercise, or an `attested` one somebody
+// vouched for in place of a test. That slice reaches its gate exactly as it did before,
+// and it says what it is on the way (`docs/decisions/0033-a-criterion-nobody-asserted.md`).
 export function verifyVerdict(rows, criteria) {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const failing = [];
@@ -33,9 +41,32 @@ export function verifyVerdict(rows, criteria) {
     const r = byId.get(id);
     if (!r) failing.push({ id, result: "missing", tests: [] });
     else if (r.result === "unbound") unbound.push(id);
-    else if (!NEEDS_NO_TEST.has(r.result)) failing.push(r);
+    else if (!isNotAsserted(r) && r.result !== "pass") failing.push(r);
   }
-  return { verdict: failing.length ? "fail" : unbound.length ? "unbound" : "pass", failing, unbound };
+  const unasserted = notAssertedEntries(rows, criteria);
+  const verdict = failing.length ? "fail"
+    : unbound.length ? "unbound"
+      : unasserted.length ? "pass-unasserted" : "pass";
+  return { verdict, failing, unbound, unasserted };
+}
+
+const plural = (n, one, many) => (n === 1 ? one : many);
+
+// What a slice is told when nothing failed and something was never asserted. The count and
+// the ids are in the first line, which is the line the run record keeps and the line a
+// caller reads; the reasons follow, one per criterion, because they are the only account of
+// why the application was never asked and they exist nowhere else in the run's output. The
+// last line says the gate is still reachable, since that is the question the reader has by
+// then and the answer is not the one the paragraph above it suggests.
+export function unassertedText({ slice, proposal, criteria, unasserted }) {
+  const asserted = criteria - unasserted.length;
+  const n = unasserted.length;
+  return [
+    `verify slice ${slice}: ${asserted} of the ${criteria} criteria this slice claims ${plural(asserted, "passes", "pass")} against the application in ${proposal}; the other ${n} ${plural(n, "was", "were")} never asserted against it at all — ${unasserted.map((u) => u.id).join(", ")}.`,
+    `Nothing is established about ${plural(n, "it", "them")} in either direction. Each carries its own recorded reason:`,
+    ...unasserted.map((u) => `  ${u.id} (${u.result}): ${u.reason}`),
+    `Slice ${slice} is ready for G3 on the strength of the ${asserted} that ${plural(asserted, "was", "were")} asserted. Whether it may be approved with ${n} that nobody asserted is the ruling's to make, and the ruler is shown these same rows and reasons.`,
+  ].join("\n");
 }
 
 // `bind-adapter` throws `unbound: <page>.<member> — <reason>` from any member it could
@@ -141,7 +172,7 @@ function returnsByVerify(projectDir, slice) {
 // the routes where no test ran: currency is judged by `app_tree`, so a run that left this
 // file alone would leave an earlier `pass` on the same tree standing and the proposal
 // rulable as approved. `not_verified` says, for a reader, why there are no rows.
-function writeVerifyResult(projectDir, { slice, name, verdict, rows, notVerified = "" }) {
+function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], notVerified = "" }) {
   const resultRel = `tests/results/new/slice-${slice}.json`;
   mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
   // Each row carries the acceptance test's own error text, which is a browser's or a
@@ -151,6 +182,10 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, notVerified
   writeText(join(projectDir, resultRel), redactLocalPaths(`${JSON.stringify({
     slice, proposal: name, app_tree: git(["rev-parse", "HEAD:app"], projectDir),
     at: new Date().toISOString(), verdict,
+    // The criteria this run never put to the application, beside the verdict rather than
+    // only inside the rows: a reader deciding what the verdict means should not have to
+    // reconstruct it by sorting the rows for itself.
+    ...(unasserted.length ? { unasserted } : {}),
     ...(notVerified ? { not_verified: notVerified } : {}),
     rows,
   }, null, 2)}\n`, projectDir));
@@ -338,7 +373,7 @@ export const verify = {
         });
         const claimed = rows.filter((r) => slice.criteria.includes(r.id));
         const v = verifyVerdict(claimed, slice.criteria);
-        const paths = [writeVerifyResult(projectDir, { slice: slice.number, name, verdict: v.verdict, rows: claimed })];
+        const paths = [writeVerifyResult(projectDir, { slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted })];
         if (v.verdict === "fail") {
           const { escalate, gateRel } = writeVerifyReturn(projectDir, {
             name, slice: slice.number, escalateTo,
@@ -398,7 +433,14 @@ export const verify = {
               `  5. sdlc run verify --slice ${slice.number}`,
               `Step 5 picks the ruled adapter up: verify merges main into ${branch} before it runs the suite, so the branch carries whatever was ruled onto main after it was cut.`,
             ].join("\n");
+        } else if (v.verdict === "pass-unasserted") {
+          // Nothing failed, and the slice is not a slice whose claims were all asserted.
+          // No gate file is written and nothing about what may be ruled changes: this is
+          // the same route to G3 a clean pass takes, saying what it actually established.
+          text = unassertedText({ slice: slice.number, proposal: name, criteria: slice.criteria.length, unasserted: v.unasserted });
         } else {
+          // The one outcome this sentence is true of: every criterion the slice claims was
+          // put to the running application and met.
           text = `verify slice ${slice.number} verified: every claimed criterion passes against the application in ${name}. Ready for G3.`;
         }
         commitOnBranch(projectDir, paths, `verify(slice ${slice.number}): ${v.verdict}`);

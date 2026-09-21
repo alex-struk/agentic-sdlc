@@ -40,8 +40,8 @@ test("a suite run given spec files runs exactly those", (t) => {
 
 const row = (id, result, error) => ({ id, result, file: `tests/acceptance/users/${id}.spec.ts`, tests: error ? [{ status: "failed", error }] : [] });
 
-test("a slice passes only when every criterion it claims passes or needs no test", () => {
-  assert.equal(verifyVerdict([row("R-1", "pass"), row("R-2", "not-testable")], ["R-1", "R-2"]).verdict, "pass");
+test("a slice passes only when every criterion it claims was asserted against the application and met", () => {
+  assert.equal(verifyVerdict([row("R-1", "pass"), row("R-2", "pass")], ["R-1", "R-2"]).verdict, "pass");
   assert.equal(verifyVerdict([row("R-1", "pass"), row("R-2", "stale")], ["R-1", "R-2"]).verdict, "fail", "a stale test cannot verify a slice (spec 7.2)");
   assert.equal(verifyVerdict([row("R-1", "pass")], ["R-1", "R-2"]).verdict, "fail", "a claimed criterion with no row is not verified");
   const u = verifyVerdict([row("R-1", "pass"), row("R-2", "unbound")], ["R-1", "R-2"]);
@@ -50,8 +50,24 @@ test("a slice passes only when every criterion it claims passes or needs no test
   assert.equal(verifyVerdict([row("R-1", "fail", "x"), row("R-2", "unbound")], ["R-1", "R-2"]).verdict, "fail");
 });
 
+// A `not-testable` row is a criterion the contract surface offers no way to exercise, and an
+// `attested` row is one somebody vouched for in place of a test. Neither is a failure and
+// neither is evidence about the application, so a slice carrying one is not a slice whose
+// claims were all asserted — and the verdict has to be able to say so.
+test("a criterion nobody asserted against the application is neither a failure nor a clean pass", () => {
+  const v = verifyVerdict([row("R-1", "pass"), row("R-2", "not-testable"), row("R-3", "attested")], ["R-1", "R-2", "R-3"]);
+  assert.equal(v.verdict, "pass-unasserted");
+  assert.deepEqual(v.unasserted.map((r) => r.id), ["R-2", "R-3"]);
+  assert.deepEqual(v.unasserted.map((r) => r.result), ["not-testable", "attested"]);
+  assert.equal(v.failing.length, 0, "it is not reported as a failing criterion either");
+  // A criterion that was exercised and came out wrong, and one that could not be exercised
+  // at all, each still decide the verdict over one that was never asserted.
+  assert.equal(verifyVerdict([row("R-1", "fail", "x"), row("R-2", "not-testable")], ["R-1", "R-2"]).verdict, "fail");
+  assert.equal(verifyVerdict([row("R-1", "unbound"), row("R-2", "attested")], ["R-1", "R-2"]).verdict, "unbound");
+});
+
 // A real project, a build proposal on its branch, the suite and the sandbox both mocked.
-function buildProject(t, { escalateTo = "tech-lead" } = {}) {
+function buildProject(t, { escalateTo = "tech-lead", notTestable = [] } = {}) {
   const d = mkdtempSync(join(tmpdir(), "sdlc-verify-"));
   t.after(() => rmSync(d, { recursive: true, force: true }));
   const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
@@ -70,7 +86,14 @@ function buildProject(t, { escalateTo = "tech-lead" } = {}) {
   ].join("\n"));
   writeFileSync(join(d, ".gitattributes"), ".sdlc/runs/*.md merge=union\n");
   writeFileSync(join(d, "plan", "tasks.md"), "### Slice 1 · Sign in\n- criteria: R-4.1, R-4.2\n");
-  for (const id of ["R-4.1", "R-4.2"]) writeFileSync(join(d, "tests", "acceptance", "users", `${id}.spec.ts`), "");
+  // A criterion recorded not-testable has no spec file and an entry carrying its reason,
+  // which is the shape `checkTests` requires of the pair and the only place that reason
+  // is written down.
+  for (const id of ["R-4.1", "R-4.2"].filter((id) => !notTestable.includes(id))) writeFileSync(join(d, "tests", "acceptance", "users", `${id}.spec.ts`), "");
+  if (notTestable.length) {
+    writeFileSync(join(d, "tests", "acceptance", "not-testable.yaml"),
+      `criteria:\n${notTestable.map((id) => `  - { id: ${id}, version: 1, reason: "the contract surface offers no way to observe it" }\n`).join("")}`);
+  }
   writeFileSync(join(d, "app", "compose", "compose.yaml"), "services: {}\n");
   run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "start"]);
   run(["checkout", "-q", "-b", "proposal/build-slice-1"]);
@@ -110,6 +133,46 @@ test("a passing slice records its result on the proposal branch, and main is unt
     "the tree verified is the application the proposal contained, before verify's own commit");
   assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), "main");
   assert.equal(execFileSync("git", ["rev-parse", "main"], { cwd: d, encoding: "utf8" }), mainBefore);
+});
+
+// The sentence a reviewer reads before approving a build is the last thing the pipeline
+// says about it. Where a criterion was never asserted against the application, that
+// sentence may not claim every claimed criterion passes against it, and the verdict on the
+// branch may not read as the one a fully asserted slice earns.
+test("a slice carrying a criterion nobody asserted says so, and stays rulable", async (t) => {
+  const d = buildProject(t, { notTestable: ["R-4.2"] });
+  mockSuite(t, [row("R-4.1", "pass")]);
+  const ctx = ctxFor(d);
+  assert.ok(verify.preChecks(d, ctx).every((c) => c.ok));
+  const r = await verify.execute(d, ctx);
+
+  assert.ok(!/every claimed criterion passes/.test(r.text), "the universal is not printed over a criterion nobody asserted");
+  assert.match(r.text, /1 of the 2 criteria/, "the terminal says how many were asserted and met");
+  assert.match(r.text, /the other 1 was never asserted against it at all — R-4\.2/, "and names which were not");
+  assert.match(r.text, /R-4\.2 \(not-testable\): the contract surface offers no way to observe it/, "with the reason recorded for it");
+  assert.equal(r.notPassed, undefined, "the run did what it was asked, so it is not reported as a run that did not pass");
+
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "pass-unasserted");
+  assert.deepEqual(result.unasserted, [{ id: "R-4.2", result: "not-testable", reason: "the contract surface offers no way to observe it" }]);
+
+  // Whether a slice may be approved with a criterion nobody asserted is the ruling's
+  // question. This changes what the ruler is told, and not what may reach the gate.
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  run(["checkout", "-q", "proposal/build-slice-1"]);
+  assert.equal(buildVerified(d, "build-slice-1").ok, true, "the proposal is still rulable as approved");
+  run(["checkout", "-q", "main"]);
+});
+
+// The one outcome that earns the universal.
+test("a slice whose every claimed criterion was asserted and met keeps the sentence that says so", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.text, /every claimed criterion passes against the application/);
+  assert.equal(JSON.parse(onBranch(d, "tests/results/new/slice-1.json")).verdict, "pass");
 });
 
 test("a failing slice is returned to the builder with what the application did", async (t) => {

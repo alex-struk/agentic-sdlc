@@ -669,6 +669,11 @@ function escalationOn(projectDir, branch, name) {
   try { return escalationIn(git(["show", `${branch}:.sdlc/gates/${name}.yaml`], projectDir)); } catch { return null; }
 }
 
+// The verify verdicts an approval may be given on: a slice whose every claimed criterion was
+// asserted against the application and met, and one where nothing failed and something was
+// never asserted (`src/testrun/results.mjs`).
+const APPROVABLE_VERDICTS = new Set(["pass", "pass-unasserted"]);
+
 // The four conditions that make a verify result count as current, shared by `buildVerified`
 // (the working tree, read off disk once the branch is checked out) and `rulePending`'s
 // branch check below (read with `git show`, before the branch is ever checked out) — kept
@@ -681,7 +686,12 @@ function verifiedResult(text, name, slice, appTree, next) {
   // against this tree and the result was not a pass, or there is no current result at all.
   // Both refuse an approval; only the first is a proposal somebody is waiting on a ruling
   // for, which is what `rulePending` says out loud rather than skipping in silence.
-  if (r.verdict !== "pass") return { ok: false, notPassed: true, reason: `${name} did not pass verify` };
+  // Both passing verdicts clear this. `pass-unasserted` is a slice where nothing failed and
+  // a criterion was never put to the application at all; the ruler is shown which ones and
+  // why, in the verify section of the prompt, and decides there whether the slice can be
+  // accepted on that footing. Refusing it here would make that a pipeline policy nobody
+  // chose, and would take the decision away from the seat that exists to make it.
+  if (!APPROVABLE_VERDICTS.has(r.verdict)) return { ok: false, notPassed: true, reason: `${name} did not pass verify` };
   if (r.app_tree !== appTree) return { ok: false, reason: `the application changed since it was verified; ${next}` };
   return { ok: true, reason: "" };
 }

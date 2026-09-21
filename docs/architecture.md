@@ -109,7 +109,9 @@ what the results *mean*.
   `src/stages/calibrate.mjs`. `runSuite` installs the harness's dependencies if it must, runs
   Playwright with the target's URL and mail API in the environment, and maps the JSON report onto
   one row per criterion: `pass`, `fail`, `unbound` (the adapter reported a member it could not
-  bind), `stale` or `not-testable`. `SDLC_TEST_RUNNER=mock` reads a canned row set instead.
+  bind), `stale`, `not-testable` or `attested`. The last two settle a criterion without the
+  application being asked anything, and `src/testrun/results.mjs` is the one list of the six
+  every reader shares. `SDLC_TEST_RUNNER=mock` reads a canned row set instead.
   `calibrate` is the stage around it: it applies any calibration ruling not yet applied, runs the
   suite, writes `tests/results/<target>/<date>.json` and `latest.json`, and opens a G1 proposal
   listing every failure that has no ruling yet. `src/spec/redo.mjs` is the small file that carries
