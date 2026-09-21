@@ -15,7 +15,7 @@ import { writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { runSuite } from "../testrun/playwright.mjs";
-import { resetCommandFor, targetSettings } from "../sandbox/local.mjs";
+import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./slices.mjs";
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
@@ -105,6 +105,33 @@ function returnsByVerify(projectDir, slice) {
     if (verifyReturnGate(projectDir, name)?.by === "runner:verify") count += 1;
   }
   return count;
+}
+
+// One return by verify, written the one way. `by: "runner:verify"` is what makes
+// `returnsByVerify` count it, and the count is read here so the third return escalates
+// instead of asking for a fourth build — the same ceiling whether the slice failed its
+// criteria or never started at all (docs/decisions/0017-a-sandbox-that-is-not-up.md).
+function writeVerifyReturn(projectDir, { name, slice, escalateTo, conditions, rationale, escalatedRationale }) {
+  const escalate = returnsByVerify(projectDir, slice) + 1 >= MAX_VERIFY_RETURNS;
+  const gateRel = `.sdlc/gates/${name}.yaml`;
+  writeText(join(projectDir, gateRel), stringifyYaml({
+    gate: "G3", verdict: escalate ? "escalated" : "return", by: "runner:verify", held_by: "runner",
+    ...(escalate ? { escalate_to: escalateTo } : {}),
+    rationale: escalate ? escalatedRationale : rationale,
+    conditions,
+    at: new Date().toISOString(),
+  }));
+  return { escalate, gateRel };
+}
+
+// What a builder is given to act on when the sandbox did not come up: one condition per
+// service that failed, each naming the service, what became of it and the end of its own
+// log — which is where the reason lives, since the service that failed is not the one the
+// base URL points at and nothing else in the pipeline has read it.
+export function sandboxConditions(started) {
+  const failures = started.failures ?? [];
+  if (!failures.length) return (started.messages ?? []).map((m) => `sandbox: ${m}`);
+  return failures.map((f) => [`sandbox ${f.service}: ${f.reason}.`, f.log ? `Its own log ends:\n${f.log}` : ""].filter(Boolean).join(" "));
 }
 
 function commitOnBranch(projectDir, paths, message) {
@@ -204,15 +231,33 @@ export const verify = {
         throw new Error(text);
       }
       const started = await up(projectDir);
-      if (!started.ok) {
-        // A sandbox that will not start is a failed run, not a quiet one. Nothing is
-        // recorded against the build — the cause may be the machine rather than the
-        // application, and a port already taken is not the builder's defect — but the
-        // run has to end non-zero and say so. Returning normally here printed
+      if (!started.ok && started.cause !== APPLICATION) {
+        // The machine's half. A port already taken, an image that would not pull, a daemon
+        // that is not there: nothing the builder wrote ever ran, so there is nothing to
+        // tell a builder to fix and nothing is recorded against the build. The run still
+        // has to end non-zero and say so — returning normally here printed
         // `run verify: ok` over a verification that never happened, which is the one
         // outcome a caller must never be given.
         text = `verify slice ${slice.number}: the sandbox did not start, so nothing was verified.\n${started.messages.join("\n")}`;
         throw new Error(text);
+      } else if (!started.ok) {
+        // The application's half, and the reason this path exists: a container that came
+        // up, died on a file the build wrote and has been restarting ever since. No
+        // acceptance criterion can express that, so the suite cannot fail on it, verify
+        // cannot pass, and without a return there is nothing a reviewer or a builder can
+        // be handed. It goes back to the builder the same way a failing criterion does —
+        // the same gate file, the same author, the same three-strike ceiling — with the
+        // failed service and the end of its own log as the conditions.
+        const { escalate, gateRel } = writeVerifyReturn(projectDir, {
+          name, slice: slice.number, escalateTo,
+          conditions: sandboxConditions(started),
+          rationale: `Slice ${slice.number} builds an application that does not start, so none of its criteria could be tested. The compose file, the images it builds and the configuration they read are all part of this build, and each condition names a service, what became of it and what it said on the way down.`,
+          escalatedRationale: `Slice ${slice.number} has been returned by verify ${MAX_VERIFY_RETURNS} times, this time because the sandbox never came up. What is wrong may not be the application's to fix — the compose file, the stack profile and this machine can each be the cause (spec 7.1) — and a fourth build would not find out which.`,
+        });
+        commitOnBranch(projectDir, [gateRel], `verify(slice ${slice.number}): sandbox`);
+        text = escalate
+          ? `verify slice ${slice.number}: the sandbox did not start after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`
+          : `verify slice ${slice.number}: returned — the sandbox did not start, so nothing was verified. ${(started.messages[0] ?? "").split("\n")[0]} Next: sdlc run build --slice ${slice.number} --revise`;
       } else {
         const { rows } = runSuite({
           projectDir, target: "new", baseUrl: targetSettings(config, "new").baseUrl,
@@ -228,17 +273,12 @@ export const verify = {
         }, null, 2)}\n`);
         const paths = [resultRel];
         if (v.verdict === "fail") {
-          const escalate = returnsByVerify(projectDir, slice.number) + 1 >= MAX_VERIFY_RETURNS;
-          const gateRel = `.sdlc/gates/${name}.yaml`;
-          writeText(join(projectDir, gateRel), stringifyYaml({
-            gate: "G3", verdict: escalate ? "escalated" : "return", by: "runner:verify", held_by: "runner",
-            ...(escalate ? { escalate_to: escalateTo } : {}),
-            rationale: escalate
-              ? `Slice ${slice.number} has failed verify ${MAX_VERIFY_RETURNS} times. The failures below may not be the application's: a test, the adapter, the criterion or the sandbox can each be what is wrong (spec 7.1), and a fourth build would not find out which.`
-              : `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say. Each condition is the criterion and what the running application did.`,
+          const { escalate, gateRel } = writeVerifyReturn(projectDir, {
+            name, slice: slice.number, escalateTo,
             conditions: v.failing.map((r) => `${r.id}: ${firstError(r)}`),
-            at: new Date().toISOString(),
-          }));
+            rationale: `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say. Each condition is the criterion and what the running application did.`,
+            escalatedRationale: `Slice ${slice.number} has failed verify ${MAX_VERIFY_RETURNS} times. The failures below may not be the application's: a test, the adapter, the criterion or the sandbox can each be what is wrong (spec 7.1), and a fourth build would not find out which.`,
+          });
           paths.push(gateRel);
           text = escalate
             ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`

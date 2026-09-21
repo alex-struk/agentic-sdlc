@@ -39,8 +39,10 @@ asks for happens at the gate it is returned to, not here.
    (`docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md`). A merge that conflicts is
    undone, and ends the run: see "Checks" below.
 3. **Bring the sandbox up** against target `new` (`sandboxUp`, `docs/stages/sandbox.md`): the
-   project's own compose file, built, started, health-checked and reseeded. A sandbox that will not
-   start ends the run there, reporting why, with nothing recorded.
+   project's own compose file, built, started, health-checked, checked service by service, and
+   reseeded. A sandbox that will not start ends the run there. Which way it ends depends on the
+   `cause` the result carries: `application` returns the build proposal, `environment` halts with
+   nothing recorded — see "A sandbox that will not start" below.
 4. **Run the acceptance suite** for the slice's spec files against the running sandbox, then keep
    only the rows for criteria the slice actually claims. A slice with no spec files at all runs
    nothing: an empty file list means "nothing to run", not "no filter", so a slice whose criteria
@@ -112,6 +114,9 @@ the proposal branch.
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
 | `unbound` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |
+| the sandbox did not start, `cause: application` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
+| the sandbox did not start, `cause: application` (3rd return running) | Escalated — the compose file, the stack profile or the machine can each be the cause, and a fourth build would not find out which. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
+| the sandbox did not start, `cause: environment` | Nothing ran. The run fails; fix the machine and run verify again. | None. |
 | the branch no longer merges with `main` | Nothing ran. Rule or close the proposal and rebuild the slice on top of `main`. | None. |
 
 ## Checks
@@ -124,8 +129,30 @@ anything against the build:
   was and nothing is left half-merged, and the run fails naming the conflicted paths. No gate file
   is written and the builder is not returned anything: a conflict is a fact about two branches, not
   a verdict about the application, and the slice needs rebuilding on top of what `main` now has.
-- **The sandbox will not start.** Reported with the compose failure's own tail, with nothing
-  recorded — the cause may be the machine rather than the application.
+- **The sandbox will not start, and the cause is the machine.** Reported with the compose failure's
+  own tail, with nothing recorded: a port already bound is not the builder's defect, and no build
+  attempt is spent on it.
+
+## A sandbox that will not start
+
+A sandbox can fail to start for two quite different reasons and they need opposite answers.
+
+A container that came up, died on a file this build wrote and has been restarting ever since is the
+build's own defect, and no acceptance criterion can express it: the suite cannot fail on it, verify
+cannot pass, `rule.mjs` refuses a ruling on a build proposal with no passing verify result, and
+`build --revise` needs a returned ruling to start from. So `cause: application` is written to the
+proposal's gate file exactly as a failing criterion is — the same file, `by: runner:verify`, one
+condition per failed service naming the service, what became of it and the end of its own log — and
+`build --slice <n> --revise` picks it up like any other return. No verify result is written, since
+no suite ran, so a ruling on that proposal is still refused.
+
+`cause: environment` halts the run, non-zero, with nothing recorded. A result that names no cause at
+all is treated as the machine's: halting costs a re-run, and returning a build wrongly spends one of
+the three attempts the slice has before a person is asked.
+
+A sandbox return counts toward the three-strikes ceiling alongside a criteria return, so the third
+escalates. An environment halt writes no gate file and cannot count.
+`docs/decisions/0017-a-sandbox-that-is-not-up.md` has the reasoning.
 
 ## Failure modes
 
@@ -138,8 +165,12 @@ anything against the build:
 - **The branch no longer merges with `main`**: the merge is aborted before the sandbox is touched,
   the conflicted paths are named, and the run fails. Nothing is written, and the branch is exactly
   as it was.
-- **The sandbox does not start**: reported in the run's own text; nothing is written and the branch
-  is left exactly as it was.
+- **The sandbox does not start, `cause: environment`**: reported in the run's own text; nothing is
+  written and the branch is left exactly as it was.
+- **The sandbox does not start, `cause: application`**: the build proposal is returned (or
+  escalated on the third return running), with the failed service and the end of its own log as the
+  conditions. The run itself succeeds, the way a failing slice's does — the verdict is the outcome,
+  not an error.
 - **A throw leaves the branch dirty** — between the result write and the commit landing: verify
   does not check back out to the branch it started from, writes its run-record line where it
   stands, and the run fails with a message naming the branch HEAD was left on. The dirty branch is
