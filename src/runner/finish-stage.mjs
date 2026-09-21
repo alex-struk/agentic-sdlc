@@ -172,6 +172,19 @@ async function runFixTurn(cwd, stage, ctx, messages) {
   }
 }
 
+// The regenerated-files line for a no-op run: a count, plus the distinct top-level
+// directories the regenerated files landed in, rather than every path. A deterministic
+// stage can regenerate derived artifacts by the hundreds on a project of any size, and
+// this line is also what the state site publishes as `site/runs.md` and `runs.html` — the
+// one page whose whole purpose is a scannable chronology, not a place for a single run to
+// bury it under an enumeration. The full list is still recoverable from the commit's own
+// diff, which is where it belongs.
+function regeneratedLine(stageName, changed) {
+  const dirs = [...new Set(changed.map((p) => p.split("/")[0]))].sort();
+  const noun = changed.length === 1 ? "file" : "files";
+  return `run ${stageName}: regenerated ${changed.length} ${noun} in ${dirs.join(", ")}`;
+}
+
 // The finish path for a deterministic stage (`agent: false`) that found its own work
 // already done. Post-checks still run — they judge the working tree, and this stage
 // regenerated derived artifacts before returning even though it wrote no work of its own
@@ -200,7 +213,7 @@ export function finishDeterministicNoOp(projectDir, stage, ctx, text) {
 
   // The run record goes in before the second build, so the run log page the site carries
   // includes this run's own line rather than going stale the moment it is committed.
-  appendRun(projectDir, `run ${stage.name}: regenerated ${changed.join(", ")}`);
+  appendRun(projectDir, regeneratedLine(stage.name, changed));
   buildSite(projectDir);
   const stagedBySite = stageSite(projectDir);
   const batch = changedPaths(projectDir)

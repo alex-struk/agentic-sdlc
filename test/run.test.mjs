@@ -10,7 +10,7 @@ import { resume } from "../src/commands/resume.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { rule } from "../src/commands/rule.mjs";
 import { registerStage } from "../src/stages/registry.mjs";
-import { finishStage } from "../src/runner/finish-stage.mjs";
+import { finishStage, finishDeterministicNoOp } from "../src/runner/finish-stage.mjs";
 import { loadConfig } from "../src/config/load.mjs";
 
 const PROBE_SKILL = new URL("../src/stages/skills/probe.md", import.meta.url).pathname;
@@ -76,6 +76,34 @@ test("sdlc run probe: commits the probe file and journal, leaves the tree clean"
     assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("finishDeterministicNoOp: a run that regenerates many files logs a bounded count, not an enumeration", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-noop-many-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    // Stand-in for a deterministic stage's own regeneration step: a pile of derived
+    // files across two top-level directories the site model never reads, so the site's
+    // own rebuild inside `finishDeterministicNoOp` contributes nothing to `changed` and
+    // the count below is exactly what this test wrote.
+    mkdirSync(join(dir, "regen-one"), { recursive: true });
+    mkdirSync(join(dir, "regen-two"), { recursive: true });
+    for (let i = 0; i < 12; i++) writeFileSync(join(dir, `regen-one/file-${i}.txt`), `${i}\n`);
+    for (let i = 0; i < 8; i++) writeFileSync(join(dir, `regen-two/file-${i}.txt`), `${i}\n`);
+
+    const stage = { name: "probe", postChecks: () => [] };
+    const r = await finishDeterministicNoOp(dir, stage, {}, "");
+    assert.equal(r.ok, true);
+    assert.equal(r.changed.length, 20);
+
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
+    const line = runs.trim().split("\n").pop();
+    assert.match(line, /^- \d\d:\d\d:\d\d run probe: regenerated 20 files in regen-one, regen-two$/);
+    assert.ok(line.length < 100, line);
+  } finally {
     restoreEgress(prevEgress);
   }
 });
