@@ -115,7 +115,10 @@ what the results *mean*.
   listing every failure that has no ruling yet. `src/spec/redo.mjs` is the small file that carries
   a ruling about a test forward — `tests/acceptance/redo.yaml`, written by `calibrate` for a
   `test-wrong` ruling and by `sdlc rule` for a `test-overreaches` one, and cleared by the
-  `derive-tests` run that answers it.
+  `derive-tests` run that answers it. `src/spec/revisions.mjs` is its counterpart for a ruling
+  about a whole stage's output — `.sdlc/revision-requests.yaml`, written by `sdlc rule` for an
+  `addressed-to <stage>` condition and read by that stage's own `--revise` run, which is what
+  makes an artifact its own gate has already approved revisable again.
 
 `src/stages/shared.mjs` holds what more than one of these stages needs — the skill-path helper, the
 follow-up-proposal bookkeeping (`followUpState`, shared by `ratify`'s and `calibrate`'s follow-up

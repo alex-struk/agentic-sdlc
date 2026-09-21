@@ -762,6 +762,25 @@ test("an unbound slice is offered the exit for a test that reaches past its crit
   assert.match(r.text, /stays unverified/, "and it is said plainly that this verifies nothing");
 });
 
+// The second cause, which until the condition form existed was an instruction to go and
+// hand-edit an artifact its own gate had already approved: the slice claims more than it
+// builds, and the plan is what says so.
+test("an unbound slice is offered the exit that reaches the plan", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  mkdirSync(join(d, "tests", "adapters", "new"), { recursive: true });
+  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = {};\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "adapter"]);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: a.b — no control on the page does this")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.text, /addressed-to <stage>: /, `the plan exit is named:\n${r.text}`);
+  assert.match(r.text, /the stage is plan/, "with the stage to address it to");
+  assert.match(r.text, /plan --revise/, "and the run that takes it up");
+  assert.match(r.text, /request itself changes nothing/, "and it is said plainly that this changes nothing");
+});
+
 test("an unbound slice with no adapter at all still gets the whole binding sequence", async (t) => {
   const d = buildProject(t);
   mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: tests/adapters/new/index.ts does not exist")]);

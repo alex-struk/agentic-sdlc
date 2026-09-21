@@ -293,6 +293,37 @@ nothing is filed from it. Nothing is lost by that — at G1 no test has been der
 calibration grammar's own `test-wrong <ID>: <why>` is the ruling to make there about a test that
 asserts the wrong thing (`docs/decisions/0021-an-accurate-message-naming-the-wrong-culprit.md`).
 
+### A condition whose work belongs to another stage
+
+The same reading, at the same gates, for the general case:
+
+```
+addressed-to <stage>: <what that stage has to change, and what showed it>
+```
+
+The stage is one the registry knows to have a revision mode — it is read off the stages themselves
+rather than listed here, so a stage that gains `--revise` becomes addressable with it, and a name
+that has none is not filed for and is reported back to the ruler.
+
+Two things follow from a ruling carrying one. The condition is left out of the list the stage being
+returned is given, along with any `test-overreaches` line, so no stage is handed work it has no way
+to do; that stage is told in its prompt how many conditions were addressed elsewhere, to which
+stage, and in whose words, so its list is never silently shorter than the ruling on the branch. And
+a request is appended to `.sdlc/revision-requests.yaml`, on `main`, in a commit of its own, for the
+same reason the redo entry above lands there.
+
+That request is what makes an artifact its own gate has already approved revisable again. `sdlc run
+<stage> --revise` with no returned ruling of its own takes the oldest open request addressed to it,
+is handed the ruler's words verbatim with the proposal, gate and seat they came from, and opens a
+fresh proposal at its own gate. The entry is marked `taken` rather than removed, so what was asked
+for and who asked survives the revision being merged.
+
+Reopening is not accepting, and the guard is the same shape as the one above: an `approve` carrying
+the form is refused outright, a form with no reason refuses the ruling before anything is written,
+the filing commit touches the request file and nothing else, and the change itself is ruled by the
+gate the addressed stage holds rather than by the ruler who asked for it
+(`docs/decisions/0024-a-gate-that-only-moves-forward.md`).
+
 ## Mandatory escalation
 
 Some proposals never reach the persona at all. Before asking, `sdlc rule` escalates on its own

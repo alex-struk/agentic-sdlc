@@ -20,7 +20,7 @@ import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.m
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./slices.mjs";
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
-import { OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
 
 export const MAX_VERIFY_RETURNS = 3;
 const NEEDS_NO_TEST = new Set(["pass", "not-testable", "attested"]);
@@ -376,7 +376,7 @@ export const verify = {
               ...unboundReasons(claimed, v.unbound).map(({ id, reason }) => `  ${id}: ${reason}`),
               "Binding again would drive the same application and write the same reasons, so that is not the next step. The question is whether the application is missing something it was asked for, whether this slice was asked for too much, or whether a test is asking for something its criterion never did — and the choice is a person's:",
               `  - rule ${name} at G3 with those reasons as the conditions, which returns it and lets sdlc run build --slice ${slice.number} --revise take them on;`,
-              `  - or, if that surface belongs to a later slice, change what slice ${slice.number} claims in plan/tasks.md so its criteria match what it builds;`,
+              `  - or, if that surface belongs to a later slice, return ${name} with \`${ADDRESSED_CONDITION_FORM}\` among the conditions — the stage is plan, and the reason says which criterion slice ${slice.number} claims that nothing it builds demonstrates. That files a request the planner reads: sdlc run plan --revise cuts what the slice claims in plan/tasks.md again, with your reason in front of it, and the architect rules the result at the plan's own gate. The request itself changes nothing;`,
               `  - or, where a criterion is right and the test derived from it reaches past it — the test drives a capability the criterion never asks for, which is why there is nothing to bind — return ${name} with \`${OVERREACH_CONDITION_FORM}\` among the conditions. That files the criterion for re-derivation and carries your reason to the writer: sdlc run derive-tests --domain <the criterion's domain> --stale then writes that one test again. It verifies nothing — the criterion stays unverified until a regenerated test binds and passes.`,
               "Nothing was written to the gate file, because nothing about the application was tested and there is no verdict on it to record.",
             ].join("\n")
