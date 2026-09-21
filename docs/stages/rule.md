@@ -214,10 +214,49 @@ At G3 a `return` is read the other way around: its conditions are not run throug
 all — they are read back as plain free-text lines, one per thing that has to change, alongside the
 rationale. `sdlc run derive-tests --domain <d> --revise` is what acts on them: it quotes both
 verbatim to the agent and asks it to change only what the conditions name
-(`docs/stages/derive-tests.md`, "Revising after a return"). A human `rule <name> return --by <role>
---note "..."` records only that single free-text `note` and no structured `conditions` list at
-all; a real, multi-condition return needs the agent path (`rule <name> --by agent:<persona>`),
-whose `conditions` array is exactly what a revise run reads.
+(`docs/stages/derive-tests.md`, "Revising after a return"), and `sdlc run build --slice <n> --revise`
+reads a returned build proposal's the same way.
+
+A person rules with the same list. `rule <name> return --by <role> --condition "..." --condition
+"..."` writes a `conditions` array into the gate file exactly as an agent's ruling does, alongside
+the free-text `note`; the flag repeated is one condition per occurrence, so a condition's own text
+never has to avoid a separator. A ruling that attaches none carries no `conditions` key at all.
+
+### A test that reaches past its criterion
+
+One condition line is read as an instruction on a `return`, at any gate whose conditions are free
+text — which is every one but the three with a closed vocabulary of their own (ratification and
+calibration at G1, and the triage page above):
+
+```
+test-overreaches <ID>: <what the test demands that the criterion does not ask for>
+```
+
+It says the criterion stands and the acceptance test derived from it asks for more — a capability, a
+screen or a step the criterion never names. That is the third thing `verify`'s `unbound` verdict can
+mean (`docs/stages/verify.md`), and the one the other two exits cannot express: the adapter has
+nothing to bind the extra demand to, so it truthfully reports the application as lacking a surface
+the application was never answerable for.
+
+The ruling files the criterion and the ruler's own words onto `tests/acceptance/redo.yaml`, on
+`main`, in a commit of its own — the request is the pipeline's bookkeeping rather than part of the
+proposal, and a copy of it on a branch nobody merges would never reach the stage it is addressed to.
+`sdlc run derive-tests --domain <d> --stale` then writes that one test again and is given the reason
+as an instruction about what the replacement must not do.
+
+Two things it is not. It is not a verdict on the criterion: nothing about the row, the index or the
+suite is touched, and the criterion stays unverified until a regenerated test binds and passes — so
+an `approve` carrying this line is refused outright rather than becoming a way to sign off a
+criterion nothing can exercise. And it is not a line that can be filed empty: a form with no reason,
+or one whose reason is only whitespace, refuses the ruling before anything is written, because the
+reason is the whole of what the request carries and a request without one produces the same test
+again.
+
+Inside a closed grammar the line is left to that grammar: it is recorded verbatim under
+`unparsed_conditions` for a person to rewrite, exactly as any other foreign line there is, and
+nothing is filed from it. Nothing is lost by that — at G1 no test has been derived yet, and the
+calibration grammar's own `test-wrong <ID>: <why>` is the ruling to make there about a test that
+asserts the wrong thing (`docs/decisions/0021-an-accurate-message-naming-the-wrong-culprit.md`).
 
 ## Mandatory escalation
 

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { git } from "../src/lib/git.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { rule } from "../src/commands/rule.mjs";
@@ -54,6 +55,33 @@ test("return keeps the branch open and records the verdict", () => {
   rule(d, "plan-v1", "return", { by: "tech-lead", note: "criterion R-1.2 unassigned" });
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], d), "proposal/plan-v1");
   assert.match(readFileSync(join(d, ".sdlc/gates/plan-v1.yaml"), "utf8"), /verdict: return/);
+});
+
+// A gate seat is a seat, not a kind of ruler: whatever a persona can attach to a verdict,
+// a person sitting in that seat can attach too, in the same shape, and every stage that
+// reads a return reads it the same way.
+test("a person in a gate seat returns a proposal with the same structured conditions an agent would", () => {
+  const d = project();
+  propose(d, "plan-v2", { gate: "G2", question: "Sound?", recommendation: "No." });
+  rule(d, "plan-v2", "return", {
+    by: "tech-lead",
+    note: "two things to change before this is the plan",
+    conditions: ["Adopt the stack profile the project names", "Assign R-1.2 to a slice"],
+  });
+  const gate = parseYaml(readFileSync(join(d, ".sdlc/gates/plan-v2.yaml"), "utf8"));
+  assert.equal(gate.held_by, "human");
+  assert.deepEqual(gate.conditions, ["Adopt the stack profile the project names", "Assign R-1.2 to a slice"]);
+  assert.equal(gate.note, "two things to change before this is the plan");
+});
+
+// A ruling that attaches nothing carries no `conditions` key at all, so a gate file is
+// never read as a ruling that deliberately attached an empty list.
+test("a ruling with no conditions records none", () => {
+  const d = project();
+  propose(d, "plan-v3", { gate: "G2", question: "Sound?", recommendation: "Yes." });
+  rule(d, "plan-v3", "approve", { by: "tech-lead", note: "fine" });
+  const gate = parseYaml(readFileSync(join(d, ".sdlc/gates/plan-v3.yaml"), "utf8"));
+  assert.ok(!("conditions" in gate), JSON.stringify(gate));
 });
 
 test("an agent-held gate records held_by agent and can escalate to the human", () => {

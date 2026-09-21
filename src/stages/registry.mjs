@@ -17,7 +17,7 @@ import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { readRebindFor } from "../spec/rebind.mjs";
-import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId, criterionFingerprint } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, domainOrdinal, conditionTargetId, criterionFingerprint } from "../spec/criteria.mjs";
 import { RECOVERY_PATH, addRecovery, answerRecoveries, entriesIn, keyOf, outstandingRecoveries, readRecovery, readRecoveryFor, recoveryRequestCount, unexpectedLedgerChange } from "../spec/recovery.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
@@ -847,15 +847,15 @@ function acceptedCriteria(projectDir, domain) {
   return { criteria, generatedFrom: index.generated_from ?? "" };
 }
 
-// Ids named in `tests/acceptance/redo.yaml` (`{ redo: [{ id, version, why }] }`) for one
-// domain. `calibrate` writes that file when the product owner rules `test-wrong <ID>` —
-// the criterion is right and the test is not — which is a reason to derive the test again
-// that `checkTests` cannot see for itself: the file's header version still matches the
-// index, so nothing about the criterion is stale. An id the file names that does not
-// belong to this domain's own accepted criteria is silently not this domain's business,
-// the same way a stray id elsewhere in the file is not an error here.
-function readRedoIds(projectDir, domain, byId) {
-  return readRedo(projectDir).map((r) => r?.id).filter((id) => byId.get(id)?.domain === domain);
+// Entries on `tests/acceptance/redo.yaml` (`{ redo: [{ id, version, why, verb? }] }`) for
+// one domain. A criterion is on that list because a ruling said its test has to be written
+// again although the criterion itself has not moved — which is a reason `checkTests` cannot
+// see for itself, since the file's header version still matches the index and nothing about
+// the criterion is stale. An id the file names that does not belong to this domain's own
+// accepted criteria is silently not this domain's business, the same way a stray id
+// elsewhere in the file is not an error here.
+function readRedoFor(projectDir, domain, byId) {
+  return readRedo(projectDir).filter((r) => byId.get(r?.id)?.domain === domain);
 }
 
 // The criteria this run will actually write tests for: every accepted criterion of the
@@ -870,8 +870,32 @@ function resolveCriteriaToDerive(projectDir, ctx) {
   const byId = new Map(criteria.map((c) => [c.id, c]));
   const { stale } = checkTests(projectDir, ctx);
   const ids = new Set(stale.filter((id) => byId.has(id)));
-  for (const id of readRedoIds(projectDir, ctx.domain, byId)) ids.add(id);
-  return { criteria: criteria.filter((c) => ids.has(c.id)), generatedFrom };
+  const redo = readRedoFor(projectDir, ctx.domain, byId);
+  for (const r of redo) ids.add(r.id);
+  return { criteria: criteria.filter((c) => ids.has(c.id)), generatedFrom, redo };
+}
+
+// What the writer is told about a test it is replacing rather than writing for the first
+// time. Empty — no paragraph at all — when nothing being derived was asked for again, so an
+// ordinary derivation's prompt reads exactly as it always has.
+//
+// The criterion alone cannot say this. A criterion is on the redo list precisely because
+// nothing about it has changed, so a writer handed its id and its statement again writes
+// the same test again, whatever was wrong with the one being replaced. The ruler's own
+// words are the only account of what to do differently, so they are quoted verbatim, and
+// the two reasons a request is filed for are put as the different instructions they are:
+// one says the test asserted the wrong thing, the other that it asked for more than the
+// criterion does.
+function redoPromptBlock(ctx) {
+  const entries = (ctx.deriveTestsRedo ?? []).filter((r) => r?.id && r?.why);
+  if (!entries.length) return [];
+  const lines = entries.map((r) => (r.verb === OVERREACH_VERB
+    ? `- ${r.id} (as derived at v${r.version}): the criterion stands and the test reached past it — ${r.why}`
+    : `- ${r.id} (as derived at v${r.version}): the test asserted the wrong thing — ${r.why}`));
+  return [
+    `${entries.length} of the criteria below already had a test, and a ruling asked for it to be written again. The criterion has not changed; the test is what was wrong. Each is listed with the ruler's own account of it, verbatim:\n\n${lines.join("\n")}`,
+    "Write each of those from its criterion and nothing else, and make sure the new test does not do what the ruling names. A test that asserts more than its criterion states — a capability, a screen or a step the criterion never asks for — cannot be bound at all against an application that is only answerable for the criterion, and the failure it produces names the application rather than the test. Assert what the criterion states, and stop there.",
+  ];
 }
 
 // A criterion is tested or recorded as not testable, never both, and `checkTests` refuses
@@ -1274,6 +1298,7 @@ const deriveTests = {
     const list = criteria.map((c) => `- ${c.id} (v${c.version}): ${c.statement}`).join("\n");
     return [
       `Write one Playwright acceptance test per criterion below, for the "${d}" domain, and nothing else. You see only the contract (tests/generated/*, generated from spec/contract) and the seed; there is no app/ in this workspace and nothing here lets you read one.`,
+      ...redoPromptBlock(ctx),
       `The criteria to derive tests for:\n\n${list}\n\nThis list already excludes any criterion carrying superseded-by: it has been replaced by another, and a test for it could only ever contradict the replacement, so it gets none of its own.`,
       `For each one, write tests/acceptance/${d}/<ID>.spec.ts, starting with exactly these two header lines:\n\n// criterion: @<ID> v<version>\n// provenance: blind, spec@${specSha}, derived ${today}\n\nImport only from "../../fixtures" and "../../generated/*". Sign in through persona.<id> when the criterion needs a signed-in actor, act through surface.<page>.<action>(), read through surface.<page>.<observation>(), refer to a record through seed.<group>.<handle> rather than an id or a value you invented, and observe email through mail rather than a database row or a log line. Write one test() per given/when/then the criterion states, titled with the criterion's own statement. Never read or guess at how the system is built, and never write a selector, a test id, a locator call, or a hardcoded route — the surface is the whole world.`,
       `A criterion nothing in surface reaches — no page, action or observation gets you there — gets an entry in tests/acceptance/not-testable.yaml instead of a file: { id: <ID>, version: <version>, reason: "<why>" }. A reason has to name what is actually missing, not that the criterion is hard.`,
@@ -1327,6 +1352,10 @@ const deriveTests = {
       const resolved = resolveCriteriaToDerive(projectDir, ctx);
       ctx.deriveTestsCriteria = resolved.criteria;
       ctx.deriveTestsGeneratedFrom = resolved.generatedFrom;
+      // Stashed alongside the criteria, and for the same reason: `prompt(ctx)` runs with
+      // nothing but `ctx`, and a request's reason is the one thing about it the prompt
+      // cannot reconstruct from the contract.
+      ctx.deriveTestsRedo = resolved.redo ?? [];
     }
     return [
       domainCheck,

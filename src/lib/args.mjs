@@ -6,8 +6,13 @@ export function parseArgs(argv) {
     if (!a.startsWith("--")) { pos.push(a); continue; }
     const key = a.slice(2);
     const next = argv[i + 1];
-    if (next !== undefined && !next.startsWith("--")) { flags[key] = next; i++; }
-    else flags[key] = true;
+    let value = true;
+    if (next !== undefined && !next.startsWith("--")) { value = next; i++; }
+    // A flag given once is its value; given again, it is every value it was given, in the
+    // order they were typed. That is what lets one invocation carry a list — `rule --condition
+    // ... --condition ...` — without a separator a condition's own text could contain.
+    if (key in flags) flags[key] = [...[flags[key]].flat(), value];
+    else flags[key] = value;
   }
   return { pos, flags };
 }

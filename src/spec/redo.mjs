@@ -1,13 +1,22 @@
-// `tests/acceptance/redo.yaml` — `{ redo: [{ id, version, why }] }`, the one list two
-// stages share: `calibrate` adds an entry when the product owner rules `test-wrong <ID>`
-// (the criterion is right and the test is not), and `derive-tests` reads it to know which
-// criteria need their tests written again even though the criteria themselves have not
-// moved, then removes the entries it has just acted on. Both sides go through this module
-// so the file's shape is written and read in one place.
+// `tests/acceptance/redo.yaml` — `{ redo: [{ id, version, why, verb? }] }`, the list of
+// criteria whose tests have to be written again even though the criteria themselves have
+// not moved. `derive-tests --stale` reads it, derives those criteria, and removes the
+// entries it has just answered.
+//
+// Two rulings write to it, and each says something different about the test it is
+// replacing. `calibrate` adds an entry when the product owner rules `test-wrong <ID>`: the
+// criterion is right and the test asserts the wrong thing. A gate ruling adds one when the
+// ruler writes `test-overreaches <ID>` (`src/commands/rule.mjs`): the criterion is right
+// and the test reaches past it, demanding a capability the criterion never asked for. Both
+// carry the ruler's own words, because "write this test again" with no account of what was
+// wrong with it produces the same test. Every side goes through this module so the file's
+// shape is written and read in one place.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
+import { loadIndex } from "../checks/tests.mjs";
+import { OVERREACH_VERB, overreachConditions } from "./criteria.mjs";
 
 export const REDO_PATH = "tests/acceptance/redo.yaml";
 
@@ -44,6 +53,34 @@ export function addRedo(projectDir, entries) {
   if (!added) return null;
   writeText(redoFile(projectDir), stringifyYaml({ redo: list }));
   return REDO_PATH;
+}
+
+// The entries a ruling's `test-overreaches` conditions ask for, built against the
+// contract the project actually holds. The version is the one the criterion carries now,
+// the same version `test-wrong` records, so the writer and the person reading the file
+// afterwards both know which statement the test was judged to have reached past.
+//
+// `verb` is on these entries and not on a `test-wrong` one, and the difference is the
+// point rather than an inconsistency: both ask for the same test to be written again, and
+// they say different things about why. `test-wrong` says the test got the criterion wrong;
+// this says the test asked for more than the criterion, which is an instruction about what
+// the replacement must *not* do. `derive-tests` words the two differently, and an entry
+// with no verb on it is the older, unmarked kind.
+//
+// An id the contract does not hold is not filed at all and comes back in `unfiled`: a
+// request naming a criterion nothing can derive would sit on the list for ever, since only
+// a run that derives that id ever takes it off again.
+export function overreachRedoEntries(projectDir, conditions) {
+  const index = loadIndex(projectDir);
+  const byId = new Map(((index && !index.parseError ? index.criteria : null) ?? []).map((c) => [c.id, c]));
+  const entries = [];
+  const unfiled = [];
+  for (const { id, text } of overreachConditions(conditions)) {
+    const c = byId.get(id);
+    if (!c) { unfiled.push(id); continue; }
+    entries.push({ id, version: c.version, why: text, verb: OVERREACH_VERB });
+  }
+  return { entries, unfiled };
 }
 
 // Drops every entry naming one of `ids`. The file is left in place holding whatever is

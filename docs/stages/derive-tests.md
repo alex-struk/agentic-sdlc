@@ -27,11 +27,20 @@ listed fails its own pre-check rather than opening an empty proposal. With `--re
 acts on a G3 ruling that returned a test proposal instead of approving it — see "Revising after a
 return" below; `--stale` and `--revise` are not meant to be combined.
 
-`tests/acceptance/redo.yaml` (`{ redo: [{ id, version, why }] }`) is written by `calibrate` when the
-product owner rules `test-wrong <ID>` — the criterion is right and the test is not, which is a reason
-to write the test again that nothing else can see: the criterion has not moved, so its file's header
-version still matches the index (`docs/stages/calibrate.md`). The agent is never shown `why` and
-never sees the running application; a redo id is derived the same blind way a fresh one is.
+`tests/acceptance/redo.yaml` (`{ redo: [{ id, version, why, verb? }] }`) lists criteria whose tests
+have to be written again although the criteria themselves have not moved — a reason nothing else can
+see, since the criterion has not changed and its file's header version still matches the index. Two
+rulings write to it. `calibrate` adds an entry when the product owner rules `test-wrong <ID>`: the
+criterion is right and the test asserts the wrong thing (`docs/stages/calibrate.md`). A gate ruling
+adds one, carrying `verb: test-overreaches`, when the ruler writes `test-overreaches <ID>`: the
+criterion is right and the test reaches past it, demanding a capability the criterion never asked for
+(`docs/stages/rule.md`).
+
+The ruler's `why` is quoted verbatim into the prompt, under a paragraph naming each id and what was
+wrong with the test being replaced. Without it the run is handed a criterion that has not changed and
+writes the same test again, which is the one outcome a redo request cannot afford. It says nothing
+about the running application and nothing about how the system is built, so the stage stays blind: a
+redo id is derived the same blind way a fresh one is, from its criterion and the contract.
 
 ## Outputs
 

@@ -10,7 +10,8 @@ import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } 
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { buildSite } from "./status.mjs";
-import { CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, TRIAGE_GRAMMAR, unparsedCalibrateConditions, unparsedConditions, unparsedTriageConditions } from "../spec/criteria.mjs";
+import { CALIBRATE_GRAMMAR, CONDITION_GRAMMAR, OVERREACH_CONDITION_FORM, OVERREACH_VERB, TRIAGE_GRAMMAR, malformedOverreachConditions, overreachConditions, unparsedCalibrateConditions, unparsedConditions, unparsedTriageConditions } from "../spec/criteria.mjs";
+import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 function mergeApproved(projectDir, branch, message) {
@@ -57,19 +58,20 @@ function blockScalar(text) {
 function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, escalateTo, metrics }) {
   let text = `gate: ${gate}\nverdict: ${verdict}\nby: ${by}\nheld_by: ${heldBy}\n`;
   if (escalateTo !== undefined) text += `escalate_to: ${escalateTo ?? ""}\n`;
-  if (rationale !== undefined) {
-    text += `rationale: |2-\n${blockScalar(rationale)}\n`;
-    if (conditions !== undefined) {
-      const list = conditions ?? [];
-      text += list.length ? `conditions:\n${list.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n` : `conditions: []\n`;
-      // Written only when there are some. A gate file carrying this key is a ruling whose
-      // conditions the grammar for its own proposal could not read even after the persona
-      // was asked again — the lines are kept verbatim so a person can see exactly what was
-      // meant and correct it in place, and `ratify` refuses to act on a ruling carrying any.
-      if (unparsed?.length) text += `unparsed_conditions:\n${unparsed.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n`;
-    }
-  } else {
-    text += `note: ${JSON.stringify(note ?? "")}\n`;
+  if (rationale !== undefined) text += `rationale: |2-\n${blockScalar(rationale)}\n`;
+  else text += `note: ${JSON.stringify(note ?? "")}\n`;
+  // Conditions are written wherever a ruler attached any, which is what lets a person in
+  // a gate seat return a proposal with the same structured list an agent in that seat
+  // returns it with. Every stage that acts on a return reads `conditions`, so a seat that
+  // could only record one free-text line was a seat that could not rule the same ruling.
+  if (conditions !== undefined) {
+    const list = conditions ?? [];
+    text += list.length ? `conditions:\n${list.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n` : `conditions: []\n`;
+    // Written only when there are some. A gate file carrying this key is a ruling whose
+    // conditions the grammar for its own proposal could not read even after the persona
+    // was asked again — the lines are kept verbatim so a person can see exactly what was
+    // meant and correct it in place, and `ratify` refuses to act on a ruling carrying any.
+    if (unparsed?.length) text += `unparsed_conditions:\n${unparsed.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n`;
   }
   if (metrics) {
     const { cost = 0, turns = 0, session = "" } = metrics;
@@ -113,11 +115,65 @@ function regenerateSiteOnMain(projectDir, reason) {
   }
 }
 
+// The two things a `test-overreaches` condition may never be, checked before a ruling
+// writes anything at all — no gate file, no commit, nothing filed — so a refused line
+// leaves the proposal exactly as open as it was.
+//
+// A line with no reason is refused because the reason is the whole of what this form
+// carries: `derive-tests` is handed it in place of the test it is replacing, and a request
+// that says only "write this one again" produces the same test again. Whitespace is not a
+// reason.
+//
+// An approval may not carry it because this verdict asks for a test to be re-derived and
+// asserts nothing about the criterion. The criterion stays unverified until a regenerated
+// test binds and passes, and a route that let an approval carry it would be a route by
+// which a criterion nothing can exercise is signed off with a note about its test.
+export function assertOverreachRulable(name, verdict, conditions) {
+  const bad = malformedOverreachConditions(conditions);
+  if (bad.length)
+    throw new Error(`rule ${name}: ${JSON.stringify(bad[0])} carries no reason. Write it as \`${OVERREACH_CONDITION_FORM}\`:`
+      + " the reason is what the next derive-tests run is given in place of the test it is replacing, and a request without one produces the same test again.");
+  if (verdict === "approve" && overreachConditions(conditions).length)
+    throw new Error(`rule ${name}: a \`${OVERREACH_VERB}\` condition asks for a criterion's test to be written again, which an approval cannot carry —`
+      + " the criterion stays unverified until a regenerated test binds and passes; return the proposal instead.");
+}
+
+// Files the criteria a ruling's `test-overreaches` conditions name onto
+// `tests/acceptance/redo.yaml`, where `derive-tests --domain <d> --stale` reads them.
+//
+// On `main`, and in its own commit. The ruling itself lives on the proposal branch, which
+// is right — nothing about the proposal has been accepted — but the request is not part of
+// the proposal: it is the pipeline's own bookkeeping, and a copy of it sitting on a branch
+// nobody merges would never be read by the stage it is addressed to. `regenerateSiteOnMain`
+// steps onto `main` and back for the same reason, and the caller is left on the branch it
+// was on either way.
+//
+// An id already on the list is not filed a second time — the first reason recorded is the
+// one somebody wrote about — and `filed` names only what this ruling actually added, so a
+// replayed ruling reports nothing rather than claiming a request it did not make.
+function fileOverreachRequests(projectDir, { name, gate, conditions }) {
+  if (!overreachConditions(conditions ?? []).length) return { filed: [], unfiled: [] };
+  const branch = currentBranch(projectDir);
+  if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
+  try {
+    const { entries, unfiled } = overreachRedoEntries(projectDir, conditions);
+    const already = new Set(readRedo(projectDir).map((r) => r?.id));
+    const filed = entries.filter((e) => !already.has(e.id)).map((e) => e.id);
+    if (addRedo(projectDir, entries)) {
+      stagePaths(projectDir, [REDO_PATH]);
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} sends ${filed.join(", ")} back to derive-tests`], projectDir);
+    }
+    return { filed, unfiled };
+  } finally {
+    if (branch !== "main") git(["checkout", "-q", branch], projectDir);
+  }
+}
+
 // Shared by the human path and the agent-approve/return path: write the gate file,
 // append the run record, stage exactly those paths (plus the proposal page when the
 // caller already appended a `## Ruling` section to it), commit, merge on approve, and
 // fold the rebuilt site into that same commit.
-function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics, proposalPath, proposalAppended }) {
+function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics, proposalPath, proposalAppended, executable }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   // A ruling's rationale and conditions are an agent's own prose, and its typecheck
   // evidence is a compiler's output: both routinely quote a path on the machine the
@@ -131,12 +187,19 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   if (proposalAppended) paths.push(relative(projectDir, proposalPath));
   stagePaths(projectDir, paths);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${verdict} by ${by}`], projectDir);
+  // After the ruling commit, never before it: if filing the request fails, the ruling is
+  // still recorded and the proposal is still returned. An approval never carries this
+  // form at all (`assertOverreachRulable`).
+  const requests = verdict === "approve" || executable
+    ? { filed: [], unfiled: [] }
+    : fileOverreachRequests(projectDir, { name, gate, conditions });
   if (verdict === "approve") {
     mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
     amendSiteOntoMergeCommit(projectDir);
   } else {
     regenerateSiteOnMain(projectDir, `${name} ${verdict}`);
   }
+  return requests;
 }
 
 function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics }) {
@@ -171,7 +234,11 @@ function openGate(projectDir, name) {
   return { branch, proposalPath, proposalText, gate, g, config };
 }
 
-export function rule(projectDir, name, verdict, { by, note = "" }) {
+// `conditions` is what a person in a gate seat attaches to a verdict, and it is the same
+// list an agent in that seat attaches: one line per thing that has to change, read back by
+// whichever stage acts on the return. Left out entirely — the ordinary approval — the gate
+// file carries the free-text `note` alone, exactly as it always has.
+export function rule(projectDir, name, verdict, { by, note = "", conditions } = {}) {
   projectDir = resolve(projectDir);
   if (!["approve", "return"].includes(verdict)) throw new Error("verdict must be approve or return");
   if (!by) throw new Error("rule needs --by <role or agent:persona>");
@@ -179,9 +246,11 @@ export function rule(projectDir, name, verdict, { by, note = "" }) {
   const { branch, gate, g } = openGate(projectDir, name);
   const allowed = [g.holder, g.escalate_to].filter(Boolean);
   if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
+  const executable = conditionsAreExecutable(gate, name);
+  if (!executable) assertOverreachRulable(name, verdict, conditions ?? []);
   const heldBy = by.startsWith("agent:") ? "agent" : "human";
-  commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note });
-  return { gate, verdict, heldBy };
+  const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, conditions, executable });
+  return { gate, verdict, heldBy, ...requests };
 }
 
 // What to say a ruling turn failed for. The turn's own text when it has any; otherwise
@@ -224,6 +293,22 @@ export function conditionGrammarFor(name) {
   return name.startsWith("calibrate-")
     ? { label: "calibration", text: CALIBRATE_GRAMMAR, unparsed: unparsedCalibrateConditions, checked: false }
     : { label: "ratification", text: CONDITION_GRAMMAR, unparsed: unparsedConditions, checked: false };
+}
+
+// Whether this proposal's conditions are an instruction a stage applies through a closed
+// vocabulary, rather than free-text lines a writer reads. Three families are: ratification
+// and calibration at G1, and the reviewer's triage page at G3. Everything else at G3 and
+// every other gate carries free text.
+//
+// It decides where `test-overreaches` is read. A closed grammar is closed on purpose — a
+// line it cannot parse is a ruling that would otherwise be dropped in silence, so it is
+// recorded verbatim under `unparsed_conditions` for a person to rewrite, and the stage that
+// owns the grammar refuses to act on the gate file until they have. Reading a second,
+// unrelated verb out of those same lines would file a request off a ruling that has been
+// declared unreadable, and jam the owning stage while doing it. Where the conditions are
+// free text there is no such contract to break and nothing else is reading them.
+export function conditionsAreExecutable(gate, name) {
+  return gate === "G1" || conditionGrammarFor(name).checked;
 }
 
 // Whether a role is played by an agent in this project. Read from the policy rather than
@@ -401,7 +486,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   const grammar = conditionGrammarFor(name);
   // Read as instructions at G1, and at G3 only for a triage proposal: every other G3 ruling's
   // conditions are free-text notes to a writer, not something a stage executes.
-  const executable = gate === "G1" || grammar.checked;
+  const executable = conditionsAreExecutable(gate, name);
   let unparsed = executable && verdict !== "escalate" ? grammar.unparsed(conditions) : [];
   if (unparsed.length) {
     const again = [
@@ -429,11 +514,20 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     return { verdict, rationale, escalated: true };
   }
 
+  // The same check a person's ruling is held to, in the same place in the sequence:
+  // before anything is written. A `test-overreaches` line is an instruction a stage will
+  // carry out rather than commentary a writer reads, so — unlike an unreadable free-text
+  // condition, which is kept verbatim because the reasoning is still worth having — one
+  // that would file an unactionable request refuses the ruling instead. Nothing has been
+  // committed at this point, and the turn is read-only, so the proposal is left open for
+  // a corrected ruling.
+  if (!executable) assertOverreachRulable(name, verdict, conditions ?? []);
+
   // The ruling has to land in the proposal page's own commit, not a follow-up one, so
   // it is appended and written before `commitRuling` stages and commits.
   writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }), projectDir));
-  commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true });
-  return { verdict, rationale, unparsed, escalated: false, ...metrics };
+  const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true, executable });
+  return { verdict, rationale, unparsed, escalated: false, ...requests, ...metrics };
 }
 
 // `sdlc rule --pending`: every open proposal branch whose gate is agent-held, ruled in
@@ -559,6 +653,14 @@ COMMANDS.rule = async ({ pos, flags }) => {
     console.log(r.escalated ? `${pos[0]}: escalated (${r.rationale})` : `${pos[0]}: ${r.verdict}`);
     return 0;
   }
-  const r = rule(process.cwd(), pos[0], pos[1], { by: flags.by, note: flags.note ?? "" });
-  console.log(`${pos[0]}: ${r.verdict} at ${r.gate}`); return 0;
+  // `--condition` may be given more than once, and each occurrence is one condition line.
+  // Anything else (the flag with no value after it) is not a condition and is left out
+  // rather than written to the gate file as `true`.
+  const conditions = flags.condition === undefined ? undefined
+    : [flags.condition].flat().filter((c) => typeof c === "string");
+  const r = rule(process.cwd(), pos[0], pos[1], { by: flags.by, note: flags.note ?? "", conditions });
+  console.log(`${pos[0]}: ${r.verdict} at ${r.gate}`);
+  if (r.filed?.length) console.log(`${pos[0]}: ${r.filed.join(", ")} filed for re-derivation — run sdlc run derive-tests --domain <domain> --stale`);
+  for (const id of r.unfiled ?? []) console.warn(`warning: ${pos[0]}: ${id} is not an accepted criterion; nothing was filed for it`);
+  return 0;
 };

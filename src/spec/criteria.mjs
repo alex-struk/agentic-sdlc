@@ -483,6 +483,52 @@ function parseCalibrateCondition(line) {
   return null;
 }
 
+// The condition form for the third thing an unbound verdict can mean: the criterion is
+// right, and the acceptance test derived from it reaches past what it asks for. The test
+// drives a capability the criterion never names, the adapter has nothing to bind it to,
+// and what comes back is an accurate message naming the wrong culprit — the application is
+// reported as lacking a surface that was never in the contract in the first place.
+//
+// It is read out of a ruling's conditions at whatever gate the ruling was made, rather than
+// belonging to one proposal family's own grammar, because it is a statement about a
+// criterion and its derived test and neither of those belongs to the proposal being ruled.
+// A ruling that carries it is asking for one test to be written again, and for nothing
+// else: it resolves no criterion, promotes nothing and verifies nothing.
+export const OVERREACH_VERB = "test-overreaches";
+
+// Restated wherever a ruler has to be told the form exists — `verify`'s unbound
+// remediation, and the error a malformed line is refused with — so the wording cannot
+// drift between the place that offers it and the place that reads it.
+export const OVERREACH_CONDITION_FORM =
+  `${OVERREACH_VERB} <ID>: <what the test demands that the criterion does not ask for>`;
+
+// No `/s` flag and a bare `$`, for the same reason `parseCondition` has neither. The
+// reason is required and a reason that collapses to nothing is not one: an entry filed
+// without it would send the criterion back to a writer with nothing to write differently,
+// which is the whole defect this form exists to close.
+function parseOverreachCondition(line) {
+  const m = new RegExp(`^${OVERREACH_VERB}\\s+(\\S+):\\s*(.+)$`).exec(String(line).trim());
+  if (!m) return null;
+  const text = collapseWhitespace(m[2]);
+  return text ? { verb: OVERREACH_VERB, id: m[1], text } : null;
+}
+
+// Every readable `test-overreaches` line in a ruling's conditions. Lines in any other
+// shape are somebody else's business and are left exactly as they are: at G3 a condition
+// list is free text a writer reads, and this form is the one line in it a stage acts on.
+export function overreachConditions(lines) {
+  return (lines ?? []).map(parseOverreachCondition).filter(Boolean);
+}
+
+// Lines that open with the verb and are not a condition — a bare id, a colon with nothing
+// after it, a reason that is only whitespace. Reported separately from "not this form at
+// all" because the two call for opposite handling: an ordinary free-text line is kept
+// verbatim for the writer, and one of these is a ruling that would be filed as a request
+// nobody can act on, so the ruling is refused until it says something.
+export function malformedOverreachConditions(lines) {
+  return (lines ?? []).filter((l) => new RegExp(`^${OVERREACH_VERB}\\b`).test(String(l).trim()) && !parseOverreachCondition(l));
+}
+
 // The reviewer's two triage verbs, read on their own so a triage line can never be taken for
 // a product ruling or the other way round: each proposal family is read in its own grammar.
 function parseTriageCondition(line) {

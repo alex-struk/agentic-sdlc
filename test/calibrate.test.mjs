@@ -109,8 +109,8 @@ function writeOldOracleLocal(dir) {
 // approved, the blind acceptance suite merged (specs for R-1.1 and R-1.2, R-1.3 recorded
 // not-testable) and the old target's adapter merged — everything `calibrate` reads.
 // G1 is rebound to the product-owner persona at the end, after the two G1 rulings this
-// setup makes as a human: a calibration ruling carries conditions, and only an agent
-// ruling can attach them.
+// setup makes as a human: the calibration rulings this file is about are the persona's,
+// and its brief is what holds the grammar they are written in.
 async function makeReadyForCalibrate(tmp) {
   const { dir, prevEgress } = await makeProject(tmp);
 

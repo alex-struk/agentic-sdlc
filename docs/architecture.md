@@ -113,8 +113,9 @@ what the results *mean*.
   `calibrate` is the stage around it: it applies any calibration ruling not yet applied, runs the
   suite, writes `tests/results/<target>/<date>.json` and `latest.json`, and opens a G1 proposal
   listing every failure that has no ruling yet. `src/spec/redo.mjs` is the small file that carries
-  a `test-wrong` ruling forward — `tests/acceptance/redo.yaml`, written by `calibrate` and cleared
-  by the `derive-tests` run that answers it.
+  a ruling about a test forward — `tests/acceptance/redo.yaml`, written by `calibrate` for a
+  `test-wrong` ruling and by `sdlc rule` for a `test-overreaches` one, and cleared by the
+  `derive-tests` run that answers it.
 
 `src/stages/shared.mjs` holds what more than one of these stages needs — the skill-path helper, the
 follow-up-proposal bookkeeping (`followUpState`, shared by `ratify`'s and `calibrate`'s follow-up
