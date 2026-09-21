@@ -94,6 +94,33 @@ export function withAuthAdvice(text) {
   return looksLikeAuthFailure(text) ? `${text}\n\n${AUTH_ADVICE}` : text;
 }
 
+// The one-turn session that answers "can this machine sign in at all" before a stage
+// spends its budget finding out. It runs against the same config home, the same binary
+// and the same flags a stage turn does, so it exercises the credential a stage will
+// actually use rather than a proxy for it.
+export const PREFLIGHT_PROMPT = "Reply with one word: ok";
+const PREFLIGHT_FAILED = "the stage was not started: a one-turn check could not authenticate, and the stage would have spent its whole budget to fail the same way.";
+
+export async function preflightAuth() {
+  // Nothing to check: a mock turn never reaches a session at all.
+  if (process.env.SDLC_EXECUTOR === "mock") return { ok: true, skipped: true, text: "" };
+  let r;
+  try {
+    r = await runAgent({ prompt: PREFLIGHT_PROMPT, stage: "preflight", maxTurns: 1, allowedTools: ["Read"] });
+  } catch (e) {
+    // The CLI died rather than answering. That is this check's business only when it died
+    // saying it could not sign in; anything else is a fault the stage is entitled to hit
+    // and report for itself, and refusing the run on it would make this a second gate on
+    // every stage rather than an authentication check.
+    if (!looksLikeAuthFailure(e.message)) return { ok: true, unchecked: e.message };
+    throw new Error(`${PREFLIGHT_FAILED}\n\n${e.message}`);
+  }
+  // Likewise for a turn that ran and failed for its own reasons: it reached the model,
+  // which is the whole of what was asked.
+  if (!r.ok && looksLikeAuthFailure(r.text)) throw new Error(`${PREFLIGHT_FAILED}\n\n${r.text}`);
+  return { ok: true, text: r.text };
+}
+
 // How the session ended, in words, when the CLI said something worth repeating. The
 // `subtype` on a result is the CLI's own account — `error_max_turns` when the turn
 // ceiling was reached, `error_during_execution` when the session broke — and it is the

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileS
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { ensureConfigHome } from "../src/runner/config-home.mjs";
-import { runAgent, buildArgs, endedBecause, AUTH_ADVICE, DEFAULT_MAX_TURNS } from "../src/runner/executor.mjs";
+import { runAgent, buildArgs, endedBecause, preflightAuth, AUTH_ADVICE, DEFAULT_MAX_TURNS } from "../src/runner/executor.mjs";
 import { turnsFor } from "../src/commands/run.mjs";
 
 test("config home is created with a credentials symlink when the source exists", () => {
@@ -330,5 +330,37 @@ test("a CLI that dies complaining about authentication throws with the same advi
   try {
     await assert.rejects(() => runAgent({ cwd: root, prompt: "x", stage: "probe" }),
       /claude failed[\s\S]*operator's own CLI login/);
+  } finally { clearFakeClaude(); }
+});
+
+test("the pre-flight asks for one turn and resolves when the session authenticates", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-preflight-ok-"));
+  withFakeClaude(root, JSON.stringify({ is_error: false, result: "__MAX_TURNS__" }));
+  try {
+    const r = await preflightAuth();
+    assert.equal(r.ok, true);
+    // One turn, so the check costs a fraction of what the stage it guards would.
+    assert.equal(r.text, "1");
+  } finally { clearFakeClaude(); }
+});
+
+test("the pre-flight rejects with the sign-in advice when the session cannot authenticate", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-preflight-auth-"));
+  withFakeClaude(root, JSON.stringify({ is_error: true, result: "Failed to authenticate: OAuth session expired and could not be refreshed" }));
+  try {
+    await assert.rejects(() => preflightAuth(),
+      /was not started[\s\S]*OAuth session expired[\s\S]*operator's own CLI login/);
+  } finally { clearFakeClaude(); }
+});
+
+test("the pre-flight is silent about a session that authenticated and then failed for its own reasons", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-preflight-other-"));
+  withFakeClaude(root, JSON.stringify({ is_error: true, result: "I ran out of turns", subtype: "error_max_turns" }));
+  try {
+    // A one-turn probe that fails for anything other than authentication has answered
+    // the only question it was asked: the session reached the model. Refusing the stage
+    // on that would make the check a second, unrelated gate on every run.
+    const r = await preflightAuth();
+    assert.equal(r.ok, true);
   } finally { clearFakeClaude(); }
 });

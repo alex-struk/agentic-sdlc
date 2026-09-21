@@ -7,7 +7,7 @@ import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
 import { materialise, collect, workspaceScopeNote, workspaceScopeViolations } from "../runner/workspace.mjs";
-import { runAgent, endedBecause, turnsFor, writeMcpConfig } from "../runner/executor.mjs";
+import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
@@ -251,6 +251,28 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
         // log) and `env` exists precisely to carry things like API keys into the session.
         if (envVars && Object.keys(envVars).length) console.log(`env: ${Object.keys(envVars).join(", ")}`);
         return { ok: true, dryRun: true };
+      }
+
+      // Whether this machine can sign in at all, asked before the stage rather than
+      // discovered inside it. A stage session is capable of running for the better part
+      // of an hour, and a credential already too old to refresh fails the same way at the
+      // end of that as at the start, having spent the entire budget to find out. A
+      // one-turn session against the same config home, the same binary and the same flags
+      // answers it for a fraction of a cent. What it cannot answer is whether the
+      // credential will still be good when a long stage finishes — nothing can, so a
+      // failure inside the turn still has to explain itself, which is what the advice
+      // carried on `runAgent`'s own result is for.
+      //
+      // Recorded and committed like a failed `prepare`: a run that stopped before its
+      // agent turn is a run, and leaving no trace of it is how "nothing happened" gets
+      // confused with "nothing was attempted".
+      try {
+        await preflightAuth();
+      } catch (e) {
+        const runPath = appendRun(projectDir, `run ${name}: authentication check failed`);
+        stageAll(projectDir, [relative(projectDir, runPath)]);
+        git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): authentication check failed`], projectDir);
+        return { ok: false, messages: [e.message] };
       }
 
       // `stage.prepare` writes generated files into the workspace before the agent turn

@@ -1492,3 +1492,54 @@ test("a journal entry carries no path that names this machine", async () => {
     restoreEgress(prevEgress);
   }
 });
+
+test("a stage whose authentication check fails never spends its agent turn", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-authcheck-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const root = mkdtempSync(join(tmpdir(), "sdlc-authcheck-fake-claude-"));
+  const captureFile = join(root, "calls.txt");
+  const outFile = join(root, "out.json");
+  writeFileSync(outFile, JSON.stringify({
+    is_error: true, result: "Failed to authenticate: OAuth session expired and could not be refreshed",
+  }));
+  // Records every invocation, so the test can assert on how many sessions were spent
+  // rather than only on what the run reported.
+  const bin = join(root, "fake-claude");
+  writeFileSync(bin, [
+    "#!/usr/bin/env node",
+    'import { readFileSync, appendFileSync } from "node:fs";',
+    'appendFileSync(process.env.CAPTURE_FILE, "call\\n");',
+    'process.stdout.write(readFileSync(process.env.FAKE_OUT, "utf8"));',
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  registerStage({
+    name: "authcheck-stage",
+    title: "authcheck stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "do the work",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  process.env.SDLC_CLAUDE_BIN = bin;
+  process.env.SDLC_CLAUDE_HOME = join(root, "claude-home");
+  process.env.SDLC_CREDENTIALS = join(root, "no-such-credentials.json");
+  process.env.FAKE_OUT = outFile;
+  process.env.CAPTURE_FILE = captureFile;
+  try {
+    const r = await runStage(dir, "authcheck-stage");
+    assert.equal(r.ok, false);
+    assert.match(r.messages.join("\n"), /was not started/);
+    assert.match(r.messages.join("\n"), /operator's own CLI login/);
+    // One session: the check itself. The stage's own turn, which is the expensive one,
+    // was never started.
+    assert.equal(readFileSync(captureFile, "utf8").trim().split("\n").length, 1);
+  } finally {
+    for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "CAPTURE_FILE"]) delete process.env[k];
+    restoreEgress(prevEgress);
+  }
+});
