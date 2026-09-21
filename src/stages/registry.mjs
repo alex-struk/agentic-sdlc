@@ -37,7 +37,7 @@ import { calibrate } from "./calibrate.mjs";
 // them without importing the registry itself, which imports every stage and would make
 // that a cycle. Re-exported below so every existing caller of these four names from
 // `registry.mjs` keeps working unchanged.
-import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, highestRulingNumber } from "./proposals.mjs";
+import { addressedElsewhereNote, isReopening, nextProposalName, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, splitRulingConditions, withOpenRequests, highestRulingNumber } from "./proposals.mjs";
 import { build } from "./build.mjs";
 import { verify } from "./verify.mjs";
 
@@ -472,7 +472,7 @@ const archaeology = {
     const d = ctx.domain;
     if (ctx.revise) {
       const rationale = ctx.revision?.rationale ?? "";
-      const reopened = Boolean(ctx.revision?.request);
+      const reopened = isReopening(ctx);
       return [
         reopened ? null
           : `The "${d}" domain was recovered before and partly ratified. A ruling returned it: one criterion's evidence — its citations, or its given/when/then — is wrong in a way no ratification condition can repair. Here is the rationale, verbatim:`,
@@ -1028,13 +1028,13 @@ function checkDeriveTestsRevisionSource(projectDir, ctx) {
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
   const found = findReturnedDeriveTestsRuling(projectDir, ctx.domain);
   if (!found) {
-    const requested = requestedRevision(projectDir, "derive-tests", ctx);
+    const requested = requestedRevision(projectDir, "derive-tests");
     if (!requested) return { id, ok: false, messages: [`derive-tests --revise: no returned ruling for ${ctx.domain} to revise from`] };
     ctx.revision = requested;
     return { id, ok: true, messages: [] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
-  ctx.revision = { ...found, branchCommit };
+  ctx.revision = withOpenRequests(projectDir, "derive-tests", { ...found, branchCommit });
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
   return { id, ok: true, messages: [] };
 }
@@ -1307,7 +1307,7 @@ const deriveTests = {
         ? conditions.map((c, i) => `${i + 1}. ${c}`).join("\n")
         : "(the ruling recorded no separate conditions; act on the rationale alone.)";
       const elsewhere = addressedElsewhereNote(ctx);
-      const reopened = Boolean(ctx.revision?.request);
+      const reopened = isReopening(ctx);
       return [
         reopened ? revisionRulingBlock(ctx)
           : `These tests for the "${d}" domain were proposed and returned, not approved. Here is the reviewer's rationale, verbatim:\n\n\`\`\`\n${rationale}\n\`\`\``,
@@ -1602,13 +1602,13 @@ function checkBindAdapterRevisionSource(projectDir, ctx) {
   if (!ctx.revise || !ctx.target) return { id, ok: true, messages: [] };
   const found = findReturnedBindAdapterRuling(projectDir, ctx.target);
   if (!found) {
-    const requested = requestedRevision(projectDir, "bind-adapter", ctx);
+    const requested = requestedRevision(projectDir, "bind-adapter");
     if (!requested) return { id, ok: false, messages: [`bind-adapter --revise: no returned ruling for ${ctx.target} to revise from`] };
     ctx.revision = requested;
     return { id, ok: true, messages: [] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
-  ctx.revision = { ...found, branchCommit };
+  ctx.revision = withOpenRequests(projectDir, "bind-adapter", { ...found, branchCommit });
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
   return { id, ok: true, messages: [] };
 }
@@ -1959,12 +1959,12 @@ function checkRevisionSource(projectDir, ctx) {
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
   const found = findReturnedRuling(projectDir, ctx.domain);
   if (!found) {
-    const requested = requestedRevision(projectDir, "archaeology", ctx);
+    const requested = requestedRevision(projectDir, "archaeology");
     if (!requested) return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
     ctx.revision = requested;
     return { id, ok: true, messages: [] };
   }
-  ctx.revision = found;
+  ctx.revision = withOpenRequests(projectDir, "archaeology", found);
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G1" });
   return { id, ok: true, messages: [] };
 }
@@ -2405,13 +2405,13 @@ function checkDesignRevisionSource(projectDir, ctx, maySpend = true) {
   const spend = maySpend && !ctx.dryRun;
   const found = findReturnedDesignRuling(projectDir, ctx.domain);
   if (!found) {
-    const requested = requestedRevision(projectDir, "design", { ...ctx, dryRun: !spend });
+    const requested = requestedRevision(projectDir, "design");
     if (!requested) return { id, ok: false, messages: [`design --revise: no returned ruling for ${ctx.domain} to revise from`] };
     ctx.revision = requested;
     return { id, ok: true, messages: [] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
-  ctx.revision = { ...found, branchCommit };
+  ctx.revision = withOpenRequests(projectDir, "design", { ...found, branchCommit });
   if (spend) recordReturnOnMain(projectDir, found, { gate: "G-DESIGN", keepBranch: true });
   return { id, ok: true, messages: [] };
 }
@@ -2655,7 +2655,7 @@ function checkPlanRevisionSource(projectDir, ctx, maySpend = true) {
   for (const name of open) {
     const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
     if (!found) continue;
-    ctx.revision = { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) };
+    ctx.revision = withOpenRequests(projectDir, "plan", { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) });
     if (spend) recordReturnOnMain(projectDir, ctx.revision, { gate: "G2", keepBranch: true });
     return { id, ok: true, messages: [] };
   }
@@ -2672,14 +2672,14 @@ function checkPlanRevisionSource(projectDir, ctx, maySpend = true) {
       if (!gitOk(["cat-file", "-e", `returned/${name}:${gatePath}`], projectDir)) continue;
       const gate = parseYaml(git(["show", `returned/${name}:${gatePath}`], projectDir)) ?? {};
       if (gate.verdict !== "return") continue;
-      ctx.revision = {
+      ctx.revision = withOpenRequests(projectDir, "plan", {
         name, branch: `returned/${name}`, rationale: gate.rationale ?? gate.note ?? "",
-        conditions: gate.conditions ?? [], branchCommit: git(["rev-parse", `returned/${name}`], projectDir),
-      };
+        ...splitRulingConditions(gate, name), branchCommit: git(["rev-parse", `returned/${name}`], projectDir),
+      });
       return { id, ok: true, messages: [] };
     }
   }
-  const requested = requestedRevision(projectDir, "plan", { ...ctx, dryRun: !spend });
+  const requested = requestedRevision(projectDir, "plan");
   if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }
   return { id, ok: false, messages: ["plan --revise: no returned plan ruling to revise from"] };
 }

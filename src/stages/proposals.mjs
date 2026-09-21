@@ -9,7 +9,8 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { escapeRe } from "./shared.mjs";
 import { conditionsAreExecutable, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { REVISION_REQUESTS_PATH, openRevisionRequestsFor, takeRevisionRequest } from "../spec/revisions.mjs";
+import { REVISION_REQUESTS_PATH, openRevisionRequestsFor, revisionRound, settleRevisionRound } from "../spec/revisions.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
 
 // One sentence off the front of `text`, plus whatever is left after it. The terminator
 // has to be followed by whitespace or the end of the string, so a dot inside a filename
@@ -135,15 +136,24 @@ export function revisionConditionList(ctx) {
   return (ctx.revision?.conditions ?? []).map((c) => `- ${c}`).join("\n");
 }
 
-// What a revise prompt says about the conditions on the same ruling that are not in that
-// list. A stage shown a shorter list with nothing to explain it cannot tell a ruling that
-// asked less of it from one whose other halves it was never given, and it has no way to
-// reason about the gap between the ruling it can read on the branch and the work it has
-// been set. So each one is named with the stage it went to and the ruler's own words.
+// Everything a revise prompt is accountable for naming and is not carrying out, in two
+// paragraphs that fire independently. A stage shown a shorter list with nothing to explain
+// it cannot tell a ruling that asked less of it from one whose other halves it was never
+// given, and it has no way to reason about the gap between what it can read on the branch
+// and the work it has been set. So both kinds of gap are named, with whose words they are.
 //
-// Empty — no paragraph at all — where nothing was addressed elsewhere, so an ordinary
-// revision's prompt reads exactly as it always has.
+// The first is the conditions on the ruling being revised from that went to another stage.
+// The second is the requests addressed to THIS stage that this run is not answering — a
+// revision driven by a returned ruling answers that ruling, while an ask filed against the
+// same stage from somewhere else is open the whole time and is no part of it.
+//
+// Empty — no paragraph at all — where there is neither, so an ordinary revision's prompt
+// reads exactly as it always has.
 export function addressedElsewhereNote(ctx) {
+  return [elsewhereConditionsPart(ctx), openRequestsPart(ctx)].filter(Boolean).join("\n\n") || null;
+}
+
+function elsewhereConditionsPart(ctx) {
   const away = ctx.revision?.addressedElsewhere ?? [];
   if (!away.length) return null;
   return `${away.length} condition${away.length === 1 ? "" : "s"} on that ruling ${away.length === 1 ? "is" : "are"} addressed to another stage and `
@@ -151,6 +161,16 @@ export function addressedElsewhereNote(ctx) {
     + `${away.length === 1 ? "it" : "them"}, and ${away.length === 1 ? "is" : "are"} named here so the list above is not silently shorter than the ruling:\n\n`
     + `${away.map((a) => `- to ${a.stage}: ${a.text}`).join("\n")}\n\n`
     + "Leave each of those alone. Doing one of them here would change work this proposal is not answerable for, and the stage it was addressed to would then be asked for it again.";
+}
+
+function openRequestsPart(ctx) {
+  const open = ctx.revision?.openRequests ?? [];
+  if (!open.length) return null;
+  return `${open.length} request${open.length === 1 ? "" : "s"} addressed to this stage ${open.length === 1 ? "is" : "are"} open and no part of this revision. `
+    + `This run answers the ruling above; ${open.length === 1 ? "that one stays" : "those stay"} open until a run takes ${open.length === 1 ? "it" : "them"} up, and `
+    + `${open.length === 1 ? "is" : "are"} named here so the work in front of you is not silently narrower than what is asked of this stage:\n\n`
+    + `${open.map((r) => `- from ${r.from} (${r.gate}, ${r.by}): ${r.why}`).join("\n")}\n\n`
+    + "Do not go past what the ruling above asks for on account of them. A request is answered by the run that takes it up, and this run has not.";
 }
 
 // The side effect every `--revise` pre-check performs, on a real run only, once it has
@@ -195,45 +215,132 @@ export function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", 
   else git(["branch", "-D", branch], projectDir);
 }
 
-// The other thing a `--revise` run can start from: a request filed by a ruling elsewhere
+// A revision read off a returned ruling, plus the requests addressed to the same stage that
+// are open while it runs. That revision answers the ruling and no part of those, so the
+// prompt names them (`addressedElsewhereNote`) rather than letting a stage be handed less
+// than what is asked of it with nothing to say so. They are not taken up: a request is
+// spent by the run that answers it, and nothing here can tell an ask the return already
+// covers from one about something else entirely.
+export function withOpenRequests(projectDir, stage, revision) {
+  const openRequests = openRevisionRequestsFor(projectDir, stage);
+  return openRequests.length ? { ...revision, openRequests } : revision;
+}
+
+// The other thing a `--revise` run can start from: the requests filed by rulings elsewhere
 // that named this stage (`addressed-to <stage>: <why>`). What that stage last produced was
-// approved and merged, so there is no returned proposal to revise from and, until this,
-// no way to open the artifact at all — which left a pipeline whose gates only move forward
+// approved and merged, so there is no returned proposal to revise from and, until this, no
+// way to open the artifact at all — which left a pipeline whose gates only move forward
 // unable to record what the work downstream of a decision discovers about it.
 //
-// Reopening is not accepting. The request makes the stage runnable again and nothing else:
-// the revision it produces is a fresh proposal at that stage's own gate, ruled by the
+// Every open request addressed to the stage, not the head of the list. A ruler who routes
+// two conditions to one stage means them together, and a run handed the first of them alone
+// answers half an ask, marks half a round and opens a proposal the addressed stage's own
+// gate reads as answering all of it.
+//
+// Reopening is not accepting. The requests make the stage runnable again and nothing else:
+// the revision they produce is a fresh proposal at that stage's own gate, ruled by the
 // holder of that gate, so an upstream artifact is never changed on the say-so of a
 // downstream reviewer alone.
 //
-// Taken up on a real run only, in a commit of its own on `main` — a dry run is asking what
-// would happen, and taking the request would be an answer that changed the question. The
-// entry is marked rather than removed, so what was asked for, by whom and from which
-// proposal stays readable long after the revision is merged.
-export function requestedRevision(projectDir, stage, ctx) {
-  const [request] = openRevisionRequestsFor(projectDir, stage);
-  if (!request) return null;
-  if (!ctx.dryRun && takeRevisionRequest(projectDir, request)) {
-    stagePaths(projectDir, [REVISION_REQUESTS_PATH]);
-    git([...SDLC_AUTHOR, "commit", "-q", "-m", `record(${stage}): ${request.from} asks ${stage} to revise`], projectDir);
+// This reads and writes nothing. The round is spent where the run delivers
+// (`settleRequestedRevision`), so a run refused by a later check, one whose agent turn was
+// lost and one that was never started all leave every request exactly where they found it.
+export function requestedRevision(projectDir, stage) {
+  const requests = revisionRound(projectDir, stage);
+  if (!requests.length) return null;
+  return { name: null, branch: null, requests, rationale: "", conditions: [], addressedElsewhere: [] };
+}
+
+// Whether this revision was opened by requests rather than by a ruling returning the
+// stage's own proposal. Asked of the round, so there is nothing for a caller to read a
+// single entry out of.
+export function isReopening(ctx) {
+  return Boolean(ctx?.revision?.requests?.length);
+}
+
+// The one thing a run may say about a request it was given and could not answer, written
+// in its journal on a line of its own, numbered as the prompt numbered it:
+//
+//     deferred-request 2: <why it cannot be answered here>
+//
+// Read as a map of number to reason. A list marker or blockquote in front of the line is
+// allowed, since a journal entry is prose and the line will be written inside it; a reason
+// is required, because a deferral with no account of itself leaves the next run reading the
+// same ask with nothing more than it had.
+export function deferredRequestNumbers(text) {
+  const out = new Map();
+  for (const m of String(text ?? "").matchAll(/^[ \t>*+-]*deferred-request[ \t]+(\d+)[ \t]*:[ \t]*(\S.*)$/gim)) {
+    out.set(Number(m[1]), m[2].trim());
   }
-  return { name: null, branch: null, request, rationale: "", conditions: [], addressedElsewhere: [] };
+  return out;
+}
+
+// What the round costs, paid where the run delivers: every request the run answered is
+// marked taken, in one write and one commit on `main`, and every one it said it could not
+// answer keeps its place on the list, open, with the reason recorded against it.
+//
+// Marked here rather than when the round was read, because a request is spent by work, and
+// until a proposal is opened there is no work — a run refused by a later pre-check, one
+// whose agent turn failed its post-checks, one interrupted mid-session all end with the ask
+// still unanswered, and an ask marked answered is one nothing will raise again.
+//
+// A number the prompt never issued defers nothing: the run that wrote it named something
+// this round does not hold, and guessing which request it meant is how a request nobody
+// answered gets marked. It is reported in the commit instead.
+export function settleRequestedRevision(projectDir, stage, ctx, agentText, proposalName = null) {
+  const requests = ctx?.revision?.requests ?? [];
+  if (!requests.length) return null;
+  const deferrals = deferredRequestNumbers(agentText);
+  const unknown = [...deferrals.keys()].filter((n) => n < 1 || n > requests.length).sort((a, b) => a - b);
+  const taken = [];
+  const deferred = [];
+  requests.forEach((request, i) => {
+    const why = deferrals.get(i + 1);
+    if (why) deferred.push({ request, why, proposal: proposalName ?? "" });
+    else taken.push(request);
+  });
+  if (!settleRevisionRound(projectDir, { taken, deferred })) return { taken: [], deferred: [], unknown, written: false };
+  const noun = (n) => `${n} revision request${n === 1 ? "" : "s"}`;
+  const by = proposalName ? ` by ${proposalName}` : "";
+  const subject = deferred.length
+    ? `record(${stage}): ${taken.length} of ${noun(requests.length)} taken up${by}`
+    : `record(${stage}): ${noun(taken.length)} taken up${by}`;
+  const body = [
+    ...deferred.map((d) => `deferred, still open: ${d.request.from} (${d.request.gate}) — ${d.why}`),
+    ...unknown.map((n) => `deferred-request ${n} names no request in this round`),
+  ].join("\n");
+  stagePaths(projectDir, [REVISION_REQUESTS_PATH]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, ...(body ? ["-m", redactLocalPaths(body, projectDir)] : [])], projectDir);
+  return { taken, deferred, unknown, written: true };
 }
 
 // Where a revision came from, in the prompt's own words: ordinarily the ruling that
-// returned this stage's own proposal, and for a reopening the ruling at another gate that
+// returned this stage's own proposal, and for a reopening the rulings at other gates that
 // asked for it. Both carry the ruler's text verbatim, because a stage sent back to work
 // with no account of what was wrong does the same work again.
 //
-// The reopening block says which proposal, which gate and which seat, since none of that
-// is anywhere the stage can see, and it says where the result goes: a stage told only to
-// change something could otherwise read the request as the decision it is not.
+// The reopening block says which proposal, which gate and which seat each request came
+// from, since none of that is anywhere the stage can see, and it says where the result
+// goes: a stage told only to change something could otherwise read a request as the
+// decision it is not.
+//
+// Every request is numbered and quoted, and the round is stated as one: the stage answers
+// all of them in the run, and the number is what a run says back when it cannot.
 export function revisionRulingBlock(ctx) {
-  const r = ctx.revision?.request;
-  if (!r) return `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`;
+  const requests = ctx.revision?.requests ?? [];
+  if (!requests.length) return `The ruling that returned it:\n\n${ctx.revision?.rationale ?? ""}`;
+  const one = requests.length === 1;
   return [
-    `This revision was not asked for by a ruling on a proposal of your own. What this stage last produced was approved, and ${r.from} — ruled at ${r.gate} by ${r.by} — carried a condition addressed to this stage: the work downstream of yours showed something about it that could not have been known when it was ruled.`,
-    `What that ruling asked for, in its own words:\n\n${r.why}`,
-    "Change only what it names and leave everything else exactly as you found it. What you produce is a fresh proposal at this stage's own gate, and that gate decides whether the change is accepted — the ruling that asked for it does not.",
-  ].join("\n\n");
+    `This revision was not asked for by a ruling on a proposal of your own. What this stage last produced was approved, and `
+      + `${one ? "a condition ruled elsewhere is" : `${requests.length} conditions ruled elsewhere are`} addressed to this stage: `
+      + `the work downstream of yours showed something about it that could not have been known when it was ruled.`,
+    one ? null
+      : "They are one round and every one of them is here. Answer all of them in this run and make the result consistent with all of them at once: conditions routed to the same stage were meant together, and an artifact that answers one of them on its own can end up consistent with neither.",
+    `What ${one ? "that ruling asked" : "each of them asks"} for, in ${one ? "its" : "their"} own words:\n\n`
+      + requests.map((r, i) => `${i + 1}. ${r.from} — ruled at ${r.gate} by ${r.by}:\n\n${r.why}`).join("\n\n"),
+    `If ${one ? "it cannot" : "one of them cannot"} be answered in this run, say so in your journal entry on a line of its own, with the number it has above:\n\n`
+      + "deferred-request <n>: <why it cannot be answered here>\n\n"
+      + "A request you defer stays open and is asked again. Every one you do not defer is recorded as taken up by this run, whether or not the gate accepts what you did with it.",
+    `Change only what ${one ? "it names" : "they name"} and leave everything else exactly as you found it. What you produce is a fresh proposal at this stage's own gate, and that gate decides whether the change is accepted — the ${one ? "ruling" : "rulings"} that asked for it ${one ? "does" : "do"} not.`,
+  ].filter(Boolean).join("\n\n");
 }

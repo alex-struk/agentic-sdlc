@@ -11,6 +11,7 @@ import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
 import { endedBecause, runAgent, turnsFor, writeMcpConfig } from "./executor.mjs";
 import { skillText } from "../stages/registry.mjs";
+import { settleRequestedRevision } from "../stages/proposals.mjs";
 import { IN_PLACE_MODES } from "./workspace.mjs";
 
 // A stage's own commit-and-journal subject: a plain string for most stages, or (`ratify`,
@@ -388,6 +389,16 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     const title = resolveTitle(stage, ctx);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${title}`], projectDir);
   }
+
+  // A run opened by requests addressed to this stage spends them here and nowhere earlier.
+  // The checkout is back on `main` and the tree is clean by this point on either path
+  // above, so the ledger moves in a commit of its own, the way `0024` files one: what the
+  // run answered is marked taken, all of it at once, and what the run said it could not
+  // answer stays open with the reason against it. A run that never got this far — refused
+  // by a later pre-check, failed by its post-checks, lost mid-session — leaves every
+  // request exactly where it found it, because an ask marked answered is an ask nothing
+  // raises again.
+  settleRequestedRevision(projectDir, stage.name, ctx, result.text, proposal?.name ?? null);
 
   clearRunState(projectDir);
   return { ok: true, proposal, journal, cost: result.cost, turns: result.turns };

@@ -10,7 +10,7 @@ import { readText } from "../lib/fsx.mjs";
 import { changedPaths, git } from "../lib/git.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { readSlice, buildProposalBase, buildProposals } from "./slices.mjs";
-import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock } from "./proposals.mjs";
+import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, withOpenRequests } from "./proposals.mjs";
 import { skillPath } from "./shared.mjs";
 import { targetSettings } from "../sandbox/local.mjs";
 
@@ -59,11 +59,11 @@ function checkBuildRevisionSource(projectDir, ctx) {
   for (const name of buildProposals(projectDir, ctx.slice)) {
     const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
     if (!found) continue;
-    ctx.revision = { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) };
+    ctx.revision = withOpenRequests(projectDir, "build", { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) });
     if (!ctx.dryRun) recordReturnOnMain(projectDir, ctx.revision, { gate: "G3", keepBranch: true });
     return { id, ok: true, messages: [] };
   }
-  const requested = requestedRevision(projectDir, "build", ctx);
+  const requested = requestedRevision(projectDir, "build");
   if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }
   return { id, ok: false, messages: [`build --revise: no returned ruling for slice ${ctx.slice} to revise from`] };
 }

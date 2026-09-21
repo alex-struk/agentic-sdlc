@@ -19,7 +19,8 @@ import { rule, ruleByAgent } from "../src/commands/rule.mjs";
 import { stageFor, revisableStages } from "../src/stages/registry.mjs";
 import { loadConfig } from "../src/config/load.mjs";
 import { addressedConditions, malformedAddressedConditions, splitConditionsByAddressee } from "../src/spec/criteria.mjs";
-import { readRevisionRequests } from "../src/spec/revisions.mjs";
+import { addRevisionRequests, readRevisionRequests, settleRevisionRound } from "../src/spec/revisions.mjs";
+import { finishStage } from "../src/runner/finish-stage.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -72,17 +73,22 @@ function mock(on) {
 
 // A project whose `applications` domain is ratified, whose contract is approved, and whose
 // blind acceptance suite is on main — everything a ruling at G3 needs to stand against.
-async function ready(tmp) {
+async function newFixtureProject(tmp, name = "permit-intake") {
   const prevEgress = process.env.SDLC_EGRESS_NAMES;
   const emptyList = join(tmp, "empty-egress-names.txt");
   writeFileSync(emptyList, "");
   process.env.SDLC_EGRESS_NAMES = emptyList;
-  const dir = join(tmp, "permit-intake");
+  const dir = join(tmp, name);
   await newProject({ dir, from: FROM });
   const c = join(dir, "constitution.md");
   writeFileSync(c, readFileSync(c, "utf8").replace(/\{\{[A-Z_]+\}\}/g, "filled"));
   git(["add", "-A"], dir);
   git([...COMMIT, "fill constitution"], dir);
+  return { dir, prevEgress };
+}
+
+async function ready(tmp) {
+  const { dir, prevEgress } = await newFixtureProject(tmp);
 
   writeFileSync(join(dir, "spec", "domains", "applications.md"), DOMAIN_TEXT);
   propose(dir, "archaeology-applications", {
@@ -356,7 +362,7 @@ test("a line in this form at a gate with a closed grammar is left to that gramma
 // reach a prompt, which needs a ruling and a stage and nothing else.
 import { mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { requestedRevision, returnedRulingOn } from "../src/stages/proposals.mjs";
+import { requestedRevision, returnedRulingOn, settleRequestedRevision } from "../src/stages/proposals.mjs";
 import { openRevisionRequestsFor } from "../src/spec/revisions.mjs";
 
 const OVERREACH = "test-overreaches R-1.3: the test signs in as a reviewer and reads an audit log the criterion never names";
@@ -466,13 +472,20 @@ test("a build revise prompt reports the same way", (t) => {
 
 // --- an approved artifact, reopened by a condition raised against it ---
 
-// One request on file, addressed to `stage`, the way a ruling elsewhere leaves it.
-function requestOnMain(d, run, stage, why) {
+// Requests on file, addressed to a stage, the way rulings elsewhere leave them. `entries`
+// are written in the order given, which is the order they were filed in.
+function requestsOnFile(d, run, entries) {
   mkdirSync(join(d, ".sdlc"), { recursive: true });
-  writeFileSync(join(d, ".sdlc", "revision-requests.yaml"),
-    `requests:\n  - stage: ${stage}\n    why: ${JSON.stringify(why)}\n    from: build-slice-2\n    gate: G3\n    by: agent:reviewer\n    at: 2026-01-01T00:00:00.000Z\n`);
+  const rows = entries.map((e, i) => `  - stage: ${e.stage}\n    why: ${JSON.stringify(e.why)}\n`
+    + `    from: ${e.from ?? "build-slice-2"}\n    gate: ${e.gate ?? "G3"}\n    by: ${e.by ?? "agent:reviewer"}\n`
+    + `    at: 2026-01-0${i + 1}T00:00:00.000Z\n`);
+  writeFileSync(join(d, ".sdlc", "revision-requests.yaml"), `requests:\n${rows.join("")}`);
   run(["add", "-A"]);
   run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "filed"]);
+}
+
+function requestOnMain(d, run, stage, why) {
+  requestsOnFile(d, run, [{ stage, why }]);
 }
 
 test("a stage with nothing returned is revisable by a request addressed to it, and is handed the reason verbatim", (t) => {
@@ -484,7 +497,8 @@ test("a stage with nothing returned is revisable by a request addressed to it, a
   const check = stage.preChecks(d, ctx).find((c) => c.id === "plan-revise-source");
   assert.equal(check.ok, true, JSON.stringify(check));
   assert.equal(ctx.revision.name, null, "there is no returned proposal behind this one");
-  assert.equal(ctx.revision.request.from, "build-slice-2");
+  assert.equal(ctx.revision.requests.length, 1);
+  assert.equal(ctx.revision.requests[0].from, "build-slice-2");
 
   const prompt = stage.prompt(ctx);
   assert.ok(prompt.includes(WHY), "the reason reaches the stage that has to do the work");
@@ -497,18 +511,27 @@ test("a stage with nothing returned is revisable by a request addressed to it, a
   assert.equal(ctx.revision.branchCommit, undefined);
 });
 
-test("a revision run takes the request up, and what it said stays on file", (t) => {
+test("a request is spent by a run that delivered, not by the run that read it", async (t) => {
   const { d, run } = repo(t);
   plannable(d, run);
   requestOnMain(d, run, "plan", WHY);
+  const head = git(["rev-parse", "HEAD"], d);
   const ctx = { revise: true };
   assert.equal(stageFor("plan").preChecks(d, ctx).find((c) => c.id === "plan-revise-source").ok, true);
+
+  // Reading the round costs nothing. A run refused after this point, or one whose agent
+  // turn never comes back, leaves the ask for the next run to find.
+  assert.equal(openRevisionRequestsFor(d, "plan").length, 1, "still open until something is delivered");
+  assert.equal(git(["rev-parse", "HEAD"], d), head, "and nothing has been committed for it");
+
+  settleRequestedRevision(d, "plan", ctx, "## Journal\n\nThe slice now gives the criterion up.", "plan-2");
 
   assert.deepEqual(openRevisionRequestsFor(d, "plan"), [], "nothing is left open for a second run to take again");
   const [taken] = readRevisionRequests(d);
   assert.equal(taken.why, WHY, "the reason an approved artifact was opened again survives being acted on");
   assert.equal(taken.from, "build-slice-2");
   assert.match(taken.taken, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(git(["log", "-1", "--pretty=%s"], d), /^record\(plan\): 1 revision request taken up by plan-2$/);
 
   // Taken up means taken up, not answered: the next run has nothing to start from again.
   const second = { revise: true };
@@ -530,6 +553,7 @@ test("taking a request rules nothing, approves nothing and changes no artifact",
 
   const ctx = { revise: true };
   stageFor("plan").preChecks(d, ctx);
+  settleRequestedRevision(d, "plan", ctx, "## Journal\n\nThe slice now gives the criterion up.", "plan-2");
 
   assert.equal(execFileSync("git", ["rev-parse", "HEAD:plan"], { cwd: d, encoding: "utf8" }).trim(), before,
     "the artifact the request names is not touched by the request");
@@ -555,7 +579,7 @@ test("a request reaches any stage that can be asked to revise", (t) => {
   const { d: d2, run: run2 } = repo(t);
   requestOnMain(d2, run2, "derive-tests", "the applications suite asserts a total no criterion states");
   const testsCtx = { revise: true, domain: "applications", dryRun: true };
-  testsCtx.revision = requestedRevision(d2, "derive-tests", testsCtx);
+  testsCtx.revision = requestedRevision(d2, "derive-tests");
   const testsPrompt = stageFor("derive-tests").prompt(testsCtx);
   assert.ok(testsPrompt.includes("the applications suite asserts a total no criterion states"));
   assert.ok(!testsPrompt.includes("proposed and returned"), "a reopening is not a return");
@@ -579,4 +603,154 @@ test("a run refused by an earlier pre-check leaves the request open", (t) => {
   const checks = stageFor("plan").preChecks(d, ctx);
   assert.ok(checks.some((c) => !c.ok), "this repository has no criteria to plan against");
   assert.equal(openRevisionRequestsFor(d, "plan").length, 1);
+});
+
+// --- two requests addressed to one stage are one round ---
+//
+// A ruler who routes two conditions to the same stage means them together: they are halves
+// of one observation about that artifact, and an artifact that answers one of them alone
+// can end up consistent with neither.
+
+const WHY_SECOND = "slice 3 claims the same criterion as slice 2, so whichever slice keeps it has to be the only one that does";
+const WHY_OTHER = "the slices are cut so that nothing is demonstrable until the last of them lands";
+
+test("every open request addressed to a stage reaches its prompt, in its ruler's own words, as one round", (t) => {
+  const { d, run } = repo(t);
+  plannable(d, run);
+  requestsOnFile(d, run, [{ stage: "plan", why: WHY }, { stage: "plan", why: WHY_SECOND }]);
+
+  const ctx = { revise: true, dryRun: true };
+  assert.equal(stageFor("plan").preChecks(d, ctx).find((c) => c.id === "plan-revise-source").ok, true);
+  assert.equal(ctx.revision.requests.length, 2, "the whole round, not the head of the queue");
+
+  const prompt = stageFor("plan").prompt(ctx);
+  assert.ok(prompt.includes(WHY), "the first ruler's words, verbatim");
+  assert.ok(prompt.includes(WHY_SECOND), "and the second's");
+  assert.match(prompt, /^1\. build-slice-2 — ruled at G3 by agent:reviewer:$/m, "each numbered, with where it came from");
+  assert.match(prompt, /^2\. build-slice-2 — ruled at G3 by agent:reviewer:$/m);
+  assert.match(prompt, /2 conditions ruled elsewhere are addressed to this stage/);
+  assert.match(prompt, /They are one round and every one of them is here\. Answer all of them in this run/);
+  assert.match(prompt, /deferred-request <n>: <why it cannot be answered here>/,
+    "and the one thing it may say back about an ask it cannot answer");
+});
+
+test("requests from different rulings stay in filing order, with one ruling's own kept together", (t) => {
+  const { d, run } = repo(t);
+  plannable(d, run);
+  requestsOnFile(d, run, [
+    { stage: "plan", why: WHY, from: "build-slice-2" },
+    { stage: "plan", why: WHY_OTHER, from: "build-slice-3" },
+    { stage: "plan", why: WHY_SECOND, from: "build-slice-2" },
+  ]);
+  const ctx = { revise: true, dryRun: true };
+  stageFor("plan").preChecks(d, ctx);
+  assert.deepEqual(ctx.revision.requests.map((r) => r.why), [WHY, WHY_SECOND, WHY_OTHER],
+    "the older ruling first, and both of its conditions before the newer ruling's");
+});
+
+// A revision driven by a returned ruling answers that ruling. A request filed against the
+// same stage from somewhere else is open the whole time and is no part of it, so the writer
+// is told it exists rather than being handed a narrower job with nothing to explain it.
+test("a revision from a returned ruling names the requests addressed to the same stage that it is not answering", (t) => {
+  const { d, run } = repo(t);
+  plannable(d, run);
+  requestOnMain(d, run, "plan", WHY);
+  returned(d, run, {
+    name: "plan", gate: "G2", rationale: "the cut is close",
+    conditions: ["plan/tasks.md leaves criterion R-1.3 unassigned to any slice"],
+  });
+
+  const ctx = { revise: true, dryRun: true };
+  assert.equal(stageFor("plan").preChecks(d, ctx).find((c) => c.id === "plan-revise-source").ok, true);
+  const prompt = stageFor("plan").prompt(ctx);
+  assert.match(prompt, /1 request addressed to this stage is open and no part of this revision/);
+  assert.ok(prompt.includes(`- from build-slice-2 (G3, agent:reviewer): ${WHY}`));
+  assert.equal(openRevisionRequestsFor(d, "plan").length, 1, "and it stays open, because this run is not answering it");
+});
+
+// --- the round is spent, or deferred, where the run delivers ---
+
+function fileRequests(dir, entries) {
+  addRevisionRequests(dir, entries.map((e, i) => ({
+    stage: e.stage, why: e.why, from: e.from ?? "build-slice-2", gate: "G3", by: "agent:reviewer",
+    at: `2026-01-0${i + 1}T00:00:00.000Z`,
+  })));
+  git(["add", "-A"], dir);
+  git([...COMMIT, "file revision requests"], dir);
+}
+
+// A gated stage reduced to what `finishStage` reads of one: a name, a gate the policy
+// holds, post-checks that pass and a proposal to open. What is under test is what happens
+// to the round when the work lands, which no part of a real stage's own work decides.
+const deliveringStage = {
+  name: "plan",
+  title: "plan (revise)",
+  gate: "G2",
+  postChecks: () => [],
+  proposal: () => ({ name: "plan-2", question: "Is the revised cut right?", recommendation: "the slices were recut" }),
+};
+
+async function deliver(dir, journal) {
+  const ctx = { revise: true, revision: requestedRevision(dir, "plan") };
+  const r = await finishStage(dir, deliveringStage, ctx, { text: journal, cost: 0, turns: 1, sessionId: "mock" });
+  assert.equal(r.ok, true, JSON.stringify(r.messages));
+  return { ctx, result: r };
+}
+
+test("a run that delivers marks every request of its round taken, at one instant and in one commit", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-round-taken-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const { dir, prevEgress } = await newFixtureProject(tmp, "round-taken");
+  try {
+    fileRequests(dir, [{ stage: "plan", why: WHY }, { stage: "plan", why: WHY_SECOND }]);
+    const { ctx } = await deliver(dir, "## Journal\n\nBoth asks are about the same criterion, and the recut answers them together.");
+    assert.equal(ctx.revision.requests.length, 2);
+
+    const list = readRevisionRequests(dir);
+    assert.equal(list.filter((r) => r.taken).length, 2, "both, or the next run answers half an ask");
+    assert.equal(list[0].taken, list[1].taken, "at the same instant: a round moves whole");
+    assert.deepEqual(openRevisionRequestsFor(dir, "plan"), []);
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /^record\(plan\): 2 revision requests taken up by plan-2$/);
+    assert.deepEqual(git(["show", "--name-only", "--format=", "HEAD"], dir).split("\n").filter(Boolean),
+      [".sdlc/revision-requests.yaml"], "the ledger alone: taking a round rules nothing and merges nothing");
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a request the run says it could not answer is left open, with its reason on file", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-round-deferred-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const { dir, prevEgress } = await newFixtureProject(tmp, "round-deferred");
+  const DEFERRED = "the screen this would need is not drawn anywhere, and a plan cannot add one";
+  try {
+    fileRequests(dir, [{ stage: "plan", why: WHY }, { stage: "plan", why: WHY_SECOND }]);
+    await deliver(dir, `## Journal\n\nThe first ask is answered: slice 2 gives the criterion up.\n\ndeferred-request 2: ${DEFERRED}`);
+
+    const list = readRevisionRequests(dir);
+    assert.ok(list[0].taken, "the one the run answered is spent");
+    assert.ok(!list[1].taken, "and the one it could not is still asked for");
+    assert.equal(list[1].why, WHY_SECOND, "unchanged");
+    assert.equal(list[1].deferred.why, DEFERRED, "with the account of why it could not be answered here");
+    assert.equal(list[1].deferred.proposal, "plan-2");
+    assert.deepEqual(openRevisionRequestsFor(dir, "plan").map((r) => r.why), [WHY_SECOND]);
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /^record\(plan\): 1 of 2 revision requests taken up by plan-2$/);
+    assert.match(git(["log", "-1", "--pretty=%b"], dir), /deferred, still open: build-slice-2 \(G3\)/);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a round nothing can match whole is not marked at all", (t) => {
+  const { d, run } = repo(t);
+  requestsOnFile(d, run, [{ stage: "plan", why: WHY }, { stage: "plan", why: WHY_SECOND }]);
+  const round = openRevisionRequestsFor(d, "plan");
+
+  // The second entry is spent underneath — a round already settled once, a file edited by
+  // hand. Marking the first anyway would report half a round as answered.
+  settleRevisionRound(d, { taken: [round[1]] });
+  assert.equal(settleRevisionRound(d, { taken: round }), null, "nothing is written");
+  const list = readRevisionRequests(d);
+  assert.ok(!list[0].taken, "the request nothing answered is still open");
+  assert.ok(list[1].taken);
 });
