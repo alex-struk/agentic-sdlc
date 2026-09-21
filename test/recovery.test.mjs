@@ -105,17 +105,19 @@ test("a recovery request is outstanding until an archaeology run answers it", ()
   // The stamp an archaeology run writes is what ends them, and it ends every request that
   // was owed on the row it recovered.
   const recovered = { ...c, version: 3, statement: "what the route actually does" };
-  assert.equal(answerRecoveries(tmp, ["D-content-1"], new Map([["D-content-1", recovered]])), "spec/recovery.yaml");
+  assert.equal(answerRecoveries(tmp, "content", ["D-content-1"], new Map([["D-content-1", recovered]])), "spec/recovery.yaml");
   const after = readRecoveryFor(tmp, "content");
   assert.deepEqual(after.map((e) => e.answered), [{ version: 3 }, { version: 3 }]);
   assert.deepEqual(outstandingRecoveries(after, [recovered]), []);
   assert.equal(recoveryRequestCount(after, "D-content-1"), 2, "an answered request stays on file as the record that it was made");
-  assert.equal(answerRecoveries(tmp, ["D-content-1"], new Map([["D-content-1", recovered]])), null, "nothing is rewritten once there is nothing left to stamp");
+  assert.equal(answerRecoveries(tmp, "content", ["D-content-1"], new Map([["D-content-1", recovered]])), null, "nothing is rewritten once there is nothing left to stamp");
 
   // A recovery that removed the row records that instead of a version.
   const gone = { id: "D-content-9", domain: "content", version: 1, why: "this behaviour is not in the application at all" };
   addRecovery(tmp, [gone]);
-  answerRecoveries(tmp, ["D-content-9"], new Map());
+  assert.equal(answerRecoveries(tmp, "fees", ["D-content-9"], new Map()), null, "a run for one domain never answers another domain's request");
+  assert.equal(readRecoveryFor(tmp, "content").find((e) => e.id === "D-content-9").answered, undefined);
+  answerRecoveries(tmp, "content", ["D-content-9"], new Map());
   assert.deepEqual(readRecoveryFor(tmp, "content").find((e) => e.id === "D-content-9").answered, { removed: true });
 });
 
@@ -461,7 +463,7 @@ test("ratify: the ruling that sent a criterion back does not send it back again 
     const text = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
     // The recovery stands, and mints: the ruling that sent the row back is read again on
     // this pass and must do nothing, rather than re-pushing its note, dropping the row to
-    // `open` and restoring the fingerprint that says the work is still owed.
+    // `open` and putting it back in a queue it had already left.
     assert.match(text, /### R-1\.2 · v2 · confirmed · recovered/);
     assert.match(text, /store the intake fee the submitted permit type carries/);
     assert.ok(!text.includes("sent back for re-recovery"), text);
@@ -749,7 +751,7 @@ test("applyConditions: a ruling that both confirms and sends back the same crite
 
   const filed = [{
     id: "D-content-1", domain: "content", version: first[0].version,
-    why: "the guard sits behind a check that is always false", fingerprint: criterionFingerprint(first[0]),
+    why: "the guard sits behind a check that is always false",
   }];
   const second = applyConditions(first, lines, filed).criteria;
   assert.equal(second[0].confidence, "open", "the request is still outstanding, so the row stays where it was put");
@@ -866,27 +868,59 @@ test("ratify: one ruling can send a criterion back for two separate reasons, and
   }
 });
 
-test("archaeology: a run may not write the record of what was sent back", async () => {
+test("archaeology: a run may not rewrite the record of what was sent back", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-ledger-guard-"));
   const { dir, prevEgress } = await makeProject(tmp);
   try {
     assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
 
-    // The session marks its own work done instead of doing it. The ledger is under
+    // The session drops the request instead of doing the work. The ledger is under
     // `spec/`, which an archaeology run may otherwise write freely.
-    const unchanged = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
-    const stamped = readFileSync(join(dir, "spec/recovery.yaml"), "utf8").replace(/\n$/, "\n    answered:\n      version: 1\n");
+    const recovered = withCriterionRecovered(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), {
+      confidence: "inferred", note: "the stored fee follows the permit type",
+    });
     process.env.SDLC_EXECUTOR = "mock";
     process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", {
-      text: "## Journal\n\nNothing to change.",
-      files: { "spec/domains/applications.md": unchanged, "spec/recovery.yaml": stamped },
+      text: "## Journal\n\nTidied the recovery list.",
+      files: { "spec/domains/applications.md": recovered, "spec/recovery.yaml": "recovery: []\n" },
     });
 
     const r = await runStage(dir, "archaeology", { domain: "applications" });
     assert.equal(r.ok, false);
-    assert.ok(r.messages.some((m) => /spec\/recovery\.yaml records what was sent back/.test(m)), r.messages.join(" | "));
-    assert.ok(r.messages.some((m) => /D-applications-2 was sent back for re-recovery/.test(m)),
-      "and the criterion is still judged against HEAD's record, not against the one the run wrote");
+    assert.ok(r.messages.some((m) => /spec\/recovery\.yaml gained or lost entries/.test(m)), r.messages.join(" | "));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("archaeology: a run that marks its own request answered without doing the work is still refused", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-forged-stamp-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
+
+    // A stamp the session writes itself is shaped exactly like the runner's, so the guard
+    // above cannot tell them apart — and does not have to. What a run was asked to recover
+    // is read from the ledger as `HEAD` holds it, so stamping the request in the working
+    // tree changes nothing about what this run is judged on, and the row is still
+    // unchanged.
+    const unchanged = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const ledger = readFileSync(join(dir, "spec/recovery.yaml"), "utf8").replace(/\n$/, "\n    answered:\n      version: 1\n");
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", {
+      text: "## Journal\n\nNothing to change.",
+      files: { "spec/domains/applications.md": unchanged, "spec/recovery.yaml": ledger },
+    });
+
+    const r = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /D-applications-2 was sent back for re-recovery/.test(m)), r.messages.join(" | "));
+    // And the forgery does not survive the failed run: a failed run commits only its
+    // journal and run record, so the recorded ledger still shows the request owed and the
+    // next attempt is judged against that.
+    assert.ok(!git(["show", "HEAD:spec/recovery.yaml"], dir).includes("answered"),
+      "what a run was asked to recover is read from the recorded ledger, never from the tree it wrote");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
@@ -1002,6 +1036,144 @@ test("archaeology --revise: a sent-back minted criterion may be rewritten, never
     const r = await runStage(dir, "archaeology", { domain: "applications", revise: true });
     assert.equal(r.ok, false, "a permanent id the contract and its tests point at is not a recovery's to delete");
     assert.ok(r.messages.some((m) => /R-1\.1 is missing; a revision may not remove an already-minted criterion/.test(m)), r.messages.join(" | "));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("resume: a run that died between the stamp and its commit finishes, and is not blamed for the stamp", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-resume-stamp-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const origLog = console.log;
+  const logs = [];
+  try {
+    assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
+
+    // The tree a run leaves when it dies after its post-checks passed and before
+    // `finishStage` committed: the recovered domain file, and the stamp the runner writes
+    // on its way out. Both are the runner's own work, and the retry has to be able to tell
+    // that.
+    const domainFile = join(dir, "spec/domains/applications.md");
+    const recovered = withCriterionRecovered(readFileSync(domainFile, "utf8"), {
+      confidence: "inferred", note: "re-read src/routes.js:10: the stored fee follows the permit type",
+    });
+    writeFileSync(domainFile, recovered);
+    answerRecoveries(dir, "applications", ["D-applications-2"],
+      new Map(parseDomainFile(recovered, "applications").criteria.map((c) => [c.id, c])));
+    assert.match(readFileSync(join(dir, "spec/recovery.yaml"), "utf8"), /answered/);
+    writeFileSync(join(dir, ".sdlc/run-state.json"),
+      JSON.stringify({ stage: "archaeology", ctx: { domain: "applications" }, phase: "post-checks" }) + "\n");
+
+    // A canned turn stands in for the repair turn a post-check failure would take, so the
+    // test measures whether the checks pass rather than whether something cleaned up after
+    // them. It writes nothing: a run whose checks pass never reaches it.
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", { text: "nothing to repair" });
+
+    console.log = (...a) => logs.push(a.join(" "));
+    const code = await resume(dir, { again: true });
+    console.log = origLog;
+    assert.equal(code, 0, logs.join(" | "));
+    assert.ok(!logs.join(" ").includes("is not a run's to write"), logs.join(" | "));
+    assert.ok(!/post-checks failed/.test(git(["log", "-1", "--pretty=%s"], dir)), git(["log", "-1", "--pretty=%s"], dir));
+    // And nothing is left dirty, so the next run is not wedged behind a ledger somebody
+    // has to hand-revert.
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [{ version: 2 }]);
+  } finally {
+    console.log = origLog;
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a re-recovery nobody approved answers nothing: the stamp lands on the proposal, not on main", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-returned-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
+
+    const recovered = withCriterionRecovered(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), {
+      confidence: "inferred", note: "the stored fee follows the permit type",
+    });
+    assert.equal((await archaeologyWriting(dir, recovered, "Re-read the intake route.")).ok, true);
+    // On the proposal branch the work is done and the request is stamped.
+    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [{ version: 2 }]);
+
+    await rule(dir, "archaeology-applications-2", "return", "the fee schedule is documented in the README and this still does not cite it", []);
+
+    // A return merges nothing, so `main` carries neither the recovery nor its stamp: the
+    // request is owed exactly as it was, and the next run is told about it.
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.deepEqual(readRecoveryFor(dir, "applications").map((e) => e.answered), [undefined]);
+    assert.match(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), /calculate an intake fee for it from the applicant's age/);
+    assert.ok(stageFor("archaeology").prompt({ domain: "applications", projectDir: dir }).includes(WHY));
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a recovery that finds the behaviour is not there at all removes the row, and the request records that", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-removed-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const feesWhy = "nothing on this path reads a rate table; the quote shown is the permit type's own fee and this criterion describes a screen the release does not have";
+  const feesBlock = [
+    "### D-fees-2 · v1 · confirmed · recovered",
+    "When a visitor asks for a fee quote, the system shall show the fee the chosen permit type carries.",
+    "- cites: src/routes.js:10",
+    "- reconciliation: implemented-only",
+    "- given: a visitor on the fee quote page",
+    "- when: a quote is asked for",
+    "- then: the fee the chosen permit type carries is shown",
+    "- state: proposed",
+    "",
+  ].join("\n");
+  const feesDomain = [
+    "# fees",
+    "",
+    "### D-fees-1 · v1 · inferred · recovered",
+    "When a visitor asks for a fee quote, the system shall look the quote up in a published rate table.",
+    "- cites: src/routes.js:4",
+    "- reconciliation: documented-only",
+    "- given: a visitor on the fee quote page",
+    "- when: a quote is asked for",
+    "- then: the rate table's entry for that permit type is shown",
+    "- state: proposed",
+    "",
+    feesBlock,
+  ].join("\n");
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", {
+      text: "## Journal\n\nThe fees domain quotes a fee for a permit type.",
+      files: { "spec/domains/fees.md": feesDomain },
+    });
+    assert.equal((await runStage(dir, "archaeology", { domain: "fees" })).ok, true);
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    await rule(dir, "archaeology-fees", "approve", "the rate table criterion describes something this release does not do", [`recovery-wrong D-fees-1: ${feesWhy}`]);
+    assert.equal((await runStage(dir, "ratify", { domain: "fees" })).ok, true);
+    assert.match(readFileSync(join(dir, "spec/domains/fees.md"), "utf8"), /### R-2\.1 · v1 · confirmed · recovered/);
+
+    // The recovery finds nothing behind the criterion and drops the row. That answers the
+    // request as surely as a rewrite does — there is no row left to recover — and the
+    // ledger records which of the two happened.
+    process.env.SDLC_EXECUTOR = "mock";
+    const ratified = readFileSync(join(dir, "spec/domains/fees.md"), "utf8");
+    process.env.SDLC_MOCK_DIR = mockDirWith("archaeology", {
+      text: "## Journal\n\nThere is no rate table in this release; the criterion had nothing behind it.",
+      files: { "spec/domains/fees.md": `# fees\n\n${ratified.slice(ratified.indexOf("### R-2.1"))}` },
+    });
+    const r = await runStage(dir, "archaeology", { domain: "fees" });
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    const text = readFileSync(join(dir, "spec/domains/fees.md"), "utf8");
+    assert.ok(!text.includes("D-fees-1"), text);
+    assert.deepEqual(readRecoveryFor(dir, "fees").map((e) => e.answered), [{ removed: true }]);
+    assert.deepEqual(outstandingRecoveries(readRecoveryFor(dir, "fees"), parseDomainFile(text, "fees").criteria), []);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

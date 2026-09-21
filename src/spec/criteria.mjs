@@ -611,7 +611,7 @@ export const RECOVERY_NOTE_PREFIX = "sent back for re-recovery: ";
 // must surface somewhere a person will read it (the ratify journal), not vanish.
 //
 // `recovery-wrong <ID>: <what the evidence shows>` is the one verb that changes no wording:
-// it marks the row as out for re-recovery (a note, and `recoveryRequested` on the criterion
+// it marks the row as out for re-recovery (a note, and `recoveryRequests` on the criterion
 // object for `ratify` to read back once ids are minted), drops a provisional row's
 // confidence to `open` so it cannot mint while it is out, and leaves the correction itself
 // to the next `archaeology` run for the domain. Idempotent on a row it has already marked:
@@ -704,7 +704,7 @@ export function applyConditions(criteria, conditions, filed = []) {
         // write: the row misreports what the old application does, so the correction has
         // to come from reading the old application again. What is recorded here is the
         // request — on the row, as a note, and on the criterion object as
-        // `recoveryRequested`, which `ratify` reads after minting to write the entry
+        // `recoveryRequests`, which `ratify` reads after minting to write the entries
         // `archaeology` picks the work up from (`src/spec/recovery.mjs`).
         //
         // A ruling is read again on every pass — a gate file is never consumed — so this

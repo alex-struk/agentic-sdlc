@@ -86,7 +86,8 @@ export function keyOf(entry) {
 }
 
 // True when this request has been answered — an archaeology run carried it out and stamped
-// it. Nothing else sets this, and no amount of change to the criterion itself does.
+// it. Nothing else sets this, and no amount of change to the criterion itself does. This,
+// rather than anything inside the stamp, is what every caller asks.
 export function isAnswered(entry) {
   return entry?.answered !== undefined && entry?.answered !== null;
 }
@@ -101,18 +102,27 @@ export function outstandingRecoveries(entries, criteria) {
   return entries.filter((e) => !isAnswered(e) && ids.has(e?.id));
 }
 
-// Records, on every request `ids` names, that an archaeology run answered it: the version
-// the criterion came back at, or that the recovery removed the row. Called by the
-// `archaeology` stage itself once every one of its checks has passed — the runner writes
-// this, never the agent, and only for a run that has already been judged to have recovered
-// the rows it was asked about. Returns the project-relative path when the file was written.
-export function answerRecoveries(projectDir, ids, criteriaById) {
+// Records, on every request for `domain` that `ids` names, that an archaeology run answered
+// it. Called by the `archaeology` stage itself once every one of its checks has passed —
+// the runner writes this, never the agent, and only for a run that has already been judged
+// to have recovered the rows it was asked about. Returns the project-relative path when the
+// file was written.
+//
+// What the stamp holds — the version the criterion came back at, or that the recovery
+// removed the row — is an audit record and nothing reads it: every judgement about a
+// request turns on whether it is stamped at all (`isAnswered`). It is there because a
+// ledger of answered requests that does not say what the answer was is a poorer record
+// than one that does, and a person reading this file is its main reader.
+export function answerRecoveries(projectDir, domain, ids, criteriaById) {
   const wanted = new Set(ids);
   if (!wanted.size || !existsSync(recoveryFile(projectDir))) return null;
   const list = readRecovery(projectDir);
   let stamped = false;
   for (const entry of list) {
-    if (isAnswered(entry) || !wanted.has(entry?.id)) continue;
+    // The domain as well as the id: a run recovers one domain, and an id is only
+    // domain-scoped by convention, which is not a thing to stake another domain's
+    // outstanding work on.
+    if (isAnswered(entry) || entry?.domain !== domain || !wanted.has(entry?.id)) continue;
     const c = criteriaById.get(entry.id);
     entry.answered = c ? { version: c.version } : { removed: true };
     stamped = true;
@@ -120,6 +130,35 @@ export function answerRecoveries(projectDir, ids, criteriaById) {
   if (!stamped) return null;
   writeText(recoveryFile(projectDir), stringifyYaml({ recovery: list }));
   return RECOVERY_PATH;
+}
+
+// What an `archaeology` run did to the ledger itself, judged against `HEAD` — `null` when
+// the only change is the one the runner makes on its way out, and a reason otherwise.
+//
+// The stamp is written into the working tree before the run's own commit, and a stage's
+// post-checks can run twice over that tree (a repair turn, or `sdlc resume` picking up a
+// run that died between the write and the commit), so "this file changed" cannot be the
+// test: it would report the runner's own write as the session's, blame the agent for it,
+// and leave the tree dirty with no way forward but hand-reverting the ledger. What is
+// allowed is exactly one shape of change — `answered` appearing on a request this run was
+// owed, `owedKeys` naming those — and anything else is a session writing a record that is
+// not its to write.
+export function unexpectedLedgerChange(headEntries, treeEntries, owedKeys) {
+  if (headEntries.length !== treeEntries.length)
+    return `${RECOVERY_PATH} gained or lost entries; it records what was sent back for re-recovery and is not a run's to write`;
+  for (const [i, was] of headEntries.entries()) {
+    const is = treeEntries[i];
+    const { answered: wasAnswer, ...wasRest } = was ?? {};
+    const { answered: isAnswer, ...isRest } = is ?? {};
+    if (JSON.stringify(wasRest) !== JSON.stringify(isRest))
+      return `${RECOVERY_PATH} entry ${i + 1} was rewritten; it records what was sent back for re-recovery and is not a run's to write`;
+    if (JSON.stringify(wasAnswer ?? null) === JSON.stringify(isAnswer ?? null)) continue;
+    if (wasAnswer != null)
+      return `${RECOVERY_PATH} changes an answer already recorded for ${was.id}; a request is answered once`;
+    if (!owedKeys.has(keyOf(is)))
+      return `${RECOVERY_PATH} marks ${is?.id} answered, which this run was not asked to recover`;
+  }
+  return null;
 }
 
 // How many times a criterion has been sent back, counting every request ever filed for it

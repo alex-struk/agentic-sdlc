@@ -59,8 +59,9 @@ remainder to release and a whole-domain revision is what is actually needed.
 ## 2 — Only an archaeology run answers a request, and it records that it did
 
 **Decision.** A request on `spec/recovery.yaml` is outstanding until an `archaeology` run for its
-domain passes every check and stamps it with the version the criterion came back at — or with the
-fact that the recovery removed the row. The stamp is written by the runner, after the checks have
+domain passes every check and stamps it. Whether a request carries a stamp is the whole of what the
+pipeline reads; what the stamp holds — the version the criterion came back at, or that the recovery
+removed the row — is an audit record for a person reading the ledger. The stamp is written by the runner, after the checks have
 judged the tree, in the same place and for the same reason `derive-tests` clears the redo entries it
 has answered. Nothing is ever removed from the ledger: an answered request stays on it as the record
 that it was made.
@@ -77,11 +78,21 @@ made, with no error anywhere — the worst outcome this verb can produce, reache
 ruling.
 
 **Why the session cannot write it.** The ledger is under `spec/`, which an archaeology run may
-otherwise write freely, so a run could stamp its own requests and skip the work. It is refused:
-changing `spec/recovery.yaml` fails `archaeology-recovery`, the requests a run is judged against are
-read from the ledger as `HEAD` holds it, and whether a criterion came back changed is decided by
-comparing `HEAD`'s row with the working tree's. Like `tests/acceptance/redo.yaml`, this file is the
-pipeline's bookkeeping and not part of what the agent is judged on.
+otherwise write freely, so a session could rewrite the record of what it was asked to do. Two things
+prevent it. The requests a run is judged against, and whether its criteria came back changed, are
+both read from `HEAD` — so editing the ledger in the working tree changes nothing about what the run
+is held to, and a session that stamps its own request without recovering the row still fails on the
+row. And the file itself is compared against `HEAD`: a run may leave it holding exactly one kind of
+change, `answered` appearing on a request that run was owed, and anything else fails the check.
+
+**Why compared rather than simply forbidden.** The runner's own stamp lands in the same working tree
+before the run commits, and a stage's post-checks can run over that tree more than once — after a
+repair turn, or when `sdlc resume` picks up a run that died between the stamp and the commit.
+"Did this file change?" cannot tell those apart from a session's write: it reports the runner's own
+stamp as the agent's fault, fails the resumed run, and leaves the ledger and the recovered domain
+file dirty, so the retry cannot start at all and the recovery has to be hand-rescued. Like
+`tests/acceptance/redo.yaml`, this file is the pipeline's bookkeeping and not part of what the agent
+is judged on; what it may contain after a run is a fact worth stating exactly.
 
 **Why the stamp rather than deleting the entry.** A criterion sent back twice is the signal that a
 re-recovery did not answer the question, and a ledger that forgets cannot show it. Keeping every

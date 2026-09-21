@@ -198,8 +198,9 @@ Any real change to the row answers the check: a corrected statement, a corrected
 recording what was read, or the row's removal where the behaviour turns out not to exist.
 
 A request ends when a run answers it, and only then. Once every check has passed, the run stamps
-each request it was owed with the version its criterion came back at — or with the fact that the
-recovery removed the row — and that stamp is what `ratify` reads to know the work was done. The
+each request it was owed, and the presence of that stamp is what `ratify` reads to know the work was
+done. What the stamp holds — the version the criterion came back at, or that the recovery removed
+the row — is an audit record for whoever reads the ledger; nothing in the pipeline branches on it. The
 runner writes it, after the checks have judged the tree, so it is never the session's to claim; a
 failed run stamps nothing and the requests are still owed on the next attempt. The entry itself is
 never deleted: it is the record that the request was made. A criterion the ruling has merely

@@ -18,7 +18,7 @@ import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, ch
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { readRebindFor } from "../spec/rebind.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, domainOrdinal, conditionTargetId, criterionFingerprint } from "../spec/criteria.mjs";
-import { RECOVERY_PATH, addRecovery, answerRecoveries, entriesIn, outstandingRecoveries, readRecoveryFor, recoveryRequestCount } from "../spec/recovery.mjs";
+import { RECOVERY_PATH, addRecovery, answerRecoveries, entriesIn, keyOf, outstandingRecoveries, readRecovery, readRecoveryFor, recoveryRequestCount, unexpectedLedgerChange } from "../spec/recovery.mjs";
 import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
@@ -375,12 +375,13 @@ function recoveryPromptBlock(ctx) {
 // writes afterwards can change the answer to a question about what this run was asked for.
 // A project with no ledger, or a domain file `HEAD` does not have yet, is owed nothing.
 function recoveryAtHead(projectDir, domain) {
-  if (!domain) return { outstanding: [], byId: new Map() };
+  if (!domain) return { ledger: [], outstanding: [], byId: new Map() };
   let ledger = [];
   try { ledger = entriesIn(git(["show", `HEAD:${RECOVERY_PATH}`], projectDir)); } catch { ledger = []; }
   let criteria = [];
   try { ({ criteria } = parseDomainFile(git(["show", `HEAD:spec/domains/${domain}.md`], projectDir), domain)); } catch { criteria = []; }
   return {
+    ledger,
     outstanding: outstandingRecoveries(ledger.filter((e) => e?.domain === domain), criteria),
     byId: new Map(criteria.map((c) => [c.id, c])),
   };
@@ -408,16 +409,19 @@ function criteriaNow(projectDir, domain) {
 // `edit` moved is still a row nobody has been back to the old application for.
 //
 // The ledger itself is the pipeline's own bookkeeping, like `tests/acceptance/redo.yaml`,
-// and a run that wrote to it is refused: the stamp that answers a request is the runner's
-// to write, after these checks have judged the tree, and a session that could write it
-// itself could mark its own work done without doing it.
+// and a run that wrote to it is refused: a session that could stamp its own requests could
+// mark its own work done without doing it. Refused by comparing the file against `HEAD`
+// rather than by asking whether it changed at all, because the runner's own stamp lands in
+// this same working tree before the run commits and these checks can run over it again —
+// after a repair turn, or when `sdlc resume` picks up a run that died between the stamp and
+// the commit. `unexpectedLedgerChange` allows that one shape of change and nothing else.
 function checkArchaeologyRecovery(projectDir, ctx) {
   const id = "archaeology-recovery";
   if (!ctx.domain) return { id, ok: true, messages: [] };
   const messages = [];
-  if (changedPaths(projectDir).includes(RECOVERY_PATH))
-    messages.push(`${RECOVERY_PATH} records what was sent back for re-recovery and is not a run's to write; recover the criteria it names instead`);
-  const { outstanding, byId } = recoveryAtHead(projectDir, ctx.domain);
+  const { ledger, outstanding, byId } = recoveryAtHead(projectDir, ctx.domain);
+  const wrote = unexpectedLedgerChange(ledger, readRecovery(projectDir), new Set(outstanding.map(keyOf)));
+  if (wrote) messages.push(wrote);
   const now = criteriaNow(projectDir, ctx.domain);
   const whysById = new Map();
   for (const e of outstanding) whysById.set(e.id, [...(whysById.get(e.id) ?? []), e.why]);
@@ -444,7 +448,7 @@ function checkArchaeologyRecovery(projectDir, ctx) {
 function answerArchaeologyRecoveries(projectDir, domain) {
   const { outstanding } = recoveryAtHead(projectDir, domain);
   if (!outstanding.length) return;
-  answerRecoveries(projectDir, outstanding.map((e) => e.id), criteriaNow(projectDir, domain));
+  answerRecoveries(projectDir, domain, outstanding.map((e) => e.id), criteriaNow(projectDir, domain));
 }
 
 // `archaeology` recovers one business domain's behaviour from the old application,
@@ -2120,11 +2124,12 @@ const ratify = {
 
     const minted = mintIds(withConditions, domainOrdinal, existingMax);
 
-    // Filed after minting rather than while the condition is applied, so the entry names
-    // the id and version the criterion actually ends up with in the file, and fingerprints
-    // the row as it is about to be written. `addRecovery` files nothing when the same
-    // criterion already carries the same request, which is what makes replaying a ruling
-    // that already sent a row back a no-op rather than a second request.
+    // Filed after minting rather than while the condition is applied, so each entry names
+    // the id and version the criterion actually ends up with in the file. One entry per
+    // reason: a ruling that names a criterion twice is two requests, each owed its own
+    // answer. `addRecovery` files nothing when the same criterion already carries the same
+    // request, which is what makes replaying a ruling that already sent a row back a no-op
+    // rather than a second request.
     const recoveryPath = addRecovery(projectDir, minted.flatMap((c) =>
       (c.recoveryRequests ?? []).map((why) => ({ id: c.id, domain, version: c.version, why }))));
 
