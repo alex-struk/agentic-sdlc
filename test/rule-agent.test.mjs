@@ -9,7 +9,7 @@ import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { init } from "../src/commands/init.mjs";
 import { propose } from "../src/commands/propose.mjs";
-import { ruleByAgent, rulePending, rulingTurns } from "../src/commands/rule.mjs";
+import { rule, ruleByAgent, rulePending, rulingTurns } from "../src/commands/rule.mjs";
 import { buildSite } from "../src/commands/status.mjs";
 
 const FROM = fileURLToPath(new URL("../fixture-project/fixture.config.yaml", import.meta.url));
@@ -695,4 +695,104 @@ test("ruleByAgent: neither the gate file nor the ruling section names this machi
     rmSync(mockDir, { recursive: true, force: true });
     restoreEgress(prevEgress);
   }
+});
+
+// A ruling borrows the proposal's branch and is answerable for giving it back. The
+// failures below all happen after the checkout, which is exactly the state in which
+// nothing else in the run is at fault and every later command reads the wrong tree.
+
+// stderr, captured: where HEAD was left is the whole point of the paths below, and a
+// report nobody can read is the defect being tested for.
+function saidOnStderr(t) {
+  const lines = [];
+  const err = console.error;
+  console.error = (m) => lines.push(String(m));
+  t.after(() => { console.error = err; });
+  return () => lines.join("\n");
+}
+
+test("a human ruling refused after the branch is opened leaves HEAD where it started", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-restore-human-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  t.after(() => restoreEgress(prevEgress));
+  propose(dir, "p-restore-human", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  git(["checkout", "-q", "main"], dir);
+
+  assert.throws(() => rule(dir, "p-restore-human", "approve", { by: "ux-reviewer" }), /not a holder/);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main",
+    "a refusal about the seat must not cost the caller its place in the repository");
+});
+
+test("a ruling turn that throws leaves HEAD where it started and the original failure surfaces", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-restore-agent-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  t.after(() => restoreEgress(prevEgress));
+  propose(dir, "p-restore-agent", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  git(["checkout", "-q", "main"], dir);
+
+  const mockDir = mockRule("I read the diff and the checks. I am not giving you a verdict block.");
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  t.after(() => { delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; rmSync(mockDir, { recursive: true, force: true }); });
+
+  const err = await ruleByAgent(dir, "p-restore-agent", { persona: "product-owner" }).then(() => null, (e) => e);
+  assert.ok(err, "the failure is not swallowed");
+  assert.match(err.message, /no verdict block/);
+  // Without this the next `sdlc run` refuses with `must start on main` for a reason that
+  // has nothing to do with its own input, and the operator diagnoses the wrong command.
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+  assert.equal(git(["status", "--porcelain"], dir), "");
+});
+
+test("a ruling turn that dirtied the branch keeps HEAD there, and says so", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-restore-dirty-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  t.after(() => restoreEgress(prevEgress));
+  const said = saidOnStderr(t);
+  propose(dir, "p-restore-dirty", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  git(["checkout", "-q", "main"], dir);
+
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-rule-dirty-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    text: 'Looked at it.\n\n```json\n{"verdict":"approve","rationale":"fine","conditions":[]}\n```',
+    files: { "tampered.txt": "a file a read-only ruling turn had no business writing\n" },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  t.after(() => { delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; rmSync(mockDir, { recursive: true, force: true }); });
+
+  const err = await ruleByAgent(dir, "p-restore-dirty", { persona: "product-owner" }).then(() => null, (e) => e);
+  assert.match(err.message, /modified the working tree/);
+  // `git checkout` carries an uncommitted file across whenever it is identical on both
+  // sides, so the residue stays on the branch that produced it rather than riding to main.
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/p-restore-dirty");
+  assert.match(said(), /left dirty on proposal\/p-restore-dirty/);
+  assert.match(said(), /tampered\.txt/);
+});
+
+test("a restore that cannot happen is reported and does not replace the failure that caused it", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-restore-stuck-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  t.after(() => restoreEgress(prevEgress));
+  const said = saidOnStderr(t);
+  propose(dir, "p-restore-stuck", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  git(["checkout", "-q", "main"], dir);
+
+  // A lock file is what a crashed git leaves behind: it fails the checkout home without
+  // showing up in `git status`, so the tree reads clean and the way back is shut.
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-mock-rule-stuck-"));
+  writeFileSync(join(mockDir, "rule.json"), JSON.stringify({
+    text: "No verdict block here either.",
+    files: { ".git/index.lock": "" },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  t.after(() => { delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; rmSync(mockDir, { recursive: true, force: true }); });
+
+  const err = await ruleByAgent(dir, "p-restore-stuck", { persona: "product-owner" }).then(() => null, (e) => e);
+  assert.match(err.message, /no verdict block/, "the ruling's own failure survives a checkout that failed too");
+  assert.doesNotMatch(err.message, /index\.lock/);
+  assert.match(said(), /HEAD could not be put back on main/);
+  assert.match(said(), /index\.lock/);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/p-restore-stuck");
 });

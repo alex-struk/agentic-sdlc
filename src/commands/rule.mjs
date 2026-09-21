@@ -1,7 +1,7 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import { git, gitOk, assertCleanTree, porcelainStatus, stagePaths, stageSite, currentBranch, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, porcelainStatus, stagePaths, stageSite, currentBranch, enterBranch, leaveBranch, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
@@ -26,14 +26,15 @@ function mergeApproved(projectDir, branch, message) {
     git([...SDLC_AUTHOR, "merge", "-q", "--no-ff", "-m", message, branch], projectDir);
   } catch (e) {
     // A failed merge leaves main mid-merge, which is the worst place to stop: the
-    // ruling is recorded, main is unbuildable, and nothing says why. Unwind it, put the
-    // caller back on the proposal branch, and name the files a person has to reconcile.
+    // ruling is recorded, main is unbuildable, and nothing says why. Unwind it and name
+    // the files a person has to reconcile. Where the caller is left standing is not
+    // decided here — `leaveRuling` gives the borrowed branch back for every ruling that
+    // throws, and a message here claiming a branch would be claiming one of two places.
     const conflicted = gitOk(["diff", "--name-only", "--diff-filter=U"], projectDir)
       ? git(["diff", "--name-only", "--diff-filter=U"], projectDir) : "";
     git(["merge", "--abort"], projectDir);
-    git(["checkout", "-q", branch], projectDir);
     const files = conflicted ? `\nconflicted files:\n  ${conflicted.split("\n").join("\n  ")}` : "";
-    throw new Error(`merging ${branch} into main failed; main was left unchanged and you are back on ${branch}.${files}\n${e.message}`);
+    throw new Error(`merging ${branch} into main failed; main was left unchanged and the ruling stays on ${branch}.${files}\n${e.message}`);
   }
 }
 
@@ -285,20 +286,60 @@ function appendRulingSection(text, { verdict, by, rationale, conditions = [], ty
   return `${text}\n## Ruling\n\n**Verdict:** ${verdict}\n**By:** ${by}\n\n${rationale}\n\n**Conditions:**\n${cond}\n${evidence}`;
 }
 
+// Gives the proposal's branch back when a ruling did not finish.
+//
+// A ruling borrows a branch: `openGate` checks it out to read the proposal, the config and
+// the briefs off it, and every successful path hands it back to the place its own verdict
+// belongs — an approval ends on `main` with the merge, a return and an escalation end on
+// the proposal branch for whoever has to act on it. A ruling that throws was handing it
+// back nowhere, and the caller was left standing on the proposal branch, where the next
+// `sdlc run` refuses `assertOnMain` for a reason that has nothing to do with its own input.
+// `fileOverreachRequests` and `regenerateSiteOnMain` in this file restore through `finally`
+// for the same reason; this is the same contract for the borrow that wraps all of them.
+//
+// The failure that got here is always what comes out of here. A tree the ruling left dirty
+// keeps HEAD on the branch that dirtied it, because `git checkout` carries uncommitted
+// changes across and residue has to stay visible where it was made; a checkout that fails
+// outright is a second fact rather than a replacement for the first. Both are said on
+// stderr and only the original is thrown, the way `sandbox` and `verify` unwind their own
+// branch borrows.
+function leaveRuling(projectDir, start, branch, failure) {
+  let dirty = "";
+  try { dirty = leaveBranch(projectDir, start); }
+  catch (err) {
+    console.error(`rule ${branch}: HEAD could not be put back on ${start} and is still on ${branch};`
+      + ` check it out by hand once the cause below is dealt with. The checkout said: ${err.message}`);
+    return failure;
+  }
+  if (dirty) {
+    console.error(`rule ${branch}: the working tree was left dirty on ${branch}, so HEAD is still there.`
+      + ` Inspect and clean it, then check out ${start}:\n${dirty}`);
+  }
+  return failure;
+}
+
+// The proposal's branch, checked out, with everything a ruling reads off it. `enterBranch`
+// records where HEAD was so `leaveRuling` can put it back; the refusals raised below are
+// about the proposal rather than about the branch, and must not cost the caller its place
+// either.
 function openGate(projectDir, name) {
   const branch = `proposal/${name}`;
   if (!gitOk(["rev-parse", "--verify", branch], projectDir)) throw new Error(`no proposal branch ${branch}`);
-  git(["checkout", "-q", branch], projectDir);
-  const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
-  const proposalText = existsSync(proposalPath) ? readText(proposalPath) : null;
-  const gateMatch = proposalText ? proposalText.match(/^gate:\s*(\S+)/m) : null;
-  if (!gateMatch) throw new Error(`proposal ${name} has no gate line`);
-  const gate = gateMatch[1];
-  const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
-  if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
-  const g = config.policy.gates[gate];
-  if (!g) throw new Error(`gate ${gate} is not in policy`);
-  return { branch, proposalPath, proposalText, gate, g, config };
+  const start = enterBranch(projectDir, branch, "rule");
+  try {
+    const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
+    const proposalText = existsSync(proposalPath) ? readText(proposalPath) : null;
+    const gateMatch = proposalText ? proposalText.match(/^gate:\s*(\S+)/m) : null;
+    if (!gateMatch) throw new Error(`proposal ${name} has no gate line`);
+    const gate = gateMatch[1];
+    const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+    if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
+    const g = config.policy.gates[gate];
+    if (!g) throw new Error(`gate ${gate} is not in policy`);
+    return { branch, start, proposalPath, proposalText, gate, g, config };
+  } catch (e) {
+    throw leaveRuling(projectDir, start, branch, e);
+  }
 }
 
 // `conditions` is what a person in a gate seat attaches to a verdict, and it is the same
@@ -310,25 +351,29 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
   if (!["approve", "return"].includes(verdict)) throw new Error("verdict must be approve or return");
   if (!by) throw new Error("rule needs --by <role or agent:persona>");
   assertCleanTree(projectDir, "rule");
-  const { branch, gate, g } = openGate(projectDir, name);
-  const allowed = [g.holder, g.escalate_to].filter(Boolean);
-  if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
-  const executable = conditionsAreExecutable(gate, name);
-  if (!executable) {
-    assertOverreachRulable(name, verdict, conditions ?? []);
-    assertAddressedRulable(name, verdict, conditions ?? []);
+  const { branch, start, gate, g } = openGate(projectDir, name);
+  try {
+    const allowed = [g.holder, g.escalate_to].filter(Boolean);
+    if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
+    const executable = conditionsAreExecutable(gate, name);
+    if (!executable) {
+      assertOverreachRulable(name, verdict, conditions ?? []);
+      assertAddressedRulable(name, verdict, conditions ?? []);
+    }
+    // The same evidence the seat's persona is held to, so that sitting in the seat is the
+    // whole of what changes when a person takes it. A build with no passing result is
+    // returnable here and unapprovable here, exactly as it is on the agent path; the one
+    // approval that goes through without one is the escalation target's, which the
+    // escalation already on the branch is the record of.
+    const escalation = standingEscalation(projectDir, name);
+    assertApprovalEvidence(projectDir, name, verdict,
+      Boolean(escalation) && by === g.escalate_to && escalation.by !== by);
+    const heldBy = by.startsWith("agent:") ? "agent" : "human";
+    const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, conditions, executable });
+    return { gate, verdict, heldBy, ...requests };
+  } catch (e) {
+    throw leaveRuling(projectDir, start, branch, e);
   }
-  // The same evidence the seat's persona is held to, so that sitting in the seat is the
-  // whole of what changes when a person takes it. A build with no passing result is
-  // returnable here and unapprovable here, exactly as it is on the agent path; the one
-  // approval that goes through without one is the escalation target's, which the
-  // escalation already on the branch is the record of.
-  const escalation = standingEscalation(projectDir, name);
-  assertApprovalEvidence(projectDir, name, verdict,
-    Boolean(escalation) && by === g.escalate_to && escalation.by !== by);
-  const heldBy = by.startsWith("agent:") ? "agent" : "human";
-  const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, conditions, executable });
-  return { gate, verdict, heldBy, ...requests };
 }
 
 // What to say a ruling turn failed for. The turn's own text when it has any; otherwise
@@ -461,148 +506,152 @@ function assertApprovalEvidence(projectDir, name, verdict, onEscalation) {
 export async function ruleByAgent(projectDir, name, { persona }) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "rule");
-  const { branch, proposalPath, proposalText, gate, g, config } = openGate(projectDir, name);
-  const by = `agent:${persona}`;
-  // A persona rules the gate it holds. The one other ruling an agent may make is on an
-  // escalation, and only where the project plays the escalation's target by an agent
-  // too (`simulatedRole`) — a project whose tech lead is a person gets the escalation,
-  // as before. A persona never rules its own escalation: that one waits for a person.
-  const escalation = standingEscalation(projectDir, name);
-  const ruleEscalation = g.holder !== by && Boolean(escalation) && g.escalate_to === persona
-    && simulatedRole(config, persona) && escalation.by !== by;
-  if (g.holder !== by && !ruleEscalation) {
-    const allowed = [g.holder, simulatedRole(config, g.escalate_to) ? `agent:${g.escalate_to} (on an escalation)` : null].filter(Boolean);
-    throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
-  }
-  // An agent-held gate with nowhere to escalate is a broken policy, not a ruling this
-  // agent can be trusted with — checked before the persona brief is even read, since
-  // every path below (mandatory escalation, an `escalate` verdict) needs `escalate_to`.
-  if (!g.escalate_to) throw new Error(`gate ${gate} has an agent holder but no escalate_to`);
-
-  const brief = readPersonaBrief(projectDir, persona);
-  const tierMatch = proposalText.match(/^tier:\s*(\S+)/m);
-  const tier = tierMatch ? tierMatch[1] : config.policy.default_tier;
-
-  // Mandatory escalation happens before the persona is ever asked: a HIGH/CRITICAL item,
-  // or a persona whose brief always defers on this gate, never gets a chance to rule.
-  // Declared in the brief's front matter (`escalates: [G-POL]`), never read out of its
-  // prose. A brief is written for the agent that reads it, so a sentence scoped to one
-  // kind of item — "a platform-article change is escalated, never ruled here" — is
-  // indistinguishable to a phrase search from a rule covering every gate, and a persona
-  // matched that way is switched off entirely without anything saying so.
-  const mandatoryReason = ["HIGH", "CRITICAL"].includes(tier) ? `tier ${tier}`
-    : personaEscalates(brief).includes(gate) ? `${persona} does not rule ${gate} alone`
-      : null;
-
-  if (mandatoryReason) {
-    const rationale = `mandatory escalation: ${mandatoryReason}`;
-    // No persona turn ran, so the ruling cost nothing — recorded as zero rather than
-    // omitted, so every agent-held gate file carries the same three keys.
-    writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics: { cost: 0, turns: 0, session: "" } });
-    return { verdict: "escalate", rationale, escalated: true };
-  }
-
-  const typecheck = await acceptanceTypecheck(projectDir, {
-    name, gate, revision: git(["rev-parse", "HEAD"], projectDir),
-  });
-  assertCleanTree(projectDir, "rule: typecheck modified the working tree");
-  const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate, typecheck, escalation: ruleEscalation ? escalation : null });
-  // A ruling reads and answers; it never writes. The tool list says so up front rather
-  // than relying on the clean-tree check below to catch a turn that wrote anyway: the
-  // read-only git commands are there because a persona legitimately wants to look
-  // further into the branch than the diff the prompt already carries.
-  //
-  // A ruling turn is read-only and cheap, and a failed one is often transient — a
-  // dropped connection, a rate limit — so one automatic retry is attempted before the
-  // whole ruling is abandoned. Only one: a turn that fails twice is failing for a reason
-  // retrying will not fix, and `rule --pending` running a batch must not turn one broken
-  // proposal into an unbounded loop.
-  const runRuling = (text) => runAgent({ cwd: projectDir, prompt: text, stage: "rule", maxTurns: rulingTurns(config, gate, name),
-    allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
-
-  // One turn, its failure retried once, and the verdict read out of whatever came back.
-  // The clean-tree check sits inside this rather than after it: a ruling is a read-only
-  // turn, and a verdict text that looks fine must not be allowed to mask files the turn
-  // left behind. The edit is left in place (not reset) so the tampering stays visible.
-  const askOnce = async (text) => {
-    let result = await runRuling(text);
-    if (!result.ok) {
-      console.warn(`warning: the ruling turn for ${name} failed (${rulingFailure(result)}); retrying once`);
-      result = await runRuling(text);
+  const { branch, start, proposalPath, proposalText, gate, g, config } = openGate(projectDir, name);
+  try {
+    const by = `agent:${persona}`;
+    // A persona rules the gate it holds. The one other ruling an agent may make is on an
+    // escalation, and only where the project plays the escalation's target by an agent
+    // too (`simulatedRole`) — a project whose tech lead is a person gets the escalation,
+    // as before. A persona never rules its own escalation: that one waits for a person.
+    const escalation = standingEscalation(projectDir, name);
+    const ruleEscalation = g.holder !== by && Boolean(escalation) && g.escalate_to === persona
+      && simulatedRole(config, persona) && escalation.by !== by;
+    if (g.holder !== by && !ruleEscalation) {
+      const allowed = [g.holder, simulatedRole(config, g.escalate_to) ? `agent:${g.escalate_to} (on an escalation)` : null].filter(Boolean);
+      throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
     }
-    // A turn that reports failure has no verdict to read, and its own text is the only
-    // account of why — except when it has no text at all, which is exactly when a person
-    // most needs one, so the CLI's own account of how the session ended stands in.
-    // Checked before `parseVerdict`, whose "no verdict block in persona reply" would
-    // otherwise be the error a person sees for what is actually a failed session.
-    if (!result.ok) throw new Error(`ruling agent turn failed after one retry: ${rulingFailure(result)}`);
-    assertCleanTree(projectDir, "rule: the ruling agent modified the working tree");
-    return { ...parseVerdict(result.text), metrics: { cost: result.cost, turns: result.turns, session: result.sessionId } };
-  };
+    // An agent-held gate with nowhere to escalate is a broken policy, not a ruling this
+    // agent can be trusted with — checked before the persona brief is even read, since
+    // every path below (mandatory escalation, an `escalate` verdict) needs `escalate_to`.
+    if (!g.escalate_to) throw new Error(`gate ${gate} has an agent holder but no escalate_to`);
 
-  let { verdict, rationale, conditions, metrics } = await askOnce(prompt);
+    const brief = readPersonaBrief(projectDir, persona);
+    const tierMatch = proposalText.match(/^tier:\s*(\S+)/m);
+    const tier = tierMatch ? tierMatch[1] : config.policy.default_tier;
 
-  // At G1 a condition is not commentary, it is an instruction `ratify` will execute
-  // against the domain file, so a line the ratification grammar cannot read is a silently
-  // dropped ruling on a criterion. The persona is asked again, once, with its own
-  // unreadable lines quoted back and the grammar restated — which is the whole fix in the
-  // ordinary case, since these are formatting slips rather than disagreements. Anything
-  // still unreadable after that is written to the gate file under `unparsed_conditions`
-  // and the ruling proceeds: the verdict was reached and the reasoning is worth keeping,
-  // and `ratify` refuses to act on that gate file until a person fixes the lines.
-  const grammar = conditionGrammarFor(name);
-  // Read as instructions at G1, and at G3 only for a triage proposal: every other G3 ruling's
-  // conditions are free-text notes to a writer, not something a stage executes.
-  const executable = conditionsAreExecutable(gate, name);
-  let unparsed = executable && verdict !== "escalate" ? grammar.unparsed(conditions) : [];
-  if (unparsed.length) {
-    const again = [
-      prompt,
-      "",
-      "## Your previous reply had conditions I could not read",
-      "",
-      `You ruled ${verdict}. These condition lines do not match the ${grammar.label} grammar, so nothing`,
-      "would be applied for them:",
-      "",
-      ...unparsed.map((c) => `- ${JSON.stringify(c)}`),
-      "",
-      grammar.text,
-      "",
-      "Rule again. Keep the conditions that were fine exactly as they were, rewrite these in the",
-      "grammar above, and finish with the JSON block as before.",
-    ].join("\n");
-    ({ verdict, rationale, conditions, metrics } = await askOnce(again));
-    unparsed = verdict === "escalate" ? [] : grammar.unparsed(conditions);
-    if (unparsed.length) console.warn(`warning: ${name}: ${unparsed.length} condition line(s) still unreadable after one re-prompt; recorded as unparsed_conditions`);
+    // Mandatory escalation happens before the persona is ever asked: a HIGH/CRITICAL item,
+    // or a persona whose brief always defers on this gate, never gets a chance to rule.
+    // Declared in the brief's front matter (`escalates: [G-POL]`), never read out of its
+    // prose. A brief is written for the agent that reads it, so a sentence scoped to one
+    // kind of item — "a platform-article change is escalated, never ruled here" — is
+    // indistinguishable to a phrase search from a rule covering every gate, and a persona
+    // matched that way is switched off entirely without anything saying so.
+    const mandatoryReason = ["HIGH", "CRITICAL"].includes(tier) ? `tier ${tier}`
+      : personaEscalates(brief).includes(gate) ? `${persona} does not rule ${gate} alone`
+        : null;
+
+    if (mandatoryReason) {
+      const rationale = `mandatory escalation: ${mandatoryReason}`;
+      // No persona turn ran, so the ruling cost nothing — recorded as zero rather than
+      // omitted, so every agent-held gate file carries the same three keys.
+      writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics: { cost: 0, turns: 0, session: "" } });
+      return { verdict: "escalate", rationale, escalated: true };
+    }
+
+    const typecheck = await acceptanceTypecheck(projectDir, {
+      name, gate, revision: git(["rev-parse", "HEAD"], projectDir),
+    });
+    assertCleanTree(projectDir, "rule: typecheck modified the working tree");
+    const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate, typecheck, escalation: ruleEscalation ? escalation : null });
+    // A ruling reads and answers; it never writes. The tool list says so up front rather
+    // than relying on the clean-tree check below to catch a turn that wrote anyway: the
+    // read-only git commands are there because a persona legitimately wants to look
+    // further into the branch than the diff the prompt already carries.
+    //
+    // A ruling turn is read-only and cheap, and a failed one is often transient — a
+    // dropped connection, a rate limit — so one automatic retry is attempted before the
+    // whole ruling is abandoned. Only one: a turn that fails twice is failing for a reason
+    // retrying will not fix, and `rule --pending` running a batch must not turn one broken
+    // proposal into an unbounded loop.
+    const runRuling = (text) => runAgent({ cwd: projectDir, prompt: text, stage: "rule", maxTurns: rulingTurns(config, gate, name),
+      allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
+
+    // One turn, its failure retried once, and the verdict read out of whatever came back.
+    // The clean-tree check sits inside this rather than after it: a ruling is a read-only
+    // turn, and a verdict text that looks fine must not be allowed to mask files the turn
+    // left behind. The edit is left in place (not reset) so the tampering stays visible.
+    const askOnce = async (text) => {
+      let result = await runRuling(text);
+      if (!result.ok) {
+        console.warn(`warning: the ruling turn for ${name} failed (${rulingFailure(result)}); retrying once`);
+        result = await runRuling(text);
+      }
+      // A turn that reports failure has no verdict to read, and its own text is the only
+      // account of why — except when it has no text at all, which is exactly when a person
+      // most needs one, so the CLI's own account of how the session ended stands in.
+      // Checked before `parseVerdict`, whose "no verdict block in persona reply" would
+      // otherwise be the error a person sees for what is actually a failed session.
+      if (!result.ok) throw new Error(`ruling agent turn failed after one retry: ${rulingFailure(result)}`);
+      assertCleanTree(projectDir, "rule: the ruling agent modified the working tree");
+      return { ...parseVerdict(result.text), metrics: { cost: result.cost, turns: result.turns, session: result.sessionId } };
+    };
+
+    let { verdict, rationale, conditions, metrics } = await askOnce(prompt);
+
+    // At G1 a condition is not commentary, it is an instruction `ratify` will execute
+    // against the domain file, so a line the ratification grammar cannot read is a silently
+    // dropped ruling on a criterion. The persona is asked again, once, with its own
+    // unreadable lines quoted back and the grammar restated — which is the whole fix in the
+    // ordinary case, since these are formatting slips rather than disagreements. Anything
+    // still unreadable after that is written to the gate file under `unparsed_conditions`
+    // and the ruling proceeds: the verdict was reached and the reasoning is worth keeping,
+    // and `ratify` refuses to act on that gate file until a person fixes the lines.
+    const grammar = conditionGrammarFor(name);
+    // Read as instructions at G1, and at G3 only for a triage proposal: every other G3 ruling's
+    // conditions are free-text notes to a writer, not something a stage executes.
+    const executable = conditionsAreExecutable(gate, name);
+    let unparsed = executable && verdict !== "escalate" ? grammar.unparsed(conditions) : [];
+    if (unparsed.length) {
+      const again = [
+        prompt,
+        "",
+        "## Your previous reply had conditions I could not read",
+        "",
+        `You ruled ${verdict}. These condition lines do not match the ${grammar.label} grammar, so nothing`,
+        "would be applied for them:",
+        "",
+        ...unparsed.map((c) => `- ${JSON.stringify(c)}`),
+        "",
+        grammar.text,
+        "",
+        "Rule again. Keep the conditions that were fine exactly as they were, rewrite these in the",
+        "grammar above, and finish with the JSON block as before.",
+      ].join("\n");
+      ({ verdict, rationale, conditions, metrics } = await askOnce(again));
+      unparsed = verdict === "escalate" ? [] : grammar.unparsed(conditions);
+      if (unparsed.length) console.warn(`warning: ${name}: ${unparsed.length} condition line(s) still unreadable after one re-prompt; recorded as unparsed_conditions`);
+    }
+
+    if (verdict === "escalate") {
+      writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics });
+      return { verdict, rationale, escalated: true };
+    }
+
+    // The same check a person's ruling is held to, in the same place in the sequence:
+    // before anything is written. A `test-overreaches` line is an instruction a stage will
+    // carry out rather than commentary a writer reads, so — unlike an unreadable free-text
+    // condition, which is kept verbatim because the reasoning is still worth having — one
+    // that would file an unactionable request refuses the ruling instead. Nothing has been
+    // committed at this point, and the turn is read-only, so the proposal is left open for
+    // a corrected ruling.
+    if (!executable) {
+      assertOverreachRulable(name, verdict, conditions ?? []);
+      assertAddressedRulable(name, verdict, conditions ?? []);
+    }
+    // Here rather than before the persona is asked, because the verdict is what decides
+    // whether it applies at all. By this point the typecheck has run and the ruling turn has
+    // answered, both read-only against a tree asserted clean; no gate file, no proposal page,
+    // no commit and no merge has been written for this ruling.
+    assertApprovalEvidence(projectDir, name, verdict, ruleEscalation);
+
+    // The ruling has to land in the proposal page's own commit, not a follow-up one, so
+    // it is appended and written before `commitRuling` stages and commits.
+    writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }), projectDir));
+    const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true, executable });
+    return { verdict, rationale, unparsed, escalated: false, ...requests, ...metrics };
+  } catch (e) {
+    throw leaveRuling(projectDir, start, branch, e);
   }
-
-  if (verdict === "escalate") {
-    writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics });
-    return { verdict, rationale, escalated: true };
-  }
-
-  // The same check a person's ruling is held to, in the same place in the sequence:
-  // before anything is written. A `test-overreaches` line is an instruction a stage will
-  // carry out rather than commentary a writer reads, so — unlike an unreadable free-text
-  // condition, which is kept verbatim because the reasoning is still worth having — one
-  // that would file an unactionable request refuses the ruling instead. Nothing has been
-  // committed at this point, and the turn is read-only, so the proposal is left open for
-  // a corrected ruling.
-  if (!executable) {
-    assertOverreachRulable(name, verdict, conditions ?? []);
-    assertAddressedRulable(name, verdict, conditions ?? []);
-  }
-  // Here rather than before the persona is asked, because the verdict is what decides
-  // whether it applies at all. By this point the typecheck has run and the ruling turn has
-  // answered, both read-only against a tree asserted clean; no gate file, no proposal page,
-  // no commit and no merge has been written for this ruling.
-  assertApprovalEvidence(projectDir, name, verdict, ruleEscalation);
-
-  // The ruling has to land in the proposal page's own commit, not a follow-up one, so
-  // it is appended and written before `commitRuling` stages and commits.
-  writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }), projectDir));
-  const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true, executable });
-  return { verdict, rationale, unparsed, escalated: false, ...requests, ...metrics };
 }
 
 // `sdlc rule --pending`: every open proposal branch whose gate is agent-held, ruled in
