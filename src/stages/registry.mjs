@@ -2381,19 +2381,20 @@ function findReturnedDesignRuling(projectDir, domain) {
   return null;
 }
 
-function checkDesignRevisionSource(projectDir, ctx) {
+function checkDesignRevisionSource(projectDir, ctx, maySpend = true) {
   const id = "design-revise-source";
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
+  const spend = maySpend && !ctx.dryRun;
   const found = findReturnedDesignRuling(projectDir, ctx.domain);
   if (!found) {
-    const requested = requestedRevision(projectDir, "design", ctx);
+    const requested = requestedRevision(projectDir, "design", { ...ctx, dryRun: !spend });
     if (!requested) return { id, ok: false, messages: [`design --revise: no returned ruling for ${ctx.domain} to revise from`] };
     ctx.revision = requested;
     return { id, ok: true, messages: [] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
   ctx.revision = { ...found, branchCommit };
-  if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G-DESIGN", keepBranch: true });
+  if (spend) recordReturnOnMain(projectDir, found, { gate: "G-DESIGN", keepBranch: true });
   return { id, ok: true, messages: [] };
 }
 
@@ -2453,12 +2454,14 @@ const design = {
   preChecks(projectDir, ctx) {
     const domainCheck = checkDomainOption(ctx, "design");
     if (ctx.domain) ctx.designPages = pagesForDomain(projectDir, ctx.domain);
-    return [
+    const before = [
       domainCheck,
       checkDesignDomainRatified(projectDir, ctx),
       checkDesignSurfaceExists(projectDir, ctx),
-      checkDesignRevisionSource(projectDir, ctx),
     ];
+    // The revision source reports whatever the checks above found and only spends a
+    // return or a request when they passed, for the reason `plan`'s own `preChecks` gives.
+    return [...before, checkDesignRevisionSource(projectDir, ctx, before.every((c) => c.ok))];
   },
   postChecks(projectDir, ctx) {
     // `design/screens.yaml` is the declaration and the catalogue answers to it, so a story
@@ -2584,7 +2587,14 @@ const plan = {
     const ids = allAcceptedCriterionIds(projectDir);
     ctx.planCriteriaCount = ids.length;
     ctx.planAcceptedIds = ids;
-    return [checkPlanHasCriteria(ids), checkPlanHasDesign(projectDir), checkPlanRevisionSource(projectDir, ctx)];
+    const before = [checkPlanHasCriteria(ids), checkPlanHasDesign(projectDir)];
+    // The revision source is the one check here that writes: it records a return onto
+    // `main`, or takes up a request addressed to this stage, and either is spent once it
+    // has happened. It still reports, whatever the checks above found — a run is entitled
+    // to be told everything that is wrong with it in one pass — but it only spends
+    // anything when they passed, so a project with nothing to plan against does not lose
+    // the ruling it would have revised from to a run that was never going to happen.
+    return [...before, checkPlanRevisionSource(projectDir, ctx, before.every((c) => c.ok))];
   },
   postChecks(projectDir, ctx) {
     ctx.planName = nextProposalName(projectDir, "plan");
@@ -2611,15 +2621,16 @@ function planBranches(projectDir, prefix) {
 
 // The returned plan a `--revise` run starts from: the newest `proposal/plan` or
 // `proposal/plan-<n>` whose ruling is a return not yet recorded on `main`.
-function checkPlanRevisionSource(projectDir, ctx) {
+function checkPlanRevisionSource(projectDir, ctx, maySpend = true) {
   const id = "plan-revise-source";
   if (!ctx.revise) return { id, ok: true, messages: [] };
+  const spend = maySpend && !ctx.dryRun;
   const open = planBranches(projectDir, "proposal");
   for (const name of open) {
     const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
     if (!found) continue;
     ctx.revision = { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) };
-    if (!ctx.dryRun) recordReturnOnMain(projectDir, ctx.revision, { gate: "G2", keepBranch: true });
+    if (spend) recordReturnOnMain(projectDir, ctx.revision, { gate: "G2", keepBranch: true });
     return { id, ok: true, messages: [] };
   }
   // A return already recorded on `main` has had its branch renamed to `returned/<name>`,
@@ -2642,7 +2653,7 @@ function checkPlanRevisionSource(projectDir, ctx) {
       return { id, ok: true, messages: [] };
     }
   }
-  const requested = requestedRevision(projectDir, "plan", ctx);
+  const requested = requestedRevision(projectDir, "plan", { ...ctx, dryRun: !spend });
   if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }
   return { id, ok: false, messages: ["plan --revise: no returned plan ruling to revise from"] };
 }

@@ -342,6 +342,21 @@ function repo(t) {
   return { d, run };
 }
 
+// Enough of a project for the checks that run before a revision source: an accepted
+// criterion to plan against, a screen catalogue, and a surface page in the domain.
+function plannable(d, run) {
+  mkdirSync(join(d, "spec", "contract"), { recursive: true });
+  mkdirSync(join(d, "design"), { recursive: true });
+  writeFileSync(join(d, "spec", "criteria-index.json"), JSON.stringify({
+    generated_from: "0".repeat(40),
+    criteria: [{ id: "R-1.1", domain: "applications", version: 1, state: "accepted", statement: "a submitted application is acknowledged" }],
+  }));
+  writeFileSync(join(d, "design", "screens.yaml"), "screens: []\n");
+  writeFileSync(join(d, "spec", "contract", "surface.yaml"), "pages:\n  - id: applications-list\n    domain: applications\n    route: /applications\n");
+  run(["add", "-A"]);
+  run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "seed"]);
+}
+
 // A returned proposal standing on its own branch, ruled with `conditions`.
 function returned(d, run, { name, gate, rationale, conditions }) {
   run(["checkout", "-q", "-b", `proposal/${name}`]);
@@ -379,6 +394,7 @@ test("a ruling whose conditions are a closed grammar keeps every line", (t) => {
 
 test("a plan revise prompt carries only the planner's conditions, and names the ones it is not carrying", (t) => {
   const { d, run } = repo(t);
+  plannable(d, run);
   const planCondition = "plan/tasks.md leaves criterion R-1.3 unassigned to any slice";
   returned(d, run, {
     name: "plan", gate: "G2", rationale: "the cut is close",
@@ -431,6 +447,7 @@ function requestOnMain(d, run, stage, why) {
 
 test("a stage with nothing returned is revisable by a request addressed to it, and is handed the reason verbatim", (t) => {
   const { d, run } = repo(t);
+  plannable(d, run);
   requestOnMain(d, run, "plan", WHY);
   const stage = stageFor("plan");
   const ctx = { revise: true, dryRun: true };
@@ -452,6 +469,7 @@ test("a stage with nothing returned is revisable by a request addressed to it, a
 
 test("a revision run takes the request up, and what it said stays on file", (t) => {
   const { d, run } = repo(t);
+  plannable(d, run);
   requestOnMain(d, run, "plan", WHY);
   const ctx = { revise: true };
   assert.equal(stageFor("plan").preChecks(d, ctx).find((c) => c.id === "plan-revise-source").ok, true);
@@ -472,6 +490,7 @@ test("a revision run takes the request up, and what it said stays on file", (t) 
 // The guard the whole route turns on: a request asks for work, and asks for nothing else.
 test("taking a request rules nothing, approves nothing and changes no artifact", (t) => {
   const { d, run } = repo(t);
+  plannable(d, run);
   mkdirSync(join(d, "plan"), { recursive: true });
   writeFileSync(join(d, "plan", "tasks.md"), "# slices\n");
   run(["add", "-A"]);
@@ -494,8 +513,9 @@ test("taking a request rules nothing, approves nothing and changes no artifact",
 // The mechanism is keyed on a stage having a revision mode, not on a list of stage names.
 test("a request reaches any stage that can be asked to revise", (t) => {
   const { d, run } = repo(t);
+  plannable(d, run);
   requestOnMain(d, run, "design", "the screen the second slice delivers is not drawn anywhere");
-  const ctx = { revise: true, domain: "applications", dryRun: true };
+  const ctx = { revise: true, domain: "applications", dryRun: true, config: { project: { domains: ["applications"] } } };
   const check = stageFor("design").preChecks(d, ctx).find((c) => c.id === "design-revise-source");
   assert.equal(check.ok, true, JSON.stringify(check));
   assert.ok(stageFor("design").prompt(ctx).includes("the screen the second slice delivers is not drawn anywhere"));
@@ -516,5 +536,17 @@ test("a dry run reads the request and does not take it", (t) => {
   requestOnMain(d, run, "plan", WHY);
   const ctx = { revise: true, dryRun: true };
   stageFor("plan").preChecks(d, ctx);
+  assert.equal(openRevisionRequestsFor(d, "plan").length, 1);
+});
+
+// A revision source is the one pre-check with a side effect of its own, so it is settled
+// last: a run refused for an unrelated reason must leave the request for the corrected
+// re-run to find, not spend it on a run that never happened.
+test("a run refused by an earlier pre-check leaves the request open", (t) => {
+  const { d, run } = repo(t);
+  requestOnMain(d, run, "plan", WHY);
+  const ctx = { revise: true };
+  const checks = stageFor("plan").preChecks(d, ctx);
+  assert.ok(checks.some((c) => !c.ok), "this repository has no criteria to plan against");
   assert.equal(openRevisionRequestsFor(d, "plan").length, 1);
 });
