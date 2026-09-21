@@ -32,8 +32,9 @@ repository are the primitives that shape composes into:
   to 120,000 characters, well past what an argument list can carry — or, in CI, whichever cloud
   executor the configuration names, and in tests a mock executor selected by
   `SDLC_EXECUTOR=mock` — confined to the workspace by three mechanisms: an isolated
-  `CLAUDE_CONFIG_DIR` holding only a link to the operator's credentials
-  (`docs/decisions/0004-isolated-stage-sessions.md`), `.claude/settings.json`'s deny list, which
+  `CLAUDE_CONFIG_DIR` whose only credential is the operator's own, linked in and kept there when a
+  session refreshes it (`docs/decisions/0004-isolated-stage-sessions.md`,
+  `docs/decisions/0035-a-credential-refreshed-where-the-next-run-deletes-it.md`), `.claude/settings.json`'s deny list, which
   blocks destructive commands and reading secrets outright, and
   `templates/hooks/implement-guard.sh`, which reads `SDLC_STAGE` and blocks edits outside the paths
   that stage owns (see `docs/stages/init.md` for both tables). `probe` proves this whole loop end to

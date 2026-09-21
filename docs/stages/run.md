@@ -187,6 +187,23 @@ environment variables), both passed straight through to the agent turn. `allowed
 process's environment alongside `CLAUDE_CONFIG_DIR` and `SDLC_STAGE`. Neither is printed by a dry
 run except by name — `env`'s keys, via the `env: <names>` line described above, and never a value.
 
+## The authentication check
+
+A stage session signs in with the operator's own CLI login, read from the config directory the
+runner points `CLAUDE_CONFIG_DIR` at. Before a stage with an agent turn starts — after the dry-run
+return, so a dry run still spends nothing — `runStage` runs a one-turn session against that same
+directory, the same binary and the same flags, and refuses to start the stage when it cannot
+authenticate. A stage can run for the better part of an hour, and a credential already too old to
+refresh fails the same way at the end of that as at the start. The check costs one turn.
+
+It asks one question. A one-turn session that reaches the model and fails for any other reason
+passes the check, and the mock executor (`SDLC_EXECUTOR=mock`) skips it entirely, since a mock turn
+never reaches a session at all. A run stopped here is recorded and committed as
+`run(<stage>): authentication check failed`, the same way a failed `prepare` is, and the message
+says what a stage authenticates with and that signing in interactively is the fix — the same
+paragraph any authentication failure inside an agent turn now carries
+(`docs/decisions/0035-a-credential-refreshed-where-the-next-run-deletes-it.md`).
+
 ## Stages with no agent turn
 
 A stage may declare `agent: false`, which `ratify` and `calibrate` do. There is no workspace and no
