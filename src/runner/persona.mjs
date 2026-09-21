@@ -3,9 +3,11 @@ import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
+import { stackBulk } from "../lib/stack.mjs";
 import { runChecks } from "../checks/index.mjs";
 import { formatChecks } from "../commands/checks.mjs";
 import { formatTypecheckEvidence } from "./typecheck.mjs";
+import { buildSliceOf, readVerifyResult, verifyResultPath, formatVerifyEvidence } from "./verify-evidence.mjs";
 
 // The diff of files outside app/ is the reviewer's evidence, not a transcript to
 // reproduce in full: a proposal that touches a lot of generated or vendored text would
@@ -32,14 +34,32 @@ function diffCapFor(gate) {
 // personas that hold the spec-side gates rule on the spec, not on an implementation.
 const DIFF_EXCLUDE = [":!site", ":!.sdlc/runs", ":!.sdlc/journal", ":!.sdlc/proposals"];
 
+// No single file takes more than this share of the budget while other files are still
+// waiting to be shown. A diff is evidence about a change, and one file of it — a
+// resolved dependency tree, a generated client, a data baseline nobody wrote by hand —
+// can be larger than the whole budget on its own, which leaves the ruler the opening
+// hunks of one machine-written file and nothing else at all. The last file in the order
+// is exempt: by then nothing is waiting, so the rest of the budget is its to use.
+const FILE_SHARE = 0.25;
+
 // `app/` is evidence exactly when the proposal is about it. A spec-side proposal — a
 // domain file, a derived suite, an adapter — never touches the application, so leaving it
 // out there costs its persona nothing and keeps an implementation out of a ruling on the
 // spec. A build proposal IS `app/`, and ruling one without it is ruling on the builder's
 // own summary of work nobody read.
-function excludesFor(projectDir, branch) {
+function excludesFor(projectDir, branch, omit = []) {
   const touchesApp = git(["diff", `main...${branch}`, "--name-only", "--", "app"], projectDir);
-  return touchesApp ? DIFF_EXCLUDE : [":!app", ...DIFF_EXCLUDE];
+  const app = touchesApp ? [] : [":!app"];
+  return [...app, ...DIFF_EXCLUDE, ...omit.map((p) => `:!${p}`)];
+}
+
+// The project's own stack name, read leniently: the config here is whatever the
+// proposal's branch carries, and a prompt is still built for a project whose config does
+// not validate — the checks section is where that is reported, not this one.
+function stackOf(projectDir) {
+  const path = join(projectDir, ".sdlc", "config.yaml");
+  if (!existsSync(path)) return null;
+  try { return parseYaml(readText(path))?.stack ?? null; } catch { return null; }
 }
 
 // The stage's own output, first — the whole point of the ruling. Without this the diff
@@ -50,9 +70,12 @@ function excludesFor(projectDir, branch) {
 const PRIORITY_PATHS = {
   G0: ["intent/"],
   G1: ["spec/domains/", "spec/"],
-  // G3 holds both the spec-side derivations and the build. `app/` outranks the rest only
-  // for a proposal that has one, since the others never do.
-  G3: ["app/", "tests/acceptance/", "tests/adapters/", "evidence/"],
+  // G3 holds both the spec-side derivations and the build. What a build ruling turns on
+  // is what the acceptance suite established and what the slice was asked to satisfy, so
+  // the suite result, the tests and the adapter that drove them come before the
+  // application: a builder who changed the tests he is judged against is the first thing
+  // the ruler needs to see, and the application is what the rest of the budget is for.
+  G3: ["tests/results/", "tests/acceptance/", "tests/adapters/", "app/", "evidence/"],
 };
 
 // Orders `files` so that anything under one of `prefixes` comes first, in the order the
@@ -69,30 +92,48 @@ export function orderDiffPaths(files, prefixes = []) {
     .map((x) => x.f);
 }
 
+// A cut says what was cut. A count alone — "3 further changed file(s) not shown" — tells
+// the ruler that evidence is missing and gives it no way to decide whether the ruling
+// turns on it; the paths are cheap, and with them the ruler can read the one file it
+// needs on the branch or return the proposal saying which file it could not see.
+const NAMED_CUTS = 25;
+
+function cutNotice(cut) {
+  const named = cut.slice(0, NAMED_CUTS).join(", ");
+  const rest = cut.length > NAMED_CUTS ? `, and ${cut.length - NAMED_CUTS} more` : "";
+  return `[${cut.length} changed file(s) not shown, in the order they were dropped: ${named}${rest}. Read them on the branch if the ruling turns on one of them.]`;
+}
+
 // The diff, one file at a time in `orderDiffPaths` order, concatenated until the cap is
 // reached. Per file rather than in one `git diff` call because git orders its own output
 // by path and ignores the order of the pathspec it was given, and the order is the whole
 // point: the cap has to fall on the least important file, not on whichever one happens to
-// sort last. A file whose own diff would overflow the budget is still started, so the
-// reader sees its header and its opening hunks rather than nothing at all, and the cut is
-// marked with what was left out.
-function orderedDiff(projectDir, branch, gate) {
+// sort last. A file whose own diff would overflow its share is still started, so the
+// reader sees its header and its opening hunks rather than nothing at all, and every cut
+// is marked with what was left out of it.
+function orderedDiff(projectDir, branch, gate, omit = []) {
   const range = `main...${branch}`;
-  const listed = git(["diff", range, "--name-only", "--", ".", ...excludesFor(projectDir, branch)], projectDir);
+  const listed = git(["diff", range, "--name-only", "--", ".", ...excludesFor(projectDir, branch, omit)], projectDir);
   const files = orderDiffPaths(listed ? listed.split("\n").filter(Boolean) : [], PRIORITY_PATHS[gate] ?? []);
   const cap = diffCapFor(gate);
+  const perFile = Math.floor(cap * FILE_SHARE);
   const parts = [];
+  const cut = [];
   let used = 0;
-  let cut = 0;
-  for (const f of files) {
-    if (used >= cap) { cut += 1; continue; }
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    if (used >= cap) { cut.push(f); continue; }
     const one = git(["diff", range, "--", f], projectDir);
     if (!one) continue;
     const room = cap - used;
-    if (one.length <= room) { parts.push(one); used += one.length; }
-    else { parts.push(`${one.slice(0, room)}\n[truncated]`); used = cap; }
+    const limit = i === files.length - 1 ? room : Math.min(room, perFile);
+    if (one.length <= limit) { parts.push(one); used += one.length; }
+    else {
+      parts.push(`${one.slice(0, limit)}\n[truncated: ${f} — ${one.length - limit} of ${one.length} characters of this file's diff are not shown. Read the file on the branch if the ruling turns on the rest.]`);
+      used += limit;
+    }
   }
-  if (cut) parts.push(`[${cut} further changed file(s) not shown]`);
+  if (cut.length) parts.push(cutNotice(cut));
   return parts.join("\n");
 }
 
@@ -136,7 +177,22 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
 
   const branch = `proposal/${name}`;
   const stat = git(["diff", `main...${branch}`, "--stat"], projectDir);
-  const outside = orderedDiff(projectDir, branch, gate);
+
+  // The slice's verify result is quoted in a section of its own below, so its diff would
+  // be the same text a second time — the same reason the proposal page is left out.
+  const slice = buildSliceOf(name);
+  const verify = slice ? readVerifyResult(projectDir, branch, slice) : null;
+
+  // What the stack profile declares its toolchain writes and the project commits. The
+  // files exist on the branch and are named here rather than silently dropped, so a
+  // ruler who wants one knows it is there and that nothing tried to hide it.
+  const bulk = stackBulk({ stack: stackOf(projectDir) });
+  const bulkListed = bulk.length
+    ? git(["diff", `main...${branch}`, "--name-only", "--", ...bulk], projectDir)
+    : "";
+  const bulkFiles = bulkListed ? bulkListed.split("\n").filter(Boolean) : [];
+
+  const outside = orderedDiff(projectDir, branch, gate, [...bulk, ...(slice ? [verifyResultPath(slice)] : [])]);
 
   // `criteria-index` is skipped here: it compares the live domain files on this
   // proposal's own branch against `spec/criteria-index.json`, which only `ratify`
@@ -181,15 +237,31 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
     "",
     tier,
     "",
+    // The evidence a build ruling turns on comes before the diff and is never inside its
+    // budget: it is what an approval is refused without, and it is the only place the
+    // adapter's account of what it could not bind is written down.
+    ...(slice ? [
+      formatVerifyEvidence({ result: verify, slice, branchAppTree: git(["rev-parse", `${branch}:app`], projectDir) }),
+      "",
+    ] : []),
     `## Diff summary (main...${branch})`,
     "",
     stat || "(no changes)",
     "",
     "## Diff of the proposal's own output",
     "",
-    "The stage's own output comes first. `app/`, the generated state site, the run record,",
-    "the journal and the proposal page are left out — they are derived from the work being",
-    "ruled on, or quoted above already, not evidence about it.",
+    "The stage's own output comes first. The generated state site, the run record, the journal",
+    "and the proposal page are left out — they are derived from the work being ruled on, or",
+    "quoted above already, not evidence about it. A proposal that does not touch the",
+    "application leaves `app/` out on the same grounds.",
+    ...(bulkFiles.length ? [
+      "",
+      `Left out as machine-generated, on the project's stack profile: ${bulkFiles.join(", ")}. These files are on the branch and can be read there.`,
+    ] : []),
+    ...(slice && verify ? [
+      "",
+      `The verify result (\`${verifyResultPath(slice)}\`) is quoted above rather than shown here as a diff.`,
+    ] : []),
     "",
     outside || "(no changes to show)",
     "",

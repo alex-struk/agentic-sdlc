@@ -83,16 +83,29 @@ When `--by agent:<persona>` names the gate's own `holder`, `sdlc rule` builds a 
 - the tier — the proposal's own `tier:` front matter if it set one, else
   `policy.default_tier`;
 - `git diff main...proposal/<name> --stat`;
-- the diff of the proposal's own output, capped at 60,000 characters with a `[truncated]`
-  marker so a large or generated diff cannot blow the prompt budget. Four path groups are left
-  out of it entirely: `app/` (the spec-side personas rule on the spec, not an implementation),
-  and `site/`, `.sdlc/runs/` and `.sdlc/journal/`, which are derived from the very work being
-  ruled on, change on every run, and between them can be larger than everything the persona
-  actually needs to read. What remains is ordered so the stage's own output comes first — for
-  G1, `spec/domains/` then the rest of `spec/`; for G0, `intent/` — and the cap is applied to
-  that order, so what falls off the end is the least important file rather than whichever one
-  sorts last. When the cap does cut, the diff ends with `[<n> further changed file(s) not
-  shown]`;
+- for a `build-slice-*` proposal, the verify result for that slice, quoted before the diff and
+  outside its budget (see **The verify evidence a build ruling is shown** below);
+- the diff of the proposal's own output, capped at 60,000 characters — 120,000 at G3 — so a
+  large or generated diff cannot blow the prompt budget. Path groups left out of it entirely:
+  `app/` on a proposal whose branch does not touch the application (the spec-side personas rule
+  on the spec, not an implementation); `site/`, `.sdlc/runs/` and `.sdlc/journal/`, which are
+  derived from the very work being ruled on, change on every run, and between them can be
+  larger than everything the persona actually needs to read; `.sdlc/proposals/`, quoted in full
+  higher up already; the verify result quoted in its own section; and whatever the project's
+  stack profile declares as `bulk:` in its front matter — the files its toolchain writes and
+  the project commits, such as a resolved dependency tree or a generated API client, one of
+  which can be larger than the whole budget on its own. Files left out on the stack's account
+  are named in the prompt, since they are on the branch and a ruler may want one.
+
+  What remains is ordered so the evidence the ruling turns on comes first — for G1,
+  `spec/domains/` then the rest of `spec/`; for G0, `intent/`; for G3, the verify results, the
+  acceptance suite and the adapters, then `app/`, then `evidence/`. The cap is applied to that
+  order, so what falls off the end is the least important file rather than whichever one sorts
+  last, and no single file takes more than a quarter of the budget while other files are still
+  waiting (the last file in the order is exempt, since by then nothing is waiting). Every cut
+  says what was cut: a file shown in part ends with `[truncated: <path> — <n> of <m> characters
+  of this file's diff are not shown...]`, and a diff that ran out of budget ends with `[<n>
+  changed file(s) not shown, in the order they were dropped: <paths>...]`;
 - the structural checks, run on the proposal branch's current checkout;
 - for G3 test and adapter proposals, a runner-owned TypeScript check tied to that checkout's
   commit. The runner invokes the already-installed harness compiler directly, with no emit,
@@ -146,6 +159,28 @@ with `by: agent:<persona>` (so `held_by: agent`) and the persona's `rationale` a
 written into the gate file in place of a human's free-text `note`. The rationale and verdict are
 also appended to the proposal page itself, under a `## Ruling` heading, *before* that page is
 committed — so the ruling is part of the same commit the gate file is, not a follow-up.
+
+### The verify evidence a build ruling is shown
+
+A build proposal is ruled on what the acceptance suite established about the application on its
+branch: `verify` writes that to `tests/results/new/slice-<n>.json`, and `buildVerified` reads the
+same file to decide whether an approval may be given at all (`docs/decisions/0022`). The ruler is
+shown it in a section of its own, before the diff and outside the diff's budget:
+
+- the verdict — `pass`, `fail` or `unbound` — with what each one means for the ruling;
+- which proposal and which application tree the result was recorded for, and, where the branch
+  has moved on since, that it is evidence about code that is no longer there;
+- the number of criteria the slice claims, how many passed, and how many did not;
+- a line per criterion that did not pass, carrying the first error its tests recorded — which is
+  where an `unbound` criterion's adapter reason, the only account in the pipeline of what the
+  application did not provide, is written down;
+- the passing criteria by id.
+
+It is bounded by construction: each reason is cut at 500 characters, the first twenty
+non-passing criteria carry their reasons and the rest are listed by id, and the passing ids are
+named up to forty and counted past that. A suite of hundreds of criteria cannot spend the budget
+the diff needs. A build proposal with no result on its branch is told so in the same place,
+rather than being left to infer it from a diff that does not mention it.
 
 ### Ratification conditions
 

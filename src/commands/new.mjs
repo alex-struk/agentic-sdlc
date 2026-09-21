@@ -1,13 +1,15 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { git, SDLC_AUTHOR } from "../lib/git.mjs";
 import { copyTree, ensureDir, readText, writeText } from "../lib/fsx.mjs";
 import { parseConfig } from "../config/load.mjs";
 import { init } from "./init.mjs";
 import { COMMANDS } from "../cli.mjs";
+import { PIPELINE_ROOT } from "../lib/root.mjs";
 
-export const PIPELINE_ROOT = resolve(fileURLToPath(import.meta.url), "../../..");
+// Re-exported here because this is where the rest of the pipeline has always imported it
+// from; the constant itself belongs to no one command.
+export { PIPELINE_ROOT };
 
 export async function newProject({ dir, from, interactive = false, answers = null }) {
   dir = resolve(dir);

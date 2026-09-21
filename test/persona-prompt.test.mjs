@@ -14,6 +14,7 @@ import { git } from "../src/lib/git.mjs";
 import { buildPersonaPrompt, orderDiffPaths } from "../src/runner/persona.mjs";
 
 const CONFIG = `profile: rebuild
+stack: openshift-ts
 project: { name: permit-intake, domains: [applications, billing] }
 policy:
   default_tier: STANDARD
@@ -182,7 +183,7 @@ test("a G1 prompt keeps the 60 KB cap: a diff past it is cut and the cut is mark
   git(["commit", "-q", "-m", "wide"], dir);
 
   const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G1" });
-  assert.match(prompt, /further changed file\(s\) not shown|\[truncated\]/);
+  assert.match(prompt, /further changed file\(s\) not shown|\[truncated: /);
   assert.match(prompt, /A statement\./, "the domain file is still first, so it survives the cut");
 });
 
@@ -239,4 +240,142 @@ test("a build proposal's ruler is shown the application; a spec proposal's ruler
   const derived = await buildPersonaPrompt(dir, "derive-tests-applications", "product-owner", { tier: "STANDARD", gate: "G3" });
   assert.match(derived, /R-1\.1\.spec\.ts/);
   assert.ok(!/export const findPage/.test(derived), "a ruling on the spec is not shown an implementation");
+});
+
+// A build ruling turns on what the acceptance suite established and on the code the
+// slice wrote. Both used to depend on surviving a budget that a dependency lockfile and
+// a generated type declaration could spend before either was reached.
+test("a build ruling is shown the suite, the adapter and the code before anything else, and never the stack's machine-generated files", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], dir);
+
+  // Far larger than the whole G3 budget, and sorted by git ahead of most of app/: the
+  // stack profile declares it machine-generated, so it never enters the budget at all.
+  write(dir, "app/package-lock.json", `{\n${'  "a line of a resolved dependency tree": "1.0.0",\n'.repeat(4000)}}\n`);
+  write(dir, "app/backend/src/content.ts", "export const findPage = (slug: string) => slug;\n");
+  write(dir, "tests/acceptance/applications/R-1.1.spec.ts", "// @R-1.1 v1\ntest(\"the suite the slice is judged against\", () => {});\n");
+  write(dir, "tests/adapters/new/index.ts", "export default function create() { return { bound: true }; }\n");
+  write(dir, "evidence/pr-evidence.md", "what was checked\n");
+  write(dir, "docs/decisions/0007-a-choice.md", "# 0007\n\nA choice the builder made.\n");
+  write(dir, ".sdlc/proposals/build-slice-1.md", "---\ngate: G3\n---\n\n# Does slice 1 hold?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, "build-slice-1", "product-owner", { tier: "STANDARD", gate: "G3" });
+
+  assert.ok(!prompt.includes("a line of a resolved dependency tree"), "the lockfile's content is not in the prompt");
+  assert.match(prompt, /machine-generated/, "the prompt says the file was left out rather than hiding it");
+  assert.match(prompt, /app\/package-lock\.json/, "and names it");
+
+  const at = (needle) => { const i = prompt.indexOf(needle); assert.notEqual(i, -1, `${needle} is in the prompt`); return i; };
+  assert.ok(at("+++ b/tests/acceptance/applications/R-1.1.spec.ts") < at("+++ b/tests/adapters/new/index.ts"));
+  assert.ok(at("+++ b/tests/adapters/new/index.ts") < at("+++ b/app/backend/src/content.ts"));
+  assert.ok(at("+++ b/app/backend/src/content.ts") < at("+++ b/evidence/pr-evidence.md"));
+  assert.ok(at("+++ b/evidence/pr-evidence.md") < at("+++ b/docs/decisions/0007-a-choice.md"));
+});
+
+test("one enormous file cannot spend the whole budget while other files are still unshown", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], dir);
+  // Nothing declares this one, so nothing excludes it: the share a single file may take
+  // while others wait is what keeps the rest of the diff reachable.
+  write(dir, "app/backend/src/aaa-generated.ts", `export const table = [\n${'  "a row of a generated table",\n'.repeat(6000)}];\n`);
+  write(dir, "app/backend/src/zzz-handwritten.ts", "export const findPage = (slug: string) => slug;\n");
+  write(dir, ".sdlc/proposals/build-slice-1.md", "---\ngate: G3\n---\n\n# Does slice 1 hold?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, "build-slice-1", "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.match(prompt, /export const findPage/, "the file behind the big one is still shown");
+  assert.match(prompt, /truncated/);
+});
+
+test("the truncation notice names what was cut, so the ruler can go and read it", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], dir);
+  const filler = "a line of ordinary changed application code\n".repeat(3000);
+  for (const n of ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]) write(dir, `app/backend/src/${n}.ts`, filler);
+  write(dir, ".sdlc/proposals/build-slice-1.md", "---\ngate: G3\n---\n\n# Does slice 1 hold?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, "build-slice-1", "product-owner", { tier: "STANDARD", gate: "G3" });
+  const notice = /\[(\d+) changed file\(s\) not shown[^\]]*\]/.exec(prompt);
+  assert.ok(notice, "the cut is marked");
+  assert.match(notice[0], /app\/backend\/src\/foxtrot\.ts/, "the file that was cut is named, not counted");
+  assert.match(prompt, /[Rr]ead (them|it) on the branch/, "and the ruler is told where to find it");
+});
+
+// The verify result is the evidence a build ruling turns on: it says what the acceptance
+// suite established about the application on this branch, and it is what an approval is
+// refused without. Reaching the ruler only because it happens to be a changed file makes
+// it the first thing a large diff drops.
+test("a build ruling prompt carries the verify verdict, its rows and its reasons even when the diff is cut", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], dir);
+  const filler = "a line of ordinary changed application code\n".repeat(4000);
+  for (const n of ["alpha", "bravo", "charlie", "delta", "echo"]) write(dir, `app/backend/src/${n}.ts`, filler);
+  write(dir, "tests/results/new/slice-1.json", JSON.stringify({
+    slice: 1, proposal: "build-slice-1", app_tree: "0".repeat(40), at: "2026-09-08T00:00:00.000Z",
+    verdict: "unbound",
+    rows: [
+      { id: "R-1.1", result: "pass", tests: [{ title: "a criterion that was met", status: "passed" }] },
+      { id: "R-1.2", result: "unbound", tests: [{ title: "a criterion nothing could exercise", status: "failed", error: "Error: unbound: signIn.reviewer — the surface offers no way to sign in" }] },
+    ],
+  }, null, 2) + "\n");
+  write(dir, ".sdlc/proposals/build-slice-1.md", "---\ngate: G3\n---\n\n# Does slice 1 hold?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, "build-slice-1", "product-owner", { tier: "STANDARD", gate: "G3" });
+
+  assert.match(prompt, /further changed file\(s\) not shown|truncated/, "the diff really is cut in this prompt");
+  assert.match(prompt, /## Verify result/, "the evidence has a section of its own");
+  assert.match(prompt, /unbound/);
+  assert.match(prompt, /R-1\.1/);
+  assert.match(prompt, /R-1\.2/);
+  assert.match(prompt, /the surface offers no way to sign in/, "the adapter's own reason reaches the ruler");
+  // The result was recorded against a different application tree than the branch carries.
+  assert.match(prompt, /changed since/);
+  // An approval is refused on anything but a current pass, and the ruler is told so.
+  assert.match(prompt, /return or an escalation/);
+});
+
+test("a build proposal with no verify result on its branch says so, and a spec proposal has no such section", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/build-slice-2"], dir);
+  write(dir, "app/backend/src/content.ts", "export const findPage = (slug: string) => slug;\n");
+  write(dir, ".sdlc/proposals/build-slice-2.md", "---\ngate: G3\n---\n\n# Does slice 2 hold?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "build slice 2"], dir);
+  const built = await buildPersonaPrompt(dir, "build-slice-2", "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.match(built, /## Verify result/);
+  assert.match(built, /no verify result/i);
+  git(["checkout", "-q", "main"], dir);
+
+  git(["checkout", "-q", "-b", "proposal/derive-tests-applications"], dir);
+  write(dir, "tests/acceptance/applications/R-1.1.spec.ts", "// @R-1.1 v1\n");
+  write(dir, ".sdlc/proposals/derive-tests-applications.md", "---\ngate: G3\n---\n\n# Do these tests follow?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "derive tests"], dir);
+  const derived = await buildPersonaPrompt(dir, "derive-tests-applications", "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.ok(!derived.includes("## Verify result"), "a proposal that is not a build has no verify result to be shown");
+});
+
+test("a verify result far larger than its section is summarised rather than allowed to spend the budget", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], dir);
+  const rows = [];
+  for (let i = 1; i <= 300; i++) {
+    rows.push({
+      id: `R-1.${i}`, result: i % 3 === 0 ? "fail" : "pass",
+      tests: [{ title: `criterion ${i}`, status: i % 3 === 0 ? "failed" : "passed", error: i % 3 === 0 ? `Error: ${"a very long browser stack trace line ".repeat(200)}` : undefined }],
+    });
+  }
+  write(dir, "tests/results/new/slice-1.json", JSON.stringify({
+    slice: 1, proposal: "build-slice-1", app_tree: "0".repeat(40), at: "2026-09-08T00:00:00.000Z", verdict: "fail", rows,
+  }, null, 2) + "\n");
+  write(dir, "app/backend/src/content.ts", "export const findPage = (slug: string) => slug;\n");
+  write(dir, ".sdlc/proposals/build-slice-1.md", "---\ngate: G3\n---\n\n# Does slice 1 hold?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, "build-slice-1", "product-owner", { tier: "STANDARD", gate: "G3" });
+  const section = prompt.slice(prompt.indexOf("## Verify result"), prompt.indexOf("## Diff summary"));
+  assert.ok(section.length < 20000, `the section is bounded (was ${section.length})`);
+  assert.match(section, /100 criteria did not pass|did not pass/);
+  assert.match(prompt, /export const findPage/, "the application is still shown after it");
 });
