@@ -186,6 +186,18 @@ function approvalFormGuidance(verb, line) {
     + " return the proposal and keep the condition, or approve and leave it off. Which you mean is the ruling.";
 }
 
+// The words for an approval the branch holds no current passing verify result for, taken
+// from `buildVerified`'s own account of what is missing. Like the pairing above this is not
+// a line to rewrite: the evidence is a fact about the branch rather than about how the
+// ruling was written down, and what is asked for is which ruling the ruler means now that
+// an approval is not one of them. Both remaining verdicts are named, and both were already
+// open to it whatever the evidence said (`0022`).
+function approvalEvidenceGuidance(reason) {
+  return `${reason}. An approval is recorded only against a current passing verify result, so this one cannot be:`
+    + " return the proposal and keep your findings as its conditions, or escalate."
+    + " Which you mean is the ruling.";
+}
+
 function unknownRefGuidance(ref, open) {
   const list = open.length
     ? `The conditions still open are: ${open.map((c) => `${c.ref} (${JSON.stringify(collapse(c.text))})`).join("; ")}.`
@@ -306,10 +318,9 @@ export function assertAccountedRulable(projectDir, name, verdict, conditions) {
   if (unknown) throw new Error(withRulingPreserved(`rule ${name}: ${unknownRefGuidance(unknown.ref, open)}`, verdict, conditions));
 }
 
-// The first defect above a second turn can answer, checked in the order the hard asserts
-// below apply them and reporting only the first, so the re-prompt always names the line the
-// refusal would have named. One re-prompt turn, the same ceiling the unparsed-conditions
-// path in `ruleByAgent` holds itself to.
+// The first defect in a ruling's conditions that a second turn can answer, checked in the
+// order the hard asserts below apply them and reporting only the first, so the re-prompt
+// always names the line the refusal would have named.
 //
 // Two kinds of defect are read here and they are answered differently. Most are formatting
 // slips — a verb used without its reason, a plain line naming a path outside the stage's
@@ -349,6 +360,33 @@ function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
   return null;
 }
 
+// Every defect a second turn can answer, in the order the refusals below apply them, so the
+// re-prompt always names what the refusal would have named.
+//
+// One re-prompt covers all of them together rather than one apiece. A ruling gets a second
+// turn, not a second turn per guard: that is the ceiling the unparsed-conditions path set
+// and the reason it set it — a reply that gets it wrong twice is no longer making a slip,
+// and a batch running unattended must not turn one stuck proposal into an unbounded retry.
+//
+// The conditions are read only where they are free text. Where a closed grammar owns them
+// the stage that owns the grammar is what reads them, and `grammar.unparsed` above has
+// already had its own turn on them.
+function firstRepromptableDefect(projectDir, name, verdict, conditions, { executable, onEscalation }) {
+  const condition = executable ? null : firstFixableConditionDefect(projectDir, name, verdict, conditions);
+  if (condition) return condition;
+  // The evidence an approval stands on, read here for the same reason the pairing above is:
+  // the ruler produced a verdict, a rationale and a set of conditions, and refusing throws
+  // all of it away over a fact the ruler can be told and answer in one more turn. What is
+  // quoted back is the evidence, and what is asked for is a verdict the evidence supports.
+  // An approval on a standing escalation is exempt here exactly as it is in the guard: the
+  // absent result is what the escalation was raised about.
+  if (verdict === "approve" && !onEscalation) {
+    const verified = buildVerified(projectDir, name);
+    if (!verified.ok) return { kind: "approval-evidence", reason: verified.reason };
+  }
+  return null;
+}
+
 // The sentence a persona is asked to fix, in the same words the throw would have used.
 function defectGuidance(defect) {
   if (defect.kind === "overreach") return overreachGuidance(defect.line);
@@ -356,6 +394,7 @@ function defectGuidance(defect) {
   if (defect.kind === "accounted") return accountedGuidance(defect.line);
   if (defect.kind === "unknown-ref") return unknownRefGuidance(defect.ref, defect.open);
   if (defect.kind === "approval-form") return approvalFormGuidance(defect.verb, defect.line);
+  if (defect.kind === "approval-evidence") return approvalEvidenceGuidance(defect.reason);
   return deliverableGuidance(defect);
 }
 
@@ -377,20 +416,46 @@ const REPROMPT_CLOSING = {
     "the JSON block as before. A reply that approves and still carries the condition is refused, and nothing",
     "of the ruling is recorded.",
   ],
+  evidence: [
+    "Rule again, and give the verdict you mean. Keep the rest of the ruling exactly as it was, and finish",
+    "with the JSON block as before. A reply that approves again is refused, and nothing of the ruling is",
+    "recorded.",
+  ],
 };
 
-function conditionDefectReprompt(prompt, verdict, defect) {
-  const choosing = defect.kind === "approval-form";
+// The heading the second turn reads, the closing it is given, and the line a person watching
+// a batch sees. A defect with a rewrite is one line to fix and the rest of the ruling to
+// leave alone; a verdict at odds with a condition form or with the evidence has no rewrite,
+// because the two ways out are two verdicts.
+const REPROMPT_SHAPE = {
+  "approval-form": {
+    closing: "choose",
+    heading: "Your previous reply approved and asked for another artifact to be changed",
+    said: "the first reply approved and asked for another artifact to be changed",
+  },
+  "approval-evidence": {
+    closing: "evidence",
+    heading: "Your previous reply approved a proposal with no passing verify result",
+    said: "the first reply approved with no passing verify result",
+  },
+};
+const REWRITE_SHAPE = {
+  closing: "rewrite",
+  heading: "Your previous reply had a condition this stage cannot carry out",
+  said: "the first reply's condition could not be carried out",
+};
+const repromptShape = (defect) => REPROMPT_SHAPE[defect.kind] ?? REWRITE_SHAPE;
+
+function defectReprompt(prompt, verdict, defect) {
+  const shape = repromptShape(defect);
   return [
     prompt,
     "",
-    choosing
-      ? "## Your previous reply approved and asked for another artifact to be changed"
-      : "## Your previous reply had a condition this stage cannot carry out",
+    `## ${shape.heading}`,
     "",
     `You ruled ${verdict}. ${defectGuidance(defect)}`,
     "",
-    ...REPROMPT_CLOSING[choosing ? "choose" : "rewrite"],
+    ...REPROMPT_CLOSING[shape.closing],
   ].join("\n");
 }
 
@@ -646,7 +711,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
     // escalation already on the branch is the record of.
     const escalation = standingEscalation(projectDir, name);
     assertApprovalEvidence(projectDir, name, verdict,
-      Boolean(escalation) && by === g.escalate_to && escalation.by !== by);
+      Boolean(escalation) && by === g.escalate_to && escalation.by !== by, conditions ?? []);
     const heldBy = by.startsWith("agent:") ? "agent" : "human";
     const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, conditions, executable });
     return { gate, verdict, heldBy, note, conditions: conditions ?? [], ...requests };
@@ -782,10 +847,11 @@ function buildVerifiedOnBranch(projectDir, branch, name) {
 //
 // Called once the verdict is in hand and before anything about the ruling is written, so
 // a refusal leaves the proposal exactly as open as it was.
-function assertApprovalEvidence(projectDir, name, verdict, onEscalation) {
+function assertApprovalEvidence(projectDir, name, verdict, onEscalation, conditions) {
   if (verdict !== "approve" || onEscalation) return;
   const verified = buildVerified(projectDir, name);
-  if (!verified.ok) throw new Error(`rule ${name}: ${verified.reason}`);
+  if (!verified.ok)
+    throw new Error(withRulingPreserved(`rule ${name}: ${approvalEvidenceGuidance(verified.reason)}`, verdict, conditions));
 }
 
 // The agent path: no human types --by approve|return. A persona brief is handed to a
@@ -950,30 +1016,27 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // still land on one of them; refusing outright throws away a verdict, a rationale and
     // every other condition over a single line. A reply that rules `escalate` this time is
     // handled the same way it would have been had it done so first.
-    if (!executable) {
-      const defect = firstFixableConditionDefect(projectDir, name, verdict, conditions ?? []);
-      if (defect) {
-        const guidance = defectGuidance(defect);
-        // The console line a person watching a batch run needs, the moment the re-prompt
-        // fires rather than only afterward: what the first reply got wrong, in the same
-        // words the persona is being asked to fix.
-        const wrong = defect.kind === "approval-form"
-          ? "the first reply approved and asked for another artifact to be changed"
-          : "the first reply's condition could not be carried out";
-        console.log(`${name}: re-asking once — ${wrong}. ${guidance}`);
-        const next = await askOnce(conditionDefectReprompt(prompt, verdict, defect));
-        metrics = sumMetrics(metrics, next.metrics);
-        reprompt = `You ruled ${verdict}. ${guidance}`;
-        ({ verdict, rationale, conditions } = next);
-        if (verdict === "escalate") {
-          writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
-          return { verdict, rationale, escalated: true, gate, escalateTo: g.escalate_to, reprompted: true };
-        }
+    const defect = firstRepromptableDefect(projectDir, name, verdict, conditions ?? [], { executable, onEscalation: ruleEscalation });
+    if (defect) {
+      const guidance = defectGuidance(defect);
+      // The console line a person watching a batch run needs, the moment the re-prompt
+      // fires rather than only afterward: what the first reply got wrong, in the same
+      // words the persona is being asked to fix.
+      console.log(`${name}: re-asking once — ${repromptShape(defect).said}. ${guidance}`);
+      const next = await askOnce(defectReprompt(prompt, verdict, defect));
+      metrics = sumMetrics(metrics, next.metrics);
+      reprompt = `You ruled ${verdict}. ${guidance}`;
+      ({ verdict, rationale, conditions } = next);
+      if (verdict === "escalate") {
+        writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
+        return { verdict, rationale, escalated: true, gate, escalateTo: g.escalate_to, reprompted: true };
       }
-      // The final word, whether or not a re-prompt was tried: a defect still present here
-      // — the same one, or a different one the rewrite introduced — refuses the ruling,
-      // exactly as it always did. Nothing about what these four refuse has changed; only
-      // the chance to answer the one line that sinks a ruling has been added in front of it.
+    }
+    // The final word, whether or not a re-prompt was tried: a defect still present here —
+    // the same one, or a different one the rewrite introduced — refuses the ruling, exactly
+    // as it always did. Nothing about what these five refuse has changed; only the chance to
+    // answer what would otherwise sink an honest ruling has been added in front of them.
+    if (!executable) {
       assertOverreachRulable(name, verdict, conditions ?? []);
       assertAddressedRulable(name, verdict, conditions ?? []);
       assertDeliverableRulable(name, verdict, conditions ?? []);
@@ -983,7 +1046,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // whether it applies at all. By this point the typecheck has run and the ruling turn has
     // answered, both read-only against a tree asserted clean; no gate file, no proposal page,
     // no commit and no merge has been written for this ruling.
-    assertApprovalEvidence(projectDir, name, verdict, ruleEscalation);
+    assertApprovalEvidence(projectDir, name, verdict, ruleEscalation, conditions ?? []);
 
     // The ruling has to land in the proposal page's own commit, not a follow-up one, so
     // it is appended and written before `commitRuling` stages and commits.

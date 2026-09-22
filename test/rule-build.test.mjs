@@ -415,3 +415,86 @@ test("a person in the gate seat is refused the same undeliverable condition with
   const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
   assert.deepEqual(gate.conditions, [OK_CONDITION, CORRECTED_CONDITION]);
 });
+
+// An approval the branch holds no passing result for is the verdict and the evidence
+// disagreeing about what was just ruled — the same shape as a verdict carrying a condition
+// form it may not (`0028`, `0036`). The pipeline records neither claim, so the ruler is
+// asked once which of the two it means rather than losing a turn's rationale over it.
+test("an approval with no passing result is re-prompted once, and the corrected ruling is what lands", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "unbound" });
+  replyWith(t, [
+    { verdict: "approve", rationale: "the route reads correctly and I would accept it", conditions: [] },
+    { verdict: "return", rationale: "nothing the slice claims was exercised", conditions: ["bind what the suite could not reach"] },
+  ]);
+  const { value: r, lines } = await said(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }));
+  assert.equal(r.verdict, "return");
+  assert.equal(r.reprompted, true);
+  const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.equal(gate.verdict, "return");
+  assert.deepEqual(gate.conditions, ["bind what the suite could not reach"]);
+  assert.match(gate.reprompt, /An approval is recorded only against a current passing verify result/);
+  assert.equal(gate.turns, 2, "both turns are counted, not only the one that answered");
+  assert.match(lines, /re-asking once/);
+});
+
+// The other way out of the same re-prompt: the ruler holds that nothing here can be
+// exercised and hands the question up, which asserts nothing about the application and
+// needs no evidence.
+test("an approval with no passing result may escalate on the second turn", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "unbound" });
+  replyWith(t, [
+    { verdict: "approve", rationale: "it looks right to me", conditions: [] },
+    { verdict: "escalate", rationale: "nothing here can be exercised and I cannot tell whether the application is at fault", conditions: [] },
+  ]);
+  const r = await said(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }));
+  assert.equal(r.value.escalated, true);
+  assert.equal(r.value.reprompted, true);
+  const gate = parseYaml(git(["show", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d));
+  assert.equal(gate.verdict, "escalated");
+  assert.equal(gate.turns, 2);
+});
+
+// The guard is unchanged: a second reply that still approves is refused, and the refusal
+// shows the whole of what the ruling produced rather than the evidence line alone.
+test("an approval still without a passing result after the re-prompt is refused, with the ruling shown", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "unbound" });
+  const held = "the results list still has no accessible name";
+  replyWith(t, [
+    { verdict: "approve", rationale: "it looks right to me", conditions: [held] },
+    { verdict: "approve", rationale: "it still looks right to me", conditions: [held] },
+  ]);
+  let thrown;
+  await said(async () => {
+    await assert.rejects(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }), (e) => { thrown = e; return true; });
+  });
+  assert.match(thrown.message, /did not pass verify/);
+  assert.match(thrown.message, /return the proposal and keep your findings as its conditions, or escalate/);
+  assert.match(thrown.message, /verdict: approve/);
+  assert.ok(thrown.message.includes(held), "the condition the ruling produced is shown too");
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false, "nothing was ruled");
+  assert.equal(gitOk(["cat-file", "-e", "main:app/index.ts"], d), false, "and nothing was merged");
+});
+
+// The human seat reads the same sentence. There is no turn to redo, so there is no
+// re-prompt; what the refusal owes a person is the whole ruling back, ready to retype.
+test("a person's approval with no passing result is refused with the same guidance and the whole ruling", (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "unbound" });
+  const held = "the results list still has no accessible name";
+  let thrown;
+  assert.throws(
+    () => rule(d, "build-slice-1", "approve", { by: "tech-lead", note: "looks fine", conditions: [held] }),
+    (e) => { thrown = e; return true; },
+  );
+  assert.match(thrown.message, /did not pass verify/);
+  assert.match(thrown.message, /return the proposal and keep your findings as its conditions, or escalate/);
+  assert.match(thrown.message, /verdict: approve/);
+  assert.ok(thrown.message.includes(held));
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false);
+});
