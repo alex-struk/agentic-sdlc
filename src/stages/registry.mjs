@@ -37,7 +37,7 @@ import { calibrate } from "./calibrate.mjs";
 // them without importing the registry itself, which imports every stage and would make
 // that a cycle. Re-exported below so every existing caller of these four names from
 // `registry.mjs` keeps working unchanged.
-import { addressedElsewhereNote, isReopening, nextProposalName, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, splitRulingConditions, withOpenRequests, highestRulingNumber } from "./proposals.mjs";
+import { addressedElsewhereNote, isReopening, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, splitRulingConditions, withOpenRequests, highestRulingNumber } from "./proposals.mjs";
 import { build } from "./build.mjs";
 import { verify } from "./verify.mjs";
 
@@ -1023,15 +1023,26 @@ function findReturnedDeriveTestsRuling(projectDir, domain) {
 // run. `branchCommit` is read before that rename, from the still-live `proposal/<name>`
 // ref, so it names the commit regardless of what the branch is called by the time
 // `materialise` reads it.
+// No returned ruling is not the only reason there is nothing to revise from: a candidate
+// name may carry a proposal nobody has ruled at all yet, open and waiting at its own
+// gate. That is a different obstacle from a missing ruling — the operator's next step is
+// to rule it, not to produce one from nothing — so it is checked for and named
+// separately once `requestedRevision` also comes up empty.
 function checkDeriveTestsRevisionSource(projectDir, ctx) {
   const id = "derive-tests-revise-source";
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
   const found = findReturnedDeriveTestsRuling(projectDir, ctx.domain);
   if (!found) {
     const requested = requestedRevision(projectDir, "derive-tests");
-    if (!requested) return { id, ok: false, messages: [`derive-tests --revise: no returned ruling for ${ctx.domain} to revise from`] };
-    ctx.revision = requested;
-    return { id, ok: true, messages: [] };
+    if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }
+    const open = deriveTestsRevisionCandidates(projectDir, ctx.domain).find((name) => openProposalOn(projectDir, name, `proposal/${name}`));
+    if (open) {
+      return {
+        id, ok: false,
+        messages: [`derive-tests --revise: proposal ${open} is open and awaiting a ruling at G3; rule it (or delete the branch), then revise ${ctx.domain} again`],
+      };
+    }
+    return { id, ok: false, messages: [`derive-tests --revise: no returned ruling for ${ctx.domain} to revise from`] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
   ctx.revision = withOpenRequests(projectDir, "derive-tests", { ...found, branchCommit });
@@ -1926,25 +1937,31 @@ function followUpRulingsRead(read, domain) {
   return read.filter((n) => re.test(n)).length;
 }
 
+// The proposal names a returned archaeology ruling for one domain can be found under,
+// highest follow-up first and the archaeology proposal itself last — the order a
+// follow-up's return, being the more recent word on the domain, should be read in.
+// Shared by `findReturnedRuling` below and by `checkRevisionSource`'s own search for an
+// open (unruled) proposal once no returned one turns up.
+function archaeologyRevisionCandidates(projectDir, domain) {
+  const followUpRefs = gitOk(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir).split("\n").filter(Boolean)
+    : [];
+  const re = new RegExp(`^proposal/ratify-${escapeRe(domain)}-(\\d+)$`);
+  const followUpNumbers = followUpRefs.map((b) => re.exec(b)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
+  return [...followUpNumbers.map((n) => followUpName(domain, n)), ratifyGateName(domain)];
+}
+
 // Which returned ruling `--revise` acts on when a domain has more than one candidate:
 // the highest-numbered follow-up if any follow-up was returned, else the archaeology
 // proposal itself. A follow-up's return is always the more recent word on the domain —
 // follow-ups are opened and ruled in order, so a higher number can only exist because an
 // earlier one (or the archaeology ruling before all of them) already resolved.
 function findReturnedRuling(projectDir, domain) {
-  const followUpRefs = gitOk(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir)
-    ? git(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/ratify-${domain}-*`], projectDir).split("\n").filter(Boolean)
-    : [];
-  const re = new RegExp(`^proposal/ratify-${escapeRe(domain)}-(\\d+)$`);
-  const followUpNumbers = followUpRefs.map((b) => re.exec(b)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
-  for (const n of followUpNumbers) {
-    const name = followUpName(domain, n);
+  for (const name of archaeologyRevisionCandidates(projectDir, domain)) {
     const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
     if (found) return { name, branch: `proposal/${name}`, ...found };
   }
-  const archName = ratifyGateName(domain);
-  const found = returnedRulingOn(projectDir, archName, `proposal/${archName}`);
-  return found ? { name: archName, branch: `proposal/${archName}`, ...found } : null;
+  return null;
 }
 
 // `archaeology --revise`'s own pre-check: is there a returned ruling to revise from at
@@ -1954,15 +1971,27 @@ function findReturnedRuling(projectDir, domain) {
 // deleting the spent branch (`recordReturnOnMain`) happens only on a real run — `ctx`
 // carries `dryRun` (set by `runStage` before `preChecks` is called) for exactly this,
 // so a dry run leaves the branch and `main` exactly as it found them.
+//
+// No returned ruling is not the only reason there is nothing to revise from: a candidate
+// name may carry a proposal nobody has ruled at all yet, open and waiting at its own
+// gate. That is a different obstacle from a missing ruling — the operator's next step is
+// to rule it, not to produce one from nothing — so it is checked for and named
+// separately once `requestedRevision` also comes up empty.
 function checkRevisionSource(projectDir, ctx) {
   const id = "archaeology-revise-source";
   if (!ctx.revise || !ctx.domain) return { id, ok: true, messages: [] };
   const found = findReturnedRuling(projectDir, ctx.domain);
   if (!found) {
     const requested = requestedRevision(projectDir, "archaeology");
-    if (!requested) return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
-    ctx.revision = requested;
-    return { id, ok: true, messages: [] };
+    if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }
+    const open = archaeologyRevisionCandidates(projectDir, ctx.domain).find((name) => openProposalOn(projectDir, name, `proposal/${name}`));
+    if (open) {
+      return {
+        id, ok: false,
+        messages: [`archaeology --revise: proposal ${open} is open and awaiting a ruling at G1; rule it (or delete the branch), then revise ${ctx.domain} again`],
+      };
+    }
+    return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
   }
   ctx.revision = withOpenRequests(projectDir, "archaeology", found);
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G1" });

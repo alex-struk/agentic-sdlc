@@ -25,7 +25,10 @@ not have fails before any workspace is built.
 already opened for this slice (`build-slice-<n>`, `build-slice-<n>-2`, ...), newest first, it looks
 for one whose own branch carries a `return` gate file — written either by a reviewer's ruling or by
 `verify` itself (0011 §2) — and revises from that one. No returned ruling for the slice fails the
-pre-check with `build --revise: no returned ruling for slice <n> to revise from`.
+pre-check with `build --revise: no returned ruling for slice <n> to revise from`. If one of those
+same proposals is instead sitting open and unruled — nobody has judged it at all yet — that is a
+different obstacle and reads differently: `build --revise: proposal <name> is open and awaiting a
+ruling at G3; rule it (or delete the branch), then revise slice <n> again`.
 
 Once found, the returned gate file (and proposal page, if there is one) is copied onto `main` and
 the spent branch is kept, renamed to `returned/<name>` — the revision's workspace overlays `app/`

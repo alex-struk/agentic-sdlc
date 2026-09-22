@@ -203,7 +203,10 @@ among `proposal/derive-tests-<d>` (a full run), every `proposal/derive-tests-<d>
 revision of it), and every `proposal/derive-tests-<d>-stale-<n>` (a `--stale` re-run), the one whose
 gate file records `verdict: return` and has not already landed on `main`. An older ruling at the
 same path does not count as recording a newer return from a full rerun. None found fails the
-pre-check with `derive-tests --revise: no returned ruling for <d> to revise from`.
+pre-check with `derive-tests --revise: no returned ruling for <d> to revise from`. If one of those
+candidates is instead sitting open and unruled — nobody has judged it at all yet — that is a
+different obstacle and reads differently: `derive-tests --revise: proposal <name> is open and
+awaiting a ruling at G3; rule it (or delete the branch), then revise <d> again`.
 
 On a real run, once found, that branch's gate file and proposal page are copied onto `main`,
 committed as `record(G3): <name> returned`, and the branch is **renamed** to `returned/<name>` —
@@ -291,6 +294,10 @@ previous run is refused before a workspace is even materialised.
 - `--revise` with nothing returned to revise from fails `derive-tests-revise-source` with
   `derive-tests --revise: no returned ruling for <d> to revise from` (see "Revising after a return"
   above).
+- `--revise` where a candidate proposal is open and unruled instead fails the same check with
+  `derive-tests --revise: proposal <name> is open and awaiting a ruling at G3; rule it (or delete
+  the branch), then revise <d> again` — a different obstacle, needing a ruling rather than a fresh
+  derivation.
 - `--revise` whose agent turn changes a spec file no condition named fails `derive-tests-revise-drift`,
   naming the file — the return is still recorded on `main` and the branch still renamed by that
   point, since both are pre-check side effects that ran before the agent turn; only the fresh

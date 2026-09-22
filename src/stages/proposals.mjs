@@ -114,6 +114,19 @@ export function returnedRulingOn(projectDir, name, branch) {
   return { rationale: gate.rationale ?? gate.note ?? "", ...splitRulingConditions(gate, name) };
 }
 
+// Whether a named proposal is open right now: its branch exists and nobody has ruled it
+// at all, on the branch or on `main`. A `--revise` pre-check needs this apart from
+// `returnedRulingOn`'s `null`, which also covers a name that never existed and one whose
+// ruling was something other than `return` (approved, escalated) — three different
+// situations, and only this one means "a ruling is pending, go rule it" rather than
+// "there is nothing here to revise from".
+export function openProposalOn(projectDir, name, branch) {
+  if (!gitOk(["rev-parse", "--verify", branch], projectDir)) return false;
+  const gatePath = `.sdlc/gates/${name}.yaml`;
+  return !gitOk(["cat-file", "-e", `${branch}:${gatePath}`], projectDir)
+    && !gitOk(["cat-file", "-e", `main:${gatePath}`], projectDir);
+}
+
 // A ruling's conditions as the stage being asked to revise should receive them:
 // `conditions` are the ones it is to act on, and `addressedElsewhere` accounts by stage
 // for the ones it is not. A stage handed a condition addressed to another stage either

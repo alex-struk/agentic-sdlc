@@ -105,6 +105,42 @@ test("archaeology --revise: with no returned ruling, fails the pre-check up fron
   }
 });
 
+// The obstacle here is not the same as "no returned ruling": a follow-up proposal exists
+// and is sitting open at G1, waiting on a ruling nobody has given it yet. The operator's
+// next step is to rule it, not to somehow produce a return from nothing, so the pre-check
+// has to say which situation this is.
+test("archaeology --revise: an open, unruled follow-up is named as pending a ruling, not as a missing one", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-revise-open-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    const archaeologyRun = await runStage(dir, "archaeology", { domain: "applications" });
+    assert.equal(archaeologyRun.ok, true, JSON.stringify(archaeologyRun.messages));
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    const approved = rule(dir, "archaeology-applications", "approve", { by: "tech-lead" });
+    assert.equal(approved.verdict, "approve");
+
+    const ratifyRun = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(ratifyRun.ok, true, JSON.stringify(ratifyRun.messages));
+    assert.equal(ratifyRun.proposal?.name, "ratify-applications-1", "the fee criterion stayed inferred, so a follow-up opened");
+    // Left open deliberately: nobody has ruled it.
+
+    const r = await runStage(dir, "archaeology", { domain: "applications", revise: true });
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, [
+      "archaeology --revise: proposal ratify-applications-1 is open and awaiting a ruling at G1; rule it (or delete the branch), then revise applications again",
+    ]);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /run\(archaeology\): pre-checks failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("archaeology --revise --dry-run: prints the return's rationale, and leaves the branch and main untouched", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-revise-dryrun-"));
   const { dir, prevEgress } = await makeSourcesProject(tmp);

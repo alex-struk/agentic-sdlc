@@ -206,6 +206,33 @@ test("derive-tests --revise: with no returned ruling, fails the pre-check up fro
   }
 });
 
+// The obstacle here is not the same as "no returned ruling": the proposal exists and is
+// sitting open at G3, waiting on a ruling nobody has given it yet. The operator's next
+// step is to rule it, not to produce a return from nothing.
+test("derive-tests --revise: an open, unruled proposal is named as pending a ruling, not as a missing one", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-open-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    const first = await runStage(dir, "derive-tests", { domain: "applications" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    // Left open deliberately: nobody has ruled it.
+
+    const r = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, [
+      "derive-tests --revise: proposal derive-tests-applications is open and awaiting a ruling at G3; rule it (or delete the branch), then revise applications again",
+    ]);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("derive-tests --revise: an older ruling with the same name on main does not hide a new return", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-revise-reused-"));
   const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);

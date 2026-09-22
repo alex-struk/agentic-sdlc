@@ -81,6 +81,24 @@ test("a build run is refused without a slice, or with one the plan does not have
   assert.ok(build.preChecks(d, { slice: 1 }).every((c) => c.ok));
 });
 
+test("build --revise: no proposal at all for the slice reads as no returned ruling", (t) => {
+  const d = gitProject(t);
+  const fail = build.preChecks(d, { slice: 1, revise: true }).find((c) => !c.ok);
+  assert.equal(fail.messages[0], "build --revise: no returned ruling for slice 1 to revise from");
+});
+
+// The obstacle here is not the same as "no returned ruling": a proposal for this slice
+// exists and is sitting open at G3, waiting on a ruling nobody has given it yet. The
+// operator's next step is to rule it, not to produce a return from nothing, so the
+// pre-check has to say which situation this is rather than conflating the two.
+test("build --revise: an open, unruled proposal for the slice is named as pending a ruling, not as a missing one", (t) => {
+  const d = gitProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  run(["branch", "proposal/build-slice-1"]);
+  const fail = build.preChecks(d, { slice: 1, revise: true }).find((c) => !c.ok);
+  assert.equal(fail.messages[0], "build --revise: proposal build-slice-1 is open and awaiting a ruling at G3; rule it (or delete the branch), then revise slice 1 again");
+});
+
 test("the prompt carries the slice's own text and criteria, and nothing of another slice", (t) => {
   const d = gitProject(t);
   const ctx = { slice: 1, config: { targets: { new: { base_url: "http://localhost:8080", identity: "sandbox-idp" } }, project: { name: "p" } } };

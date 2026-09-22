@@ -140,7 +140,9 @@ revise from: among `proposal/archaeology-<d>` and every `proposal/ratify-<d>-<n>
 one whose gate file records `verdict: return` and has not already landed on `main` — the
 highest-numbered follow-up if more than one qualifies, otherwise the archaeology proposal itself.
 None found fails the pre-check with `archaeology --revise: no returned ruling for <d> to revise
-from`.
+from`. If one of those candidates is instead sitting open and unruled — nobody has judged it at
+all yet — that is a different obstacle and reads differently: `archaeology --revise: proposal
+<name> is open and awaiting a ruling at G1; rule it (or delete the branch), then revise <d> again`.
 
 On a real run, once found, that branch's gate file and proposal page are copied onto `main`,
 committed as `record(G1): <name> returned`, and the branch — never merged, since a return merges
@@ -232,6 +234,10 @@ routine.
   attempted.
 - `--revise` with no returned ruling to revise from: the pre-check fails with `archaeology
   --revise: no returned ruling for <d> to revise from` (see "Revising after a return" above).
+- `--revise` where a candidate proposal is open and unruled instead: the pre-check fails with
+  `archaeology --revise: proposal <name> is open and awaiting a ruling at G1; rule it (or delete
+  the branch), then revise <d> again` — a different obstacle from the one above, needing a ruling
+  rather than a fresh recovery (see "Revising after a return" above).
 - The agent session itself fails to run, or reports failure (turn limit, an error result): handled
   the same way every stage's agent-turn failure is (`docs/stages/run.md`) — no post-checks run,
   the turn's own text becomes the journal entry, and `run` returns `{ ok: false }`.

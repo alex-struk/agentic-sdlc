@@ -10,7 +10,7 @@ import { readText } from "../lib/fsx.mjs";
 import { changedPaths, git } from "../lib/git.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { readSlice, buildProposalBase, buildProposals } from "./slices.mjs";
-import { addressedElsewhereNote, nextProposalName, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, withOpenRequests } from "./proposals.mjs";
+import { addressedElsewhereNote, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, withOpenRequests } from "./proposals.mjs";
 import { skillPath } from "./shared.mjs";
 import { targetSettings } from "../sandbox/local.mjs";
 
@@ -53,10 +53,16 @@ function checkSliceOption(projectDir, ctx) {
   return { id, ok: true, messages: [] };
 }
 
+// No returned ruling is not the only reason there is nothing to revise from: a candidate
+// name may carry a proposal nobody has ruled at all yet, open and waiting at its own
+// gate. That is a different obstacle from a missing ruling — the operator's next step is
+// to rule it, not to produce one from nothing — so it is checked for and named
+// separately once `requestedRevision` also comes up empty.
 function checkBuildRevisionSource(projectDir, ctx) {
   const id = "build-revise-source";
   if (!ctx.revise || !ctx.buildSlice) return { id, ok: true, messages: [] };
-  for (const name of buildProposals(projectDir, ctx.slice)) {
+  const candidates = buildProposals(projectDir, ctx.slice);
+  for (const name of candidates) {
     const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
     if (!found) continue;
     ctx.revision = withOpenRequests(projectDir, "build", { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) });
@@ -65,6 +71,13 @@ function checkBuildRevisionSource(projectDir, ctx) {
   }
   const requested = requestedRevision(projectDir, "build");
   if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }
+  const open = candidates.find((name) => openProposalOn(projectDir, name, `proposal/${name}`));
+  if (open) {
+    return {
+      id, ok: false,
+      messages: [`build --revise: proposal ${open} is open and awaiting a ruling at G3; rule it (or delete the branch), then revise slice ${ctx.slice} again`],
+    };
+  }
   return { id, ok: false, messages: [`build --revise: no returned ruling for slice ${ctx.slice} to revise from`] };
 }
 
