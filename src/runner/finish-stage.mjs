@@ -68,6 +68,11 @@ export function checkProposalNotOpen(projectDir, stage, ctx) {
     // refuses to recreate a branch that already exists. Deleted here with the safe form
     // (`-d`, which itself refuses anything not fully merged into the current branch) so
     // an approved proposal's spent branch clears the way silently.
+    //
+    // A dry run reports the same "not open" a real run would find, without deleting
+    // anything: pruning the spent branch is the real run's own bookkeeping, and a
+    // preview that performed it would no longer be read-only.
+    if (ctx.dryRun) return null;
     if (gitOk(["branch", "-d", branch], projectDir)) return null;
     // `-d` refused, so the branch holds commits `main` does not — which for a ruled
     // proposal means a `return` or an `escalate`, whose ruling commit lives only on the
@@ -85,8 +90,15 @@ export function checkProposalNotOpen(projectDir, stage, ctx) {
 // same way a pre-check failure is recorded. Shared by `runStage`'s and `resume`'s own
 // pre-flight calls to `checkProposalNotOpen` so the message and commit read identically
 // no matter which one caught it.
-export function commitProposalStillOpen(projectDir, stageName, openProposal) {
+//
+// `dryRun` reports the identical message without writing anything: a dry run inspects
+// what a run would find, and this is one of the things it can find, but recording that
+// is the real run's job. Neither `resume` (which has no dry-run mode of its own) nor
+// `finishStage`'s own late check (reached only once a real run is already under way)
+// ever pass it.
+export function commitProposalStillOpen(projectDir, stageName, openProposal, { dryRun = false } = {}) {
   const message = `proposal ${openProposal} is still open; rule it (or delete the branch) before running ${stageName} again`;
+  if (dryRun) return { ok: false, messages: [message] };
   const runPath = appendRun(projectDir, `run ${stageName}: proposal ${openProposal} still open`);
   stageAll(projectDir, [relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${stageName}): proposal still open`], projectDir);

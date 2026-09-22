@@ -320,6 +320,32 @@ test("sdlc run archaeology --domain applications: the mock run opens proposal/ar
   }
 });
 
+// A `with-sources` stage's workspace is built by `ensureSources`, which clones the old
+// application's whole repository into `sources/old` the first time it runs — real disk
+// (and, outside a test, network) I/O that has nothing to do with what a dry run prints.
+// It used to run before the dry-run return existed to skip it, so `archaeology --dry-run`
+// paid for a clone every time. It is built only once a real run is confirmed now.
+test("sdlc run archaeology --domain applications --dry-run: prints the prompt and never clones the old application", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-dry-"));
+  const { dir, prevEgress } = await makeSourcesProject(tmp);
+  const logs = [];
+  const orig = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  try {
+    const headBefore = git(["rev-parse", "HEAD"], dir);
+    const r = await runStage(dir, "archaeology", { domain: "applications", dryRun: true });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(r.dryRun, true);
+    assert.ok(logs.some((l) => l.includes("Recover what the old application does")), logs.join(" | "));
+    assert.ok(!existsSync(join(dir, "sources")), "ensureSources must not have run at all");
+    assert.equal(git(["rev-parse", "HEAD"], dir), headBefore);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    console.log = orig;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("sdlc run archaeology --domain applications: a second run while the proposal is open is refused; ruling it lets a fresh run through", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-archaeology-rerun-"));
   const { dir, prevEgress } = await makeSourcesProject(tmp);

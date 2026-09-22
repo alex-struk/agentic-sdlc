@@ -323,11 +323,14 @@ the second, post-run check exists to catch.
 - **Invalid `.sdlc/config.yaml`**: throws listing every schema error.
 - **A pre-check fails**: `run` commits `run(<stage>): pre-checks failed` to the run record (so a
   later `run` is not blocked by this run's own leftover state) and returns `{ ok: false, messages
-  }` without materialising a workspace or starting a session.
+  }` without materialising a workspace or starting a session. On a dry run nothing is committed —
+  the same `messages` come back, unrecorded (`docs/decisions/0037`).
 - **A gated stage's proposal from a previous run is still open**: `run` commits `run(<stage>):
   proposal still open` to the run record and returns `{ ok: false, messages: ["proposal <name> is
   still open; rule it (or delete the branch) before running <stage> again"] }`, without
-  materialising a workspace or starting a session.
+  materialising a workspace or starting a session. On a dry run nothing is committed and, if the
+  open proposal is actually a spent one whose branch would otherwise be pruned, the branch is left
+  alone too — the same `messages` come back either way.
 - **A stage's `prepare` hook throws**: the workspace has already been materialised, but no agent
   turn has run. `run` commits `run(<stage>): prepare failed` to the run record with just that line
   staged and returns `{ ok: false, messages: [<the error's message>] }` — the same shape a failing

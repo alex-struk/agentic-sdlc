@@ -457,6 +457,98 @@ test("sdlc run --dry-run prints the prompt and leaves no trace on disk or in git
   }
 });
 
+// The defect this guards against: a dry run against a stage whose pre-checks fail used
+// to append a run record and commit it before ever reaching the dry-run return, so three
+// read-only pre-flight checks against a real project left stray commits on its `main`.
+// The pre-check failure still has to be reported — that is what a dry run is for — but
+// reporting it must cost nothing on disk or in git.
+test("sdlc run --dry-run on a stage with failing pre-checks commits nothing and leaves the repository byte-identical, but still reports the failure", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-dry-prefail-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "precheck-fail-dry",
+    title: "precheck fail dry",
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    proposal: () => null,
+    preChecks: () => [{ id: "always-fails", ok: false, messages: ["nope, and this is a dry run"] }],
+    postChecks: () => [],
+  });
+  try {
+    const headBefore = git(["rev-parse", "HEAD"], dir);
+    const logBefore = git(["log", "--oneline", "--all"], dir);
+    const treeBefore = readdirSync(join(dir, ".sdlc")).sort();
+
+    const r = await runStage(dir, "precheck-fail-dry", { dryRun: true });
+
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, ["nope, and this is a dry run"]);
+    // Byte-identical: the same commit, the same ref list, the same working tree, and no
+    // run record ever written for `sdlc resume` or the next `sdlc run` to trip over.
+    assert.equal(git(["rev-parse", "HEAD"], dir), headBefore);
+    assert.equal(git(["log", "--oneline", "--all"], dir), logBefore);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.deepEqual(readdirSync(join(dir, ".sdlc")).sort(), treeBefore);
+
+    // A second dry run against the same still-failing stage reports the same thing —
+    // there is no run record for it to have been unblocked by, because none was written.
+    const r2 = await runStage(dir, "precheck-fail-dry", { dryRun: true });
+    assert.equal(r2.ok, false);
+    assert.equal(git(["rev-parse", "HEAD"], dir), headBefore);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+// The same defect, on the other pre-flight write `checkProposalNotOpen` makes: a dry run
+// against a stage whose proposal is already open used to commit the "still open" run
+// record before the dry-run return existed to catch it. `commitProposalStillOpen` reports
+// the identical message without writing anything when asked for a dry run.
+test("sdlc run --dry-run on a stage with an open proposal reports it without committing", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-dry-open-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-run-dry-open-mock-"));
+  writeFileSync(join(mockDir, "gated-probe-dry.json"), JSON.stringify({
+    text: "wrote the probe file",
+    files: { "app/PROBE.md": "2026-09-06 the runner works\n" },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  registerStage({
+    name: "gated-probe-dry",
+    title: "gated probe dry",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: "G3",
+    collect: [],
+    implemented: true,
+    prompt: () => "write app/PROBE.md",
+    proposal: () => ({ name: "gated-probe-dry", question: "ok?", recommendation: "yes" }),
+    preChecks: () => [],
+    postChecks: () => [],
+  });
+  try {
+    const first = await runStage(dir, "gated-probe-dry");
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    assert.equal(first.proposal.branch, "proposal/gated-probe-dry");
+
+    const headBefore = git(["rev-parse", "HEAD"], dir);
+    const r = await runStage(dir, "gated-probe-dry", { dryRun: true });
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.messages, [
+      "proposal gated-probe-dry is still open; rule it (or delete the branch) before running gated-probe-dry again",
+    ]);
+    assert.equal(git(["rev-parse", "HEAD"], dir), headBefore);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("runStage passes --slice and --domain through to the stage's ctx", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-ctx-"));
   const { dir, prevEgress } = await makeProject(tmp);

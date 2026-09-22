@@ -102,6 +102,26 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   const stage = stageFor(name);
   if (!stage.implemented) throw new Error(`stage ${name} is not implemented yet`);
 
+  // The structural half of "a dry run writes nothing": `dryRunHead` is `main`'s commit
+  // before anything below runs, and `assertDryRunUntouched` (called at every point this
+  // function can return while `dryRun` is true) re-reads it and the tree's status,
+  // throwing loudly if either moved. It does not stop a write from happening — nothing
+  // outside git itself can — but it means a future change that lets one slip in ahead of
+  // a dry-run return breaks a test immediately, in this function, with a message that
+  // says what happened, rather than landing a stray commit on a real project's `main`
+  // for someone to find later. It cannot see a mutation outside the working tree and the
+  // current branch — a branch created or deleted elsewhere in the repository, a file
+  // written outside `projectDir` — which is why the writes below are also fixed at their
+  // source rather than left for this to catch.
+  const dryRunHead = dryRun ? git(["rev-parse", "HEAD"], projectDir) : null;
+  function assertDryRunUntouched() {
+    assertCleanTree(projectDir, `run ${name} --dry-run`);
+    const head = git(["rev-parse", "HEAD"], projectDir);
+    if (head !== dryRunHead) {
+      throw new Error(`run ${name} --dry-run: HEAD moved from ${dryRunHead} to ${head} — a dry run must commit nothing`);
+    }
+  }
+
   const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
   // `revise` and `dryRun` ride on `ctx` (rather than being passed as separate arguments)
@@ -148,13 +168,24 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   for (const r of pre) for (const w of r.warnings ?? []) console.warn(`warning: ${w}`);
   const preFail = pre.filter((r) => !r.ok);
   if (preFail.length) {
+    const messages = preFail.flatMap((r) => r.messages);
+    // A dry run reports exactly what a real run's pre-check failure reports — the same
+    // messages, the same `ok: false` — and nothing else: no run record, no commit. What
+    // made this a defect once is that the record below used to be written on every path,
+    // dry run included, so three read-only pre-flight checks against a real project left
+    // stray commits on its `main`. `assertDryRunUntouched` is the belt this return is
+    // already the suspenders for.
+    if (dryRun) {
+      assertDryRunUntouched();
+      return { ok: false, messages };
+    }
     // The pre-check failure itself has to land in the run record on disk, same as any
     // other run outcome — otherwise the next `sdlc run` dies at `assertCleanTree` on the
     // uncommitted record this one left behind.
     const runPath = appendRun(projectDir, `run ${name}: pre-checks failed`);
     stageAll(projectDir, [relative(projectDir, runPath)]);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): pre-checks failed`], projectDir);
-    return { ok: false, messages: preFail.flatMap((r) => r.messages) };
+    return { ok: false, messages };
   }
 
   // `again` is accepted here only for CLI symmetry with `resume --again`; it does not
@@ -162,7 +193,11 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   void again;
 
   const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
-  if (openProposal) return commitProposalStillOpen(projectDir, name, openProposal);
+  if (openProposal) {
+    const r = commitProposalStillOpen(projectDir, name, openProposal, { dryRun });
+    if (dryRun) assertDryRunUntouched();
+    return r;
+  }
 
   // `agent: false` (`ratify` and `calibrate`) means there is no agent turn at all: the
   // stage's work is mechanical and deterministic, so `stage.execute(projectDir, ctx)` runs in
@@ -180,6 +215,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   if (stage.agent === false) {
     if (dryRun) {
       console.log(`stage ${name}: agent: false — runs stage.execute(projectDir, ctx) directly, no agent session`);
+      assertDryRunUntouched();
       return { ok: true, dryRun: true };
     }
     // Awaited: `execute` is synchronous for `ratify` and returns a promise for
@@ -221,60 +257,72 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       merge: stage.revisionOverlayMerge?.(projectDir, ctx.domain),
     }
     : undefined;
-  const ws = materialise(projectDir, wsMode, { collect: collectPaths, context: contextPaths, ...(overlay ? { overlay } : {}) });
+  // `materialise` is not called here: building a workspace is itself a write — an
+  // ephemeral mode archives the committed tree with `git archive`, and `with-sources`
+  // (`ensureSources`) clones the old application's whole repository into
+  // `<projectDir>/sources` the first time it runs — and none of it is needed to print
+  // what a dry run prints. It is called below, once the dry-run return and the sign-in
+  // check are both behind us.
+  const skillDir = mkdtempSync(join(tmpdir(), `sdlc-skill-${name}-`));
   try {
-    const skillDir = mkdtempSync(join(tmpdir(), `sdlc-skill-${name}-`));
+    // The skill text an agent turn reads is stage- and run-specific, so it is written
+    // to its own scratch file rather than reused from disk.
+    const skillPath = join(skillDir, "SKILL.md");
+    writeText(skillPath, skillText(name));
+
+    // The scope note is appended by the runner rather than written into any stage's own
+    // prompt, so it is generated from the same two declarations the runner enforces and
+    // one cannot drift from the other. A stage prompt that lists something read out of a
+    // read-only path — the criteria a slice claims, read from the plan — is then followed
+    // by the statement that the path is not this stage's to change.
+    const scopeNote = workspaceScopeNote(wsMode, collectPaths, contextPaths);
+    const prompt = [stage.prompt(ctx), scopeNote].filter(Boolean).join("\n\n");
+    const mcpServers = stage.mcp?.(ctx, config);
+    const envVars = stage.env?.(ctx, config);
+    if (dryRun) {
+      console.log(prompt);
+      console.log(`skill: ${skillPath}`);
+      console.log(`workspace: ${wsMode}`);
+      // `prepare` writes real files, so it does not run on a dry run at all — this is
+      // the only account of it a dry run gives, and only for a stage that has one.
+      if (stage.prepare) console.log("prepare: skipped on dry run");
+      if (mcpServers) console.log(`mcp: ${Object.keys(mcpServers).join(", ")}`);
+      // Names only, never values: a dry run is printed to a terminal (or captured in a
+      // log) and `env` exists precisely to carry things like API keys into the session.
+      if (envVars && Object.keys(envVars).length) console.log(`env: ${Object.keys(envVars).join(", ")}`);
+      assertDryRunUntouched();
+      return { ok: true, dryRun: true };
+    }
+
+    // Whether this machine can sign in at all, asked before the stage rather than
+    // discovered inside it. A stage session is capable of running for the better part
+    // of an hour, and a credential already too old to refresh fails the same way at the
+    // end of that as at the start, having spent the entire budget to find out. A
+    // one-turn session against the same config home, the same binary and the same flags
+    // answers it for a fraction of a cent. What it cannot answer is whether the
+    // credential will still be good when a long stage finishes — nothing can, so a
+    // failure inside the turn still has to explain itself, which is what the advice
+    // carried on `runAgent`'s own result is for.
+    //
+    // Checked before `materialise` below for the same reason it is checked before
+    // everything else that costs something: a session that cannot sign in should not
+    // first pay for a workspace — an archive of the committed tree, or a clone of the
+    // whole old application — that a failed turn would throw away.
+    //
+    // Recorded and committed like a failed `prepare`: a run that stopped before its
+    // agent turn is a run, and leaving no trace of it is how "nothing happened" gets
+    // confused with "nothing was attempted".
     try {
-      // The skill text an agent turn reads is stage- and run-specific, so it is written
-      // to its own scratch file rather than reused from disk.
-      const skillPath = join(skillDir, "SKILL.md");
-      writeText(skillPath, skillText(name));
+      await preflightAuth();
+    } catch (e) {
+      const runPath = appendRun(projectDir, `run ${name}: authentication check failed`);
+      stageAll(projectDir, [relative(projectDir, runPath)]);
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): authentication check failed`], projectDir);
+      return { ok: false, messages: [e.message] };
+    }
 
-      // The scope note is appended by the runner rather than written into any stage's own
-      // prompt, so it is generated from the same two declarations the runner enforces and
-      // one cannot drift from the other. A stage prompt that lists something read out of a
-      // read-only path — the criteria a slice claims, read from the plan — is then followed
-      // by the statement that the path is not this stage's to change.
-      const scopeNote = workspaceScopeNote(wsMode, collectPaths, contextPaths);
-      const prompt = [stage.prompt(ctx), scopeNote].filter(Boolean).join("\n\n");
-      const mcpServers = stage.mcp?.(ctx, config);
-      const envVars = stage.env?.(ctx, config);
-      if (dryRun) {
-        console.log(prompt);
-        console.log(`skill: ${skillPath}`);
-        console.log(`workspace: ${wsMode}`);
-        // `prepare` writes real files, so it does not run on a dry run at all — this is
-        // the only account of it a dry run gives, and only for a stage that has one.
-        if (stage.prepare) console.log("prepare: skipped on dry run");
-        if (mcpServers) console.log(`mcp: ${Object.keys(mcpServers).join(", ")}`);
-        // Names only, never values: a dry run is printed to a terminal (or captured in a
-        // log) and `env` exists precisely to carry things like API keys into the session.
-        if (envVars && Object.keys(envVars).length) console.log(`env: ${Object.keys(envVars).join(", ")}`);
-        return { ok: true, dryRun: true };
-      }
-
-      // Whether this machine can sign in at all, asked before the stage rather than
-      // discovered inside it. A stage session is capable of running for the better part
-      // of an hour, and a credential already too old to refresh fails the same way at the
-      // end of that as at the start, having spent the entire budget to find out. A
-      // one-turn session against the same config home, the same binary and the same flags
-      // answers it for a fraction of a cent. What it cannot answer is whether the
-      // credential will still be good when a long stage finishes — nothing can, so a
-      // failure inside the turn still has to explain itself, which is what the advice
-      // carried on `runAgent`'s own result is for.
-      //
-      // Recorded and committed like a failed `prepare`: a run that stopped before its
-      // agent turn is a run, and leaving no trace of it is how "nothing happened" gets
-      // confused with "nothing was attempted".
-      try {
-        await preflightAuth();
-      } catch (e) {
-        const runPath = appendRun(projectDir, `run ${name}: authentication check failed`);
-        stageAll(projectDir, [relative(projectDir, runPath)]);
-        git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): authentication check failed`], projectDir);
-        return { ok: false, messages: [e.message] };
-      }
-
+    const ws = materialise(projectDir, wsMode, { collect: collectPaths, context: contextPaths, ...(overlay ? { overlay } : {}) });
+    try {
       // `stage.prepare` writes generated files into the workspace before the agent turn
       // sees it — the derive-tests and bind-adapter stages this runner now serves both
       // need something already sitting in the workspace for the agent to work from. It
@@ -295,10 +343,11 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
       // `stage.mcp` names MCP servers the agent turn is allowed to reach — written
       // (`writeMcpConfig`) to its own scratch file, removed with the rest of `skillDir`
-      // in the `finally` below, rather than to a project path, since it is run-specific
-      // and never any stage's own output. `--strict-mcp-config` (always passed) means
-      // this file is the *only* source of servers for the session; a stage that
-      // declares none passes no `mcpConfig` at all, and the session reaches none.
+      // in the outer `finally` below, rather than to a project path, since it is
+      // run-specific and never any stage's own output. `--strict-mcp-config` (always
+      // passed) means this file is the *only* source of servers for the session; a
+      // stage that declares none passes no `mcpConfig` at all, and the session reaches
+      // none.
       const mcpConfig = writeMcpConfig(skillDir, mcpServers);
 
       // Written only once the dry-run return above is behind us: a dry run makes no
@@ -337,10 +386,10 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       return await finishStage(projectDir, stage, ctx, r,
         ws.mode === "project" ? {} : { workspaceDir: ws.dir, recollect });
     } finally {
-      rmSync(skillDir, { recursive: true, force: true });
+      ws.cleanup();
     }
   } finally {
-    ws.cleanup();
+    rmSync(skillDir, { recursive: true, force: true });
   }
 }
 
