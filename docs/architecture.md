@@ -176,8 +176,9 @@ There is no database. All state is git plus files:
   per open decision, created by `sdlc propose` and merged into `main` by `sdlc rule approve`; a
   `return` verdict leaves its branch open for another round.
 - **`.sdlc/gates/<name>.yaml`** — one file per ruled proposal: which gate, the verdict, who ruled,
-  whether that ruling was agent-held or human, and when — plus, for an agent-held ruling, the
-  persona's own rationale and any conditions it attached.
+  which of three seats ruled it (`held_by`: a persona `agent`, a `human`, or the `runner` itself
+  for a verdict the pipeline worked out with no seat held and nobody asked), and when — plus, for
+  an agent-held ruling, the persona's own rationale and any conditions it attached.
 - **`.sdlc/journal/<NNN>-<stage>.md`** — one entry per stage agent turn, numbered in order, holding
   the agent's own account of what it did in its own words, with the turn's cost, turn count and
   session id recorded in front matter.

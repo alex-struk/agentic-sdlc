@@ -41,6 +41,9 @@ every `.sdlc/proposals/*.md`, every `.sdlc/runs/*.md`, `tests/acceptance/<domain
   | `Rulings cost` | The `cost` field of every gate file — what the persona turns that ruled proposals have cost. |
   | `Total cost` | Those two added together: everything this project has spent on agent turns. |
   | `Agent-held rulings` | Gate files with `held_by: agent` and a verdict other than `escalated`. |
+  | `Runner rulings (automatic, no seat held)` | Gate files with `held_by: runner` and a verdict other than `escalated` — a verdict the pipeline worked out for itself, such as `verify` recording a failing acceptance run as a return. No seat held it and nobody was asked. |
+  | `Human rulings` | Gate files with `held_by: human` and a verdict other than `escalated`. |
+  | `Rulings whose seat this page does not recognise` | Gate files whose `held_by` is none of those three, or absent. Counted rather than folded into one of the others, because the reading a seat must never be given by default is the human one. |
   | `Open escalations` | Gate files with `verdict: escalated`. |
   | `Open proposals` | Proposal files with no gate file yet. |
 
@@ -48,12 +51,26 @@ every `.sdlc/proposals/*.md`, every `.sdlc/runs/*.md`, `tests/acceptance/<domain
   regenerated it, so git already dates it, and a timestamp would make every rebuild a diff —
   which is exactly what would leave `sdlc status` on an unchanged project with a dirty tree.
 - `site/gates.md`: one row per gate ruling, newest first, showing when, which proposal, which
-  gate, the verdict, who ruled, whether the ruling was `agent-held, unsampled` or `human`, a
+  gate, the verdict, who ruled, a `Made by` column naming the seat, a
   `Cost` column — what that ruling's own agent turn cost, blank for a human ruling because there
   was no turn to measure, and `$0` for an agent ruling that genuinely cost nothing (a mandatory
   escalation never asks the persona anything) — and a `Sample` column: for each gate, the first `human_sample_per_week` (from that gate's policy
   entry, default 0) agent-held rulings in each ISO week (grouped by `at`) are marked `sample`;
-  every other row — including every human ruling — is left blank.
+  every other row is left blank.
+
+  `Made by` is the column that answers "did a person decide this?", and three seats can rule:
+  `persona agent` (an agent that read the gate holder's brief and ruled in that role), `a person`
+  (someone who ran the command themselves), and `the runner, automatically` (a verdict the
+  pipeline worked out from evidence it already had — no seat held, nobody asked, no judgement
+  behind it). A `held_by` that is none of the three, or missing, reads `unknown seat (<value>)`:
+  the mapping is total, and an unrecognised seat is never given the human reading
+  (`src/lib/seat.mjs`). The HTML gate log renders the same three as chips and explains, in its
+  legend, only the seats that project's own log carries.
+
+  Sampling is a spot check on agent judgement, so only `persona agent` rulings are eligible and
+  only they spend a week's quota. A runner ruling has no judgement to re-read and an unknown seat
+  has nothing known about it at all; neither is sampled and neither displaces an agent ruling that
+  would otherwise have been.
 - `site/journal.md`: every journal entry, newest first, as a `## NNN · <stage> · <date>` heading,
   a `cost $<c> · turns <t>` line, then the entry's body.
 - `site/proposals/<name>.md`: one page per file in `.sdlc/proposals/`, with the front matter
