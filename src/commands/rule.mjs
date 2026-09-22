@@ -7,7 +7,7 @@ import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } from "../runner/persona.mjs";
-import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
+import { runAgent, endedBecause, preflightAuth, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { buildSite } from "./status.mjs";
@@ -989,6 +989,22 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics: { cost: 0, turns: 0, session: "" } });
       return { verdict: "escalate", rationale, escalated: true, gate, escalateTo: g.escalate_to };
     }
+
+    // Whether this machine can sign in at all, asked before the ruling turn rather than
+    // discovered inside it — the same question `run` asks before it starts a stage
+    // (`src/commands/run.mjs`), asked here because a gate seat spends a paid turn too, and
+    // spends it twice: a ruling turn that fails is retried once, so a credential too old to
+    // refresh is paid for at both attempts before anything says why. The one-turn check runs
+    // against the same config home, the same binary and the same flags the ruling turn will
+    // use, so it exercises the credential the ruling will actually authenticate with rather
+    // than a proxy for it, and it costs a fraction of a cent. Under the mock executor it is
+    // skipped, which `preflightAuth` decides for itself, so neither caller has to know.
+    //
+    // Nothing is recorded for a refusal here, unlike the ones below: no turn was spent, so
+    // there is no cost to account for, and no ruling was produced, so there is nothing to
+    // preserve. The proposal is left exactly as open as it was, for the same ruling to be
+    // made once the sign-in is good again.
+    await preflightAuth();
 
     const typecheck = await acceptanceTypecheck(projectDir, {
       name, gate, revision: git(["rev-parse", "HEAD"], projectDir),

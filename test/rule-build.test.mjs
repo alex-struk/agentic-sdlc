@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -611,4 +611,63 @@ test("a refusal on a tampered tree records nothing and leaves the tampering wher
   await assert.rejects(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }), /modified the working tree/);
   assert.deepEqual(rulingJournalOnMain(d), [], "nothing was written to main while the tree was dirty");
   assert.match(git(["status", "--porcelain"], d), /app\/index\.ts/, "and the tampering is still visible");
+});
+
+// A `claude` binary that reports a sign-in failure to whatever asks it, and keeps a line per
+// stage that asked — so a ruling that stopped before its own turn can be told from one that
+// spent the turn to find out.
+function fakeSignInFailure(t, root) {
+  const bin = join(root, "fake-claude");
+  const calls = join(root, "calls.txt");
+  writeFileSync(bin, [
+    "#!/usr/bin/env node",
+    'import { appendFileSync, readFileSync } from "node:fs";',
+    'readFileSync(0, "utf8");',
+    `appendFileSync(${JSON.stringify(calls)}, (process.env.SDLC_STAGE ?? "?") + "\\n");`,
+    'process.stdout.write(JSON.stringify({ is_error: true, result: "Failed to authenticate: OAuth session expired and could not be refreshed" }));',
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  const prev = { executor: process.env.SDLC_EXECUTOR, dir: process.env.SDLC_MOCK_DIR };
+  delete process.env.SDLC_EXECUTOR;
+  delete process.env.SDLC_MOCK_DIR;
+  process.env.SDLC_CLAUDE_BIN = bin;
+  process.env.SDLC_CLAUDE_HOME = join(root, "claude-home");
+  process.env.SDLC_CREDENTIALS = join(root, "no-such-credentials.json");
+  t.after(() => {
+    for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS"]) delete process.env[k];
+    if (prev.executor !== undefined) process.env.SDLC_EXECUTOR = prev.executor;
+    if (prev.dir !== undefined) process.env.SDLC_MOCK_DIR = prev.dir;
+  });
+  return () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n") : []);
+}
+
+// A ruling turn is short, but it is a paid turn, and a credential too old to refresh fails it
+// at the end of one exactly as it would at the start. `run` asks the question for a fraction
+// of a cent before it starts a stage; a gate seat was spending its turn to find out.
+test("a ruling checks that this machine can sign in before it spends its turn", async (t) => {
+  const d = project(t);
+  buildProposal(d, { verdict: "pass" });
+  const root = mkdtempSync(join(tmpdir(), "sdlc-rule-preflight-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const calls = fakeSignInFailure(t, root);
+
+  await assert.rejects(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }),
+    /was not started[\s\S]*OAuth session expired[\s\S]*operator's own CLI login/);
+  assert.deepEqual(calls(), ["preflight"], "the one-turn check ran and the ruling turn never did");
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false,
+    "and nothing was ruled");
+  assert.equal(git(["status", "--porcelain"], d), "");
+});
+
+test("and the check is skipped under the mock executor, which never reaches a session at all", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "pass" });
+  reply(t, "approve", "every criterion this slice claims passes against the running application");
+  // The mock refuses a stage it has no canned reply for, and there is a reply for `rule` and
+  // none for `preflight` — so a ruling that completes here is one that asked nothing of a
+  // session it never needed.
+  const r = await ruleByAgent(d, "build-slice-1", { persona: "reviewer" });
+  assert.equal(r.verdict, "approve");
+  assert.equal(existsSync(join(process.env.SDLC_MOCK_DIR, "preflight.json")), false);
 });
