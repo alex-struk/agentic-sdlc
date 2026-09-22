@@ -24,6 +24,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
+import { git } from "../lib/git.mjs";
 
 export const CONDITIONS_PATH = ".sdlc/conditions.yaml";
 
@@ -101,4 +102,17 @@ export function closeCondition(projectDir, ref, { outcome, why, by, at = new Dat
   if (i === -1) return null;
   list[i] = { ...list[i], closed: { outcome, why, by, at } };
   return writeConditions(projectDir, list);
+}
+
+// `main`'s ledger, read with `git show` rather than off the checkout. A ruling has the
+// proposal's own branch checked out, and a branch cut before a condition was filed does not
+// carry it: a guard reading the checkout would refuse a reference that is perfectly good,
+// and a prompt reading the checkout would show the ruler a different list from the one its
+// ruling is judged against. Both read this.
+//
+// An empty list where `main` has no ledger yet, or one that does not parse: this is one
+// caller's input rather than its subject, the same leniency `readConditions` has.
+export function openConditionsOnMain(projectDir) {
+  try { return stillOpen(conditionsIn(git(["show", `main:${CONDITIONS_PATH}`], projectDir))); }
+  catch { return []; }
 }

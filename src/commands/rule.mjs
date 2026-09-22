@@ -12,7 +12,7 @@ import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typechec
 import { writeJournal } from "../runner/journal.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { CONDITIONS_PATH, addConditions, closeCondition, conditionRef, conditionsIn, stillOpen } from "../spec/conditions.mjs";
+import { CONDITIONS_PATH, addConditions, closeCondition, conditionRef, openConditionsOnMain } from "../spec/conditions.mjs";
 import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo.mjs";
 import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } from "../spec/revisions.mjs";
 import { proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
@@ -204,16 +204,6 @@ function unknownRefGuidance(ref, open) {
     ? `The conditions still open are: ${open.map((c) => `${c.ref} (${JSON.stringify(collapse(c.text))})`).join("; ")}.`
     : "No condition is open in this project, so there is nothing here to close.";
   return `${JSON.stringify(ref)} is not an open condition. ${list}`;
-}
-
-// The plain conditions `main`'s ledger is still waiting on, read with `git show` rather than
-// off the checkout: `openGate` has the proposal's own branch out by the time any of this
-// runs, and a branch cut before a condition was filed does not carry it. A guard reading the
-// checkout would refuse a reference that is perfectly good, which is the worst way to be
-// wrong about a ledger whose whole job is to stop instructions going missing.
-function openConditionsOnMain(projectDir) {
-  try { return stillOpen(conditionsIn(git(["show", `main:${CONDITIONS_PATH}`], projectDir))); }
-  catch { return []; }
 }
 
 // What a refusal here must not cost a second time. None of the three throws below has

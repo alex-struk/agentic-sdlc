@@ -5,8 +5,9 @@ import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
 import { deliveredBy, stageForProposal } from "../stages/registry.mjs";
 import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, approvableConditionForms, conditionsAreExecutable, returnOnlyConditionForms } from "../spec/criteria.mjs";
-import { openConditions } from "../spec/conditions.mjs";
+import { openConditionsOnMain } from "../spec/conditions.mjs";
 import { stackBulk } from "../lib/stack.mjs";
+import { configSection, rulingConfig } from "./ruling-config.mjs";
 import { runChecks } from "../checks/index.mjs";
 import { formatChecks } from "../commands/checks.mjs";
 import { formatTypecheckEvidence } from "./typecheck.mjs";
@@ -55,15 +56,6 @@ function excludesFor(projectDir, branch, omit = []) {
   const touchesApp = git(["diff", `main...${branch}`, "--name-only", "--", "app"], projectDir);
   const app = touchesApp ? [] : [":!app"];
   return [...app, ...DIFF_EXCLUDE, ...omit.map((p) => `:!${p}`)];
-}
-
-// The project's own stack name, read leniently: the config here is whatever the
-// proposal's branch carries, and a prompt is still built for a project whose config does
-// not validate — the checks section is where that is reported, not this one.
-function stackOf(projectDir) {
-  const path = join(projectDir, ".sdlc", "config.yaml");
-  if (!existsSync(path)) return null;
-  try { return parseYaml(readText(path))?.stack ?? null; } catch { return null; }
 }
 
 // The stage's own output, first — the whole point of the ruling. Without this the diff
@@ -242,22 +234,34 @@ function conditionFormsNote(name, gate) {
   ];
 }
 
-// What a ruler does about an instruction an earlier ruling left owed. The open ones are
-// already in front of the persona — `sdlc checks` reads them back on every run and the
-// checks are quoted in this prompt — so what is missing is only the two lines that close
-// one, and the fact that not writing either leaves it open.
+// What a ruler does about an instruction an earlier ruling left owed, and which ones those
+// are. The two lines that close one are what is missing from a brief, and not writing
+// either leaves the instruction open.
 //
-// A person in this seat is handed no prompt and reads the same list out of `sdlc checks`,
-// with the same two lines in it: this is how an agent is given what a person would go and
-// read, and both seats close a condition with the identical line.
-function accountingNote(projectDir) {
-  const open = openConditions(projectDir);
+// Read from `main` and quoted here rather than pointed at. The ledger lives on `main` —
+// a return files its conditions there because a branch nobody merges is a record nobody
+// reads — so the copy on a proposal's own branch is whatever had been filed the day the
+// branch was opened, and the checks section above reads that copy. The guard that refuses
+// a ruling for closing a reference nothing has open reads `main`'s, so a ruler working
+// from the branch's list can write a reference the guard will not take, or pass over one
+// nobody has accounted for, and learn either only when the turn has been spent.
+//
+// A person in this seat is handed no prompt and reads the same list out of
+// `sdlc checks` on `main`, with the same two lines in it: this is how an agent is given
+// what a person would go and read, and both seats close a condition with the identical
+// line.
+function accountingNote(open) {
   if (!open.length) return [];
+  const quote = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
   return [
     "## Instructions an earlier ruling left owed",
     "",
-    "The `conditions` check above lists them, each with a reference. Where this proposal settles one,",
-    "say so in a condition of your own — on an approval as readily as on a return:",
+    "These are open on `main`, which is where the ledger lives and what a ruling is checked against:",
+    "",
+    ...open.map((c) => `- \`${c.ref}\` — "${quote(c.text)}" (asked of ${c.stage ?? "?"}, ruled at ${c.gate ?? "?"} on ${c.from ?? "?"})`),
+    "",
+    "Where this proposal settles one, say so in a condition of your own — on an approval as readily",
+    "as on a return:",
     "",
     `- \`${CONDITION_MET_FORM}\``,
     `- \`${CONDITION_WITHDRAWN_FORM}\``,
@@ -282,10 +286,16 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
   const slice = buildSliceOf(name);
   const verify = slice ? readVerifyResult(projectDir, branch, slice) : null;
 
+  // The configuration the ruling reasons from: `main`'s, except where this proposal
+  // changes a block or the block is the policy it was made under
+  // (`./ruling-config.mjs`). Everything below that reads a configured value reads it from
+  // here rather than off the checkout, which carries the day the branch was opened.
+  const resolved = rulingConfig(projectDir, branch);
+
   // What the stack profile declares its toolchain writes and the project commits. The
   // files exist on the branch and are named here rather than silently dropped, so a
   // ruler who wants one knows it is there and that nothing tried to hide it.
-  const bulk = stackBulk({ stack: stackOf(projectDir) });
+  const bulk = stackBulk({ stack: resolved.config?.stack ?? null });
   const bulkListed = bulk.length
     ? git(["diff", `main...${branch}`, "--name-only", "--", ...bulk], projectDir)
     : "";
@@ -345,6 +355,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
     "",
     tier,
     "",
+    ...configSection(resolved),
     // The evidence a build ruling turns on comes before the diff and is never inside its
     // budget: it is what an approval is refused without, and it is the only place the
     // adapter's account of what it could not bind is written down.
@@ -393,7 +404,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
       "The writer can fix reported TypeScript errors; the runner owns executing the check.",
       "",
     ] : []),
-    ...accountingNote(projectDir),
+    ...accountingNote(openConditionsOnMain(projectDir)),
     ...conditionFormsNote(name, gate),
     ...deliverabilityNote(name),
     `Finish with one fenced \`\`\`json block: {"verdict": "approve"|"return"|"escalate", "rationale": "...", "conditions": [...]}. Nothing after the block.`,
