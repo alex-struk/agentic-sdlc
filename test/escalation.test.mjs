@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { git, assertCleanTree } from "../src/lib/git.mjs";
 import { propose } from "../src/commands/propose.mjs";
-import { ruleByAgent, rulePending, simulatedRole } from "../src/commands/rule.mjs";
+import { rule, ruleByAgent, rulePending, simulatedRole } from "../src/commands/rule.mjs";
+import { commitProposalStillOpen } from "../src/runner/finish-stage.mjs";
 
 // A first run simulates every role, the tech lead included: the tech lead holds the policy
 // gate as an agent, and that is what says escalations stay inside the run.
@@ -219,4 +220,105 @@ test("a branch's older .gitignore does not make the project's own ignored files 
   // A file nothing ignores is still dirt, on either branch.
   writeFileSync(join(d, "stray.txt"), "left behind\n");
   assert.throws(() => assertCleanTree(d, "rule"), /uncommitted changes/);
+});
+
+// An escalation is a hand-off: the gate's holder will not rule, so the question goes to
+// another role. A verdict that escalates to the role the seat itself holds hands it to
+// nobody — the same agent is named as the one who could not rule and as the one who will —
+// and the pipeline wrote it as though the proposal had moved.
+test("an escalation addressed to the role that raised it is recorded as stalled", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  reply(t, "escalate", "a pattern the design system does not cover");
+  await ruleByAgent(d, "design-a", { persona: "ux-reviewer" });
+  git(["checkout", "-q", "main"], d);
+
+  reply(t, "escalate", "the pipeline cannot check a catalogue; that is its owner's to fix");
+  const r = await ruleByAgent(d, "design-a", { persona: "tech-lead" });
+  assert.equal(r.escalated, true, "the verdict is still recorded");
+  assert.ok(r.stalled, "and the caller is told it went nowhere");
+
+  const g = gateFile(d, "design-a");
+  assert.equal(g.by, "agent:tech-lead");
+  assert.equal(g.escalate_to, "tech-lead");
+  assert.match(g.stalled, /agent:tech-lead escalated to tech-lead, the role it holds itself/);
+  assert.match(g.stalled, /a person has to rule it/);
+  assert.match(g.rationale, /the pipeline cannot check a catalogue/,
+    "the ruler's reasoning survives being marked as going nowhere");
+});
+
+test("an escalation to a different role is not marked stalled", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  reply(t, "escalate", "a pattern the design system does not cover");
+  const r = await ruleByAgent(d, "design-a", { persona: "ux-reviewer" });
+  assert.equal(r.escalated, true);
+  assert.equal(r.stalled, null, "ux-reviewer handed the question to a role that can still take it");
+  const g = gateFile(d, "design-a");
+  assert.equal(g.escalate_to, "tech-lead");
+  assert.equal(g.stalled, undefined);
+});
+
+// The gate whose holder and escalation target are the same role is where this costs a turn
+// every time: the holder rules its own gate, escalates to itself, and may be asked again.
+test("a gate that escalates to its own holder stalls on the first escalation", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  propose(d, "policy-a", { gate: "G-POL", question: "Should this article stand?", recommendation: "It should." });
+  git(["checkout", "-q", "main"], d);
+
+  reply(t, "escalate", "this is the pipeline owner's call, not mine");
+  const r = await ruleByAgent(d, "policy-a", { persona: "tech-lead" });
+  assert.equal(r.escalated, true);
+  assert.match(r.stalled, /a person has to rule it/);
+  assert.match(gateFile(d, "policy-a").stalled, /the role it holds itself/);
+});
+
+// A person in the seat is the way out of a stall, so the seat has to keep working. The
+// human path rules an escalation an agent holding the same role raised, and records an
+// ordinary verdict.
+test("a person rules an escalation an agent of the same role raised", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  reply(t, "escalate", "a pattern the design system does not cover");
+  await ruleByAgent(d, "design-a", { persona: "ux-reviewer" });
+  git(["checkout", "-q", "main"], d);
+  reply(t, "escalate", "the pipeline cannot check a catalogue; that is its owner's to fix");
+  await ruleByAgent(d, "design-a", { persona: "tech-lead" });
+  git(["checkout", "-q", "main"], d);
+
+  const ruled = rule(d, "design-a", "approve", { by: "tech-lead", note: "accepted as the project's own component" });
+  assert.equal(ruled.verdict, "approve");
+  assert.equal(ruled.heldBy, "human");
+  const g = gateFile(d, "design-a");
+  assert.equal(g.by, "tech-lead");
+  assert.equal(g.stalled, undefined, "a person's ruling is not a stall, whatever the agent before it did");
+});
+
+// What an operator meets a stalled proposal through: the next run of the stage is refused
+// because the proposal is still open, and "rule it" is exactly what produced the loop.
+test("a run blocked by a stalled proposal says the proposal is going nowhere", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  reply(t, "escalate", "a pattern the design system does not cover");
+  await ruleByAgent(d, "design-a", { persona: "ux-reviewer" });
+  git(["checkout", "-q", "main"], d);
+  reply(t, "escalate", "the pipeline cannot check a catalogue; that is its owner's to fix");
+  await ruleByAgent(d, "design-a", { persona: "tech-lead" });
+  git(["checkout", "-q", "main"], d);
+
+  const blocked = commitProposalStillOpen(d, "design", "design-a", { dryRun: true });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.messages[0], /stalled/);
+  assert.match(blocked.messages[0], /the role it holds itself/);
+  assert.match(blocked.messages[0], /a person has to rule it/);
+});
+
+// A proposal nobody stalled reports what it always reported.
+test("a run blocked by an ordinary open proposal reads as it always did", async (t) => {
+  withMock(t);
+  const d = project(t, SIMULATED);
+  const blocked = commitProposalStillOpen(d, "design", "design-a", { dryRun: true });
+  assert.equal(blocked.messages[0],
+    "proposal design-a is still open; rule it (or delete the branch) before running design again");
 });

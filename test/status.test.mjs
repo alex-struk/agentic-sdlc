@@ -422,3 +422,27 @@ test("a latest.json that is not valid JSON at all leaves the target's columns bl
   const index = readFileSync(join(d, "site/index.md"), "utf8");
   assert.match(index, /\| Domain \|.*\| old \|/);
 });
+
+// An escalation addressed to the role that raised it hands the question to no seat this
+// pipeline can fill. Every other escalation on these pages names somebody who is expected
+// to rule it, so a stalled one that read the same way would be the one proposal nobody
+// went looking for.
+test("a stalled escalation reads as going nowhere, not as waiting on somebody", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-site-stalled-"));
+  mkdirSync(join(d, ".sdlc/gates"), { recursive: true });
+  mkdirSync(join(d, ".sdlc/proposals"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), CONFIG);
+  writeFileSync(join(d, ".sdlc/proposals/p-stalled.md"),
+    `---\ngate: G0\nquestion: "Does this hold?"\nrecommendation: "It does."\nopened: 2026-01-05T00:00:00.000Z\n---\n\n# Does this hold?\n`);
+  writeFileSync(join(d, ".sdlc/gates/p-stalled.yaml"),
+    `gate: G0\nverdict: escalated\nby: agent:tech-lead\nheld_by: agent\nescalate_to: tech-lead\n`
+    + `stalled: "agent:tech-lead escalated to tech-lead, the role it holds itself, so no seat this pipeline can fill is waiting on it: a person has to rule it, or the proposal has to be withdrawn."\n`
+    + `rationale: |2-\n  This one is the pipeline owner's call.\ncost: 0.1\nturns: 2\nsession: "s1"\nat: 2026-01-05T02:00:00.000Z\n`);
+
+  buildSite(d);
+  const page = readFileSync(join(d, "site/proposals/p-stalled.md"), "utf8");
+  assert.match(page, /Stalled\./);
+  assert.match(page, /the role it holds itself/);
+  assert.match(page, /This one is the pipeline owner's call/, "the ruler's reasoning is still on the page");
+  assert.match(readFileSync(join(d, "site/index.md"), "utf8"), /- Stalled proposals: 1/);
+});

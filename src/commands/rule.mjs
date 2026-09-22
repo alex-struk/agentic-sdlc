@@ -10,6 +10,7 @@ import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } 
 import { runAgent, endedBecause, preflightAuth, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { writeJournal } from "../runner/journal.mjs";
+import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { CONDITIONS_PATH, addConditions, closeCondition, conditionRef, openConditionsOnMain } from "../spec/conditions.mjs";
@@ -76,9 +77,13 @@ function sumMetrics(a, b) {
 // what it spent on stages. Every agent path passes it, including a mandatory escalation
 // that never asked the persona anything (cost 0, no session); a human ruling has no
 // turn to measure and the keys are left out of its file entirely.
-function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, escalateTo, metrics, reprompt }) {
+function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, escalateTo, stalled, metrics, reprompt }) {
   let text = `gate: ${gate}\nverdict: ${verdict}\nby: ${by}\nheld_by: ${heldBy}\n`;
   if (escalateTo !== undefined) text += `escalate_to: ${escalateTo ?? ""}\n`;
+  // Written only on an escalation that hands the question to the role that raised it
+  // (`src/runner/escalation.mjs`). `escalate_to` stays as the verdict named it, because
+  // that is what was ruled; this is the line that stops the pair reading as a hand-off.
+  if (stalled) text += `stalled: ${JSON.stringify(stalled)}\n`;
   if (rationale !== undefined) text += `rationale: |2-\n${blockScalar(rationale)}\n`;
   else text += `note: ${JSON.stringify(note ?? "")}\n`;
   // Written only where a guard refused the first reply and the persona was asked again
@@ -603,14 +608,28 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   return { ...requests, ...ledger };
 }
 
+// An escalation, whether the persona ruled one or the brief and the tier made it mandatory.
+//
+// Both paths come through here, which is where a verdict that hands the question to the
+// role the seat itself holds is caught: the check is the same two names either way, and a
+// mandatory escalation at a gate whose holder is its own escalation target is as circular
+// as one a persona reasoned its way to. The stall is recorded rather than refused, and the
+// rationale, the metrics and the target the verdict named are all written exactly as they
+// would have been — what is added is the sentence saying the proposal has not moved.
+//
+// Returns the stall's reason, or `null`, so the caller can say it on the terminal in the
+// turn it happened rather than leaving an operator to read the gate file.
 function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, metrics, reprompt }) {
+  const stalled = stallReason({ by, escalateTo });
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   writeText(join(projectDir, gatePath),
-    redactLocalPaths(gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, rationale, metrics, reprompt }), projectDir));
-  const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`);
+    redactLocalPaths(gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, stalled, rationale, metrics, reprompt }), projectDir));
+  const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`
+    + (stalled ? ` — stalled: ${stalled}` : ""));
   stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
-  git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} escalated to ${escalateTo ?? "?"}`], projectDir);
-  regenerateSiteOnMain(projectDir, `${name} escalated`);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${stalled ? "stalled" : `escalated to ${escalateTo ?? "?"}`}`], projectDir);
+  regenerateSiteOnMain(projectDir, stalled ? `${name} stalled` : `${name} escalated`);
+  return stalled;
 }
 
 // What a refused ruling leaves behind. A refusal writes no gate file — that is the point of
@@ -976,8 +995,8 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       const rationale = `mandatory escalation: ${mandatoryReason}`;
       // No persona turn ran, so the ruling cost nothing — recorded as zero rather than
       // omitted, so every agent-held gate file carries the same three keys.
-      writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics: { cost: 0, turns: 0, session: "" } });
-      return { verdict: "escalate", rationale, escalated: true, gate, escalateTo: g.escalate_to };
+      const stalled = writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics: { cost: 0, turns: 0, session: "" } });
+      return { verdict: "escalate", rationale, escalated: true, stalled, gate, escalateTo: g.escalate_to };
     }
 
     // Whether this machine can sign in at all, asked before the ruling turn rather than
@@ -1094,8 +1113,8 @@ export async function ruleByAgent(projectDir, name, { persona }) {
 
     if (verdict === "escalate") {
       recorded = true;
-      writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
-      return { verdict, rationale, escalated: true, gate, escalateTo: g.escalate_to, reprompted: Boolean(reprompt) };
+      const stalled = writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
+      return { verdict, rationale, escalated: true, stalled, gate, escalateTo: g.escalate_to, reprompted: Boolean(reprompt) };
     }
 
     // The same check a person's ruling is held to, in the same place in the sequence:
@@ -1128,8 +1147,8 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       ({ verdict, rationale, conditions } = next);
       if (verdict === "escalate") {
         recorded = true;
-        writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
-        return { verdict, rationale, escalated: true, gate, escalateTo: g.escalate_to, reprompted: true };
+        const stalled = writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
+        return { verdict, rationale, escalated: true, stalled, gate, escalateTo: g.escalate_to, reprompted: true };
       }
     }
     produced = { verdict, rationale, conditions: conditions ?? [] };
@@ -1191,11 +1210,14 @@ function pointedAt(text, gatePath) {
 // Redacted the same way the gate file itself is (`redactLocalPaths`) — an agent's own
 // prose can carry a path off the machine it ran on, and a terminal is not exempt from the
 // rule the committed file is held to.
-function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, reprompted, opened, closed }) {
+function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, opened, closed }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   const recordedOn = verdict === "approve" ? "main (merged)" : `proposal/${name}`;
   const lines = [`${name}: ${verdict} at ${gate}`];
   if (escalateTo) lines.push(`  escalated to: ${escalateTo}`);
+  // Said in the turn it happened, not left for whoever opens the gate file: an escalation
+  // to the role that raised it looks identical to a hand-off on every other line here.
+  if (stalled) lines.push(`  stalled: ${stalled}`);
   if (reprompted) lines.push(`  re-asked once: the first reply was refused; see "reprompt" in the gate file for what it got wrong`);
   const text = pointedAt(rationale || note, gatePath);
   if (text) lines.push(`  rationale: ${text}`);
@@ -1293,11 +1315,11 @@ export async function rulePending(projectDir) {
     try {
       const r = await ruleByAgent(projectDir, name, { persona });
       results.push({ name, ...r });
-      if (r.escalated && escalation) console.log(`${name}: escalated again by agent:${persona}; waiting for a person`);
+      if (r.escalated && escalation && !r.stalled) console.log(`${name}: escalated again by agent:${persona}; waiting for a person`);
       console.log(formatRuling(projectDir, name, {
         gate: r.gate ?? gateMatch[1], verdict: r.escalated ? "escalate" : r.verdict,
-        conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
-        opened: r.opened, closed: r.closed,
+        conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, stalled: r.stalled,
+        reprompted: r.reprompted, opened: r.opened, closed: r.closed,
       }));
     } catch (e) {
       results.push({ name, failed: true, error: e.message });

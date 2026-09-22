@@ -338,6 +338,9 @@ function gateLegend(model) {
   if (model.gates.some((g) => g.verdict === "escalated")) {
     items.push(["Escalated", "The holder declined to rule and passed the decision up, which the policy requires for high-risk changes."]);
   }
+  if (model.gates.some((g) => g.stalled)) {
+    items.push(["Stalled", "The escalation named the role that raised it, so no seat in the pipeline is waiting on it. A person has to rule it, or the proposal has to be withdrawn."]);
+  }
   if (items.length === 0) return "";
   return `<section><h2>What the columns mean</h2><dl class="legend">${items.map(([k, v]) =>
     `<dt>${e(k)}</dt><dd>${e(v)}</dd>`).join("")}</dl></section>`;
@@ -348,7 +351,7 @@ function gatesPage(model) {
     <td>${e(when(g.at))}</td>
     <td><a href="proposals/${e(g.name)}.html">${e(g.name)}</a></td>
     <td>${e(g.gate ?? "")}</td>
-    <td>${verdictChip(g.verdict)}</td>
+    <td>${verdictChip(g.verdict)}${g.stalled ? ` ${chip("stalled", "return")}` : ""}</td>
     <td>${e(g.by ?? "")}</td>
     <td>${g.held_by === "agent" ? chip("persona agent", "escalated") : chip("a person", "approve")}</td>
     <td class="num">${g.cost === undefined ? "" : e(dollars(g.cost))}</td>
@@ -393,6 +396,10 @@ function rulingBlock(p) {
   const parts = [`<section class="ruling"><h2>Ruling</h2>`,
     `<p>${verdictChip(r.verdict)} by ${e(r.by ?? "")}${r.held_by === "agent" ? " (persona agent)" : ""}${r.at ? ` on ${e(when(r.at))}` : ""}.</p>`];
   if (r.verdict === "escalated" && r.escalate_to) parts.push(`<p>Escalated to ${e(r.escalate_to)}.</p>`);
+  // An escalation that named the role that raised it handed the question to no seat this
+  // pipeline can fill, so the page says the proposal is going nowhere rather than leaving
+  // it looking like any other escalation waiting on somebody.
+  if (r.stalled) parts.push(`<p class="note"><strong>Stalled.</strong> ${e(String(r.stalled))}</p>`);
   if (r.rationale) parts.push(`<div class="body">${markdownToHtml(String(r.rationale).trim())}</div>`);
   const conditions = Array.isArray(r.conditions) ? r.conditions : [];
   if (conditions.length) {

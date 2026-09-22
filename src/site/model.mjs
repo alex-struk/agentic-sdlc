@@ -210,6 +210,10 @@ export function collect(projectDir) {
     counts: {
       agentRulings: gates.filter((g) => g.held_by === "agent" && g.verdict !== "escalated").length,
       openEscalations: gates.filter((g) => g.verdict === "escalated").length,
+      // An escalation addressed to the role that raised it: counted apart from the rest
+      // because nobody is waiting on it, which is the opposite of what an open escalation
+      // means everywhere else on the site.
+      stalled: gates.filter((g) => Boolean(g.stalled)).length,
       openProposals: proposals.filter((p) => p.open).length,
     },
   };

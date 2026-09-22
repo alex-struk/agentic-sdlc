@@ -135,7 +135,11 @@ export function renderMarkdown(model) {
     let tail = null;
     if (p.hasRulingSection) tail = null;
     else if (!p.ruling) tail = `_Open, waiting for ${p.holder}_`;
-    else if (p.ruling.verdict === "escalated") tail = `_Escalated to ${p.ruling.escalate_to}: ${p.ruling.rationale}_`;
+    else if (p.ruling.verdict === "escalated") {
+      tail = p.ruling.stalled
+        ? `_Stalled. ${p.ruling.stalled} The ruling was: ${p.ruling.rationale}_`
+        : `_Escalated to ${p.ruling.escalate_to}: ${p.ruling.rationale}_`;
+    }
     else tail = `_Ruled: ${p.ruling.verdict} by ${p.ruling.by}_`;
     const parts = [table, p.body.trim()];
     if (tail) parts.push(tail);
@@ -158,6 +162,7 @@ export function renderMarkdown(model) {
     `- Total cost: $${model.costs.total}`,
     `- Agent-held rulings: ${model.counts.agentRulings}`,
     `- Open escalations: ${model.counts.openEscalations}`,
+    `- Stalled proposals: ${model.counts.stalled}`,
     `- Open proposals: ${model.counts.openProposals}`, ""].join("\n");
 
   return [["site/index.md", index], ["site/gates.md", gatesMd], ["site/runs.md", runsMd], ["site/results.md", resultsMd],

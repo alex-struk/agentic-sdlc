@@ -6,6 +6,7 @@ import { writeText } from "../lib/fsx.mjs";
 import { git, gitOk, changedPaths, stageAll, stageSite, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { writeJournal } from "./journal.mjs";
+import { stalledOn } from "./escalation.mjs";
 import { propose } from "../commands/propose.mjs";
 import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
@@ -97,7 +98,14 @@ export function checkProposalNotOpen(projectDir, stage, ctx) {
 // `finishStage`'s own late check (reached only once a real run is already under way)
 // ever pass it.
 export function commitProposalStillOpen(projectDir, stageName, openProposal, { dryRun = false } = {}) {
-  const message = `proposal ${openProposal} is still open; rule it (or delete the branch) before running ${stageName} again`;
+  // A proposal whose last ruling escalated to the role that raised it is not going to
+  // clear itself, and "rule it" is the instruction that produced the loop. The stall is
+  // read off the branch and said here, because this refusal is where an operator meets
+  // the proposal again (`src/runner/escalation.mjs`).
+  const stalled = stalledOn(projectDir, `proposal/${openProposal}`, openProposal);
+  const message = stalled
+    ? `proposal ${openProposal} is still open and stalled: ${stalled} Nothing will move it before running ${stageName} again.`
+    : `proposal ${openProposal} is still open; rule it (or delete the branch) before running ${stageName} again`;
   if (dryRun) return { ok: false, messages: [message] };
   const runPath = appendRun(projectDir, `run ${stageName}: proposal ${openProposal} still open`);
   stageAll(projectDir, [relative(projectDir, runPath)]);
