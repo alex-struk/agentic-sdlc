@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { buildPersonaPrompt, orderDiffPaths } from "../src/runner/persona.mjs";
+import { ADDRESSED_VERB, CONDITION_MET_VERB, CONDITION_WITHDRAWN_VERB, OVERREACH_VERB, returnOnlyConditionForms } from "../src/spec/criteria.mjs";
 
 const CONFIG = `profile: rebuild
 stack: openshift-ts
@@ -581,4 +582,45 @@ test("a prompt for a proposal that goes back to no stage carries no deliverabili
 
   const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G1" });
   assert.ok(!prompt.includes("## What a condition may ask for"));
+});
+
+// Which condition forms a verdict may carry is enforced when the ruling is recorded, and by
+// then the turn has been paid for. The prompt states it first, out of the same table the
+// guards read, so a ruler is told the rule it is about to be held to.
+test("a ruling prompt states which condition forms an approval may carry and which need a return", async () => {
+  const dir = microProject();
+  const name = "build-slice-1";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "app/routes/list.tsx", "export const List = () => null;\n");
+  write(dir, `.sdlc/proposals/${name}.md`, `---\ngate: G3\nquestion: "Does slice 1 do what its criteria say?"\nrecommendation: "yes"\nopened: 2026-09-06T00:00:00.000Z\n---\n\n# Does slice 1 do what its criteria say?\n`);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "build slice 1"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.match(prompt, /## Which condition forms a verdict may carry/);
+  const section = prompt.slice(prompt.indexOf("## Which condition forms a verdict may carry"));
+  // Both halves of the split are named, each with the form and the reason the table holds.
+  for (const verb of [OVERREACH_VERB, ADDRESSED_VERB, CONDITION_MET_VERB, CONDITION_WITHDRAWN_VERB]) {
+    assert.ok(section.includes(verb), `${verb} is named: ${section}`);
+  }
+  assert.match(section, /A return only/);
+  assert.match(section, /Either verdict/);
+  for (const rule of returnOnlyConditionForms()) assert.ok(section.includes(rule.because), rule.verb);
+  // And what to do about it, since the choice a ruler has here is between two verdicts.
+  assert.match(section, /return the proposal and keep the condition, or approve and leave it off/);
+});
+
+// A closed condition vocabulary does not read these verbs at all, so stating a rule about
+// them there would be telling a ruler about a check that will never run on its lines.
+test("a prompt whose conditions are read in a closed grammar carries no condition-form section", async () => {
+  const dir = microProject();
+  const name = "ratify-zeta-2";
+  git(["checkout", "-q", "-b", `proposal/${name}`], dir);
+  write(dir, "spec/domains/zeta.md", "# zeta\n");
+  write(dir, `.sdlc/proposals/${name}.md`, `---\ngate: G1\nquestion: "Which become the contract?"\nrecommendation: "rule each"\nopened: 2026-09-06T00:00:00.000Z\n---\n\n# Which become the contract?\n`);
+  git(["add", "-A"], dir);
+  git(["commit", "-q", "-m", "ratify follow-up"], dir);
+
+  const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G1" });
+  assert.ok(!prompt.includes("## Which condition forms a verdict may carry"));
 });

@@ -671,6 +671,64 @@ export function malformedAccountedConditions(lines) {
     && !parseAccountCondition(l));
 }
 
+// Which verdicts each condition form may ride on, and the sentence that says why.
+//
+// One table, read twice and written once. The guards in `src/commands/rule.mjs` refuse a
+// verdict carrying a form this table says it may not, in these words; the ruling prompt
+// (`conditionFormsNote`, `src/runner/persona.mjs`) states the same rule to the ruler before
+// it rules, out of the same entries. A ruler is therefore told the rule it will be held to
+// rather than a second copy of it, which is the property the deliverability note already
+// has: what the prompt promises and what the code enforces cannot drift apart, because
+// there is only one of them.
+//
+// `because` is a clause, not a sentence, so both readers can frame it — the refusal as
+// "an `x` condition <because>", the prompt as "it <because>".
+export const CONDITION_FORM_RULES = [
+  {
+    verb: OVERREACH_VERB,
+    form: OVERREACH_CONDITION_FORM,
+    onApproval: false,
+    because: "asks for a criterion's test to be written again, and the criterion stays unverified"
+      + " until a regenerated test binds and passes",
+  },
+  {
+    verb: ADDRESSED_VERB,
+    form: ADDRESSED_CONDITION_FORM,
+    onApproval: false,
+    because: "asks another stage to produce its artifact again, and says the work being ruled"
+      + " was built against something that has to change",
+  },
+  {
+    verb: CONDITION_MET_VERB,
+    form: CONDITION_MET_FORM,
+    onApproval: true,
+    because: "records that an instruction an earlier ruling left owed has been carried out, which"
+      + " a revision is ordinarily approved for doing",
+  },
+  {
+    verb: CONDITION_WITHDRAWN_VERB,
+    form: CONDITION_WITHDRAWN_FORM,
+    onApproval: true,
+    because: "records that an instruction an earlier ruling left owed is no longer asked for,"
+      + " which is as true of an approval as of a return",
+  },
+];
+
+// The rule for one verb, or null where the verb is not one this table governs.
+export function conditionFormRule(verb) {
+  return CONDITION_FORM_RULES.find((r) => r.verb === verb) ?? null;
+}
+
+// The forms only a return may carry, and the forms either verdict may. Separate readers
+// rather than a filter at each call site, so the prompt and the guards agree on the split
+// by construction.
+export function returnOnlyConditionForms() {
+  return CONDITION_FORM_RULES.filter((r) => !r.onApproval);
+}
+export function approvableConditionForms() {
+  return CONDITION_FORM_RULES.filter((r) => r.onApproval);
+}
+
 // Every path-like token in a free-text condition line. A ruler writes a condition as prose
 // and names a file in it the way anyone does, in backticks or bare, so the tokens are read
 // out of the sentence rather than required in a form.

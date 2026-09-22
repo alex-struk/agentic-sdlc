@@ -4,7 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
 import { deliveredBy, stageForProposal } from "../stages/registry.mjs";
-import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, approvableConditionForms, conditionsAreExecutable, returnOnlyConditionForms } from "../spec/criteria.mjs";
 import { openConditions } from "../spec/conditions.mjs";
 import { stackBulk } from "../lib/stack.mjs";
 import { runChecks } from "../checks/index.mjs";
@@ -202,6 +202,46 @@ function deliverabilityNote(name) {
   ];
 }
 
+// Which condition forms each verdict may carry, put in front of the ruler before the ruling
+// is written rather than discovered when it is refused. Generated from
+// `CONDITION_FORM_RULES` (`src/spec/criteria.mjs`), which is the table the guards that
+// refuse the verdict read — the same arrangement the deliverability note below has, and for
+// the same reason: a rule stated in one place and enforced from another drifts, and the
+// ruler is the one who pays for the drift, because a refusal costs the turn that reached
+// the ruling.
+//
+// Left out where the proposal's conditions are read in a closed grammar. These verbs are
+// not read out of one at all, so stating a rule about them there would describe a check
+// that never runs on the lines this ruler is about to write.
+//
+// The closing line is the part that matters most. Unlike every other condition defect,
+// this one is not a line to rewrite: the ruler has reached two positions at once, and what
+// it is being asked for is which of the two it means.
+function conditionFormsNote(name, gate) {
+  if (conditionsAreExecutable(gate, name)) return [];
+  const entry = (r) => `- \`${r.form}\` — it ${r.because}.`;
+  return [
+    "## Which condition forms a verdict may carry",
+    "",
+    "A condition line is read for the forms below, and the form decides which verdicts may carry it.",
+    "A verdict carrying a form it may not is refused when the ruling is recorded, and the ruling turn",
+    "has been spent by then.",
+    "",
+    "**Either verdict** may carry these, and free-text lines besides:",
+    "",
+    ...approvableConditionForms().map(entry),
+    "",
+    "**A return only** may carry these:",
+    "",
+    ...returnOnlyConditionForms().map(entry),
+    "",
+    "Where you would approve and attach one of the return-only forms, that is two positions at once and",
+    "the pipeline records neither: return the proposal and keep the condition, or approve and leave it off.",
+    "Which you mean is the ruling, so decide it here rather than leaving it to be refused.",
+    "",
+  ];
+}
+
 // What a ruler does about an instruction an earlier ruling left owed. The open ones are
 // already in front of the persona — `sdlc checks` reads them back on every run and the
 // checks are quoted in this prompt — so what is missing is only the two lines that close
@@ -354,6 +394,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
       "",
     ] : []),
     ...accountingNote(projectDir),
+    ...conditionFormsNote(name, gate),
     ...deliverabilityNote(name),
     `Finish with one fenced \`\`\`json block: {"verdict": "approve"|"return"|"escalate", "rationale": "...", "conditions": [...]}. Nothing after the block.`,
   ].join("\n");

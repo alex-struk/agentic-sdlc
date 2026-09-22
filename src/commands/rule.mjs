@@ -10,7 +10,7 @@ import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } 
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { buildSite } from "./status.mjs";
-import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { CONDITIONS_PATH, addConditions, closeCondition, conditionRef, conditionsIn, stillOpen } from "../spec/conditions.mjs";
 import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo.mjs";
 import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } from "../spec/revisions.mjs";
@@ -174,6 +174,18 @@ function accountedGuidance(line) {
   return `${JSON.stringify(line)} carries no reason. Write it as \`${CONDITION_MET_FORM}\` or \`${CONDITION_WITHDRAWN_FORM}\`:`
     + " closing an instruction while recording nothing about why is the state this ledger exists to end.";
 }
+// The words for an approval carrying a form only a return may carry, taken from the same
+// table the ruling prompt states the rule from (`CONDITION_FORM_RULES`,
+// `src/spec/criteria.mjs`). Unlike the three defects above this is not a line to rewrite:
+// the verdict and the condition are two positions at once, and what is asked for is which
+// of them the ruler means. Both ways out are named, because both are rulings and neither
+// is the pipeline's to pick.
+function approvalFormGuidance(verb, line) {
+  const rule = conditionFormRule(verb);
+  return `${JSON.stringify(line)} is a \`${verb}\` condition, which ${rule.because}. An approval may not carry it:`
+    + " return the proposal and keep the condition, or approve and leave it off. Which you mean is the ruling.";
+}
+
 function unknownRefGuidance(ref, open) {
   const list = open.length
     ? `The conditions still open are: ${open.map((c) => `${c.ref} (${JSON.stringify(collapse(c.text))})`).join("; ")}.`
@@ -223,9 +235,9 @@ export function assertOverreachRulable(name, verdict, conditions) {
   const bad = malformedOverreachConditions(conditions);
   if (bad.length)
     throw new Error(withRulingPreserved(`rule ${name}: ${overreachGuidance(bad[0])}`, verdict, conditions));
-  if (verdict === "approve" && overreachConditions(conditions).length)
-    throw new Error(withRulingPreserved(`rule ${name}: a \`${OVERREACH_VERB}\` condition asks for a criterion's test to be written again, which an approval cannot carry —`
-      + " the criterion stays unverified until a regenerated test binds and passes; return the proposal instead.", verdict, conditions));
+  const carried = (conditions ?? []).find((l) => overreachConditions([l]).length);
+  if (verdict === "approve" && carried)
+    throw new Error(withRulingPreserved(`rule ${name}: ${approvalFormGuidance(OVERREACH_VERB, carried.line)}`, verdict, conditions));
 }
 
 // The two things an `addressed-to` condition may never be, checked in the same place and
@@ -244,9 +256,9 @@ export function assertAddressedRulable(name, verdict, conditions) {
   const bad = malformedAddressedConditions(conditions);
   if (bad.length)
     throw new Error(withRulingPreserved(`rule ${name}: ${addressedGuidance(bad[0])}`, verdict, conditions));
-  if (verdict === "approve" && addressedConditions(conditions).length)
-    throw new Error(withRulingPreserved(`rule ${name}: an \`${ADDRESSED_VERB}\` condition asks another stage to produce its artifact again, which an approval cannot carry —`
-      + " it says the work being ruled was built against something that has to change; return the proposal instead.", verdict, conditions));
+  const carried = (conditions ?? []).find((l) => addressedConditions([l]).length);
+  if (verdict === "approve" && carried)
+    throw new Error(withRulingPreserved(`rule ${name}: ${approvalFormGuidance(ADDRESSED_VERB, carried.line)}`, verdict, conditions));
 }
 
 // The one thing a plain condition may never be: an instruction to change a path the stage
