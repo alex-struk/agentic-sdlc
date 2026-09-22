@@ -18,6 +18,7 @@ import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo
 import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } from "../spec/revisions.mjs";
 import { proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
+import { heldByFor } from "../lib/seat.mjs";
 
 // Which grammar a proposal's conditions are read in is a property of the conditions, so it
 // is defined with them; `rule` is what applies it, and is where a caller reaches it.
@@ -773,7 +774,12 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
     const allowed = [g.holder, g.escalate_to].filter(Boolean);
     if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
     const executable = conditionsAreExecutable(gate, name);
-    const heldBy = by.startsWith("agent:") ? "agent" : "human";
+    // Derived through the same mapping the site reads it back with, so what is written and
+    // what is displayed cannot drift apart (`src/lib/seat.mjs`). Gate holders are roles or
+    // `agent:<persona>`, so a person is what a bare role means here — but the derivation is
+    // total over anything it is handed, because the one reading a default must never reach
+    // is the human one.
+    const heldBy = heldByFor(by);
     // The same evidence the seat's persona is held to, so that sitting in the seat is the
     // whole of what changes when a person takes it. A build with no passing result is
     // returnable here and unapprovable here, exactly as it is on the agent path; the one
