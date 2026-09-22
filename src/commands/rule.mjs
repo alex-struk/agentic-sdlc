@@ -9,6 +9,7 @@ import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } from "../runner/persona.mjs";
 import { runAgent, endedBecause, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
+import { writeJournal } from "../runner/journal.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { CONDITIONS_PATH, addConditions, closeCondition, conditionRef, conditionsIn, stillOpen } from "../spec/conditions.mjs";
@@ -622,6 +623,71 @@ function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, me
   regenerateSiteOnMain(projectDir, `${name} escalated`);
 }
 
+// What a refused ruling leaves behind. A refusal writes no gate file — that is the point of
+// it — and until this it wrote nothing else either, so a ruling that spent a turn (two, where
+// a re-prompt was tried) left the project looking exactly like one nobody had ruled, with the
+// reasoning the turn reached gone along with the session it was reached in.
+//
+// On `main`, in a commit of its own, for the reason `fileAddressedRequests` gives: a refused
+// ruling belongs to no branch — the proposal is still open, and may be ruled again or
+// abandoned — and a record on a branch nobody merges is a record nobody reads. `main` is also
+// what the state site reads its costs from, so a turn spent on a refusal is counted in the
+// project's total rather than missing from it.
+//
+// Two entries, because they answer different questions. The run record's line is the one a
+// person scanning what happened to this proposal reads; the journal entry beside it holds the
+// verdict, the rationale and every condition the ruling produced, which is what an operator
+// needs to act on the rest of a ruling by hand instead of paying for the turn again.
+//
+// Best-effort and silent about its own failures: the refusal is what the caller is owed and
+// has to reach them whatever happens here.
+function recordRefusal(projectDir, { name, gate, by, heldBy, produced, reason, metrics }) {
+  // A tampered tree records nothing at all. `git checkout main` carries uncommitted changes
+  // across wherever the file is identical on both branches, so switching branches to record
+  // would put whatever the turn wrote onto `main` under a commit about a refused ruling, and
+  // what a turn wrote has to stay where it was made so it is still visible there.
+  if (porcelainStatus(projectDir)) return;
+  const word = produced ? "refused" : "unanswered";
+  // The guard's own sentence without the copy of the ruling `withRulingPreserved` appends to
+  // it: the run record is one line per outcome, and the whole of the ruling is in the journal
+  // entry written beside it.
+  const headline = String(reason ?? "").split("\n\n")[0].trim();
+  const body = [
+    "## Nothing was ruled",
+    "",
+    `The ruling was ${word}, so no gate file was written and the proposal is still open at ${gate}.`,
+    "",
+    String(reason ?? "").trim(),
+    ...(produced ? [
+      "",
+      "## What the ruling produced",
+      "",
+      `**Verdict:** ${produced.verdict}`,
+      `**By:** ${by}`,
+      "",
+      produced.rationale?.trim() || "No rationale accompanied the verdict.",
+      "",
+      "**Conditions:**",
+      (produced.conditions ?? []).length ? (produced.conditions ?? []).map((c) => `- ${c}`).join("\n") : "none",
+    ] : []),
+    "",
+  ].join("\n");
+  const branch = currentBranch(projectDir);
+  try {
+    if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
+    const journalPath = writeJournal(projectDir, { stage: "rule", title: `${name} ${word} at ${gate}`, body, metrics });
+    const runPath = appendRun(projectDir, `rule ${name} ${word} at ${gate} by ${by} (${heldBy}): ${headline}`);
+    stagePaths(projectDir, [relative(projectDir, journalPath), relative(projectDir, runPath)]);
+    // The journal and the runs page are both built into the site, so the site goes into the
+    // same commit — otherwise the next `status` or ruling rebuilds it, finds it changed, and
+    // fails its clean-tree check on a diff this refusal left behind.
+    buildSite(projectDir);
+    stageSite(projectDir);
+    git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${word}`], projectDir);
+  } catch { /* nothing here may replace the refusal the caller is being handed */ }
+  finally { if (currentBranch(projectDir) !== branch) gitOk(["checkout", "-q", branch], projectDir); }
+}
+
 function appendRulingSection(text, { verdict, by, rationale, conditions = [], typecheck = null }) {
   const cond = conditions.length ? conditions.map((c) => `- ${c}`).join("\n") : "none";
   const evidence = typecheck ? `\n### Runner-owned typecheck evidence\n\n${formatTypecheckEvidence(typecheck)}\n` : "";
@@ -698,21 +764,33 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
     const allowed = [g.holder, g.escalate_to].filter(Boolean);
     if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
     const executable = conditionsAreExecutable(gate, name);
-    if (!executable) {
-      assertOverreachRulable(name, verdict, conditions ?? []);
-      assertAddressedRulable(name, verdict, conditions ?? []);
-      assertDeliverableRulable(name, verdict, conditions ?? []);
-      assertAccountedRulable(projectDir, name, verdict, conditions ?? []);
-    }
+    const heldBy = by.startsWith("agent:") ? "agent" : "human";
     // The same evidence the seat's persona is held to, so that sitting in the seat is the
     // whole of what changes when a person takes it. A build with no passing result is
     // returnable here and unapprovable here, exactly as it is on the agent path; the one
     // approval that goes through without one is the escalation target's, which the
     // escalation already on the branch is the record of.
+    //
+    // And recorded the same way when it is refused. No turn was spent on this seat, so there
+    // is no cost to account for and nothing of the person's own typing is at risk — but what
+    // happened to the proposal is the same fact from either seat, and a record that carries
+    // it from one and not the other is a record of which seat ruled rather than of what was
+    // ruled.
     const escalation = standingEscalation(projectDir, name);
-    assertApprovalEvidence(projectDir, name, verdict,
-      Boolean(escalation) && by === g.escalate_to && escalation.by !== by, conditions ?? []);
-    const heldBy = by.startsWith("agent:") ? "agent" : "human";
+    try {
+      if (!executable) {
+        assertOverreachRulable(name, verdict, conditions ?? []);
+        assertAddressedRulable(name, verdict, conditions ?? []);
+        assertDeliverableRulable(name, verdict, conditions ?? []);
+        assertAccountedRulable(projectDir, name, verdict, conditions ?? []);
+      }
+      assertApprovalEvidence(projectDir, name, verdict,
+        Boolean(escalation) && by === g.escalate_to && escalation.by !== by, conditions ?? []);
+    } catch (e) {
+      recordRefusal(projectDir, { name, gate, by, heldBy, reason: e.message, metrics: {},
+        produced: { verdict, rationale: note, conditions: conditions ?? [] } });
+      throw e;
+    }
     const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, note, conditions, executable });
     return { gate, verdict, heldBy, note, conditions: conditions ?? [], ...requests };
   } catch (e) {
@@ -862,6 +940,15 @@ export async function ruleByAgent(projectDir, name, { persona }) {
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "rule");
   const { branch, start, proposalPath, proposalText, gate, g, config } = openGate(projectDir, name);
+  // What a refusal below has to be able to record, held out here because the catch is where
+  // it is recorded from. `turnCost` is what the ruling turns have spent, set whether or not
+  // one of them answered; `produced` is the reply the guards are about to be run against, and
+  // stays null where nothing was read out of a turn at all; `recorded` says the ruling has
+  // reached the point of writing itself down, after which a failure is no longer a refusal
+  // and must not be reported as one.
+  let turnCost = null;
+  let produced = null;
+  let recorded = false;
   try {
     const by = `agent:${persona}`;
     // A persona rules the gate it holds. The one other ruling an agent may make is on an
@@ -937,6 +1024,11 @@ export async function ruleByAgent(projectDir, name, { persona }) {
         result = await runRuling(text);
         spent = sumMetrics(spent, { cost: result.cost, turns: result.turns, session: result.sessionId });
       }
+      // Accumulated before the three throws below rather than after them: a turn that failed,
+      // wrote to the tree, or came back in a shape the protocol could not be read out of spent
+      // exactly what a turn that answered spent, and a refusal that cannot say so is the
+      // silence this is here to end.
+      turnCost = turnCost ? sumMetrics(turnCost, spent) : spent;
       // A turn that reports failure has no verdict to read, and its own text is the only
       // account of why — except when it has no text at all, which is exactly when a person
       // most needs one, so the CLI's own account of how the session ended stands in.
@@ -995,6 +1087,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     }
 
     if (verdict === "escalate") {
+      recorded = true;
       writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
       return { verdict, rationale, escalated: true, gate, escalateTo: g.escalate_to, reprompted: Boolean(reprompt) };
     }
@@ -1028,10 +1121,12 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       reprompt = `You ruled ${verdict}. ${guidance}`;
       ({ verdict, rationale, conditions } = next);
       if (verdict === "escalate") {
+        recorded = true;
         writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });
         return { verdict, rationale, escalated: true, gate, escalateTo: g.escalate_to, reprompted: true };
       }
     }
+    produced = { verdict, rationale, conditions: conditions ?? [] };
     // The final word, whether or not a re-prompt was tried: a defect still present here —
     // the same one, or a different one the rewrite introduced — refuses the ruling, exactly
     // as it always did. Nothing about what these five refuse has changed; only the chance to
@@ -1050,10 +1145,18 @@ export async function ruleByAgent(projectDir, name, { persona }) {
 
     // The ruling has to land in the proposal page's own commit, not a follow-up one, so
     // it is appended and written before `commitRuling` stages and commits.
+    recorded = true;
     writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }), projectDir));
     const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true, executable, reprompt });
     return { verdict, rationale, conditions, unparsed, escalated: false, gate, escalateTo: null, reprompted: Boolean(reprompt), ...requests, ...metrics };
   } catch (e) {
+    // Recorded only where a turn was spent and the ruling had not yet begun writing itself
+    // down. Before the first turn there is nothing to account for — a seat that does not hold
+    // the gate, a policy with nowhere to escalate — and after `recorded` the failure is a
+    // ruling that could not be committed rather than one that was refused.
+    if (turnCost && !recorded) {
+      recordRefusal(projectDir, { name, gate, by: `agent:${persona}`, heldBy: "agent", produced, reason: e.message, metrics: turnCost });
+    }
     throw leaveRuling(projectDir, start, branch, e);
   }
 }

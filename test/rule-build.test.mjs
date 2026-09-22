@@ -498,3 +498,117 @@ test("a person's approval with no passing result is refused with the same guidan
   assert.ok(thrown.message.includes(held));
   assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false);
 });
+
+// What `main` holds after a ruling that was refused: the run record's own lines, and the
+// journal entries a ruling wrote. Read with `git show` rather than off disk, because a
+// refused ruling leaves the caller wherever it was standing.
+const filesOnMain = (d, dir) => {
+  try { return git(["ls-tree", "--name-only", `main:${dir}`], d).split("\n").filter(Boolean); }
+  catch { return []; }
+};
+const runLinesOnMain = (d) => filesOnMain(d, ".sdlc/runs")
+  .flatMap((f) => git(["show", `main:.sdlc/runs/${f}`], d).split("\n"))
+  .filter((l) => l.startsWith("- "));
+const rulingJournalOnMain = (d) => filesOnMain(d, ".sdlc/journal")
+  .filter((f) => f.endsWith("-rule.md"))
+  .map((f) => git(["show", `main:.sdlc/journal/${f}`], d));
+
+// A refused ruling has spent a turn, and until this it spent it into nothing: no gate file
+// is the point of the refusal, but no run-record line and no journal entry meant the cost
+// and the reasoning both went unrecorded, and an operator reading the project afterwards
+// could not tell a refused ruling from a proposal nobody had looked at.
+test("a refused ruling records what it produced and what was refused, on main", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "unbound" });
+  const held = "the results list still has no accessible name";
+  const why = "every criterion the slice claims reads as met to me";
+  replyWith(t, [
+    { verdict: "approve", rationale: why, conditions: [held] },
+    { verdict: "approve", rationale: why, conditions: [held] },
+  ]);
+  await said(async () => {
+    await assert.rejects(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }));
+  });
+
+  const run = runLinesOnMain(d).find((l) => /refused/.test(l));
+  assert.ok(run, `no refusal in the run record: ${runLinesOnMain(d).join(" | ")}`);
+  assert.match(run, /rule build-slice-1 refused at G3 by agent:reviewer \(agent\)/);
+  assert.match(run, /did not pass verify/);
+
+  const entries = rulingJournalOnMain(d);
+  assert.equal(entries.length, 1, "one journal entry, for the one ruling that was refused");
+  const [entry] = entries;
+  assert.match(entry, /stage: "rule"/);
+  assert.match(entry, /turns: 2/, "the re-prompt turn is counted in what the refusal cost");
+  assert.match(entry, /\*\*Verdict:\*\* approve/);
+  assert.ok(entry.includes(why), "the rationale the ruler reached is kept");
+  assert.ok(entry.includes(held), "and every condition it attached");
+  assert.match(entry, /did not pass verify/);
+  // The refusal is still a refusal: nothing was ruled and nothing was merged.
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false);
+  assert.equal(gitOk(["cat-file", "-e", "main:app/index.ts"], d), false);
+  assert.equal(git(["status", "--porcelain"], d), "");
+});
+
+// A reply the ruling protocol could not be read out of costs the same turn and leaves the
+// same silence, so it is recorded the same way — with the reply's failure in place of a
+// verdict, because there is no verdict to keep.
+test("a reply with no verdict block is recorded as a turn spent with no ruling read out of it", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "pass" });
+  const dir = mkdtempSync(join(tmpdir(), "sdlc-rule-build-mock-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "rule.json"), JSON.stringify({ text: "I would rather not put this in a block." }));
+  process.env.SDLC_MOCK_DIR = dir;
+
+  await assert.rejects(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }), /no verdict block/);
+  const run = runLinesOnMain(d).find((l) => /unanswered/.test(l));
+  assert.ok(run, `no unanswered line in the run record: ${runLinesOnMain(d).join(" | ")}`);
+  assert.match(run, /no verdict block/);
+  const [entry] = rulingJournalOnMain(d);
+  assert.ok(entry, "the turn it cost is journalled even though no ruling came out of it");
+  assert.match(entry, /turns: 1/);
+  assert.match(entry, /no verdict block/);
+  assert.ok(!/\*\*Verdict:\*\*/.test(entry), "there is no verdict to record");
+});
+
+// The human seat is recorded the same way, and for the same reason: what happened to the
+// proposal is the same fact on either seat. There is no turn behind it, so the cost is
+// recorded as nothing rather than left out.
+test("a person's refused ruling is recorded on main too, at no cost", (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "unbound" });
+  const held = "the results list still has no accessible name";
+  assert.throws(() => rule(d, "build-slice-1", "approve", { by: "tech-lead", note: "looks fine", conditions: [held] }));
+  const run = runLinesOnMain(d).find((l) => /refused/.test(l));
+  assert.ok(run, `no refusal in the run record: ${runLinesOnMain(d).join(" | ")}`);
+  assert.match(run, /rule build-slice-1 refused at G3 by tech-lead \(human\)/);
+  const [entry] = rulingJournalOnMain(d);
+  assert.ok(entry);
+  assert.match(entry, /turns: 0/);
+  assert.match(entry, /cost: 0/);
+  assert.ok(entry.includes(held));
+  assert.equal(git(["status", "--porcelain"], d), "");
+});
+
+// A tampered working tree is the one refusal that records nothing: switching to main with
+// uncommitted changes present carries them across wherever the file is identical on both
+// branches, which would put the tampering on main under a commit about a refused ruling.
+test("a refusal on a tampered tree records nothing and leaves the tampering where it was made", async (t) => {
+  withMock(t);
+  const d = project(t);
+  buildProposal(d, { verdict: "pass" });
+  const dir = mkdtempSync(join(tmpdir(), "sdlc-rule-build-mock-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "rule.json"), JSON.stringify({
+    text: `\`\`\`json\n${JSON.stringify({ verdict: "approve", rationale: "fine", conditions: [] })}\n\`\`\``,
+    files: { "app/index.ts": "export const tampered = 1;\n" },
+  }));
+  process.env.SDLC_MOCK_DIR = dir;
+
+  await assert.rejects(() => ruleByAgent(d, "build-slice-1", { persona: "reviewer" }), /modified the working tree/);
+  assert.deepEqual(rulingJournalOnMain(d), [], "nothing was written to main while the tree was dirty");
+  assert.match(git(["status", "--porcelain"], d), /app\/index\.ts/, "and the tampering is still visible");
+});
