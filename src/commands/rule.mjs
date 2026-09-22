@@ -306,25 +306,33 @@ export function assertAccountedRulable(projectDir, name, verdict, conditions) {
   if (unknown) throw new Error(withRulingPreserved(`rule ${name}: ${unknownRefGuidance(unknown.ref, open)}`, verdict, conditions));
 }
 
-// The first of the three defects above that a re-prompt can fix mechanically, checked in
-// the same order the hard asserts above apply them and reporting only the first: one
-// re-prompt turn, the same as the unparsed-conditions path in `ruleByAgent`, is what the
-// ordinary case needs, because these are formatting slips — a verb used without its
-// reason, a plain line naming a path outside the stage's workspace — rather than a
-// disagreement with the ruling itself.
+// The first defect above a second turn can answer, checked in the order the hard asserts
+// below apply them and reporting only the first, so the re-prompt always names the line the
+// refusal would have named. One re-prompt turn, the same ceiling the unparsed-conditions
+// path in `ruleByAgent` holds itself to.
 //
-// What is deliberately not read here is the other half of `assertOverreachRulable` and
-// `assertAddressedRulable`: an approval carrying a condition that says the work belongs to
-// another verdict entirely. That is not a line with the wrong shape a rewrite can fix; it
-// is the verdict and the condition disagreeing about what was just ruled, and asking the
-// persona to reword the line would really be asking it to pick a different verdict — a
-// second bite at the ruling itself, not a correction. It is left to the hard asserts,
-// unprompted, exactly as it always was.
+// Two kinds of defect are read here and they are answered differently. Most are formatting
+// slips — a verb used without its reason, a plain line naming a path outside the stage's
+// workspace, a reference to a condition nothing has open — and the second turn is asked to
+// rewrite one line and leave the rest alone.
+//
+// An approval carrying a form only a return may carry is the other kind. It is the verdict
+// and the condition disagreeing about what was just ruled, and the ruler's position behind
+// it can be entirely coherent: the artifact in front of it is right, and a different
+// artifact has to change. What the pipeline cannot do is record both claims, so the second
+// turn is asked which of the two it means. The ruling is not re-opened — both ways out
+// were already the ruler's to take, and neither is picked for it — and the guard below is
+// unchanged, so a reply that comes back with the same pairing is refused exactly as it
+// always was.
 function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
   const overreach = malformedOverreachConditions(conditions)[0];
   if (overreach) return { kind: "overreach", line: overreach };
+  const carriedOverreach = verdict === "approve" && (conditions ?? []).find((l) => overreachConditions([l]).length);
+  if (carriedOverreach) return { kind: "approval-form", verb: OVERREACH_VERB, line: carriedOverreach };
   const addressed = malformedAddressedConditions(conditions)[0];
   if (addressed) return { kind: "addressed", line: addressed };
+  const carriedAddressed = verdict === "approve" && (conditions ?? []).find((l) => addressedConditions([l]).length);
+  if (carriedAddressed) return { kind: "approval-form", verb: ADDRESSED_VERB, line: carriedAddressed };
   const accounted = malformedAccountedConditions(conditions)[0];
   if (accounted) return { kind: "accounted", line: accounted };
   // A reference to a condition nothing has open is the same kind of slip: the persona was
@@ -347,23 +355,42 @@ function defectGuidance(defect) {
   if (defect.kind === "addressed") return addressedGuidance(defect.line);
   if (defect.kind === "accounted") return accountedGuidance(defect.line);
   if (defect.kind === "unknown-ref") return unknownRefGuidance(defect.ref, defect.open);
+  if (defect.kind === "approval-form") return approvalFormGuidance(defect.verb, defect.line);
   return deliverableGuidance(defect);
 }
 
 // The re-prompt itself, built the same way the unparsed-conditions one above is: the
-// original prompt, the persona's own verdict quoted back, the offending line, and the form
-// that would have been read.
+// original prompt, the persona's own verdict quoted back, the offending line, and what
+// would have been read instead.
+//
+// The closing instruction differs by what is wrong. A misshapen line has a rewrite, and the
+// rest of the ruling is to be left untouched. An approval carrying a return-only form has
+// no rewrite — the two ways out are two verdicts — so that reply is asked to choose, and
+// told that leaving the pairing as it stands ends the ruling with nothing recorded.
+const REPROMPT_CLOSING = {
+  rewrite: [
+    "Rule again. Keep the conditions that were fine exactly as they were, rewrite this one as shown above,",
+    "and finish with the JSON block as before.",
+  ],
+  choose: [
+    "Rule again, and say which of the two you mean. Keep everything else exactly as it was, and finish with",
+    "the JSON block as before. A reply that approves and still carries the condition is refused, and nothing",
+    "of the ruling is recorded.",
+  ],
+};
+
 function conditionDefectReprompt(prompt, verdict, defect) {
-  const guidance = defectGuidance(defect);
+  const choosing = defect.kind === "approval-form";
   return [
     prompt,
     "",
-    "## Your previous reply had a condition this stage cannot carry out",
+    choosing
+      ? "## Your previous reply approved and asked for another artifact to be changed"
+      : "## Your previous reply had a condition this stage cannot carry out",
     "",
-    `You ruled ${verdict}. ${guidance}`,
+    `You ruled ${verdict}. ${defectGuidance(defect)}`,
     "",
-    "Rule again. Keep the conditions that were fine exactly as they were, rewrite this one as shown above,",
-    "and finish with the JSON block as before.",
+    ...REPROMPT_CLOSING[choosing ? "choose" : "rewrite"],
   ].join("\n");
 }
 
@@ -914,15 +941,15 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // committed at this point, and the turn is read-only, so the proposal is left open for
     // a corrected ruling.
     //
-    // Before the refusal, one more turn: the same three checks below read a fixable
-    // defect — a verb with no reason, a plain line naming a path the returned-to stage
-    // cannot deliver — the same way `grammar.unparsed` above reads an unreadable G1
-    // condition, and get the same one re-prompt. The persona was already told, in its own
-    // prompt, which paths this proposal's stage delivers (`deliverabilityNote`,
-    // `src/runner/persona.mjs`) and wrote the wrong form anyway; refusing outright throws
-    // away a verdict, a rationale and every other condition over one line a second turn
-    // fixes in the ordinary case. A reply that rules `escalate` this time is handled the
-    // same way it would have been had it done so first.
+    // Before the refusal, one more turn: the checks below read a defect a second turn can
+    // answer — a verb with no reason, a plain line naming a path the returned-to stage
+    // cannot deliver, an approval carrying a form only a return may carry — the same way
+    // `grammar.unparsed` above reads an unreadable G1 condition, and get the same one
+    // re-prompt. The persona is told both rules in its own prompt before it rules
+    // (`conditionFormsNote` and `deliverabilityNote`, `src/runner/persona.mjs`) and can
+    // still land on one of them; refusing outright throws away a verdict, a rationale and
+    // every other condition over a single line. A reply that rules `escalate` this time is
+    // handled the same way it would have been had it done so first.
     if (!executable) {
       const defect = firstFixableConditionDefect(projectDir, name, verdict, conditions ?? []);
       if (defect) {
@@ -930,7 +957,10 @@ export async function ruleByAgent(projectDir, name, { persona }) {
         // The console line a person watching a batch run needs, the moment the re-prompt
         // fires rather than only afterward: what the first reply got wrong, in the same
         // words the persona is being asked to fix.
-        console.log(`${name}: re-asking once — the first reply's condition could not be carried out. ${guidance}`);
+        const wrong = defect.kind === "approval-form"
+          ? "the first reply approved and asked for another artifact to be changed"
+          : "the first reply's condition could not be carried out";
+        console.log(`${name}: re-asking once — ${wrong}. ${guidance}`);
         const next = await askOnce(conditionDefectReprompt(prompt, verdict, defect));
         metrics = sumMetrics(metrics, next.metrics);
         reprompt = `You ruled ${verdict}. ${guidance}`;
@@ -942,8 +972,8 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       }
       // The final word, whether or not a re-prompt was tried: a defect still present here
       // — the same one, or a different one the rewrite introduced — refuses the ruling,
-      // exactly as it always did. Nothing about what these three refuse has changed; only
-      // the chance to fix the one line that sinks a ruling has been added in front of it.
+      // exactly as it always did. Nothing about what these four refuse has changed; only
+      // the chance to answer the one line that sinks a ruling has been added in front of it.
       assertOverreachRulable(name, verdict, conditions ?? []);
       assertAddressedRulable(name, verdict, conditions ?? []);
       assertDeliverableRulable(name, verdict, conditions ?? []);

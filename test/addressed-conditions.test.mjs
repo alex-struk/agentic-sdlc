@@ -140,6 +140,16 @@ function agentReplySequence(entries, rationale = "the slice is sound; the plan i
   process.env.SDLC_MOCK_DIR = d;
 }
 
+// The same, where the verdict changes between turns as well as the conditions: each entry
+// is `[verdict, conditions]`.
+function agentVerdictSequence(entries, rationale = "the slice is sound; the plan it was cut from is not") {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-addressed-mock-"));
+  const turn = ([verdict, conditions]) => ({ text: `\`\`\`json\n${JSON.stringify({ verdict, rationale, conditions })}\n\`\`\`` });
+  writeFileSync(join(d, "rule.json"), JSON.stringify({ sequence: entries.map(turn) }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = d;
+}
+
 const requestsOnMain = (dir) => {
   const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], dir);
   if (branch !== "main") git(["checkout", "-q", "main"], dir);
@@ -274,6 +284,73 @@ test("an approval may not carry it, from either seat", async (t) => {
   await assert.rejects(() => ruleByAgent(dir, "slice-2-review", { persona: "reviewer" }), /addressed-to.*return/s);
   assert.ok(!existsSync(join(dir, ".sdlc/gates/slice-2-review.yaml")));
   assert.deepEqual(requestsOnMain(dir), []);
+});
+
+// An approval carrying this form is the verdict and the condition disagreeing about what
+// was just ruled, and the ruler's position can be perfectly coherent: the artifact in front
+// of it is right, and another artifact has to change. The pipeline records neither claim,
+// so the ruler is asked once which of the two it means rather than losing the turn over it.
+test("an approval carrying it is re-prompted once, and the corrected ruling is what lands", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-approve-reprompt-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  openProposal(dir, "slice-2-review");
+  agentVerdictSequence([["approve", [CONDITION]], ["return", [MINE, CONDITION]]]);
+  const logs = [];
+  const origLog = console.log;
+  console.log = (...a) => logs.push(a.join(" "));
+  let r;
+  try { r = await ruleByAgent(dir, "slice-2-review", { persona: "reviewer" }); }
+  finally { console.log = origLog; }
+
+  assert.equal(r.verdict, "return");
+  assert.equal(r.reprompted, true);
+  const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/slice-2-review.yaml"), "utf8"));
+  assert.deepEqual(gate.conditions, [MINE, CONDITION]);
+  assert.match(gate.reprompt, /An approval may not carry it/);
+  assert.equal(gate.turns, 2, "both turns are counted, not only the one that answered");
+  // Said at the terminal as it happens, the way every other re-prompt is.
+  assert.ok(logs.some((l) => /re-asking once/.test(l)), logs.join(" | "));
+  // And the corrected ruling did the filing, so the request reached the stage.
+  assert.deepEqual(requestsOnMain(dir).map(withoutTime), [
+    { stage: "plan", why: WHY, from: "slice-2-review", gate: "G3", by: "agent:reviewer" },
+  ]);
+});
+
+// The other way out of the re-prompt: the ruler meant the approval, and drops the
+// condition. Nothing is filed, because nothing asked for anything.
+test("an approval that drops the condition on the second turn is approved with it gone", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-approve-dropped-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  openProposal(dir, "slice-2-review");
+  agentVerdictSequence([["approve", [CONDITION]], ["approve", []]]);
+  const r = await ruleByAgent(dir, "slice-2-review", { persona: "reviewer" });
+  assert.equal(r.verdict, "approve");
+  assert.equal(r.reprompted, true);
+  assert.deepEqual(requestsOnMain(dir), []);
+});
+
+// The guard is unchanged: a second reply still carrying it is refused exactly as before,
+// and the refusal shows the whole ruling rather than the one line that sank it.
+test("an approval still carrying it after the re-prompt is refused, with the verdict and every condition shown", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-approve-twice-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  openProposal(dir, "slice-2-review");
+  agentVerdictSequence([["approve", [MINE, CONDITION]], ["approve", [MINE, CONDITION]]]);
+  await assert.rejects(() => ruleByAgent(dir, "slice-2-review", { persona: "reviewer" }), (e) => {
+    assert.match(e.message, /An approval may not carry it/);
+    assert.match(e.message, /verdict: approve/);
+    assert.ok(e.message.includes(MINE), "the condition that was fine is shown too");
+    assert.ok(e.message.includes(CONDITION));
+    return true;
+  });
+  assert.ok(!existsSync(join(dir, ".sdlc/gates/slice-2-review.yaml")), "nothing was ruled");
+  assert.deepEqual(requestsOnMain(dir), [], "and nothing was filed");
 });
 
 test("it files a request and changes nothing the stage it is addressed to owns", async (t) => {
