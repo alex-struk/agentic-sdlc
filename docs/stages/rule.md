@@ -465,6 +465,56 @@ checked out, and a branch opened weeks ago carries the briefs of the day it was 
 is the ruler's instruction sheet rather than part of the proposal, so a correction to a persona
 applies to every proposal still open when it is made.
 
+### An escalation that reaches nobody
+
+An escalation is a hand-off, so a verdict that escalates to the role the escalating seat itself
+holds — `by: agent:<role>` and `escalate_to: <role>` — hands the question to no seat the pipeline
+can fill. Either path can produce one: a persona ruling an escalation raised by another persona and
+escalating again, or a gate whose holder and escalation target are the same role.
+
+It is recorded, not refused. The gate file carries the verdict, the rationale, the conditions, the
+metrics and the `escalate_to` the verdict named, plus a `stalled` line saying the question reached
+nobody and a person has to rule it or the proposal has to be withdrawn. Refusing would destroy a
+ruling the persona produced, and the two remaining verdicts are not open to a ruler that has just
+said the decision is above the pipeline.
+
+The stall is said on the terminal in the turn it happened, in the run record, on the gate log and
+the proposal page, in the state site's counts, and in the refusal a stage gets when it tries to run
+again behind the still-open proposal — where "rule it" would otherwise be the instruction that
+produced the loop.
+
+A role escalating to a different role is unaffected, and so is a person in the seat: a human
+`--by <role>` carries no `agent:` prefix, which is what makes a person ruling an escalation an
+agent of the same role raised the way out of a stall rather than another instance of one.
+
+## The configuration a ruling reasons from
+
+`.sdlc/config.yaml` is versioned with the repository, so the copy on a proposal branch is the
+configuration as it stood the day the branch was opened. The prompt quotes it resolved block by
+block instead, under **The project's configuration**, and tells the ruler to read that rather than
+the file on the branch:
+
+- `main` governs, because it is what is true now. An address a target answers on, the services it
+  depends on, the stack profile its toolchain is — these describe the world the project runs in,
+  and the branch's copy of them is a stale snapshot.
+- `policy` is read from the branch. It is the terms the proposal was made under, and it is the copy
+  the pipeline already acted on when it chose the seat ruling this gate.
+- A block the proposal itself changes is read from the branch, whichever kind it is, with `main`'s
+  current value quoted beside it. A proposal whose subject *is* the configuration is ruled on what
+  it proposes; `main`'s copy would be the absence of the change it was asked about.
+
+Whether the proposal changes a block is a comparison between the branch and the merge base — the
+same comparison the diff is taken over — not something read out of the proposal's prose.
+
+Where the branch and `main` disagree on a block the proposal does not change, both values are
+quoted under **Where the branch disagrees with `main`** and the disagreement is named. Showing one
+of them silently is what let two rulings in a row reason from an environment the project had left.
+
+The instructions an earlier ruling left owed are quoted from `main`'s ledger for the same reason:
+`.sdlc/conditions.yaml` is written on `main`, so a branch carries whatever had been filed when it
+was opened, and the guard that refuses a ruling for closing a reference nothing has open already
+reads `main`'s copy.
+
 The gate file records `verdict: escalated`, `escalate_to: <the gate's escalate_to>`, and a
 rationale beginning `mandatory escalation: <reason>`. The proposal branch is left open — nothing
 is merged — and a run-record line is appended the same as for any other ruling.
