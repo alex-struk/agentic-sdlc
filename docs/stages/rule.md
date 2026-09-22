@@ -281,8 +281,9 @@ as an instruction about what the replacement must not do.
 
 Two things it is not. It is not a verdict on the criterion: nothing about the row, the index or the
 suite is touched, and the criterion stays unverified until a regenerated test binds and passes — so
-an `approve` carrying this line is refused outright rather than becoming a way to sign off a
-criterion nothing can exercise. And it is not a line that can be filed empty: a form with no reason,
+an `approve` carrying this line is refused rather than becoming a way to sign off a criterion
+nothing can exercise. On the agent seat the ruler is asked once which of the two it means before
+that refusal stands (below). And it is not a line that can be filed empty: a form with no reason,
 or one whose reason is only whitespace, refuses the ruling before anything is written, because the
 reason is the whole of what the request carries and a request without one produces the same test
 again.
@@ -328,7 +329,7 @@ way, so what was asked for and who asked survives the revision being merged
 (`docs/decisions/0034-a-queue-read-as-though-it-held-one-thing.md`).
 
 Reopening is not accepting, and the guard is the same shape as the one above: an `approve` carrying
-the form is refused outright, a form with no reason refuses the ruling before anything is written,
+the form is refused, a form with no reason refuses the ruling before anything is written,
 the filing commit touches the request file and nothing else, and the change itself is ruled by the
 gate the addressed stage holds rather than by the ruler who asked for it
 (`docs/decisions/0024-a-gate-that-only-moves-forward.md`).
@@ -394,6 +395,49 @@ too, and says so rather than naming a stage.
 Only a return is checked. An approval's conditions are commentary no `--revise` run reads, and the
 verdicts that may not carry a cross-stage request at all are refused by the two guards above.
 
+### A defect a second turn can answer, and what a refusal leaves behind
+
+Every refusal above fires after the ruling turn has answered, because the verdict is the thing
+being refused. On the agent seat, a ruling is therefore given **one** more turn before any of them
+stands — one per ruling, not one per guard. What the second turn is asked depends on what was
+wrong:
+
+- **A line to rewrite.** A condition verb used without its reason, a plain condition naming a path
+  the returned-to stage cannot deliver, or an accounting line naming a condition nothing has open.
+  The persona's own reply is quoted back with the offending line and what it should have written,
+  and it is told to keep the rest of the ruling exactly as it was.
+- **A verdict to choose.** An approval carrying a `test-overreaches` or `addressed-to` line, or an
+  approval on a `build-slice-*` proposal with no current passing verify result. There is no line to
+  rewrite here: the verdict and the record are two positions at once, so the ruler is asked which
+  of them it means, with both ways out named. Neither is picked for it — both were already its own
+  to take.
+
+Whatever comes back, corrected or not, replaces the reply that triggered it and is what the
+refusals are then run against, in the words they always used. A reply that switches to `escalate`
+on the second turn is handled exactly as it would have been had it escalated on the first
+(`docs/decisions/0028-a-guard-that-corrected-a-fault-by-destroying-the-work-that-held-it.md`,
+`docs/decisions/0036-every-guard-in-the-ruling-path-and-what-a-refusal-costs.md`).
+
+Three refusals get no second turn, because none of them has a ruling to save: a reply the verdict
+protocol could not be read out of, a turn that failed after its own automatic retry, and a turn
+that wrote to the working tree. The last leaves its edit in place rather than resetting it, so the
+tampering stays visible where it was made.
+
+The human seat gets no second turn either, and needs none: there is no turn to redo, the refusal
+hands the whole ruling back, and the line that was fine can be given again beside the one that was
+rewritten.
+
+**A refused ruling writes no gate file — and is recorded anyway.** Two entries on `main`, in a
+commit of their own: a run-record line naming the proposal, the gate, the seat and the guard's own
+sentence, and a journal entry beside it holding the verdict, the rationale, every condition the
+ruling produced, and what the turns cost. The cost lands in the state site's totals, so a turn
+spent on a refusal is counted rather than missing. `main` rather than the branch, because a refused
+proposal is still open and may be ruled again or abandoned, and a record on a branch nobody merges
+is a record nobody reads. A turn nothing was read out of is recorded the same way, with the reply's
+failure in place of a verdict. A human ruling is recorded at zero cost, since no turn was spent. A
+refusal on a tampered working tree records nothing at all: switching to `main` to write it would
+carry the tampering across.
+
 ## Mandatory escalation
 
 Some proposals never reach the persona at all. Before asking, `sdlc rule` escalates on its own
@@ -454,10 +498,21 @@ Nothing is materialised into a separate workspace for a ruling.
   could not be bound or could not be run is still rulable in the direction that fits it. The check
   is on the verdict rather than on the seat: a person typing `--by` is refused the same approval as
   the persona holding the gate, and on the agent path it runs once the persona has answered, before
-  anything about the ruling is written. The one approval that goes through without a passing result
+  anything about the ruling is written — and there the missing evidence is quoted back for one more
+  turn first, so a rationale reached honestly is not thrown away over a verdict the ruler can still
+  change (below). The one approval that goes through without a passing result
   is the one made by the target of a standing escalation, on either seat, on an escalation somebody
   else raised — the escalation and the ruling on top of it are together the record of the override
   (`docs/decisions/0022-a-guard-that-stopped-the-failure-being-recorded.md`).
+
+- **On the agent path, that this machine can sign in at all**, asked before the acceptance
+  typecheck and the ruling turn rather than discovered inside them. It is a one-turn session
+  against the same config home, binary and flags the ruling turn will use, so it exercises the
+  credential the ruling will actually authenticate with, and it costs a fraction of a cent against
+  a ruling turn that is paid for twice when it fails. The refusal says which credential is read and
+  where from, and never what it is. Skipped under the mock executor, which reaches no session at
+  all. Nothing is recorded for it: no turn was spent and no ruling was produced, and the proposal
+  is left exactly as open as it was.
 
 For the agent path (`--by agent:<persona>` or `--pending`), the policy check is narrower: `by`
 must equal the gate's `holder` exactly. A persona agent is never allowed to act as the
