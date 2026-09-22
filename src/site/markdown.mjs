@@ -4,6 +4,7 @@
 // a change to the project visible as a change to a file.
 import { STATES } from "../spec/criteria.mjs";
 import { RESULT_VALUES, resultRows } from "./model.mjs";
+import { seatLabel } from "../lib/seat.mjs";
 
 // A GitHub-flavoured Markdown table built from a column-array header and one array of
 // cells per row, rather than joining strings by hand at each call site: that is what
@@ -102,8 +103,14 @@ export function renderMarkdown(model) {
   // `Cost` is what the ruling turn itself cost. A human ruling has no turn to measure
   // and its cell is blank, which is not the same claim as $0 — an agent ruling that
   // genuinely cost nothing (a mandatory escalation, a mock) does print $0.
-  const gatesMd = ["# Gate log", "", "| When | Proposal | Gate | Verdict | By | Held | Cost | Sample |", "| --- | --- | --- | --- | --- | --- | --- | --- |",
-    ...model.gates.map((g) => `| ${g.at} | ${g.name} | ${g.gate} | ${g.verdict} | ${g.by} | ${g.held_by === "agent" ? "agent-held, unsampled" : "human"} | ${g.cost === undefined ? "" : `$${g.cost}`} | ${model.sampled.has(g) ? "sample" : ""} |`), ""].join("\n");
+  // `Made by` is the seat that ruled, in the three kinds that exist, named through the one
+  // mapping both renderings share (`src/lib/seat.mjs`). A value the mapping cannot place is
+  // quoted back as unknown, since the question this column answers is whether a person
+  // decided, and the reading that must never be reached by default is the human one.
+  // `Sample` is a column of its own and the only place a row claims anything about
+  // sampling, so a ruling cannot be described as unsampled beside its own `sample`.
+  const gatesMd = ["# Gate log", "", "| When | Proposal | Gate | Verdict | By | Made by | Cost | Sample |", "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...model.gates.map((g) => `| ${g.at} | ${g.name} | ${g.gate} | ${g.verdict} | ${g.by} | ${seatLabel(g.held_by)} | ${g.cost === undefined ? "" : `$${g.cost}`} | ${model.sampled.has(g) ? "sample" : ""} |`), ""].join("\n");
 
   const runsMd = ["# Run log", "", ...model.runs.map((r) => r.text)].join("\n");
 
@@ -161,6 +168,9 @@ export function renderMarkdown(model) {
     `- Rulings cost: $${model.costs.rulings}`,
     `- Total cost: $${model.costs.total}`,
     `- Agent-held rulings: ${model.counts.agentRulings}`,
+    `- Runner rulings (automatic, no seat held): ${model.counts.runnerRulings}`,
+    `- Human rulings: ${model.counts.humanRulings}`,
+    `- Rulings whose seat this page does not recognise: ${model.counts.unknownSeatRulings}`,
     `- Open escalations: ${model.counts.openEscalations}`,
     `- Stalled proposals: ${model.counts.stalled}`,
     `- Open proposals: ${model.counts.openProposals}`, ""].join("\n");

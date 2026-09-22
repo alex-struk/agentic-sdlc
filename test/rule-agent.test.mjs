@@ -494,7 +494,7 @@ test("ruleByAgent records what the ruling turn cost in the gate file and the sit
     assert.equal(gate.turns, 1);
     assert.equal(gate.session, "mock");
     const gates = readFileSync(join(dir, "site/gates.md"), "utf8");
-    assert.match(gates, /\| Held \| Cost \| Sample \|/);
+    assert.match(gates, /\| Made by \| Cost \| Sample \|/);
     assert.match(gates.split("\n").find((l) => l.includes("p11")), /\|\s*\$0\s*\|/);
     const index = readFileSync(join(dir, "site/index.md"), "utf8");
     assert.match(index, /Rulings cost: \$0\n/);

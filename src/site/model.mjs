@@ -12,6 +12,7 @@ import { STATES, orderDomains } from "../spec/criteria.mjs";
 import { coverage, readNotTestable } from "../checks/tests.mjs";
 import { followUpState } from "../stages/shared.mjs";
 import { RESULT_VALUES } from "../testrun/results.mjs";
+import { SEAT_AGENT, SEAT_HUMAN, SEAT_RUNNER, SEAT_UNKNOWN, seatKind } from "../lib/seat.mjs";
 
 // Every value a results row's `result` field can hold, in the fixed order the board and
 // the results page always report them in. The list is the one the suite and the verify
@@ -34,10 +35,19 @@ function isoWeek(at) {
 // Sampling is a per-(gate, ISO week) cap on agent-held rulings: the first N by `at`
 // (chronological, not display order) are marked, so which rulings get sampled does not
 // depend on how the table happens to be sorted for reading.
+//
+// Only a persona agent's ruling is eligible, and the seat is placed through the total
+// mapping rather than by testing one string (`src/lib/seat.mjs`). `human_sample_per_week`
+// buys a person reading back a judgement an agent made, and neither other seat has one to
+// read: a person's ruling is what the sampling is *for*, and the runner's verdict is a test
+// result written down, with nothing a second reader could reach a different view on. A seat
+// the mapping cannot place is out for the same reason it is never called a person — nothing
+// is known about it, least of all that it is an agent. None of the three spends the quota,
+// so the week's re-reads all land on rulings a re-read means something about.
 function computeSampled(gates, cfg) {
   const byGateWeek = new Map();
   for (const g of gates) {
-    if (g.held_by !== "agent") continue;
+    if (seatKind(g.held_by) !== SEAT_AGENT) continue;
     const key = `${g.gate}|${isoWeek(g.at)}`;
     if (!byGateWeek.has(key)) byGateWeek.set(key, []);
     byGateWeek.get(key).push(g);
@@ -196,6 +206,8 @@ export function collect(projectDir) {
     .filter((g) => g.verdict === "return" && !approvedStems.has(stemOf(g.name)))
     .filter((g, i, all) => all.findIndex((o) => stemOf(o.name) === stemOf(g.name)) === i);
 
+  const ruledBy = (kind) => gates.filter((g) => g.verdict !== "escalated" && seatKind(g.held_by) === kind).length;
+
   const journalCost = money(journal.reduce((sum, e) => sum + (Number(e.cost) || 0), 0));
   const rulingsCost = money(gates.reduce((sum, g) => sum + (Number(g.cost) || 0), 0));
 
@@ -208,7 +220,15 @@ export function collect(projectDir) {
     gates, sampled, runs, journal, proposals, returned,
     costs: { journal: journalCost, rulings: rulingsCost, total: money(journalCost + rulingsCost) },
     counts: {
-      agentRulings: gates.filter((g) => g.held_by === "agent" && g.verdict !== "escalated").length,
+      // One count per seat, each reached the same way. The totals used to name the agents
+      // alone, which left every other seat to be had by subtraction — and subtraction
+      // returns a single number covering a person's decision and the runner's arithmetic
+      // alike. An escalation decided nothing and is counted as an open escalation instead,
+      // from every seat for the same reason.
+      agentRulings: ruledBy(SEAT_AGENT),
+      runnerRulings: ruledBy(SEAT_RUNNER),
+      humanRulings: ruledBy(SEAT_HUMAN),
+      unknownSeatRulings: ruledBy(SEAT_UNKNOWN),
       openEscalations: gates.filter((g) => g.verdict === "escalated").length,
       // An escalation addressed to the role that raised it: counted apart from the rest
       // because nobody is waiting on it, which is the opposite of what an open escalation

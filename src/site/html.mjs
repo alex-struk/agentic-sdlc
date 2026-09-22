@@ -12,6 +12,7 @@ import { RESULT_VALUES, resultRows } from "./model.mjs";
 import { escapeHtml, markdownToHtml, inline } from "./md-to-html.mjs";
 import { stylesheet } from "./theme.mjs";
 import { TOKENS_SOURCE } from "./tokens.mjs";
+import { SEAT_AGENT, SEAT_RUNNER, SEAT_UNKNOWN, seatKind, seatLabel } from "../lib/seat.mjs";
 
 const e = escapeHtml;
 
@@ -44,6 +45,17 @@ function chip(text, kind) {
 function verdictChip(verdict) {
   const kind = ["approve", "return", "escalated"].includes(verdict) ? verdict : "muted";
   return chip(verdict ?? "", kind);
+}
+
+// Which of the three seats ruled, in its own tone. The runner is muted rather than given
+// a colour of its own: a coloured chip beside the two seats that were held reads as a third
+// role, and nothing was held here. An unrecognised value is chipped in the danger tone,
+// because a gate file the site cannot place is something to go and look at rather than a
+// detail to skim past (`src/lib/seat.mjs`).
+const SEAT_TONE = { [SEAT_AGENT]: "escalated", [SEAT_RUNNER]: "muted", [SEAT_UNKNOWN]: "return" };
+
+function seatChip(heldBy) {
+  return chip(seatLabel(heldBy), SEAT_TONE[seatKind(heldBy)] ?? "approve");
 }
 
 function shell({ title, project, profile, depth, nav, current, main }) {
@@ -329,8 +341,18 @@ function domainPage(domain, model) {
 // to it, and one whose policy sets no re-read quota should not be told what sampling is.
 function gateLegend(model) {
   const items = [];
-  if (model.gates.some((g) => g.held_by === "agent")) {
-    items.push(["Made by", "A persona agent is an agent that read the gate holder's written brief and ruled in that role. A person is someone who ran the command themselves."]);
+  // The `Made by` entry is built from the seats this log actually carries. A project whose
+  // gates were all ruled by people needs no entry at all; one that carries any other seat
+  // needs the sentence for that seat beside the sentence for a person, since the whole
+  // point of the column is telling them apart.
+  const seats = new Set(model.gates.map((g) => seatKind(g.held_by)));
+  if (seats.has(SEAT_AGENT) || seats.has(SEAT_RUNNER) || seats.has(SEAT_UNKNOWN)) {
+    const said = [];
+    if (seats.has(SEAT_AGENT)) said.push("A persona agent is an agent that read the gate holder's written brief and ruled in that role.");
+    said.push("A person is someone who ran the command themselves.");
+    if (seats.has(SEAT_RUNNER)) said.push("The runner is the pipeline recording a verdict it worked out from evidence it had already gathered, such as an acceptance run that failed: no seat was held and nobody was asked, so there is no judgement behind it.");
+    if (seats.has(SEAT_UNKNOWN)) said.push("An unknown seat is a value in the gate file this page cannot place, quoted back as it was found; it is not read as a person.");
+    items.push(["Made by", said.join(" ")]);
   }
   if (model.sampled.size > 0) {
     items.push(["Human re-read", "Policy sets a number of agent-held rulings per gate per week for a person to read back. Those are marked here. It is a spot check on the agents, not a second approval."]);
@@ -353,7 +375,7 @@ function gatesPage(model) {
     <td>${e(g.gate ?? "")}</td>
     <td>${verdictChip(g.verdict)}${g.stalled ? ` ${chip("stalled", "return")}` : ""}</td>
     <td>${e(g.by ?? "")}</td>
-    <td>${g.held_by === "agent" ? chip("persona agent", "escalated") : chip("a person", "approve")}</td>
+    <td>${seatChip(g.held_by)}</td>
     <td class="num">${g.cost === undefined ? "" : e(dollars(g.cost))}</td>
     <td>${model.sampled.has(g) ? chip("yes", "open") : ""}</td>
   </tr>`).join("");
@@ -394,7 +416,7 @@ function rulingBlock(p) {
   const r = p.ruling;
   if (!r) return `<p class="note">Open, waiting for ${e(p.holder)}.</p>`;
   const parts = [`<section class="ruling"><h2>Ruling</h2>`,
-    `<p>${verdictChip(r.verdict)} by ${e(r.by ?? "")}${r.held_by === "agent" ? " (persona agent)" : ""}${r.at ? ` on ${e(when(r.at))}` : ""}.</p>`];
+    `<p>${verdictChip(r.verdict)} by ${e(r.by ?? "")} (${e(seatLabel(r.held_by))})${r.at ? ` on ${e(when(r.at))}` : ""}.</p>`];
   if (r.verdict === "escalated" && r.escalate_to) parts.push(`<p>Escalated to ${e(r.escalate_to)}.</p>`);
   // An escalation that named the role that raised it handed the question to no seat this
   // pipeline can fill, so the page says the proposal is going nowhere rather than leaving

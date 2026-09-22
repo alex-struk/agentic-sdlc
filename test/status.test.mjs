@@ -23,7 +23,7 @@ test("site pages summarise criteria, gates and runs", () => {
   const index = readFileSync(join(d, "site/index.md"), "utf8");
   assert.match(index, /\| a \| 1 \| 1 \| 0 \| 0 \| 0 \| 0 \| 0 \| 2 \|/);
   assert.match(index, /\[a\]\(criteria\/a\.md\)/);
-  assert.match(readFileSync(join(d, "site/gates.md"), "utf8"), /agent-held/);
+  assert.match(readFileSync(join(d, "site/gates.md"), "utf8"), /persona agent/);
   assert.match(readFileSync(join(d, "site/runs.md"), "utf8"), /10:00:00 init/);
 });
 
@@ -123,7 +123,7 @@ test("gate sampling marks the first N agent-held rulings per gate per ISO week",
   const lines = gates.split("\n").filter((l) => l.startsWith("|") && l.includes("G3"));
   const sampleLines = lines.filter((l) => /\|\s*sample\s*\|\s*$/.test(l));
   assert.equal(sampleLines.length, 2, "one sample per ISO week (W02 and W03)");
-  const humanLine = lines.find((l) => l.includes("tech-lead") && l.includes("human"));
+  const humanLine = lines.find((l) => l.includes("tech-lead") && l.includes("a person"));
   assert.ok(humanLine);
   assert.ok(!/\|\s*sample\s*\|\s*$/.test(humanLine), "a human ruling is never sampled");
   const earliestLine = lines.find((l) => l.includes("2026-01-05T00:00:00.000Z"));
@@ -150,12 +150,12 @@ test("gate log carries a cost column and the index totals rulings alongside jour
   const d = bigFixture();
   buildSite(d);
   const gates = readFileSync(join(d, "site/gates.md"), "utf8");
-  assert.match(gates, /\| When \| Proposal \| Gate \| Verdict \| By \| Held \| Cost \| Sample \|/);
+  assert.match(gates, /\| When \| Proposal \| Gate \| Verdict \| By \| Made by \| Cost \| Sample \|/);
   const ruled = gates.split("\n").find((l) => l.includes("p-ruled"));
   assert.match(ruled, /\|\s*\$0\.25\s*\|/, ruled);
   // A human ruling has no turn to measure, so its cost cell is blank rather than $0.
   const human = gates.split("\n").find((l) => l.includes("g3-human"));
-  assert.match(human, /\|\s*human\s*\|\s*\|/, human);
+  assert.match(human, /\|\s*a person\s*\|\s*\|/, human);
   const index = readFileSync(join(d, "site/index.md"), "utf8");
   assert.match(index, /Journal cost: \$4\n/);
   assert.match(index, /Rulings cost: \$0\.25\n/);
@@ -445,4 +445,105 @@ test("a stalled escalation reads as going nowhere, not as waiting on somebody", 
   assert.match(page, /the role it holds itself/);
   assert.match(page, /This one is the pipeline owner's call/, "the ruler's reasoning is still on the page");
   assert.match(readFileSync(join(d, "site/index.md"), "utf8"), /- Stalled proposals: 1/);
+});
+
+// Three seats rule a gate, and the site knew two of them. `verify` writes its own return —
+// `by: runner:verify`, `held_by: runner` — and every renderer read "not an agent" as "a
+// person", so an automatic verdict was published as a human sign-off nobody had been asked
+// for. The fixture carries one of each seat plus the two shapes a gate file read off disk
+// can arrive in that none of the three names.
+function seatFixture() {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-site-seats-"));
+  mkdirSync(join(d, ".sdlc/gates"), { recursive: true });
+  mkdirSync(join(d, ".sdlc/proposals"), { recursive: true });
+  mkdirSync(join(d, "spec"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), CONFIG);
+  writeFileSync(join(d, "spec/criteria-index.json"), JSON.stringify({ criteria: [] }));
+
+  writeFileSync(join(d, ".sdlc/proposals/build-slice-1.md"),
+    `---\ngate: G3\nquestion: "Ship slice 1?"\nrecommendation: "Ship"\nopened: 2026-01-05T00:00:00.000Z\n---\n\n# Ship slice 1?\n\n**Recommendation.** Ship\n`);
+  writeFileSync(join(d, ".sdlc/gates/build-slice-1.yaml"),
+    `gate: G3\nverdict: return\nby: runner:verify\nheld_by: runner\nrationale: |2-\n  Two criteria failed.\nconditions: []\nat: 2026-01-05T06:00:00.000Z\n`);
+  writeFileSync(join(d, ".sdlc/gates/seat-agent.yaml"),
+    `gate: G3\nverdict: approve\nby: agent:reviewer\nheld_by: agent\nrationale: |2-\n  ok\nconditions: []\nat: 2026-01-05T07:00:00.000Z\n`);
+  writeFileSync(join(d, ".sdlc/gates/seat-human.yaml"),
+    `gate: G1\nverdict: approve\nby: tech-lead\nheld_by: human\nnote: ""\nat: 2026-01-05T08:00:00.000Z\n`);
+  writeFileSync(join(d, ".sdlc/gates/seat-odd.yaml"),
+    `gate: G1\nverdict: approve\nby: somebody\nheld_by: committee\nnote: ""\nat: 2026-01-05T09:00:00.000Z\n`);
+  writeFileSync(join(d, ".sdlc/gates/seat-absent.yaml"),
+    `gate: G1\nverdict: approve\nby: somebody-else\nnote: ""\nat: 2026-01-05T10:00:00.000Z\n`);
+  return d;
+}
+
+const gateRow = (text, name) => text.split("\n").find((l) => l.startsWith("|") && l.includes(name));
+
+test("a runner's automatic return is never shown as a ruling a person made", () => {
+  const d = seatFixture();
+  buildSite(d);
+  const row = gateRow(readFileSync(join(d, "site/gates.md"), "utf8"), "build-slice-1");
+  assert.ok(row, "the runner's return should have a row in the gate log");
+  assert.ok(!/\ba person\b/.test(row) && !/\bhuman\b/.test(row), `the runner's row claims a person ruled: ${row}`);
+  assert.match(row, /the runner, automatically/);
+
+  const html = readFileSync(join(d, "site/gates.html"), "utf8");
+  const htmlRow = html.split("<tr>").find((r) => r.includes("build-slice-1"));
+  assert.ok(htmlRow, "the runner's return should have a row on the gate page");
+  assert.ok(!htmlRow.includes("a person"), `the runner's row renders a person chip: ${htmlRow}`);
+  assert.match(htmlRow, /the runner, automatically/);
+
+  // And on the proposal's own page, where the ruling is stated in a sentence rather than
+  // a column: an unqualified "by runner:verify" reads as a seat that was held.
+  const page = readFileSync(join(d, "site/proposals/build-slice-1.html"), "utf8");
+  assert.match(page, /by runner:verify \(the runner, automatically\)/);
+});
+
+test("a seat the site does not recognise is reported as unknown, not as a person", () => {
+  const d = seatFixture();
+  buildSite(d);
+  const gates = readFileSync(join(d, "site/gates.md"), "utf8");
+  const odd = gateRow(gates, "seat-odd");
+  assert.ok(!/\ba person\b/.test(odd) && !/\bhuman\b/.test(odd), `an unrecognised seat claims a person ruled: ${odd}`);
+  assert.match(odd, /unknown seat \(committee\)/);
+
+  // A gate file with no `held_by` at all is the same question with less to go on, and the
+  // answer is the same: the site does not know, and does not guess a person.
+  const absent = gateRow(gates, "seat-absent");
+  assert.ok(!/\ba person\b/.test(absent) && !/\bhuman\b/.test(absent), absent);
+  assert.match(absent, /unknown seat \(the gate file records none\)/);
+
+  const html = readFileSync(join(d, "site/gates.html"), "utf8");
+  assert.match(html, /unknown seat \(committee\)/);
+});
+
+test("the index counts each seat apart, so no reader reaches one of them by subtraction", () => {
+  const d = seatFixture();
+  buildSite(d);
+  const index = readFileSync(join(d, "site/index.md"), "utf8");
+  assert.match(index, /Agent-held rulings: 1\n/);
+  assert.match(index, /Runner rulings \(automatic, no seat held\): 1\n/);
+  assert.match(index, /Human rulings: 1\n/);
+  assert.match(index, /Rulings whose seat this page does not recognise: 2\n/);
+});
+
+// `human_sample_per_week` buys a person reading back a judgement an agent made. The runner
+// made none — its verdict is a test result written down — so its ruling is neither sampled
+// nor allowed to spend the week's quota, which would cost the agent ruling its re-read.
+test("a runner ruling is never sampled and never consumes the week's sample quota", () => {
+  const d = seatFixture();
+  buildSite(d);
+  const gates = readFileSync(join(d, "site/gates.md"), "utf8");
+  const sampled = (name) => /\|\s*sample\s*\|\s*$/.test(gateRow(gates, name));
+  assert.equal(sampled("build-slice-1"), false, "the runner's return is not a judgement to spot-check");
+  assert.equal(sampled("seat-agent"), true, "G3's one sample that week belongs to the agent ruling");
+});
+
+// The legend explains only the terms the project's own log uses, so a runner ruling has to
+// bring its own entry rather than being covered by the sentence about persona agents.
+test("the gate legend explains the runner and the unknown seat when the log carries them", () => {
+  const d = seatFixture();
+  buildSite(d);
+  const html = readFileSync(join(d, "site/gates.html"), "utf8");
+  const legend = html.slice(html.indexOf("What the columns mean"), html.indexOf("</dl>"));
+  assert.match(legend, /no seat was held and nobody was asked/);
+  assert.match(legend, /it is not read as a person/);
 });
