@@ -248,6 +248,31 @@ test("a person in the gate seat is refused the same approval, and returns the sa
   assert.equal(gate.verdict, "return");
 });
 
+// Whether a build may be approved on criteria nobody asserted is a permission the project
+// sets at G3. Narrowed, it binds both seats the same way, and the ruler still decides every
+// other verdict.
+test("policy.gates.G3.approve_unasserted: false refuses a pass-unasserted approval from either seat", async (t) => {
+  withMock(t);
+  const agentHeld = project(t, SIMULATED.replace('G3: { holder: "agent:reviewer", escalate_to: tech-lead }',
+    'G3: { holder: "agent:reviewer", escalate_to: tech-lead, approve_unasserted: false }'));
+  buildProposal(agentHeld, { verdict: "pass-unasserted" });
+  reply(t, "approve", "the asserted criteria pass and the unasserted one is acceptable");
+  await assert.rejects(() => ruleByAgent(agentHeld, "build-slice-1", { persona: "reviewer" }), /approve_unasserted/);
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], agentHeld), false);
+
+  const personHeld = project(t, HUMAN_HELD.replace("G3: { holder: tech-lead, escalate_to: delivery-lead }",
+    "G3: { holder: tech-lead, escalate_to: delivery-lead, approve_unasserted: false }"));
+  buildProposal(personHeld, { verdict: "pass-unasserted" });
+  assert.throws(() => rule(personHeld, "build-slice-1", "approve", { by: "tech-lead", note: "fine" }), /approve_unasserted/);
+  assert.equal(rule(personHeld, "build-slice-1", "return", { by: "tech-lead", note: "assert it", conditions: ["write a test for the unasserted criterion"] }).verdict, "return");
+});
+
+test("by default a pass-unasserted build may be approved", (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "pass-unasserted" });
+  assert.equal(rule(d, "build-slice-1", "approve", { by: "tech-lead", note: "the unasserted criterion is acceptable" }).verdict, "approve");
+});
+
 // `sdlc rule` used to print one line: `<name>: <verdict> at <gate>`. That is
 // indistinguishable at the terminal from a return that carried no conditions at all, which
 // three operators each found out the hard way — the fix is what these two tests cover.

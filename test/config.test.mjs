@@ -147,3 +147,24 @@ test("policy.retries.post_check_repair is a whole number, and zero is allowed", 
   assert.deepEqual(parseConfig(withPolicy(["retries: { post_check_repair: 2 }"])).errors, []);
   assert.ok(parseConfig(withPolicy(["retries: { post_check_repair: -1 }"])).errors.length > 0);
 });
+
+// CRITICAL is a floor: a project may narrow which tiers force an escalation or block an
+// unverified test, and may not take CRITICAL out of either.
+test("policy.escalate_tiers and policy.provenance.block_unverified must keep CRITICAL", () => {
+  assert.deepEqual(parseConfig(withPolicy(["escalate_tiers: [CRITICAL]"])).errors, []);
+  assert.deepEqual(parseConfig(withPolicy(["escalate_tiers: [STANDARD, HIGH, CRITICAL]"])).errors, []);
+  assert.ok(parseConfig(withPolicy(["escalate_tiers: [HIGH]"])).errors.length > 0);
+  assert.ok(parseConfig(withPolicy(["escalate_tiers: []"])).errors.length > 0);
+  assert.deepEqual(parseConfig(withPolicy(["provenance: { block_unverified: [CRITICAL] }"])).errors, []);
+  assert.ok(parseConfig(withPolicy(["provenance: { block_unverified: [HIGH] }"])).errors.length > 0);
+  assert.ok(parseConfig(withPolicy(["provenance: { block_unverified: [CRITICAL, URGENT] }"])).errors.length > 0);
+});
+
+test("policy.gates.G3.approve_unasserted is a boolean, and only G3 carries it", () => {
+  const g3 = (extra) => GOOD.replace("G3: { holder: \"agent:reviewer\", escalate_to: tech-lead, human_sample_per_week: 5 }",
+    `G3: { holder: "agent:reviewer", escalate_to: tech-lead, human_sample_per_week: 5${extra} }`);
+  assert.deepEqual(parseConfig(g3(", approve_unasserted: false")).errors, []);
+  assert.ok(parseConfig(g3(", approve_unasserted: sometimes")).errors.length > 0);
+  assert.ok(parseConfig(GOOD.replace("G2: { holder: \"agent:architect\", escalate_to: tech-lead }",
+    "G2: { holder: \"agent:architect\", escalate_to: tech-lead, approve_unasserted: false }")).errors.length > 0);
+});

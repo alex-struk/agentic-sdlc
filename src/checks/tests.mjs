@@ -9,6 +9,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { readText } from "../lib/fsx.mjs";
+import { blockUnverifiedTiers } from "../config/policy.mjs";
 import { git } from "../lib/git.mjs";
 
 const CRITERION_LINE_RE = /^\/\/ criterion: @(\S+) v(\d+)$/;
@@ -123,6 +124,9 @@ export function checkTests(projectDir, ctx = {}) {
   const criteria = Array.isArray(index.criteria) ? index.criteria : [];
   const byId = new Map(criteria.map((c) => [c.id, c]));
   const defaultTier = ctx.config?.policy?.default_tier ?? "STANDARD";
+  // The tiers at which a test edited outside the blind workspace fails outright; at every
+  // other tier it needs an attestation (`policy.provenance.block_unverified`).
+  const blockTiers = blockUnverifiedTiers(ctx.config);
   // Read once, with `messages` so either file's own YAML parse failure is reported by
   // name instead of silently read back as empty — the same file each is used from below.
   const notTestable = readNotTestable(projectDir, messages);
@@ -186,7 +190,7 @@ export function checkTests(projectDir, ctx = {}) {
     const tier = entry.tier ?? defaultTier;
     const provenance = resolveProvenance(projectDir, f.relPath, provenanceClaim);
     if (provenance === "unverified") {
-      if (tier === "HIGH" || tier === "CRITICAL") {
+      if (blockTiers.includes(tier)) {
         messages.push(`${f.relPath}: unverified provenance fails outright at tier ${tier}`);
       } else {
         const attested = attestations.some((a) => a && a.file === f.relPath && a.by);

@@ -196,7 +196,7 @@
               "$ref": "#/definitions/gate"
             },
             "G3": {
-              "$ref": "#/definitions/gate"
+              "$ref": "#/definitions/reviewGate"
             },
             "G-POL": {
               "$ref": "#/definitions/gate"
@@ -204,12 +204,19 @@
           }
         },
         "default_tier": {
-          "enum": [
-            "LOW",
-            "STANDARD",
-            "HIGH",
-            "CRITICAL"
-          ]
+          "$ref": "#/definitions/tier"
+        },
+        "escalate_tiers": {
+          "$ref": "#/definitions/tiersWithCritical"
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "block_unverified": {
+              "$ref": "#/definitions/tiersWithCritical"
+            }
+          }
         },
         "rungs": {
           "type": "object",
@@ -432,6 +439,45 @@
           }
         },
         "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "tier": {
+      "enum": [
+        "LOW",
+        "STANDARD",
+        "HIGH",
+        "CRITICAL"
+      ]
+    },
+    "tiersWithCritical": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/tier"
+      },
+      "uniqueItems": true,
+      "contains": {
+        "const": "CRITICAL"
+      }
+    },
+    "reviewGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "holder"
+      ],
+      "properties": {
+        "holder": {
+          "$ref": "#/definitions/gate/properties/holder"
+        },
+        "escalate_to": {
+          "$ref": "#/definitions/gate/properties/escalate_to"
+        },
+        "human_sample_per_week": {
+          "$ref": "#/definitions/gate/properties/human_sample_per_week"
+        },
+        "approve_unasserted": {
           "type": "boolean"
         }
       }

@@ -450,7 +450,8 @@ carry the tampering across.
 Some proposals never reach the persona at all. Before asking, `sdlc rule` escalates on its own
 when either is true:
 
-- the proposal's tier is `HIGH` or `CRITICAL`;
+- the proposal's tier is one `policy.escalate_tiers` names (`HIGH` and `CRITICAL` by default;
+  the list always includes `CRITICAL`);
 - the gate is named in the persona brief's `escalates` list (a persona can hold a gate and still
   always defer on it). The list lives in a YAML front-matter block at the top of the brief:
 

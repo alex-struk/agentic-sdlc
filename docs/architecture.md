@@ -56,7 +56,7 @@ repository are the primitives that shape composes into:
   (`sdlc rule <name> --by agent:<persona>`, or in a batch with `sdlc rule --pending`): a short agent
   turn reads the persona's brief (`.sdlc/personas/<persona>.md`), the proposal, the diff and the
   checks, and answers with a verdict, a rationale and any conditions, escalating on its own when the
-  tier is HIGH/CRITICAL or the gate is named in the brief's `escalates` list. The brief is read
+  tier is one `policy.escalate_tiers` names (HIGH and CRITICAL by default) or the gate is named in the brief's `escalates` list. The brief is read
   from `main`, so a correction to a persona reaches proposals that were already open.
 - **Run record** — every command that changes state calls `appendRun`, which appends one line to
   `.sdlc/runs/<date>.md`. A stage's own agent turn also gets a journal entry

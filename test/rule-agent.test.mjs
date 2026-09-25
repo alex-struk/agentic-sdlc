@@ -181,6 +181,28 @@ test("ruleByAgent: a HIGH tier proposal escalates without ever asking the person
   }
 });
 
+// Which tiers force an escalation before the persona is asked is policy. A tier the policy
+// does not name is ruled by the persona like any other proposal.
+test("ruleByAgent: the tiers that force escalation are read from policy.escalate_tiers", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-tiers-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const cfg = join(dir, ".sdlc/config.yaml");
+  writeFileSync(cfg, readFileSync(cfg, "utf8").replace(/^  default_tier: (\S+)$/m, (m) => `${m}\n  escalate_tiers: [CRITICAL]`));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "policy"], dir);
+  propose(dir, "p4h", { gate: "G0", question: "Right problem?", recommendation: "Yes.", tier: "HIGH" });
+  const mockDir = mockRule(`Reasoning.\n\n\`\`\`json\n${JSON.stringify({ verdict: "approve", rationale: "the problem is the right one", conditions: [] })}\n\`\`\``);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await ruleByAgent(dir, "p4h", { persona: "product-owner" });
+    assert.equal(r.verdict, "approve", "a HIGH proposal reaches the persona when the policy escalates only CRITICAL");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("ruleByAgent: a persona that does not hold the gate is rejected", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-rule-agent-holder-"));
   const { dir, prevEgress } = await makeProject(tmp);

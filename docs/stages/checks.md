@@ -109,10 +109,11 @@ No agent.
   starting with `propose(G3): derive-tests-`, `stage(derive-tests)` or `merge: derive-tests-` is
   genuinely blind; anything else, or a file with no clean committed history at all (untracked or
   with uncommitted changes), is unverified — except when `SDLC_STAGE=derive-tests`, which is the
-  stage's own post-check reading its output before it has committed. At LOW/STANDARD tier (the
-  criterion's own `tier`, else `policy.default_tier`) an unverified file still passes with a
-  matching entry in `attestations.yaml` naming the file and a `by`; at HIGH/CRITICAL it fails
-  outright, attestation or not.
+  stage's own post-check reading its output before it has committed. At a tier (the criterion's
+  own `tier`, else `policy.default_tier`) that `policy.provenance.block_unverified` names — HIGH
+  and CRITICAL by default, and never without CRITICAL — an unverified file fails outright,
+  attestation or not; at every other tier it still passes with a matching entry in
+  `attestations.yaml` naming the file and a `by`.
 
   `coverage(projectDir, domain)` (exported, not a check of its own) reports a domain's accepted
   criteria split into `covered`, `missing` and `notTestable` — `derive-tests`' post-check calls it

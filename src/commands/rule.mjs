@@ -19,6 +19,7 @@ import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } fro
 import { proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { heldByFor } from "../lib/seat.mjs";
+import { approvesUnasserted, escalateTiers } from "../config/policy.mjs";
 
 // Which grammar a proposal's conditions are read in is a property of the conditions, so it
 // is defined with them; `rule` is what applies it, and is where a caller reaches it.
@@ -368,7 +369,7 @@ function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
 // The conditions are read only where they are free text. Where a closed grammar owns them
 // the stage that owns the grammar is what reads them, and `grammar.unparsed` above has
 // already had its own turn on them.
-function firstRepromptableDefect(projectDir, name, verdict, conditions, { executable, onEscalation }) {
+function firstRepromptableDefect(projectDir, name, verdict, conditions, { executable, onEscalation, config }) {
   const condition = executable ? null : firstFixableConditionDefect(projectDir, name, verdict, conditions);
   if (condition) return condition;
   // The evidence an approval stands on, read here for the same reason the pairing above is:
@@ -378,7 +379,7 @@ function firstRepromptableDefect(projectDir, name, verdict, conditions, { execut
   // An approval on a standing escalation is exempt here exactly as it is in the guard: the
   // absent result is what the escalation was raised about.
   if (verdict === "approve" && !onEscalation) {
-    const verified = buildVerified(projectDir, name);
+    const verified = buildVerified(projectDir, name, config);
     if (!verified.ok) return { kind: "approval-evidence", reason: verified.reason };
   }
   return null;
@@ -769,7 +770,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
   if (!["approve", "return"].includes(verdict)) throw new Error("verdict must be approve or return");
   if (!by) throw new Error("rule needs --by <role or agent:persona>");
   assertCleanTree(projectDir, "rule");
-  const { branch, start, gate, g } = openGate(projectDir, name);
+  const { branch, start, gate, g, config } = openGate(projectDir, name);
   try {
     const allowed = [g.holder, g.escalate_to].filter(Boolean);
     if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
@@ -800,7 +801,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
         assertAccountedRulable(projectDir, name, verdict, conditions ?? []);
       }
       assertApprovalEvidence(projectDir, name, verdict,
-        Boolean(escalation) && by === g.escalate_to && escalation.by !== by, conditions ?? []);
+        Boolean(escalation) && by === g.escalate_to && escalation.by !== by, conditions ?? [], config);
     } catch (e) {
       recordRefusal(projectDir, { name, gate, by, heldBy, reason: e.message, metrics: {},
         produced: { verdict, rationale: note, conditions: conditions ?? [] } });
@@ -868,14 +869,15 @@ function escalationOn(projectDir, branch, name) {
 
 // The verify verdicts an approval may be given on: a slice whose every claimed criterion was
 // asserted against the application and met, and one where nothing failed and something was
-// never asserted (`src/testrun/results.mjs`).
+// never asserted (`src/testrun/results.mjs`) — the second only where the project's policy
+// lets G3 approve on it (`policy.gates.G3.approve_unasserted`, true by default).
 const APPROVABLE_VERDICTS = new Set(["pass", "pass-unasserted"]);
 
 // The four conditions that make a verify result count as current, shared by `buildVerified`
 // (the working tree, read off disk once the branch is checked out) and `rulePending`'s
 // branch check below (read with `git show`, before the branch is ever checked out) — kept
 // in one place so the two paths cannot disagree about what "verified" means.
-function verifiedResult(text, name, slice, appTree, next) {
+function verifiedResult(text, name, slice, appTree, next, config) {
   let r;
   try { r = JSON.parse(text); } catch { return { ok: false, reason: `tests/results/new/slice-${slice}.json does not parse; ${next}` }; }
   if (r.proposal !== name) return { ok: false, reason: `the verify result on this branch is for ${r.proposal}; ${next}` };
@@ -889,6 +891,13 @@ function verifiedResult(text, name, slice, appTree, next) {
   // accepted on that footing. Refusing it here would make that a pipeline policy nobody
   // chose, and would take the decision away from the seat that exists to make it.
   if (!APPROVABLE_VERDICTS.has(r.verdict)) return { ok: false, notPassed: true, reason: `${name} did not pass verify` };
+  // A project may narrow what G3 approves on: where it has, a slice carrying a criterion
+  // nobody asserted is not approvable by either seat, and is returned or escalated instead.
+  if (r.verdict === "pass-unasserted" && !approvesUnasserted(config)) {
+    const ids = (r.unasserted ?? []).map((u) => u.id).filter(Boolean);
+    return { ok: false, notPassed: true,
+      reason: `${name} passed verify with ${ids.length ? ids.join(", ") : "criteria"} never asserted against the application, and this project's policy.gates.G3.approve_unasserted is false` };
+  }
   if (r.app_tree !== appTree) return { ok: false, reason: `the application changed since it was verified; ${next}` };
   return { ok: true, reason: "" };
 }
@@ -897,26 +906,26 @@ function verifiedResult(text, name, slice, appTree, next) {
 // acceptance tests for its criteria (spec §5.12: the reviewer reads the verify results).
 // The result counts only for the application as it stands on the branch: a result for an
 // earlier tree is evidence about code that is no longer there.
-export function buildVerified(projectDir, name) {
+export function buildVerified(projectDir, name, config = null) {
   const m = /^build-slice-(\d+)(?:-\d+)?$/.exec(name);
   if (!m) return { ok: true, reason: "" };
   const path = join(projectDir, "tests", "results", "new", `slice-${m[1]}.json`);
   const next = `run sdlc run verify --slice ${m[1]} first`;
   if (!existsSync(path)) return { ok: false, reason: `${name} has not been verified; ${next}` };
-  return verifiedResult(readText(path), name, m[1], git(["rev-parse", "HEAD:app"], projectDir), next);
+  return verifiedResult(readText(path), name, m[1], git(["rev-parse", "HEAD:app"], projectDir), next, config);
 }
 
 // Same check, read off a not-yet-checked-out proposal branch: `rulePending` uses this to
 // leave an unverified build proposal out of a batch silently, rather than letting it reach
 // `ruleByAgent` and fail loudly there.
-function buildVerifiedOnBranch(projectDir, branch, name) {
+function buildVerifiedOnBranch(projectDir, branch, name, config) {
   const m = /^build-slice-(\d+)(?:-\d+)?$/.exec(name);
   if (!m) return { ok: true, reason: "" };
   const next = `run sdlc run verify --slice ${m[1]} first`;
   let text;
   try { text = git(["show", `${branch}:tests/results/new/slice-${m[1]}.json`], projectDir); }
   catch { return { ok: false, reason: `${name} has not been verified; ${next}` }; }
-  return verifiedResult(text, name, m[1], git(["rev-parse", `${branch}:app`], projectDir), next);
+  return verifiedResult(text, name, m[1], git(["rev-parse", `${branch}:app`], projectDir), next, config);
 }
 
 // The evidence an approval turns on, checked against the verdict rather than against the
@@ -940,9 +949,9 @@ function buildVerifiedOnBranch(projectDir, branch, name) {
 //
 // Called once the verdict is in hand and before anything about the ruling is written, so
 // a refusal leaves the proposal exactly as open as it was.
-function assertApprovalEvidence(projectDir, name, verdict, onEscalation, conditions) {
+function assertApprovalEvidence(projectDir, name, verdict, onEscalation, conditions, config) {
   if (verdict !== "approve" || onEscalation) return;
-  const verified = buildVerified(projectDir, name);
+  const verified = buildVerified(projectDir, name, config);
   if (!verified.ok)
     throw new Error(withRulingPreserved(`rule ${name}: ${approvalEvidenceGuidance(verified.reason)}`, verdict, conditions));
 }
@@ -986,14 +995,15 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     const tierMatch = proposalText.match(/^tier:\s*(\S+)/m);
     const tier = tierMatch ? tierMatch[1] : config.policy.default_tier;
 
-    // Mandatory escalation happens before the persona is ever asked: a HIGH/CRITICAL item,
+    // Mandatory escalation happens before the persona is ever asked: an item at a tier the
+    // policy names (`policy.escalate_tiers`, HIGH and CRITICAL by default),
     // or a persona whose brief always defers on this gate, never gets a chance to rule.
     // Declared in the brief's front matter (`escalates: [G-POL]`), never read out of its
     // prose. A brief is written for the agent that reads it, so a sentence scoped to one
     // kind of item — "a platform-article change is escalated, never ruled here" — is
     // indistinguishable to a phrase search from a rule covering every gate, and a persona
     // matched that way is switched off entirely without anything saying so.
-    const mandatoryReason = ["HIGH", "CRITICAL"].includes(tier) ? `tier ${tier}`
+    const mandatoryReason = escalateTiers(config).includes(tier) ? `tier ${tier}`
       : personaEscalates(brief).includes(gate) ? `${persona} does not rule ${gate} alone`
         : null;
 
@@ -1140,7 +1150,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // still land on one of them; refusing outright throws away a verdict, a rationale and
     // every other condition over a single line. A reply that rules `escalate` this time is
     // handled the same way it would have been had it done so first.
-    const defect = firstRepromptableDefect(projectDir, name, verdict, conditions ?? [], { executable, onEscalation: ruleEscalation });
+    const defect = firstRepromptableDefect(projectDir, name, verdict, conditions ?? [], { executable, onEscalation: ruleEscalation, config });
     if (defect) {
       const guidance = defectGuidance(defect);
       // The console line a person watching a batch run needs, the moment the re-prompt
@@ -1172,7 +1182,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // whether it applies at all. By this point the typecheck has run and the ruling turn has
     // answered, both read-only against a tree asserted clean; no gate file, no proposal page,
     // no commit and no merge has been written for this ruling.
-    assertApprovalEvidence(projectDir, name, verdict, ruleEscalation, conditions ?? []);
+    assertApprovalEvidence(projectDir, name, verdict, ruleEscalation, conditions ?? [], config);
 
     // The ruling has to land in the proposal page's own commit, not a follow-up one, so
     // it is appended and written before `commitRuling` stages and commits.
@@ -1279,7 +1289,11 @@ export async function rulePending(projectDir) {
     // batch must not do is reach them by itself — an automatic return sends the builder to
     // rebuild an application that may be sound, and spends one of the three attempts the
     // retry ceiling counts.
-    const verified = escalation ? { ok: true } : buildVerifiedOnBranch(projectDir, branch, name);
+    let configText;
+    try { configText = git(["show", `${branch}:.sdlc/config.yaml`], projectDir); } catch { continue; }
+    const { config, errors } = parseConfig(configText);
+    if (errors.length) continue;
+    const verified = escalation ? { ok: true } : buildVerifiedOnBranch(projectDir, branch, name, config);
     if (!verified.ok) {
       if (verified.notPassed) console.log(`${name}: left open — ${verified.reason}; rule it by name to return or escalate it`);
       continue;
@@ -1288,10 +1302,6 @@ export async function rulePending(projectDir) {
     try { proposalText = git(["show", `${branch}:.sdlc/proposals/${name}.md`], projectDir); } catch { continue; }
     const gateMatch = proposalText.match(/^gate:\s*(\S+)/m);
     if (!gateMatch) continue;
-    let configText;
-    try { configText = git(["show", `${branch}:.sdlc/config.yaml`], projectDir); } catch { continue; }
-    const { config, errors } = parseConfig(configText);
-    if (errors.length) continue;
     const g = config.policy.gates[gateMatch[1]];
     if (!g) continue;
     let persona;

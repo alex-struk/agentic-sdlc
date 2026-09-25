@@ -197,6 +197,23 @@ test("checkTests: unverified at HIGH tier fails even with a matching attestation
   assert.ok(r.messages.some((m) => m.includes("fails outright at tier HIGH")));
 });
 
+// Which tiers an unverified test fails outright at is policy; every other tier needs an
+// attestation. A project may narrow the list, never below CRITICAL (the schema holds that).
+test("checkTests: the tiers at which unverified provenance fails outright are read from policy.provenance.block_unverified", () => {
+  const d = project();
+  writeIndex(d, [{ ...R11, tier: "HIGH" }]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1, "blind"));
+  commit(d, "chore: hand-edit the spec file");
+  const config = { policy: { default_tier: "STANDARD", provenance: { block_unverified: ["CRITICAL"] } } };
+  const unattested = checkTests(d, { config });
+  assert.equal(unattested.ok, false);
+  assert.ok(!unattested.messages.some((m) => m.includes("fails outright")), unattested.messages.join("\n"));
+  assert.ok(unattested.messages.some((m) => m.includes("at tier HIGH needs an entry in tests/acceptance/attestations.yaml")));
+  write(d, "tests/acceptance/attestations.yaml",
+    'attestations:\n  - { file: tests/acceptance/opportunities/R-1.1.spec.ts, by: tech-lead, reason: "reviewed by hand" }\n');
+  assert.equal(checkTests(d, { config }).ok, true, "at a tier the policy does not block, an attestation is enough");
+});
+
 test("checkTests: an uncommitted blind file counts as blind only when SDLC_STAGE is derive-tests", () => {
   const d = project();
   writeIndex(d, [R11]);

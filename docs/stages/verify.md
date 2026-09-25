@@ -143,7 +143,7 @@ the proposal branch.
 | Result | Route | Gate file written |
 | --- | --- | --- |
 | `pass` | Ready for G3 — the reviewer can now rule the build proposal. | None. |
-| `pass-unasserted` | Ready for G3, saying which criteria were never asserted against the application and why. Whether the slice may be approved on that footing is the reviewer's, and the ruling prompt carries the same rows and reasons. | None. |
+| `pass-unasserted` | Ready for G3, saying which criteria were never asserted against the application and why. Whether the slice may be approved on that footing is the reviewer's, and the ruling prompt carries the same rows and reasons, unless the project's `policy.gates.G3.approve_unasserted` is false, in which case neither seat may approve it. | None. |
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
 | `unbound`, no adapter for `new` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |

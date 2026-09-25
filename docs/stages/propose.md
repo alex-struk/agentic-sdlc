@@ -24,7 +24,7 @@ run from inside the project's working tree.
 | `--question` | The decision, as a question. It becomes the page's heading. |
 | `--recommendation` | What the proposer thinks the answer is. |
 | `--page` | Optional extra body text below the recommendation. A stage passes its agent's own account of the work here. |
-| `--tier` | Optional risk tier for this proposal (`STANDARD`, `HIGH`, `CRITICAL`, …). Written into the page's front matter as `tier:`, where `sdlc rule` reads it: `HIGH` and `CRITICAL` escalate to a human without the gate's persona agent ever being asked. Left out, the ruling falls back to `policy.default_tier`. |
+| `--tier` | Optional risk tier for this proposal (`STANDARD`, `HIGH`, `CRITICAL`, …). Written into the page's front matter as `tier:`, where `sdlc rule` reads it: a tier `policy.escalate_tiers` names (`HIGH` and `CRITICAL` by default) escalates without the gate's persona agent ever being asked. Left out, the ruling falls back to `policy.default_tier`. |
 
 From a stage: `propose(projectDir, name, { gate, question, recommendation, page, tier, paths })`.
 `paths` is the one argument with no CLI flag — a list of project-relative paths the caller has
