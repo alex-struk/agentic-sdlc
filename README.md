@@ -17,9 +17,11 @@ Developed and tested on Node 24 (the version CI runs, and the one in `.nvmrc`); 
 allows 22 or later.
 
 Agent turns run on the Claude Code CLI (`claude`) by default, or on the OpenAI Codex CLI (`codex`)
-where the project's policy says so, each signed in with the operator's own subscription. `sdlc
-doctor` says which a project needs and whether it is signed in; `docs/config.md`, "Switching to
-Codex", says how to move work there.
+where the project's policy says so, each signed in with the operator's own subscription. A Codex
+turn for a stage that declares a tool allowlist runs in a throwaway Docker container that can read
+only its workspace and reach only an egress allowlist. `sdlc doctor` says which a project needs,
+whether it is signed in and where each stage runs; `docs/config.md`, "Running on Codex", says how to
+move work there.
 
 ## Commands
 
@@ -64,6 +66,10 @@ Codex", says how to move work there.
   through Docker Compose, on ports chosen for this machine: `up` brings the services up, applies
   migrations, loads `tests/seed/*.sql` and waits for the application to answer; `down` tears it
   down and removes the port record; `status` prints what is running (`docs/stages/oracle.md`).
+- `sdlc isolation build [dir] [--backend claude|codex]` — build the images isolated agent turns run
+  in, which are otherwise built on first use; `sdlc isolation clean` removes session containers and
+  networks a run that did not finish left behind
+  (`docs/decisions/0061-an-agent-session-in-a-container.md`).
 
 Run `sdlc help` (or any unrecognised command) to print this list from the CLI itself.
 

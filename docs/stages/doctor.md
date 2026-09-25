@@ -38,8 +38,17 @@ To stdout, one line each for:
     pipeline signs in with ChatGPT only) or "not signed in". Nothing the CLI prints about an
     account is repeated, and no credential is opened. A CLI that is missing is reported with the
     command that installs it.
-  - `codex refuses <stage>` — one line per stage set to run on Codex that Codex will refuse
-    (`docs/decisions/0060-a-second-agent-backend.md`), with the setting that accepts it.
+  - `codex refuses <stage>` — one line per stage set to run on Codex on the host that Codex will
+    refuse (`docs/decisions/0060-a-second-agent-backend.md`), with the setting that accepts it.
+  - `stage <name>: <backend>, in a container (<setting>), egress <list>: <hosts>` or
+    `stage <name>: <backend>, on the host` — one line per stage, and `ruling <gate>: …` for each
+    ruling that runs in a container (`docs/decisions/0061-an-agent-session-in-a-container.md`). A
+    stage set to run in a container that cannot be isolated is a warning saying why.
+  - Where any turn runs in a container: whether Docker answers (a warning naming the turns that will
+    be refused when it does not), whether the agent image for each backend and the egress proxy
+    image are built (a warning when not: they are built on first use, or by `sdlc isolation build`),
+    and a warning when a run that did not finish left session containers behind, which
+    `sdlc isolation clean` removes.
   - A warning when `SDLC_AGENT_BACKEND` is set, since it overrides the project's choice for every
     turn run from that shell.
 - Whether the project's persona briefs are current with the pipeline's templates, naming each one

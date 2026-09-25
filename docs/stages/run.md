@@ -182,18 +182,22 @@ prompt instead (`docs/stages/derive-tests.md`).
 
 Inside the workspace, the agent session runs on the backend and model `policy.agents` resolves for
 the stage, or `SDLC_AGENT_BACKEND`/`SDLC_AGENT_MODEL` for this run (`docs/config.md`); a dry run
-prints it as `agent: <backend> <model>, from <setting>`. A stage that declares a tool allowlist is
+prints it as `agent: <backend> <model>, from <setting>`, and whether the turn runs in a container
+with the hosts it may reach. A stage that declares a tool allowlist runs on `codex` in a throwaway
+container by default (`docs/decisions/0061-an-agent-session-in-a-container.md`). On the host it is
 refused on `codex`, with the pre-checks and recorded as they are, unless the project set
 `policy.agents.stages.<stage>.accept_weaker: true`
-(`docs/decisions/0060-a-second-agent-backend.md`).
+(`docs/decisions/0060-a-second-agent-backend.md`). A stage set to run in a container that cannot be
+isolated is refused the same way, and so is an isolated stage on a machine where Docker does not
+answer.
 
 The session is isolated from the operator's own CLI configuration — see
 `docs/decisions/0004-isolated-stage-sessions.md` for what that means and why, and `0060` for a Codex
 session. The `implement-guard` `PreToolUse` hook (`docs/stages/init.md`) still applies on either
 backend, scoped by the `SDLC_STAGE` environment variable the executor sets, and a Claude session
 also reads the project's own `.claude/settings.json` deny list. What ran the turn — backend, model,
-CLI version — is written to the run-record line and the journal entry, and to the proposal page the
-stage opens.
+CLI version, and the container image and egress allowlist of an isolated turn — is written to the
+run-record line and the journal entry, and to the proposal page the stage opens.
 
 ## The `prepare` hook
 

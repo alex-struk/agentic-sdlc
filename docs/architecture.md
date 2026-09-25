@@ -41,8 +41,10 @@ repository are the primitives that shape composes into:
   `templates/hooks/implement-guard.sh`, which reads `SDLC_STAGE` and blocks edits outside the paths
   that stage owns (see `docs/stages/init.md` for both tables). A Codex session gets an isolated
   `CODEX_HOME` holding the operator's ChatGPT sign-in and the same guard registered as its hook,
-  and no deny list, which is why a stage that declares a tool allowlist runs there only when the
-  project accepts it (`0060`). `probe` proves this whole loop end to
+  and no deny list, which is why a stage that declares a tool allowlist runs there in a throwaway
+  container — only its workspace mounted, only its egress allowlist reachable
+  (`src/runner/container.mjs`, `docs/decisions/0061-an-agent-session-in-a-container.md`) — or on
+  the host only when the project accepts the weaker stage (`0060`). `probe` proves this whole loop end to
   end without being one of the pipeline's own stages; `intent`, `archaeology`, `ratify`, `contract`,
   `bind-adapter`, `derive-tests`, `calibrate`, `design` and `plan` are implemented, and every stage
   after them (`build`, `verify`, …) is a named stub that throws until its own task lands. A stage may also

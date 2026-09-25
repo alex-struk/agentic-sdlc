@@ -67,27 +67,39 @@ Every agent turn — a stage's work, its repair turns, a persona's ruling — ru
 the Claude Code CLI or the OpenAI Codex CLI, each signed in with the operator's own subscription
 and isolated in a config home the pipeline owns. Which one, and which model, is policy:
 `policy.agents` names a default and per-stage and per-ruling choices, and changing it is a G-POL
-ruling, since it changes who does the work (`docs/config.md`, "Switching to Codex"). An operator can
+ruling, since it changes who does the work (`docs/config.md`, "Running on Codex"). An operator can
 override it for one run with `SDLC_AGENT_BACKEND` and `SDLC_AGENT_MODEL`.
 
-The two are not interchangeable everywhere. Codex cannot hold a session to a tool allowlist, so a
-stage that declares one runs on Codex only when the project accepts that stage by stage; rulings,
-and stages with no allowlist, run on either
-(`docs/decisions/0060-a-second-agent-backend.md`).
+The two are not interchangeable everywhere. Codex cannot hold a session to a tool allowlist, and on
+the host its sandbox limits what a session writes, not what it reads or runs
+(`docs/decisions/0060-a-second-agent-backend.md`). So a stage that declares an allowlist runs on
+Codex **in a throwaway container**: a pipeline-owned image with the pinned CLI, the stage's
+workspace and a copy of the sign-in as its only mounts, run as the operator's account with no
+capabilities, on a network whose one way out is a proxy that lets through only the backend's own
+endpoints and the stage's egress allowlist (`docs/decisions/0061-an-agent-session-in-a-container.md`).
+That is the default for those stages on Codex and needs Docker. Whether a turn runs in a container,
+and which allowlist it may reach, is policy too (`policy.agents.isolation`, `.egress`,
+`.allowlists`); `SDLC_AGENT_ISOLATION=container` isolates one run and nothing turns isolation off
+but a policy change. Two stages cannot be isolated — `bind-adapter`, and `contract` where there is an
+oracle, both needing something on the host — and run on Codex only when the project accepts the
+weaker stage. Rulings, and stages with no allowlist, run on either backend on the host unless
+configured into a container, and a Claude turn may be isolated the same way.
 
-**What ran the work is on the record.** Every agent turn records its backend, its model (as the CLI
-reports it, else as configured, else "the CLI's default model") and the CLI's version:
+**What ran the work, and where, is on the record.** Every agent turn records its backend, its model
+(as the CLI reports it, else as configured, else "the CLI's default model"), the CLI's version, and
+whether it ran in a container — with the image's short id and its egress allowlist — or on the host:
 
 | Where | What it shows |
 |---|---|
-| Run record (`.sdlc/runs/<day>.md`) | `run build: ok, cost …, turns …, on codex <model> (codex-cli <version>)`; a ruling's line ends `on <engine>` |
-| Journal entry front matter | `backend`, `model`, `cli` |
+| Run record (`.sdlc/runs/<day>.md`) | `run build: ok, cost …, turns …, on codex <model> (codex-cli <version>), in container <image> with egress registry`; a ruling's line ends `on <engine>` |
+| Journal entry front matter | `backend`, `model`, `cli`, `isolation` (`container <image>` or `none`), and `egress` for an isolated turn |
 | Proposal page a stage opened | the same front matter, and a **Worked by** line |
-| An agent ruling's gate file | `backend`, `model`, `cli`, and a **Ruled on** line in the ruling it appends to the proposal |
-| State site | the gate log's *Made by* column, e.g. "persona agent · codex *model*"; the journal and proposal pages |
+| An agent ruling's gate file | the same front matter, and a **Ruled on** line in the ruling it appends to the proposal |
+| State site | the gate log's *Made by* column, e.g. "persona agent · codex *model* · container"; the journal and proposal pages |
 
 A person's ruling and the runner's own verdict ran on no agent and show no engine. `sdlc doctor`
-says which backend runs which stages and gates, and whether each CLI is installed and signed in.
+says which backend runs which stages and gates, whether each CLI is installed and signed in, and for
+each stage whether it runs in a container and which hosts it may reach.
 
 ## 3. Live operation and simulation
 
