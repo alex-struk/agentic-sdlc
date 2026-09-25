@@ -78,7 +78,7 @@ Optional. Container of deployment targets.
 
 ## policy
 
-Required. Container of governance gates, tiers, and budgets.
+Required. Container of governance gates, tiers, limits and turn ceilings.
 
 - `gates` (object): A map of required gate definitions. Must include: `G0`, `G1`, `G-DESIGN`, `G2`, `G3`, `G-POL`. Each gate is an object:
   - `holder` (string, pattern `^(agent:)?[a-z][a-z0-9-]*$`): A role name or `agent:<persona>`. Role names are lowercase words joined by hyphens. Rejects person-like identifiers (e.g., `jane.doe` fails because of the dot).
@@ -100,7 +100,8 @@ Required. Container of governance gates, tiers, and budgets.
 - `triage` (object, optional): Thresholds for automatic triage.
   - `direct_max_files` (integer, optional, min 1): Maximum files changed to bypass triage.
   - `direct_allowed_paths` (array, optional): Paths that can bypass triage.
-- `budgets` (object, optional): Token budgets by category. Keys are category names, values are integers (min 1). The runner has no token-to-turn conversion yet, so it reads a value under 1000 as a turn ceiling for the stage of that name and honours it as written, up to 999. A value of 1000 or more would be a token budget the runner cannot act on, and `checks` refuses it rather than letting a run quietly fall back to the default of 40 turns: a budget a gate approved and a run ignored is worse than no budget at all. A stage that genuinely needs more than 999 turns needs splitting, not a larger number. The key `rule` caps a persona's ruling turn the same way: without it a ruling runs with 12 turns, except at G1, where the persona has to rule on every criterion in a domain and gets the stage default of 40.
+- `turns` (object, optional): The most agent turns a session may take, by stage. Keys are stage names, values are integers from 1 to 999. A stage with no entry runs with its own default: 40 for most stages, 250 for `design`, 150 for `plan`, 400 for `build`. The key `rule` caps a persona's ruling turn the same way: without it a ruling runs with 12 turns, except at G1 and on a calibration triage proposal, where the persona rules on every criterion in a page and gets the stage default of 40. A stage that genuinely needs more than 999 turns needs splitting, not a larger number.
+- `budgets` (object, optional, deprecated): The same setting as `turns`, under the name projects written before `turns` carry. A stage `turns` names ignores it. A value under 1000 is read as a turn count; a value of 1000 or more would be a token budget the runner has no conversion for, and `checks` refuses it rather than letting a run quietly fall back to its default. `checks` warns wherever this key is set; move its entries to `turns` in the project's next policy change.
 
 ## skills
 

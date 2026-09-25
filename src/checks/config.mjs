@@ -15,10 +15,12 @@ export function checkConfig(projectDir, ctx = {}) {
   // at all: it reads as a cap that a gate approved and a run honoured, and it is neither.
   // Refusing it here puts the failure in front of whoever proposes the number, rather than
   // an hour into the stage it was meant to size.
+  // `policy.turns` carries the same ceiling in its schema; `policy.budgets` is the alias
+  // existing projects carry, and its values are held to it here.
   for (const [stage, budget] of Object.entries(config?.policy?.budgets ?? {})) {
     if (typeof budget !== "number" || budget <= 0) continue;
     if (budget >= TOKEN_BUDGET_FLOOR) {
-      messages.push(`policy.budgets.${stage} is ${budget}, which reads as a token budget rather than a turn count and would be ignored; set it below ${TOKEN_BUDGET_FLOOR}`);
+      messages.push(`policy.budgets.${stage} is ${budget}, which reads as a token budget rather than a turn count and would be ignored; set policy.turns.${stage} below ${TOKEN_BUDGET_FLOOR} instead`);
     } else if (budget > MAX_TURNS_CEILING) {
       messages.push(`policy.budgets.${stage} is ${budget}, above the ${MAX_TURNS_CEILING}-turn ceiling; a stage needing more turns than that needs splitting, not a larger budget`);
     }
@@ -33,6 +35,12 @@ export function checkConfig(projectDir, ctx = {}) {
   // nothing to declare, and a check that failed would turn an addition into a requirement
   // every project already written is in breach of.
   const warnings = [];
+  // Read and honoured, because a project changes its configuration only through a policy
+  // proposal and one written before `policy.turns` existed must keep working until it does.
+  if (config?.policy?.budgets) {
+    warnings.push("policy.budgets is deprecated: it is read as turns per stage, which is what policy.turns names. "
+      + "Move its entries to policy.turns (a stage policy.turns names ignores policy.budgets)");
+  }
   for (const [name, t] of Object.entries(config?.targets ?? {})) {
     if (t?.identity !== "sandbox-idp" || t?.depends_on?.identity) continue;
     warnings.push(`targets.${name} signs in through sandbox-idp and declares no targets.${name}.depends_on.identity, `

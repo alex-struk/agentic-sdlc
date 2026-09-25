@@ -285,7 +285,7 @@ test("derive-tests warns when the turn ceiling leaves fewer than two turns per c
   // the failure that surfaces without this warning is a coverage failure that reads as
   // bad work rather than as a ceiling set too low.
   assert.deepEqual(budgetWarnings(d, { policy: { budgets: { "derive-tests": 10 } } }),
-    ["derive-tests: 30 criteria to derive with a ceiling of 10 turns; set policy.budgets.derive-tests"]);
+    ["derive-tests: 30 criteria to derive with a ceiling of 10 turns; set policy.turns.derive-tests"]);
   // The check itself passes either way: the ceiling is the project's to set, and a
   // session that finishes early under a tight one is a perfectly good run.
   const config = { project: { name: "p", domains: ["applications"] }, policy: { budgets: { "derive-tests": 10 } } };
@@ -299,6 +299,6 @@ test("derive-tests says nothing about the budget when the ceiling is two turns a
   // With no budget configured at all the stage runs at the default of 40 turns, which is
   // enough for twenty criteria and not for thirty.
   assert.deepEqual(budgetWarnings(d, {}),
-    ["derive-tests: 30 criteria to derive with a ceiling of 40 turns; set policy.budgets.derive-tests"]);
+    ["derive-tests: 30 criteria to derive with a ceiling of 40 turns; set policy.turns.derive-tests"]);
   assert.deepEqual(budgetWarnings(projectWithAcceptedCriteria(20), {}), []);
 });

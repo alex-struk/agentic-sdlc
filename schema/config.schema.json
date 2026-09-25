@@ -240,6 +240,14 @@
             }
           }
         },
+        "turns": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999
+          }
+        },
         "budgets": {
           "type": "object",
           "additionalProperties": {

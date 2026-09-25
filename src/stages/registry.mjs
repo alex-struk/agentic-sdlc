@@ -1165,7 +1165,7 @@ function checkDeriveTestsBudget(ctx) {
   if (n <= turns / 2) return { id, ok: true, messages: [] };
   return {
     id, ok: true, messages: [],
-    warnings: [`derive-tests: ${n} criteria to derive with a ceiling of ${turns} turns; set policy.budgets.derive-tests`],
+    warnings: [`derive-tests: ${n} criteria to derive with a ceiling of ${turns} turns; set policy.turns.derive-tests`],
   };
 }
 
@@ -2528,7 +2528,7 @@ const design = {
   collect: ["design", "spec/contract/surface.yaml"],
   // A design run writes one story per page per state — ninety-odd files for a domain of
   // fourteen pages — and a session's default ceiling ends it a third of the way through,
-  // having written nothing it can hand over. A project's `policy.budgets.design` still
+  // having written nothing it can hand over. A project's `policy.turns.design` still
   // overrides this, as for any stage.
   defaultTurns: 250,
   // On a `--revise` run the returned branch's own design work is overlaid into the

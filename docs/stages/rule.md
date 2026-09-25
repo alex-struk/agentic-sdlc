@@ -124,7 +124,7 @@ log*)` and `Bash(git status*)` — enough to look further into the branch than t
 prompt, and nothing that writes. It runs with `maxTurns: 12` at every gate but G1; at G1 it gets
 the stage default (40 turns) instead, since a G1 ruling has to read a whole domain file and rule
 on every criterion in it rather than just a proposal and a diff. Either ceiling is overridden by
-`policy.budgets.rule`, read the same way a stage's own turn budget is (`rulingTurns`,
+`policy.turns.rule`, read the same way a stage's own turn ceiling is (`rulingTurns`,
 `src/commands/rule.mjs`). `SDLC_STAGE=rule` also blocks every path in the
 implement guard (`docs/stages/init.md`), so a ruling that tries to edit is stopped twice before
 the clean-tree check below ever sees it. It must end its reply with one fenced JSON block and

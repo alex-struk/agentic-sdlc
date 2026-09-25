@@ -22,8 +22,8 @@ export function writeMcpConfig(dir, mcpServers) {
 // The turn ceiling a session runs with when nothing else sets one.
 export const DEFAULT_MAX_TURNS = 40;
 
-// A budget at or above this reads as a leftover token budget rather than a turn count,
-// and is ignored. Below it, the value is a turn count and is honoured up to the ceiling.
+// A `policy.budgets` value at or above this reads as a token budget rather than a turn
+// count, and is ignored. Below it, the value is a turn count and is honoured up to the ceiling.
 export const TOKEN_BUDGET_FLOOR = 1000;
 
 // The highest turn count any stage may be given: one below the token-budget floor, since
@@ -33,21 +33,21 @@ export const TOKEN_BUDGET_FLOOR = 1000;
 // silence. A stage that genuinely needs more turns than this needs splitting.
 export const MAX_TURNS_CEILING = TOKEN_BUDGET_FLOOR - 1;
 
-// `config.policy.budgets[<name>]` is documented as a token count, but `runAgent`'s
-// `maxTurns` wants a turn count and there is no token-to-turn conversion yet (that is
-// its own later task). A configured value under 1000 is small enough to read as a turn
-// count already — a token budget for a whole stage would run into the thousands — so
-// it is used directly, clamped to 400 (a blind stage like `derive-tests` can legitimately
-// need one turn per criterion, well past the old 200-turn ceiling, for a domain with many
-// accepted criteria); anything at or above 1000 is a token count we cannot yet translate,
-// so it falls back to `fallback`: the default of 40 turns for a stage, or whatever the
-// caller runs with when no budget is set at all (a ruling turn passes its own, smaller
-// ceiling).
+// A stage's turn ceiling is `config.policy.turns[<name>]`, a turn count the schema holds
+// under the ceiling. `policy.budgets` is the same setting under the name existing projects
+// carry, read where `policy.turns` does not name the stage: a value under 1000 is a turn
+// count and is honoured up to the ceiling, and anything at or above 1000 reads as a token
+// budget the runner has no conversion for, so it falls back to `fallback` — the default of
+// 40 turns for a stage, or whatever the caller runs with when nothing is set at all (a
+// ruling turn passes its own, smaller ceiling). `checks` refuses that value and reports
+// the alias as deprecated.
 // Warned names, so a run that calls `turnsFor` more than once for the same name says
 // this once rather than once per call.
 const warnedBudgets = new Set();
 
 export function turnsFor(config, name, fallback = DEFAULT_MAX_TURNS) {
+  const turns = config.policy?.turns?.[name];
+  if (turns) return Math.min(turns, MAX_TURNS_CEILING);
   const budget = config.policy?.budgets?.[name];
   if (budget && budget < TOKEN_BUDGET_FLOOR) return Math.min(budget, MAX_TURNS_CEILING);
   // A token-sized budget is configured, understood, and then ignored. Saying so out
@@ -55,7 +55,7 @@ export function turnsFor(config, name, fallback = DEFAULT_MAX_TURNS) {
   // which is that it is capped at the default.
   if (budget && !warnedBudgets.has(name)) {
     warnedBudgets.add(name);
-    console.warn(`warning: policy.budgets.${name} is ${budget}, which reads as a token budget, not a turn count. There is no token-to-turn conversion yet, so this budget is ignored and ${name} runs with the default ceiling of ${fallback} turns. To cap turns, set policy.budgets.${name} to a number below 1000.`);
+    console.warn(`warning: policy.budgets.${name} is ${budget}, which reads as a token budget, not a turn count. There is no token-to-turn conversion, so this budget is ignored and ${name} runs with the default ceiling of ${fallback} turns. To cap turns, set policy.turns.${name} to a number below 1000.`);
   }
   return fallback;
 }

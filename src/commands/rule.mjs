@@ -830,7 +830,7 @@ function rulingFailure(result) {
 // it, one condition line each, and a domain of fifty criteria whose citations the
 // persona wants to check does not fit in twelve turns — the ruling then fails at the
 // cap having written nothing. It runs with the stage default instead. Either ceiling is
-// overridden by `policy.budgets.rule`, read the same way a stage's budget is.
+// overridden by `policy.turns.rule`, read the same way a stage's turn ceiling is.
 // A triage proposal is ruled at G3 but reads like a G1 one: a page of failures, each needing
 // its own verdict and evidence read against the adapter, so it gets the same budget.
 export function rulingTurns(config, gate, name = "") {

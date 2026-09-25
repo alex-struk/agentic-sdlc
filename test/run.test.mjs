@@ -776,6 +776,13 @@ test("turnsFor: a budget under 1000 reads as a turn count, honoured up to the ce
   assert.equal(turnsFor({ policy: { budgets: { design: 999 } } }, "design"), 999);
 });
 
+test("turnsFor: policy.turns is a stage's turn ceiling, and wins over the policy.budgets alias", () => {
+  assert.equal(turnsFor({ policy: { turns: { design: 90 } } }, "design"), 90);
+  assert.equal(turnsFor({ policy: { turns: { design: 90 }, budgets: { design: 12 } } }, "design"), 90);
+  assert.equal(turnsFor({ policy: { turns: { build: 90 }, budgets: { design: 12 } } }, "design"), 12, "a stage policy.turns does not name still reads the alias");
+  assert.equal(turnsFor({ policy: { turns: {} } }, "design", 250), 250);
+});
+
 test("turnsFor: a budget at or above 1000 is a token count, unconverted, so it falls back to 40", () => {
   assert.equal(turnsFor({ policy: { budgets: { design: 4000000 } } }, "design"), 40);
   assert.equal(turnsFor({}, "design"), 40);
@@ -1143,7 +1150,7 @@ test("turnsFor warns once, by name, when a token-sized budget is ignored", () =>
   assert.match(warnings[0], /policy\.budgets\.budget-warn is 250000/);
   assert.match(warnings[0], /this budget is ignored/);
   assert.match(warnings[0], /default ceiling of 40 turns/);
-  assert.match(warnings[0], /set policy\.budgets\.budget-warn to a number below 1000/);
+  assert.match(warnings[0], /set policy\.turns\.budget-warn to a number below 1000/);
 });
 
 test("finishStage fails and names the path when a tracked file has since been excluded, and commits nothing", async () => {

@@ -29,7 +29,7 @@ policy:
   default_tier: STANDARD
   rungs: {}
   triage: { direct_max_files: 3, direct_allowed_paths: [app/] }
-  budgets: { archaeology: 120, build: 400 }
+  turns: { archaeology: 120, build: 400 }
 skills:
   packs:
     - { repo: mattpocock/skills, ref: 0123456789abcdef0123456789abcdef01234567, skills: [grilling, tdd] }
@@ -87,7 +87,7 @@ test("checkConfig refuses a turn budget the runner would ignore or reduce", () =
   const d = mkdtempSync(join(tmpdir(), "sdlc-budget-"));
   mkdirSync(join(d, ".sdlc"), { recursive: true });
   const write = (budgets) => writeFileSync(join(d, ".sdlc/config.yaml"),
-    GOOD.replace("budgets: { archaeology: 120, build: 400 }", `budgets: ${budgets}`));
+    GOOD.replace("turns: { archaeology: 120, build: 400 }", `budgets: ${budgets}`));
 
   write("{ design: 1200 }");
   const tokenSized = checkConfig(d);
@@ -167,4 +167,26 @@ test("policy.gates.G3.approve_unasserted is a boolean, and only G3 carries it", 
   assert.ok(parseConfig(g3(", approve_unasserted: sometimes")).errors.length > 0);
   assert.ok(parseConfig(GOOD.replace("G2: { holder: \"agent:architect\", escalate_to: tech-lead }",
     "G2: { holder: \"agent:architect\", escalate_to: tech-lead, approve_unasserted: false }")).errors.length > 0);
+});
+
+// `policy.budgets` is what existing projects carry, and they change their configuration only
+// through a policy proposal, so it keeps working. It counts turns, and the key that says so
+// is `policy.turns`.
+test("policy.turns is a turn count per stage; policy.budgets still works and is reported as deprecated", () => {
+  const turns = (value) => parseConfig(GOOD.replace("turns: { archaeology: 120, build: 400 }", `turns: ${value}`)).errors;
+  assert.deepEqual(turns("{ design: 250, rule: 12 }"), []);
+  assert.ok(turns("{ design: 1000 }").length > 0, "a turn count has the same ceiling as ever");
+  assert.ok(turns("{ design: 0 }").length > 0);
+
+  const d = mkdtempSync(join(tmpdir(), "sdlc-turns-"));
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), GOOD.replace("turns: { archaeology: 120, build: 400 }", "budgets: { archaeology: 120, build: 400 }"));
+  const legacy = checkConfig(d);
+  assert.equal(legacy.ok, true, legacy.messages.join("\n"));
+  assert.ok(legacy.warnings.some((w) => /policy\.budgets is deprecated[\s\S]*policy\.turns/.test(w)), legacy.warnings.join("\n"));
+
+  writeFileSync(join(d, ".sdlc/config.yaml"), GOOD);
+  const current = checkConfig(d);
+  assert.equal(current.ok, true, current.messages.join("\n"));
+  assert.ok(!current.warnings.some((w) => /budgets/.test(w)), current.warnings.join("\n"));
 });
