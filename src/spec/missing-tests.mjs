@@ -19,10 +19,19 @@
 // by every reader, so nothing waits on a write to be owed; its entry is written, stamped by the
 // runner, by the next pipeline commit that touches this list. A read never writes.
 //
-// **Closing.** Only on evidence that a test ran: a result row for the criterion, at its current
-// version, from a spec file, whose result is `pass` or `fail`. An `attested` row is somebody's
-// word and closes nothing. A test that exists and has not run yet is owed a run, by `calibrate`
-// where the project calibrates and by `verify` where it does not.
+// **Closing.** Only on evidence that the criterion's test ran: a result row for the criterion, at
+// its current version, from a spec file, whose result is `pass` or `fail`, and which is a result
+// of that spec file as it now stands. A run writes the file's fingerprint on the row
+// (`file_sha`); a row written before runs did is a result of the file as it stood on the
+// first-parent line when the results file was written (`at`). A row ruled `test-wrong` or
+// `spec-wrong` is a result of a test ruled not to test the criterion, and an `attested` row is
+// somebody's word: neither closes anything. A test that exists and has not run yet is owed a
+// run, by `calibrate` where the project calibrates and by `verify` where it does not.
+//
+// **Reopening.** A closure written before rows carried a fingerprint is checked against the
+// commit that recorded it, and an item closed on a row that was not a result of its test as it
+// stood there is reopened by the next pipeline commit that touches this list, with the closure
+// kept beside it (`reopened`), and goes where an open item goes.
 //
 // **Withdrawing.** A ruler, with a written reason, through the same accounting line a condition
 // is withdrawn with (`condition-withdrawn missing-test/<id>: <why>`). A withdrawal holds for the
@@ -40,12 +49,13 @@
 // **Retired criteria.** A criterion another supersedes, or one made obsolete, is derived no
 // test, so it is owed none: every reader leaves it out, and the next pipeline commit that
 // touches this list withdraws its item, stamped by the runner.
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git } from "../lib/git.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
+import { isDisowned, testFingerprint } from "../testrun/results.mjs";
 import { isOpen, open, owedPath, read, readAt, rewrite } from "./owed.mjs";
 
 export const MISSING_TEST = "missing-test";
@@ -158,6 +168,46 @@ function openFrom(stored, recordsText, indexText) {
   return [...stored.filter((e) => isOpen(e) && !retired(index.get(e.item))), ...pending.map((r) => pendingEntry(r, index))];
 }
 
+// Where evidence is read from: the working tree, which is `main` at every caller that writes, or
+// a commit. Each answers the same four questions — which result files there are, what one says,
+// which test file content a path holds, and which it held on the first-parent line at a time —
+// so a closure is judged by the same rule whether it is being made or checked afterwards.
+function workingTree(projectDir) {
+  return {
+    results: () => resultFiles(projectDir),
+    text: (rel) => workingText(projectDir, rel),
+    blob: (rel) => {
+      const p = join(projectDir, rel);
+      return existsSync(p) ? testFingerprint(readFileSync(p)) : null;
+    },
+    blobAsOf: (at, rel) => blobAsOf(projectDir, "HEAD", at, rel),
+  };
+}
+
+function commitTree(projectDir, rev) {
+  return {
+    results: () => {
+      let listed;
+      try { listed = git(["ls-tree", "-r", "--name-only", rev, "--", "tests/results"], projectDir); } catch { return []; }
+      return listed.split("\n").filter((f) => /^tests\/results\/[^/]+\/(latest|slice-\d+)\.json$/.test(f)).sort();
+    },
+    text: (rel) => showAt(projectDir, rev, rel),
+    blob: (rel) => blobAt(projectDir, rev, rel),
+    blobAsOf: (at, rel) => blobAsOf(projectDir, rev, at, rel),
+  };
+}
+
+function blobAt(projectDir, rev, rel) {
+  try { return git(["rev-parse", "--verify", "-q", `${rev}:${rel}`], projectDir) || null; } catch { return null; }
+}
+
+// The test file content `rel` held on `ref`'s first-parent line at time `at`.
+function blobAsOf(projectDir, ref, at, rel) {
+  let commit;
+  try { commit = git(["rev-list", "-1", "--first-parent", `--before=${at}`, ref], projectDir); } catch { return null; }
+  return commit ? blobAt(projectDir, commit, rel) : null;
+}
+
 // Every result file a test run leaves: each target's `latest.json` and each slice's verify
 // result, as project-relative paths.
 function resultFiles(projectDir) {
@@ -173,19 +223,91 @@ function resultFiles(projectDir) {
   return out.sort();
 }
 
-// The row that shows a criterion's test ran at its current version, as `{ source, row }`.
-function ranIn(rows, id, version) {
-  return (rows ?? []).find((r) => r?.id === id && r.file && RAN.has(r.result) && Number(r.version) === Number(version)) ?? null;
+// Whether a row is a result of its spec file as `tree` holds it. A row carrying the fingerprint
+// of the file it ran answers exactly. A row without one was written before runs recorded it, and
+// is taken as a result of the file the first-parent line held when its results file was written
+// (`at`); a results file with no time says nothing about which test ran.
+function ofTestAsItStands(tree, row, at) {
+  const now = tree.blob(row.file);
+  if (!now) return false;
+  if (row.file_sha) return row.file_sha === now;
+  return Boolean(at) && tree.blobAsOf(at, row.file) === now;
 }
 
-function evidenceFor(projectDir, id, version) {
-  for (const rel of resultFiles(projectDir)) {
+// The row that shows a criterion's test ran at its current version. `current` says whether a row
+// is a result of the test as it now stands.
+function ranIn(rows, id, version, current = () => true) {
+  return (rows ?? []).find((r) => r?.id === id && r.file && RAN.has(r.result) && !isDisowned(r)
+    && Number(r.version) === Number(version) && current(r)) ?? null;
+}
+
+// The evidence that a criterion's test, as `tree` holds it, ran at `version`: the line a closure
+// records as its reason, and the fingerprint of the test file that ran.
+function evidenceIn(tree, id, version) {
+  for (const rel of tree.results()) {
     let doc;
-    try { doc = JSON.parse(readText(join(projectDir, rel))); } catch { continue; }
-    const row = ranIn(doc?.rows, id, version);
-    if (row) return `${rel}: ${id} v${version} ${row.result}`;
+    try { doc = JSON.parse(tree.text(rel)); } catch { continue; }
+    const row = ranIn(doc?.rows, id, version, (r) => ofTestAsItStands(tree, r, doc?.at));
+    if (row) return { why: `${rel}: ${id} v${version} ${row.result}`, file_sha: tree.blob(row.file) };
   }
   return null;
+}
+
+// The first-parent commits that changed this list, oldest first, with when each was made.
+function listHistory(projectDir) {
+  let log;
+  try { log = git(["log", "--first-parent", "--reverse", "--format=%H %cI", "HEAD", "--", owedPath(MISSING_TEST)], projectDir); } catch { return []; }
+  return log.split("\n").filter(Boolean).map((l) => {
+    const [sha, when] = l.split(" ");
+    return { sha, when: Date.parse(when) };
+  });
+}
+
+// The commit that recorded a closure: the first on the list's history holding the entry closed
+// as it is now. Looked for from the closure's own time first, since the commit that records a
+// closure is made just after it.
+function recordingCommit(projectDir, history, entry) {
+  const closedAt = Date.parse(entry.closed?.at ?? "");
+  const holds = ({ sha }) => readAt(projectDir, MISSING_TEST, sha)
+    .some((e) => e.item === entry.item && e.closed?.outcome === "met" && e.closed?.at === entry.closed.at);
+  const from = Number.isNaN(closedAt) ? -1 : history.findIndex((c) => c.when >= Math.floor(closedAt / 1000) * 1000);
+  const hit = (from === -1 ? undefined : history.slice(from).find(holds)) ?? history.find(holds);
+  return hit?.sha ?? null;
+}
+
+const closureKey = (e) => `${e.item}\u0000${e.closed?.at ?? ""}`;
+
+// The runner's closures that the rule above rejects, as closure key → why it is reopened. A
+// closure that records the fingerprint of the test that ran was made by that rule. One that does
+// not is judged at the commit that recorded it, by the same rule against what that commit held:
+// the results on file, the criterion's version and the test file as it then stood. An item whose
+// record is back, that is open again under another entry, or whose criterion is retired, is
+// already accounted for and is left alone.
+function staleClosures(projectDir, stored, { records, index }) {
+  const out = new Map();
+  const candidates = stored.filter((e) => e.closed?.outcome === "met" && e.closed.by === "runner" && !e.closed.file_sha
+    && !records.has(e.item) && !retired(index.get(e.item)) && !stored.some((o) => o.item === e.item && isOpen(o)));
+  if (!candidates.length) return out;
+  const history = listHistory(projectDir);
+  for (const e of candidates) {
+    const commit = recordingCommit(projectDir, history, e);
+    if (!commit) continue;
+    const version = indexIn(showAt(projectDir, commit, "spec/criteria-index.json")).get(e.id)?.version ?? e.version;
+    if (evidenceIn(commitTree(projectDir, commit), e.id, version)) continue;
+    out.set(closureKey(e), `${e.closed.why} is not a result of the test for ${e.id} as it stood when the item was closed at ${commit.slice(0, 8)}`
+      + disownedNote(projectDir, commit, e.closed.why, e.id));
+  }
+  return out;
+}
+
+// Says so where the row a closure named carries a ruling that disowns its test.
+function disownedNote(projectDir, commit, why, id) {
+  const rel = /^(\S+\.json): /.exec(String(why ?? ""))?.[1];
+  if (!rel) return "";
+  let doc;
+  try { doc = JSON.parse(showAt(projectDir, commit, rel)); } catch { return ""; }
+  const row = (doc?.rows ?? []).find((r) => r?.id === id && isDisowned(r));
+  return row ? `; the row is ruled ${row.ruled}` : "";
 }
 
 function specVersion(projectDir, domain, id) {
@@ -239,8 +361,10 @@ function moved(entry, to, why, by, at, more = {}, stamp = {}) {
 // from: an item is the approval's to hand back only if that run was handed it (`handedAt`).
 //
 // It opens an item for every record nothing accounts for, moves an item whose record the merge
-// rewrote with a different owner, closes an item whose test ran at the current version, and
-// hands an item whose test exists and has not run to the stage that runs it. Returns the path
+// rewrote with a different owner, reopens an item the runner closed on a row that was not a
+// result of its test as it stood (`staleClosures`), closes an item whose test as it now stands ran
+// at the current version, and hands an item whose test exists and has not run to the stage that
+// runs it. Returns the path
 // written (`null` when nothing changed) and what it did, by criterion.
 export function syncMissingTests(projectDir, { before = null, from = null, stage = null, domain = null, base = null, gate = null, by = null, config = null, at = new Date().toISOString() } = {}) {
   const now = recordsIn(workingText(projectDir, NOT_TESTABLE_PATH));
@@ -248,10 +372,11 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
   const nowById = new Map(now.map((r) => [r.id, r]));
   const wasById = new Map(was.map((r) => [r.id, r]));
   const index = indexIn(workingText(projectDir, "spec/criteria-index.json"));
-  const result = { path: null, opened: [], readdressed: [], closed: [], withdrawn: [] };
+  const result = { path: null, opened: [], readdressed: [], closed: [], withdrawn: [], reopened: [] };
   const handed = stage === WRITER ? handedAt(projectDir, stage, { base, domain }) : null;
 
   const stored = read(projectDir, MISSING_TEST);
+  const stale = staleClosures(projectDir, stored, { records: nowById, index });
   const fresh = [];
   for (const r of [...now, ...was.filter((w) => !nowById.has(w.id))]) {
     if (covered([...stored, ...fresh], r) || retired(index.get(r.id))) continue;
@@ -266,8 +391,16 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
   }
 
   const run = runner(config);
-  const path = rewrite(projectDir, MISSING_TEST, (list) => list.map((e) => {
-    if (!isOpen(e)) return e;
+  const tree = workingTree(projectDir);
+  const path = rewrite(projectDir, MISSING_TEST, (list) => list.map((entry) => {
+    let e = entry;
+    if (!isOpen(e)) {
+      const why = stale.get(closureKey(e));
+      if (!why) return e;
+      const { closed, ...rest } = e;
+      e = { ...rest, reopened: [...(e.reopened ?? []), { closed, why, by: "runner", at }] };
+      result.reopened.push(e.item);
+    }
     const row = index.get(e.item);
     if (retired(row)) {
       result.withdrawn.push(e.item);
@@ -290,10 +423,10 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
       return moved(e, owner, recordMissing(record), by ?? "runner", at, { version: record.version });
     }
     const version = index.get(e.id)?.version ?? e.version;
-    const evidence = evidenceFor(projectDir, e.id, version);
+    const evidence = evidenceIn(tree, e.id, version);
     if (evidence) {
       result.closed.push(e.id);
-      return { ...e, closed: { outcome: "met", why: evidence, by: "runner", at } };
+      return { ...e, closed: { outcome: "met", why: evidence.why, file_sha: evidence.file_sha, by: "runner", at } };
     }
     if (specVersion(projectDir, e.domain ?? index.get(e.id)?.domain, e.id) === Number(version) && e.stage !== run.stage) {
       result.readdressed.push({ id: e.id, from: e.stage, to: run.stage });
@@ -476,13 +609,16 @@ export function restoreUnhanded(projectDir, { merge, stage, proposal, domain = n
 
 // The open items that stop a build slice being approved: every item open on `main` naming a
 // criterion the slice claims, less the ones this ruling withdraws and the ones whose test the
-// slice's own verify result shows ran at the current version (the approval closes those).
-export function blockingMissingTests(projectDir, { claimed = [], withdrawn = [], rows = [], rev = "main" } = {}) {
+// slice's own verify result shows ran at the current version (the approval closes those). A row
+// shows it only as it would close the item: a result of the test as the working tree holds it,
+// and `at` is when the verify result was written.
+export function blockingMissingTests(projectDir, { claimed = [], withdrawn = [], rows = [], at = null, rev = "main" } = {}) {
   const ids = new Set(claimed);
   const gone = new Set(withdrawn);
   const index = indexIn(workingText(projectDir, "spec/criteria-index.json"));
+  const tree = workingTree(projectDir);
   return openMissingTestsAt(projectDir, rev).filter((e) => ids.has(e.item) && !gone.has(e.item)
-    && !ranIn(rows, e.item, index.get(e.item)?.version ?? e.version));
+    && !ranIn(rows, e.item, index.get(e.item)?.version ?? e.version, (r) => ofTestAsItStands(tree, r, at)));
 }
 
 // What a stage run is handed: the open items it owes, read from `main`, and the line that moves

@@ -109,6 +109,18 @@ test("runSuite: maps a pass, a fail and an unbound spec file to rows", () => {
   assert.deepEqual(result.rows.map((r) => r.id), ["R-1.1", "R-1.2", "R-1.3"]);
 });
 
+// A result is read long after the run that wrote it, and the criterion's test may have been
+// derived again since. Each row says which content of its spec file ran, in git's own terms.
+test("runSuite: every row naming a spec file carries git's fingerprint of that file as it ran", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  writeReport(d, [fileSuite("opportunities", "R-1.1.spec.ts", "views a listing", "passed")]);
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "http://mail", exec: recordingExec([]) }));
+  assert.equal(result.rows[0].file_sha, git(["hash-object", "tests/acceptance/opportunities/R-1.1.spec.ts"], d));
+});
+
 // Playwright reports a thrown Error with its class name in front, so the adapter's own
 // text never starts the line. Anchored without that prefix, the match failed for every real
 // run: 76 unbound members in one calibration were recorded as failed criteria and put in

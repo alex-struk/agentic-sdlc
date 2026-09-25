@@ -47,7 +47,10 @@ function commit(d, m) {
 
 // A project whose `main` holds one untestable record, and an open build slice claiming both
 // of its criteria, verified with `rows`.
-function project(t, { config = HUMAN_HELD, rows = [RAN, UNASSERTED], verdict = "pass-unasserted", owed = null, records = [RECORD] } = {}) {
+// A row naming `FINGERPRINT` carries the fingerprint of the spec file it names, as a run writes it.
+const FINGERPRINT = "<fingerprint of the file>";
+
+function project(t, { config = HUMAN_HELD, rows = [RAN, UNASSERTED], verdict = "pass-unasserted", owed = null, records = [RECORD], specs = [] } = {}) {
   const d = mkdtempSync(join(tmpdir(), "sdlc-rule-missing-"));
   t.after(() => rmSync(d, { recursive: true, force: true }));
   git(["init", "-q", "-b", "main"], d);
@@ -61,7 +64,9 @@ function project(t, { config = HUMAN_HELD, rows = [RAN, UNASSERTED], verdict = "
   put(d, "plan/tasks.md", "# Tasks\n\n### Slice 1 · orders\n\n- criteria: R-1.1, R-1.2\n");
   put(d, "tests/acceptance/not-testable.yaml", stringifyYaml({ criteria: records }));
   if (owed) put(d, ".sdlc/owed.yaml", stringifyYaml({ owed }));
+  for (const id of specs) put(d, `tests/acceptance/a/${id}.spec.ts`, `// criterion: @${id} v1\n// provenance: blind, spec@abc123, derived 2026-09-18\n`);
   commit(d, "init");
+  rows = rows.map((r) => (r.file_sha === FINGERPRINT ? { ...r, file_sha: git(["hash-object", r.file], d) } : r));
   git(["checkout", "-q", "-b", "proposal/build-slice-1"], d);
   put(d, "app/index.ts", "export {};\n");
   put(d, ".sdlc/proposals/build-slice-1.md",
@@ -136,7 +141,7 @@ test("with block_on_missing_tests false the approval goes through and the item s
 
 test("a test the slice's verify ran closes the item when the slice is approved", (t) => {
   const owed = [{ kind: "missing-test", item: "R-1.2", id: "R-1.2", version: 1, domain: "a", stage: "verify", why: "a test for v1 exists and has not run", by: "runner", at: "2026-09-18T00:00:00.000Z" }];
-  const d = project(t, { owed, records: [], verdict: "pass", rows: [RAN, { ...RAN, id: "R-1.2", file: "tests/acceptance/a/R-1.2.spec.ts" }] });
+  const d = project(t, { owed, records: [], verdict: "pass", specs: ["R-1.2"], rows: [RAN, { ...RAN, id: "R-1.2", file: "tests/acceptance/a/R-1.2.spec.ts", file_sha: FINGERPRINT }] });
   const r = rule(d, "build-slice-1", "approve", { by: "tech-lead", note: "fine" });
   assert.deepEqual(r.missingTests.closed, ["R-1.2"]);
   const [item] = owedOnMain(d);
@@ -182,7 +187,7 @@ const HANDED = (id, domain, why) => ({
   readdressed: [{ from: "contract", to: "derive-tests", why, by: "contract-v2", gate: "G1", approved_by: "tech-lead", at: "2026-09-19T01:00:00.000Z" }],
 });
 
-function derivation(t) {
+function derivation(t, { results = null } = {}) {
   const d = mkdtempSync(join(tmpdir(), "sdlc-rule-missing-derive-"));
   t.after(() => rmSync(d, { recursive: true, force: true }));
   git(["init", "-q", "-b", "main"], d);
@@ -202,6 +207,7 @@ function derivation(t) {
     { ...HANDED("R-2.2", "b", "x"), stage: "contract", readdressed: undefined, kept: { by: "contract-v2", gate: "G1", approved_by: "tech-lead", at: "2026-09-19T01:00:00.000Z" } },
     { ...HANDED("R-2.3", "b", "x"), stage: "contract", readdressed: [{ from: "contract", to: "ratify", why: "two states", by: "contract-v2", at: "2026-09-19T01:00:00.000Z" }] },
   ].map((e) => (e.item === "R-2.3" ? { ...e, stage: "ratify" } : e)) }));
+  if (results) put(d, "tests/results/old/latest.json", JSON.stringify(results));
   commit(d, "init");
   git(["checkout", "-q", "-b", "proposal/derive-tests-a"], d);
   put(d, "tests/acceptance/not-testable.yaml", stringifyYaml({ criteria: ["R-2.1", "R-2.2", "R-2.3"].map(rec) }));
@@ -254,5 +260,46 @@ test("rule --settle returns to the test writer what an approval moved outside it
   assert.equal(git(["status", "--porcelain"], d), "");
   const head = git(["rev-parse", "HEAD"], d);
   assert.deepEqual(settleRuling(d, "derive-tests-a").restored, []);
+  assert.equal(git(["rev-parse", "HEAD"], d), head, "settling again commits nothing");
+});
+
+// A calibration ran an earlier test for R-1.1 and it was ruled wrong; the criterion was then
+// recorded untestable, and the derivation being approved writes its test again. The result on
+// file is the earlier test's.
+const EARLIER = { target: "old", at: "2026-09-15T00:00:00.000Z", rows: [
+  { id: "R-1.1", version: 1, domain: "a", file: "tests/acceptance/a/R-1.1.spec.ts", result: "fail", ruled: "test-wrong" },
+] };
+
+test("approving a derivation does not close an item on a result of an earlier test for its criterion", (t) => {
+  const d = derivation(t, { results: EARLIER });
+  const r = rule(d, "derive-tests-a", "approve", { by: "tech-lead", note: "fine" });
+  assert.deepEqual(r.missingTests?.closed ?? [], []);
+  const item = byItem(d).get("R-1.1");
+  assert.equal(item.closed ?? null, null);
+  assert.equal(item.stage, "verify", "its test exists and has not run");
+});
+
+// An approval that closed an item on such a result is put right by settling it again: the item
+// is reopened, with what it was closed on kept beside it, and goes to the stage that runs its test.
+test("rule --settle reopens an item its approval closed on a result of an earlier test, once", (t) => {
+  const d = derivation(t, { results: EARLIER });
+  rule(d, "derive-tests-a", "approve", { by: "tech-lead", note: "fine" });
+  const doc = parseYaml(git(["show", "main:.sdlc/owed.yaml"], d));
+  const closed = { outcome: "met", why: "tests/results/old/latest.json: R-1.1 v1 fail", by: "runner", at: new Date(Date.now() - 1000).toISOString() };
+  for (const e of doc.owed) if (e.item === "R-1.1") { e.closed = closed; e.stage = "derive-tests"; e.readdressed = e.readdressed.slice(0, 1); }
+  put(d, ".sdlc/owed.yaml", stringifyYaml(doc));
+  git(["add", "-A"], d);
+  git(["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost", "commit", "-q", "--amend", "--no-edit"], d);
+
+  const r = settleRuling(d, "derive-tests-a");
+  assert.deepEqual(r.reopened, ["R-1.1"]);
+  const item = byItem(d).get("R-1.1");
+  assert.equal(item.closed ?? null, null);
+  assert.equal(item.stage, "verify");
+  assert.deepEqual(item.reopened.map((x) => x.closed), [closed]);
+  assert.match(git(["log", "-1", "--format=%an|%s", "main"], d), /^sdlc\|record\(G3\): derive-tests-a settles 1 missing test: 1 reopened/);
+  assert.match(git(["log", "-1", "--format=%b", "main"], d), /reopened, closed on a result that is not of its test as it stood: missing-test\/R-1\.1/);
+  const head = git(["rev-parse", "HEAD"], d);
+  assert.deepEqual(settleRuling(d, "derive-tests-a").reopened, []);
   assert.equal(git(["rev-parse", "HEAD"], d), head, "settling again commits nothing");
 });

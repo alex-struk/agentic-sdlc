@@ -11,6 +11,8 @@
 // established must not be reported as one that succeeded
 // (`docs/decisions/0033-a-criterion-nobody-asserted.md`).
 
+import { createHash } from "node:crypto";
+
 // Every value a row's `result` field can hold, in the fixed order any count reports them
 // in, so a row can never fall outside every column and be counted nowhere.
 export const RESULT_VALUES = ["pass", "fail", "unbound", "stale", "not-testable", "attested"];
@@ -32,4 +34,20 @@ export function notAssertedEntries(rows, ids) {
   return ids
     .filter((id) => isNotAsserted(byId.get(id)))
     .map((id) => ({ id, result: byId.get(id).result, reason: notAssertedReason(byId.get(id)) }));
+}
+
+// Two rulings on a failure say the test that produced a row does not test the criterion as it
+// stands: `test-wrong`, the test is wrong and is derived again, and `spec-wrong`, the criterion
+// is rewritten. A row carrying either shows no test of the criterion ran.
+export const DISOWNED = new Set(["test-wrong", "spec-wrong"]);
+
+export const isDisowned = (row) => DISOWNED.has(row?.ruled);
+
+// Which test file a row is a result of: git's object id for the file's content, the value
+// `git hash-object <file>` prints and a commit's tree holds for it. A run writes it on every row
+// that names a file (`file_sha`), so a reader can tell a result of the test as it now stands
+// from a result of an earlier test for the same criterion at the same version.
+export function testFingerprint(content) {
+  const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content));
+  return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }

@@ -760,7 +760,7 @@ function recordMissingTests(projectDir, { name, gate, by }) {
   const s = settleHandedOn(projectDir, { name, gate, by, merge: "HEAD", stage, domain });
   if (!r.path && !s.path) return null;
   stagePaths(projectDir, [owedPath(MISSING_TEST)]);
-  return { opened: r.opened, readdressed: [...r.readdressed, ...s.readdressed], closed: r.closed, kept: s.kept };
+  return { opened: r.opened, readdressed: [...r.readdressed, ...s.readdressed], closed: r.closed, kept: s.kept, reopened: r.reopened };
 }
 
 // The stage a proposal came from and, for a stage that runs per domain, which domain.
@@ -847,14 +847,17 @@ function settledMessage(name, gate, stage, r) {
   const withdrawn = r.withdrawn ?? [];
   const closed = r.closed ?? [];
   const restored = r.restored ?? [];
+  const reopened = r.reopened ?? [];
   const counts = [
+    ...(reopened.length ? [`${reopened.length} reopened`] : []),
     ...(restored.length ? [`${restored.length} restored to ${stage}`] : []),
     ...[...to].map(([t, ids]) => `${ids.length} to ${t}`),
     ...(r.kept.length ? [`${r.kept.length} kept by ${stage}`] : []),
     ...(closed.length ? [`${closed.length} closed as run`] : []),
     ...(withdrawn.length ? [`${withdrawn.length} withdrawn with ${withdrawn.length === 1 ? "its criterion" : "their criteria"}`] : []),
   ];
-  const n = restored.length + r.readdressed.length + r.kept.length + closed.length + withdrawn.length;
+  // Items, not moves: an item reopened and handed on is one missing test.
+  const n = new Set([...reopened, ...restored, ...r.readdressed.map((m) => m.id), ...r.kept, ...closed, ...withdrawn]).size;
   const redo = r.redo ?? [];
   const settles = [
     ...(n ? [`${n} missing ${n === 1 ? "test" : "tests"}: ${counts.join(", ")}`] : []),
@@ -863,6 +866,7 @@ function settledMessage(name, gate, stage, r) {
   const subject = `record(${gate ?? "?"}): ${name} settles ${settles.join("; ")}`;
   const body = [
     ...(redo.length ? [`redo closed, derived again in the line of work ${name} approved: ${redo.join(", ")}`] : []),
+    ...(reopened.length ? [`reopened, closed on a result that is not of its test as it stood: ${reopened.map(missingTestRef).join(", ")}`] : []),
     ...(restored.length ? [`restored to ${stage}, moved outside what ${name} was handed: ${restored.map(missingTestRef).join(", ")}`] : []),
     ...[...to].map(([t, ids]) => `re-addressed to ${t}: ${ids.map(missingTestRef).join(", ")}`),
     ...(r.kept.length ? [`kept by ${stage}: ${r.kept.map(missingTestRef).join(", ")}`] : []),
@@ -888,7 +892,7 @@ export function settleRuling(projectDir, name) {
   }).find((d) => d?.verdict) ?? null;
   if (!doc) throw new Error(`${name} has no ruling to settle`);
   if (doc.verdict === "approve") return { ...settleApproved(projectDir, name), verdict: "approve", addressed: [], unroutable: [] };
-  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], redo: [], addressed: [], unroutable: [] };
+  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], reopened: [], redo: [], addressed: [], unroutable: [] };
   if (doc.verdict !== "return" || conditionsAreExecutable(doc.gate, name)) return none;
   const start = enterBranch(projectDir, "main", "rule --settle");
   try {
@@ -937,6 +941,7 @@ export function settleApproved(projectDir, name) {
       kept: settled.kept,
       closed: synced.closed,
       withdrawn: synced.withdrawn,
+      reopened: synced.reopened,
       redo: redo.closed,
     };
     if (!r.path) return r;
@@ -1324,9 +1329,17 @@ function claimedBySlice(projectDir, slice) {
 }
 
 function verifyRows(projectDir, slice) {
+  return verifyResult(projectDir, slice).rows;
+}
+
+// The slice's verify result: its rows, and when it was written.
+function verifyResult(projectDir, slice) {
   const path = join(projectDir, "tests", "results", "new", `slice-${slice}.json`);
-  if (!existsSync(path)) return [];
-  try { return JSON.parse(readText(path)).rows ?? []; } catch { return []; }
+  if (!existsSync(path)) return { rows: [], at: null };
+  try {
+    const doc = JSON.parse(readText(path));
+    return { rows: doc.rows ?? [], at: doc.at ?? null };
+  } catch { return { rows: [], at: null }; }
 }
 
 // The missing tests an approval of this build slice would pass over: every item open on `main`
@@ -1339,7 +1352,7 @@ function missingTestsBlocking(projectDir, name, conditions, config) {
   return blockingMissingTests(projectDir, {
     claimed: claimedBySlice(projectDir, m[1]),
     withdrawn: withdrawnMissingTests(conditions),
-    rows: verifyRows(projectDir, m[1]),
+    ...verifyResult(projectDir, m[1]),
   });
 }
 
@@ -1662,6 +1675,7 @@ function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, 
   for (const m of missingTests?.readdressed ?? []) lines.push(`  test re-addressed: ${missingTestRef(m.id)} from ${m.from} to ${m.to}`);
   if (missingTests?.kept?.length) lines.push(`  tests kept by the stage that could not supply them: ${missingTests.kept.map(missingTestRef).join(", ")}`);
   if (missingTests?.closed?.length) lines.push(`  test ran, closed: ${missingTests.closed.map(missingTestRef).join(", ")}`);
+  if (missingTests?.reopened?.length) lines.push(`  reopened, closed on a result that is not of its test as it stood: ${missingTests.reopened.map(missingTestRef).join(", ")}`);
   lines.push(`  recorded: ${gatePath} on ${recordedOn}`);
   return redactLocalPaths(lines.join("\n"), projectDir);
 }
@@ -1815,6 +1829,7 @@ async function ruleCli({ pos, flags }) {
     for (const stage of new Set(r.addressed)) console.log(`${pos[0]}: requested of ${stage}: filed on main; ${requestCommand(stage)} takes it up`);
     for (const stage of r.unroutable) console.warn(`warning: ${pos[0]}: ${stage} takes no request; nothing was filed for it`);
     if (!r.path && !r.addressed.length) { console.log(`${pos[0]}: nothing left to settle`); return 0; }
+    if (r.reopened?.length) console.log(`${pos[0]}: reopened, closed on a result that is not of its test as it stood: ${r.reopened.map(missingTestRef).join(", ")}`);
     if (r.restored?.length) console.log(`${pos[0]}: restored, moved outside what its run was handed: ${r.restored.map(missingTestRef).join(", ")}`);
     for (const [to, ids] of settledByTarget(r)) console.log(`${pos[0]}: re-addressed to ${to}: ${ids.map(missingTestRef).join(", ")}`);
     if (r.kept.length) console.log(`${pos[0]}: kept by the stage that could not supply them: ${r.kept.map(missingTestRef).join(", ")}`);

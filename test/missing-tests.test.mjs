@@ -3,10 +3,11 @@
 // it, closed only on a result row that shows a test ran, and withdrawn only with a reason.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { git } from "../src/lib/git.mjs";
 import { read } from "../src/spec/owed.mjs";
 import { checkConditions } from "../src/checks/conditions.mjs";
@@ -39,6 +40,15 @@ function commit(d, m) {
   git(["add", "-A"], d);
   git(["commit", "-q", "-m", m], d);
 }
+
+// A commit made at a given time, so a result file's `at` can fall before or after it.
+function commitAt(d, m, date) {
+  git(["add", "-A"], d);
+  execFileSync("git", ["commit", "-q", "-m", m], { cwd: d, env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+}
+
+// What a run records of the test file it ran: git's hash of the file's content.
+const fingerprint = (d, rel) => git(["hash-object", rel], d);
 
 const records = (d, criteria) => put(d, "tests/acceptance/not-testable.yaml", stringifyYaml({ criteria }));
 const spec = (d, id, version) => put(d, `tests/acceptance/orders/${id}.spec.ts`,
@@ -196,11 +206,13 @@ test("an item closes only on a result row that ran its test at the current versi
   assert.deepEqual(owed.readdressed, [{ id: "R-1.2", from: "contract", to: "calibrate" }], "a test that exists and has not run is owed a run");
   assert.equal(read(d, MISSING_TEST)[0].target, "old");
 
-  put(d, "tests/results/old/latest.json", JSON.stringify({ rows: [{ id: "R-1.2", version: 1, file: "tests/acceptance/orders/R-1.2.spec.ts", result: "pass" }] }));
+  const file = "tests/acceptance/orders/R-1.2.spec.ts";
+  const file_sha = fingerprint(d, file);
+  put(d, "tests/results/old/latest.json", JSON.stringify({ rows: [{ id: "R-1.2", version: 1, file, file_sha, result: "pass" }] }));
   assert.equal(syncMissingTests(d, {}).closed.length, 0, "a row for an earlier version is not evidence");
   put(d, "tests/results/old/latest.json", JSON.stringify({ rows: [{ id: "R-1.2", version: 2, result: "attested" }] }));
   assert.equal(syncMissingTests(d, {}).closed.length, 0, "an attestation is not a test that ran");
-  put(d, "tests/results/old/latest.json", JSON.stringify({ rows: [{ id: "R-1.2", version: 2, file: "tests/acceptance/orders/R-1.2.spec.ts", result: "fail" }] }));
+  put(d, "tests/results/old/latest.json", JSON.stringify({ rows: [{ id: "R-1.2", version: 2, file, file_sha, result: "fail" }] }));
   const r = syncMissingTests(d, {});
   assert.deepEqual(r.closed, ["R-1.2"], "a failing row is still a test that ran");
   const [e] = read(d, MISSING_TEST);
@@ -224,11 +236,102 @@ test("a met item whose record comes back is owed again", (t) => {
   commit(d, "record");
   syncMissingTests(d, {});
   records(d, []);
-  put(d, "tests/results/new/slice-1.json", JSON.stringify({ rows: [{ id: "R-1.2", version: 2, file: "tests/acceptance/orders/R-1.2.spec.ts", result: "pass" }] }));
+  spec(d, "R-1.2", 2);
+  const file = "tests/acceptance/orders/R-1.2.spec.ts";
+  put(d, "tests/results/new/slice-1.json", JSON.stringify({ rows: [{ id: "R-1.2", version: 2, file, file_sha: fingerprint(d, file), result: "pass" }] }));
   syncMissingTests(d, {});
   assert.equal(read(d, MISSING_TEST)[0].closed.outcome, "met");
   records(d, [NAMED]);
   assert.deepEqual(syncMissingTests(d, {}).opened, ["R-1.2"]);
+});
+
+// A calibration ran an earlier test for the criterion and the reviewer ruled that test wrong;
+// the criterion was then recorded untestable, and the test derived again has never run. The
+// result on file is a result of the earlier test.
+function reDerived(t, { ruled = "test-wrong" } = {}) {
+  const d = project(t);
+  const file = "tests/acceptance/orders/R-1.2.spec.ts";
+  put(d, file, "// criterion: @R-1.2 v2\n// provenance: blind, spec@abc123, derived 2030-01-01\n// the earlier attempt\n");
+  commitAt(d, "earlier test", "2030-01-01T00:00:00Z");
+  put(d, "tests/results/old/latest.json", JSON.stringify({ target: "old", at: "2030-01-02T00:00:00.000Z", rows: [
+    { id: "R-1.2", version: 2, domain: "orders", file, result: "fail", ...(ruled ? { ruled } : {}) },
+  ] }));
+  commitAt(d, "calibrate old", "2030-01-02T00:00:01Z");
+  rmSync(join(d, file));
+  records(d, [NAMED]);
+  commitAt(d, "recorded untestable", "2030-01-03T00:00:00Z");
+  syncMissingTests(d, {});
+  commitAt(d, "materialised", "2030-01-03T00:00:01Z");
+  records(d, []);
+  spec(d, "R-1.2", 2);
+  return { d, file };
+}
+
+test("a result of an earlier test for the criterion does not close its item", (t) => {
+  const { d } = reDerived(t, { ruled: null });
+  const r = syncMissingTests(d, { config: CALIBRATES });
+  assert.deepEqual(r.closed, []);
+  assert.deepEqual(r.readdressed, [{ id: "R-1.2", from: "contract", to: "calibrate" }], "the test that exists has not run");
+  assert.equal(read(d, MISSING_TEST)[0].closed ?? null, null);
+});
+
+test("a result row ruled test-wrong is never evidence, even of the test that produced it", (t) => {
+  const { d, file } = reDerived(t);
+  put(d, "tests/results/old/latest.json", JSON.stringify({ target: "old", at: "2030-01-04T00:00:00.000Z", rows: [
+    { id: "R-1.2", version: 2, domain: "orders", file, file_sha: fingerprint(d, file), result: "fail", ruled: "test-wrong" },
+  ] }));
+  assert.deepEqual(syncMissingTests(d, { config: CALIBRATES }).closed, []);
+});
+
+test("a result of the test as it now stands closes its item, by its fingerprint or, for a row without one, by when it ran", (t) => {
+  const { d, file } = reDerived(t, { ruled: null });
+  commitAt(d, "merge: derive-tests-orders approved", "2030-01-04T00:00:00Z");
+  put(d, "tests/results/old/latest.json", JSON.stringify({ target: "old", at: "2030-01-05T00:00:00.000Z", rows: [
+    { id: "R-1.2", version: 2, domain: "orders", file, result: "pass" },
+  ] }));
+  const r = syncMissingTests(d, { config: CALIBRATES });
+  assert.deepEqual(r.closed, ["R-1.2"], "run after the test that stands was committed");
+  assert.equal(read(d, MISSING_TEST)[0].closed.file_sha, fingerprint(d, file), "the closure names the test that ran");
+});
+
+// An item the runner closed on a row the rule above rejects is owed again, where the stage that
+// owes it now can see it: here, a test exists and has not run.
+test("an item closed on a result of an earlier test is reopened and handed to the stage that runs its test, once", (t) => {
+  const { d, file } = reDerived(t);
+  const doc = parseYaml(git(["show", "HEAD:.sdlc/owed.yaml"], d));
+  doc.owed[0].closed = { outcome: "met", why: "tests/results/old/latest.json: R-1.2 v2 fail", by: "runner", at: "2030-01-04T00:00:00.000Z" };
+  put(d, ".sdlc/owed.yaml", stringifyYaml(doc));
+  commitAt(d, "merge: derive-tests-orders approved", "2030-01-04T00:00:01Z");
+  const r = syncMissingTests(d, { config: CALIBRATES });
+  assert.deepEqual(r.reopened, ["R-1.2"]);
+  assert.deepEqual(r.readdressed, [{ id: "R-1.2", from: "contract", to: "calibrate" }]);
+  const [e] = read(d, MISSING_TEST);
+  assert.equal(e.closed ?? null, null);
+  assert.equal(e.stage, "calibrate");
+  assert.equal(e.reopened.at(-1).closed.why, "tests/results/old/latest.json: R-1.2 v2 fail");
+  assert.equal(e.reopened.at(-1).by, "runner");
+  assert.match(e.reopened.at(-1).why, /not a result of .*R-1\.2.* as it stood/);
+  commitAt(d, "record: reopened", "2030-01-04T00:00:02Z");
+  const again = syncMissingTests(d, { config: CALIBRATES });
+  assert.deepEqual([again.path, again.reopened], [null, []], "a second pass changes nothing");
+  assert.ok(existsSync(join(d, file)));
+});
+
+test("an item closed on a result of the test as it then stood stays closed after its test changes", (t) => {
+  const { d, file } = reDerived(t, { ruled: null });
+  commitAt(d, "merge: derive-tests-orders approved", "2030-01-04T00:00:00Z");
+  put(d, "tests/results/old/latest.json", JSON.stringify({ target: "old", at: "2030-01-05T00:00:00.000Z", rows: [
+    { id: "R-1.2", version: 2, domain: "orders", file, result: "pass" },
+  ] }));
+  const doc = parseYaml(git(["show", "HEAD:.sdlc/owed.yaml"], d));
+  doc.owed[0].closed = { outcome: "met", why: "tests/results/old/latest.json: R-1.2 v2 pass", by: "runner", at: "2030-01-05T00:00:01.000Z" };
+  put(d, ".sdlc/owed.yaml", stringifyYaml(doc));
+  commitAt(d, "calibrate old", "2030-01-05T00:00:02Z");
+  put(d, file, `${git(["show", `HEAD:${file}`], d)}\n// derived again\n`);
+  commitAt(d, "merge: derive-tests-orders-stale-1 approved", "2030-01-06T00:00:00Z");
+  const r = syncMissingTests(d, { config: CALIBRATES });
+  assert.deepEqual(r.reopened, []);
+  assert.equal(read(d, MISSING_TEST)[0].closed.outcome, "met");
 });
 
 test("a withdrawal needs a reason and holds for the version it was made at", (t) => {
@@ -391,8 +494,16 @@ test("an open item naming a slice's criterion blocks it unless withdrawn in the 
   const claimed = ["R-1.1", "R-1.2", "R-1.3"];
   assert.deepEqual(blockingMissingTests(d, { claimed }).map((e) => e.item), ["R-1.1", "R-1.2"]);
   assert.deepEqual(blockingMissingTests(d, { claimed, withdrawn: ["R-1.1"] }).map((e) => e.item), ["R-1.2"]);
-  const rows = [{ id: "R-1.2", version: 2, file: "tests/acceptance/orders/R-1.2.spec.ts", result: "pass" }];
+  const file = "tests/acceptance/orders/R-1.2.spec.ts";
+  spec(d, "R-1.2", 2);
+  const rows = [{ id: "R-1.2", version: 2, file, file_sha: fingerprint(d, file), result: "pass" }];
   assert.deepEqual(blockingMissingTests(d, { claimed, withdrawn: ["R-1.1"], rows }).map((e) => e.item), []);
+  const ruled = [{ ...rows[0], ruled: "test-wrong" }];
+  assert.deepEqual(blockingMissingTests(d, { claimed, withdrawn: ["R-1.1"], rows: ruled }).map((e) => e.item), ["R-1.2"],
+    "a row whose test was ruled wrong does not show the criterion's test ran");
+  const earlier = [{ ...rows[0], file_sha: "0".repeat(40) }];
+  assert.deepEqual(blockingMissingTests(d, { claimed, withdrawn: ["R-1.1"], rows: earlier }).map((e) => e.item), ["R-1.2"],
+    "a row from a different test file does not show this one ran");
   assert.deepEqual(blockingMissingTests(d, { claimed: ["R-1.3"] }), []);
 });
 

@@ -9,12 +9,13 @@
 // and `SDLC_EXECUTOR=mock` in `src/runner/executor.mjs`) for a caller that needs a result
 // with no suite, no browser and no npm registry in reach at all.
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { readText } from "../lib/fsx.mjs";
 import { checkTests, loadIndex, readHeader, readNotTestable } from "../checks/tests.mjs";
 import { compareIds } from "../spec/criteria.mjs";
+import { testFingerprint } from "./results.mjs";
 
 // A failing test's error message is how an unbound adapter member is told apart from a
 // real defect: `bind-adapter` throws `Error("unbound: <page>.<member> — <reason>")` from
@@ -225,11 +226,26 @@ function readMockRows(mockDir) {
   return Array.isArray(data.rows) ? data.rows : [];
 }
 
+// Each row that names a spec file carries the fingerprint of that file as it was when the suite
+// ran (`file_sha`), so a result read later is known to be a result of that file and not of
+// whatever the criterion's test has become since (`docs/decisions/0046`). A row whose file is
+// gone has nothing to fingerprint.
+function withFingerprint(projectDir, row) {
+  if (!row?.file) return row;
+  const abs = join(projectDir, row.file);
+  return existsSync(abs) ? { ...row, file_sha: testFingerprint(readFileSync(abs)) } : row;
+}
+
 // Runs the acceptance suite against `target` at `baseUrl` and maps the report to one row
 // per criterion. `opts.exec` defaults to a real synchronous subprocess (`defaultExec`);
 // a test passes a recording stand-in instead, so nothing here ever needs a real `npm`,
 // `npx` or browser to be exercised. `runSuite` is itself synchronous, since `exec` is.
 export function runSuite(opts) {
+  const out = suiteRows(opts);
+  return { ...out, rows: out.rows.map((r) => withFingerprint(opts.projectDir, r)) };
+}
+
+function suiteRows(opts) {
   // `domain` narrows the run to one domain's specs. The whole suite takes hours on a real
   // project, which makes checking one fix a whole afternoon; scoped, it is minutes. The
   // caller is responsible for merging the rows it gets back over the rows it already had —
