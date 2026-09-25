@@ -408,7 +408,10 @@ record the merge rewrote with a different owner moves to that owner; an item han
 that derivation was handed it (in its domain, and owed when its branch was cut); an item
 whose test now exists and has not run is handed to `calibrate` (a project that calibrates) or
 `verify`. An item whose test the merge shows ran — a result row for the criterion, at its current
-version, from a spec file, `pass` or `fail` — is closed as met with that row as the evidence. An
+version, from the spec file as it now stands, `pass` or `fail`, and not ruled `test-wrong` or
+`spec-wrong` — is closed as met with that row as the evidence. An item the runner closed on a row
+that rule rejects, judged at the commit that recorded the closure, is reopened, the closure kept
+under `reopened`, and goes where an open item goes. An
 item whose criterion is superseded or obsolete is withdrawn, stamped by the runner: no test is
 derived for it.
 
@@ -448,7 +451,8 @@ author: `record(<gate>): <name> settles <n> missing tests: …` (with `; <n> tes
 (redo)` where it closed redo entries), each item named in the body. A move the approval's merge made to an item its run was
 not handed is reversed first, where it still stands and nothing has kept the item since: the item
 goes back to the approved stage with the reason it had there, stamped `by: runner` and
-`reverts: <name>`, and the body lists it as restored. It is not a ruling and asks for no seat. A proposal with
+`reverts: <name>`, and the body lists it as restored. An item closed on a result that was not of
+its test as it stood is reopened by the same pass and listed as reopened. It is not a ruling and asks for no seat. A proposal with
 no ruling is refused, and one with nothing left to settle commits nothing.
 
 **A return whose request is not on `main`** is settled by the same command. It reads the ruling

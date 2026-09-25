@@ -169,9 +169,12 @@ the runner's own process, never through a tool call.
 5. **Write the result set** — this run's own dated file (`<date>.json`, or `<date>-<n>.json` when the
    day already has one) and `latest.json` — marking each row `ruled` where an applied ruling covers
    that id at its current version.
+   Each row that names a spec file carries `file_sha`, git's object id for that file as the suite
+   ran it, and a row carried over from an earlier run keeps its own.
    Then the missing tests (`docs/operating-model.md` §7): an open item whose test these rows show
-   ran at the criterion's current version — `pass` or `fail`, from a spec file — is closed as met,
-   the row cited as its evidence (`tests/results/<t>/latest.json: <id> v<n> <result>`), and one whose
+   ran at the criterion's current version — `pass` or `fail`, from the spec file as it now stands,
+   not ruled `test-wrong` or `spec-wrong` — is closed as met, the row cited as its evidence
+   (`tests/results/<t>/latest.json: <id> v<n> <result>`) and the file's id recorded, and one whose
    test exists and has not run is owed by `calibrate` for this target. `.sdlc/owed.yaml` is committed
    with the result set.
 6. **Return the summary and every path written.**

@@ -244,10 +244,13 @@ stateDiagram-v2
   proposal's stage owes and, for a build slice, the items its criteria are owed; `sdlc next` lists
   them and routes each to the run that answers it.
 - **It closes only when a test runs.** A result row for the criterion, at its current version,
-  from a spec file, `pass` or `fail`, closes it as met with the row cited as evidence — written by
-  the calibration that ran it, or by the G3 approval of a slice whose verify ran it. A written
-  assurance never closes it: `condition-met` on a missing test is refused, and an `attested` row
-  closes nothing.
+  from a spec file, `pass` or `fail`, and a result of that spec file as it now stands (the row's
+  `file_sha` is the file's git object id), closes it as met with the row cited as evidence — written
+  by the calibration that ran it, or by the G3 approval of a slice whose verify ran it. A row ruled
+  `test-wrong` or `spec-wrong` is a result of a test ruled not to test the criterion and closes
+  nothing. A written assurance never closes it: `condition-met` on a missing test is refused, and an
+  `attested` row closes nothing. An item the runner closed on a row this rule rejects is reopened by
+  the next pipeline commit that touches the list (`docs/decisions/0046`).
 - **A ruler withdraws one** with the reason written down, `condition-withdrawn missing-test/<id>:
   <why>`, on any ruling and from either seat. The withdrawal holds for the criterion's version; a
   record at a later version is owed again. A criterion superseded by another, or made obsolete, is

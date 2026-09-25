@@ -47,7 +47,19 @@ record's owner. An item whose test exists and has not run is owed by `calibrate`
 target, or by `verify` in a project that does not calibrate.
 
 **A test runs when a result row says so.** A row for the criterion, at its current version, from a
-spec file, whose result is `pass` or `fail`. A failing row closes the item too: the question was
+spec file, whose result is `pass` or `fail`, and which is a result of that spec file as it now
+stands. A criterion's test is derived again after a `test-wrong` ruling, and the results on file
+still hold a row for it at the same version, produced by the test that was ruled wrong; that row
+is not evidence that the test now on `main` runs. So a run records on each row git's object id for
+the spec file it ran (`file_sha`), and a row counts only where that matches the file as it stands.
+A row written without one counts where the file is what the first-parent line held when its results
+file was written (`at`). A row ruled `test-wrong` or `spec-wrong` counts in no case: the ruling says
+the test that produced it does not test the criterion as it stands. A closure records the
+fingerprint of the test whose row closed it. A closure made without one is judged by the same rule
+at the commit that recorded it, and where the rule rejects it the next pipeline commit that touches
+the list reopens the item, keeping the closure and the reason under `reopened`, and the item goes
+where an open item goes: to `calibrate` or `verify` where its test exists and has not run.
+`sdlc rule <name> --settle` is that commit for an approval already on `main`. A failing row closes the item too: the question was
 whether a test runs, not whether the application passes it, and a failure is `verify`'s and
 `calibrate`'s to route. The calibration that writes such a row closes the item; so does the G3
 approval of a slice whose verify result has one, which is also why that row lets the approval
