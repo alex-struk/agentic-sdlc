@@ -14,6 +14,7 @@ const HELP = `sdlc <command> [args] [--flags]
   rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>
   rule --pending                   rule every open proposal an agent holds the gate for
   rule <name> --settle             apply to main what an approved proposal settles about the missing tests its run was handed
+  withdraw <name> --by <role> --reason "..."   set an open proposal aside without ruling on it; recorded, from either seat
   run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--skip-suite] [--dry-run] [--reason "..."]
                                    run one pipeline stage; --reason is required to run something other than what next names
   next [dir] [--json]              name the next stage to run and why, read from main (exit 0 run, 3 waiting on a person, 4 nothing left)
@@ -36,7 +37,7 @@ const HELP = `sdlc <command> [args] [--flags]
 // its own top level, so `COMMANDS` is already the real object by the time they assign to it.
 let commandsLoaded = null;
 function loadCommands() {
-  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs")]);
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs"), import("./commands/withdraw.mjs")]);
   return commandsLoaded;
 }
 

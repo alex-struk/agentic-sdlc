@@ -291,6 +291,12 @@ At most one calibration proposal is open per target at a time: while `calibrate-
 it is the question the stage is waiting on, and a second would ask it twice. A run that finds
 failures while one is open says so in its own summary rather than opening nothing silently.
 
+A calibration proposal whose rows should never have been asked about, such as one opened over rows
+that a target which was not usable produced, is set aside with `sdlc withdraw <name> --by <seat>
+--reason "<why>"` (`docs/stages/withdraw.md`), which closes it without an answer on any row. The
+next run then asks afresh, so the rows it asks about must be sound: run the full calibration, not
+`--skip-suite` over the rows the broken run left on file.
+
 A proposal the persona **escalated** is unruled: escalation hands the question to `escalate_to` and
 answers nothing, so the gate file it leaves on the branch does not close the proposal. The stage
 keeps waiting on it rather than opening `-2` and `-3` on every run while a person still owes the
