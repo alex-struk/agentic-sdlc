@@ -299,10 +299,11 @@ function codexSignIn() {
 //
 // `endpoints` are the hosts the CLI reaches its model and its sign-in at, which an isolated
 // session is always allowed (`docs/decisions/0061`): without them there is no session at all.
-// Codex's were observed through the egress proxy from a signed-in session (the model at
-// `chatgpt.com`, its feature flags at `ab.chatgpt.com`) plus the host its sign-in refreshes
-// at; Claude's are the API, the two hosts its sign-in is issued and refreshed at, and the
-// feature-flag host the CLI reads at start.
+// Each list is what a signed-in session was observed to reach through the egress proxy — Codex
+// its model at `chatgpt.com` and its feature flags at `ab.chatgpt.com`, Claude its model at
+// `api.anthropic.com` — and the hosts the CLI refreshes its sign-in at, which a session reaches
+// only when its credential is near expiry. Anything else a CLI reaches for — telemetry, a
+// plugin catalogue — is refused, and the session goes on without it.
 export const BACKENDS = {
   claude: {
     name: "claude",
@@ -321,7 +322,7 @@ export const BACKENDS = {
     homeFiles: [],
     filesInSession: true,
     writes: writesFiles,
-    endpoints: ["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "statsig.anthropic.com"],
+    endpoints: ["api.anthropic.com", "console.anthropic.com", "platform.claude.com"],
   },
   codex: {
     name: "codex",

@@ -215,3 +215,8 @@ test("an isolated turn on a machine with no Docker is refused before anything is
     assert.equal(isolationUnavailable(agent, down), null);
   } finally { if (prev === undefined) delete process.env.SDLC_EXECUTOR; else process.env.SDLC_EXECUTOR = prev; }
 });
+
+test("each backend's endpoints are its model host, its feature-flag host where it reads one, and its sign-in refresh host", () => {
+  assert.deepEqual(BACKENDS.codex.endpoints, ["chatgpt.com", "ab.chatgpt.com", "auth.openai.com"]);
+  assert.deepEqual(BACKENDS.claude.endpoints, ["api.anthropic.com", "console.anthropic.com", "platform.claude.com"]);
+});
