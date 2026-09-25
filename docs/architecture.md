@@ -193,6 +193,8 @@ There is no database. All state is git plus files:
   `sdlc init`.
 - **`.sdlc/packs/<name>`** and **`.claude/skills/<skill>`** — cloned skill pack repositories and the
   skill directories copied out of them.
+- **`.sdlc/skills/<stage>.md`** — optional: a project's own copy of a stage's skill, read in place
+  of the pipeline's `src/stages/skills/<stage>.md` for that stage.
 - **`.sdlc/personas/<name>.md`** — one brief per persona (`ux-reviewer`, `tech-lead`,
   `product-owner`, `architect`, `reviewer`), installed by `sdlc init` and read by `sdlc rule` when a
   gate's holder is that persona.

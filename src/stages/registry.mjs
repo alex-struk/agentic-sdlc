@@ -32,7 +32,7 @@ import { oracleOverridePath } from "../oracle/paths.mjs";
 import { propose } from "../commands/propose.mjs";
 import { escalateOnBranch } from "../runner/escalation.mjs";
 import { ratifyFollowUps } from "../config/policy.mjs";
-import { SKILLS_DIR, checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
+import { SKILLS_DIR, checkSandboxPassword, checkTargetOption, escapeRe, followUpState, projectSkillPath, skillPath } from "./shared.mjs";
 import { calibrate } from "./calibrate.mjs";
 // Naming and revision-source helpers a stage module needs too (`build.mjs` in
 // particular): kept in their own module rather than defined here, so a stage can import
@@ -2934,8 +2934,11 @@ export function registerStage(stage) {
   STAGES_BY_NAME[stage.name] = stage;
 }
 
-export function skillText(name) {
+// The preamble is the runner's protocol with every stage and is always the pipeline's; the
+// stage's own skill is the project's copy where it has one (`skillPath`).
+export function skillText(name, projectDir = null) {
   const preamble = readText(join(SKILLS_DIR, "_preamble.md"));
   const stage = stageFor(name);
-  return `${preamble}\n${readText(stage.skill)}`;
+  const own = projectSkillPath(projectDir, name);
+  return `${preamble}\n${readText(own && existsSync(own) ? own : stage.skill)}`;
 }

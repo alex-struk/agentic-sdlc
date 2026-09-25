@@ -268,7 +268,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
     // The skill text an agent turn reads is stage- and run-specific, so it is written
     // to its own scratch file rather than reused from disk.
     const skillPath = join(skillDir, "SKILL.md");
-    writeText(skillPath, skillText(name));
+    writeText(skillPath, skillText(name, projectDir));
 
     // The scope note is appended by the runner rather than written into any stage's own
     // prompt, so it is generated from the same two declarations the runner enforces and

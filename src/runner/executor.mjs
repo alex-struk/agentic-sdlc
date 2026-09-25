@@ -165,13 +165,16 @@ export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemP
 // tests) have their own files and their own counts.
 const mockCalls = new Map();
 
-function runMock({ cwd, stage, prompt }) {
+function runMock({ cwd, stage, prompt, systemPromptFile }) {
   // What the session was actually asked, written out for a test that needs to assert on
   // the prompt a stage built rather than on what it did with the reply — the recovery
   // block `archaeology` adds for a criterion it has been told to recover again reaches a
   // live agent only through this string. Off unless the variable names a path, and the
   // path is the caller's, never a project one, so nothing lands in the tree under test.
   if (process.env.SDLC_MOCK_PROMPT_FILE) writeText(process.env.SDLC_MOCK_PROMPT_FILE, prompt ?? "");
+  // The skill the session was given, the same way: which copy of a stage's skill a run reads
+  // is decided by the runner and reaches the agent only as this file.
+  if (process.env.SDLC_MOCK_SKILL_FILE) writeText(process.env.SDLC_MOCK_SKILL_FILE, systemPromptFile ? readFileSync(systemPromptFile, "utf8") : "");
   const p = join(process.env.SDLC_MOCK_DIR ?? "", `${stage}.json`);
   if (!existsSync(p)) throw new Error(`mock executor: no canned response at ${p}`);
   const file = JSON.parse(readFileSync(p, "utf8"));

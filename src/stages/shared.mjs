@@ -9,8 +9,17 @@ import { git, gitOk } from "../lib/git.mjs";
 
 export const SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "skills");
 
-export function skillPath(name) {
-  return join(SKILLS_DIR, `${name}.md`);
+// Where a stage's skill is read from. A project may hold its own copy of any stage's skill at
+// `.sdlc/skills/<stage>.md`, and that copy is the one its runs read; without one, or with no
+// project named, it is the pipeline's own. A skill is judgement — how the stage should do its
+// work — and judgement is the project's to tune, where the mechanics around it are not.
+export function projectSkillPath(projectDir, name) {
+  return projectDir ? join(projectDir, ".sdlc", "skills", `${name}.md`) : null;
+}
+
+export function skillPath(name, projectDir = null) {
+  const own = projectSkillPath(projectDir, name);
+  return own && existsSync(own) ? own : join(SKILLS_DIR, `${name}.md`);
 }
 
 export function escapeRe(s) {

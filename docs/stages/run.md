@@ -18,6 +18,13 @@ proposal, depending on whether the stage holds a gate.
 pipeline stage (`design`, `build`, …) is a named stub that throws `stage <name> is not implemented
 yet` before touching the working tree.
 
+An agent stage's session reads the pipeline's preamble (`src/stages/skills/_preamble.md`) followed
+by the stage's skill. The skill is the project's own `.sdlc/skills/<stage>.md` where the project
+keeps one, and the pipeline's `src/stages/skills/<stage>.md` otherwise, on the first turn and on
+every repair turn alike. A skill holds the judgement a stage works by; the prompt a stage builds
+holds its mechanics — the paths it writes, the formats its checks enforce, and the values it
+substitutes from the configuration — and is the same for every project.
+
 `--slice`, `--domain`, `--target` and `--stale` are threaded into the stage's context as
 `ctx.slice`, `ctx.domain`, `ctx.target` and `ctx.stale`. `archaeology`, `ratify` and `derive-tests`
 all require `--domain <d>`, and `<d>` must be one of `config.project.domains`; `probe` and `intent`

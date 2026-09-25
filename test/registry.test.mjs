@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STAGES } from "../src/profiles.mjs";
 import { stageFor, skillText, recommendationFrom } from "../src/stages/registry.mjs";
+import { skillPath, SKILLS_DIR } from "../src/stages/shared.mjs";
 
 test("probe has no gate and is implemented", () => {
   const probe = stageFor("probe");
@@ -203,6 +204,23 @@ test("skillText concatenates the preamble and the stage skill", () => {
   const text = skillText("probe");
   assert.match(text, /one stage of a longer pipeline/);
   assert.match(text, /app\/PROBE\.md/);
+});
+
+// A stage skill is instructions, and a project may hold its own. Its copy at
+// `.sdlc/skills/<stage>.md` replaces the pipeline's for that stage; the preamble, which is the
+// runner's protocol with every stage, stays the pipeline's.
+test("a project's own .sdlc/skills/<stage>.md replaces the pipeline's skill for that stage", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-project-skill-"));
+  assert.equal(skillPath("probe", d), join(SKILLS_DIR, "probe.md"), "without a project copy, the pipeline's");
+  assert.match(skillText("probe", d), /app\/PROBE\.md/);
+  mkdirSync(join(d, ".sdlc", "skills"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "skills", "probe.md"), "Write the project's own probe file and nothing else.\n");
+  assert.equal(skillPath("probe", d), join(d, ".sdlc", "skills", "probe.md"));
+  const text = skillText("probe", d);
+  assert.match(text, /one stage of a longer pipeline/, "the preamble is still the pipeline's");
+  assert.match(text, /the project's own probe file/);
+  assert.doesNotMatch(text, /app\/PROBE\.md/);
+  assert.match(skillText("probe"), /app\/PROBE\.md/, "with no project named, the pipeline's");
 });
 
 test("recommendationFrom extracts the first sentence, handling dots in filenames", () => {

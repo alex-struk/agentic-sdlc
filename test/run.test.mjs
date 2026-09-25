@@ -337,6 +337,45 @@ test("policy.retries.post_check_repair of 0 gives a failing stage no repair turn
   }
 });
 
+// The skill a session reads is the project's own copy where the project keeps one, on the
+// first turn and on a repair turn alike.
+test("a run and its repair turn read the project's own .sdlc/skills/<stage>.md", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-project-skill-run-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerFixableStage("fixable-own-skill");
+  mkdirSync(join(dir, ".sdlc", "skills"), { recursive: true });
+  writeFileSync(join(dir, ".sdlc", "skills", "fixable-own-skill.md"), "This project's own instructions for the fixable stage.\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "own skill"], dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-project-skill-run-mock-"));
+  writeFileSync(join(mockDir, "fixable-own-skill.json"), JSON.stringify({
+    sequence: [
+      { text: "wrote it without the word", files: { "app/FIXABLE.md": "nope\n" } },
+      { text: "fixed it", files: { "app/FIXABLE.md": "fixed\n" } },
+    ],
+  }));
+  const skillFile = join(mockDir, "skill-seen.md");
+  const seen = [];
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  process.env.SDLC_MOCK_SKILL_FILE = skillFile;
+  const stage = { ...await import("../src/stages/registry.mjs").then((m) => m.stageFor("fixable-own-skill")) };
+  const postChecks = stage.postChecks;
+  registerStage({ ...stage, postChecks: (d, ctx) => { seen.push(readFileSync(skillFile, "utf8")); return postChecks(d, ctx); } });
+  try {
+    const r = await runStage(dir, "fixable-own-skill");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(seen.length, 2, "one first turn and one repair turn");
+    for (const text of seen) {
+      assert.match(text, /This project's own instructions for the fixable stage\./);
+      assert.match(text, /one stage of a longer pipeline/, "after the pipeline's preamble");
+    }
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; delete process.env.SDLC_MOCK_SKILL_FILE;
+    restoreEgress(prevEgress);
+  }
+});
+
 // A stage that writes TypeScript against a generated declaration file cannot compile it —
 // it has no shell — so a wrong parameter name survives a whole domain's derivation. The
 // repair has to happen in the workspace: the project directory holds the application

@@ -173,7 +173,7 @@ async function runFixTurn(cwd, stage, ctx, messages) {
   const skillDir = mkdtempSync(join(tmpdir(), `sdlc-fix-${stage.name}-`));
   try {
     const skillPath = join(skillDir, "SKILL.md");
-    writeText(skillPath, skillText(stage.name));
+    writeText(skillPath, skillText(stage.name, ctx.projectDir));
     // Mirrors `run`'s own mcp-file handling (`writeMcpConfig`, shared from
     // `./executor.mjs`): a stage whose first turn reached MCP servers should not lose
     // them on its fix turn. The scratch file lives in this same `skillDir`, cleaned up
