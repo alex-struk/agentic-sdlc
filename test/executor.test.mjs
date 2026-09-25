@@ -364,3 +364,28 @@ test("the pre-flight is silent about a session that authenticated and then faile
     assert.equal(r.ok, true);
   } finally { clearFakeClaude(); }
 });
+
+test("a claude turn records the backend, the model the CLI reports having used, and the CLI's version", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-exec-engine-"));
+  withFakeClaude(root, JSON.stringify({
+    is_error: false, result: "ok",
+    modelUsage: { "small-housekeeping-model": { costUSD: 0.001 }, "large-working-model": { costUSD: 0.4 } },
+  }));
+  try {
+    const r = await runAgent({ cwd: root, prompt: "x", stage: "probe", agent: { backend: "claude", model: "configured-model" } });
+    assert.equal(r.engine.backend, "claude");
+    assert.equal(r.engine.model, "large-working-model");
+    // The fake answers `--version` with whatever it prints, so only its presence is checked.
+    assert.equal(typeof r.engine.version, "string");
+  } finally { clearFakeClaude(); }
+});
+
+test("a claude turn whose CLI reports no model records the configured one", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sdlc-exec-engine-cfg-"));
+  withFakeClaude(root, JSON.stringify({ is_error: false, result: "ok" }));
+  try {
+    const r = await runAgent({ cwd: root, prompt: "x", stage: "probe", agent: { model: "configured-model" } });
+    assert.equal(r.engine.backend, "claude");
+    assert.equal(r.engine.model, "configured-model");
+  } finally { clearFakeClaude(); }
+});
