@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { git } from "../src/lib/git.mjs";
 import { readJournal } from "../src/runner/journal.mjs";
 import { newProject } from "../src/commands/new.mjs";
@@ -784,6 +784,68 @@ test("derive-tests --stale closes the redo entries it has just answered", async 
     const after = parseYaml(git(["show", `${derived.proposal.branch}:tests/acceptance/redo.yaml`], dir));
     assert.deepEqual(after.redo.filter((r) => !r.closed), [], "the request has been answered, so nothing is owed");
     assert.deepEqual(after.redo.map((r) => [r.id, r.closed?.outcome]), [["R-1.3", "met"]], "and the entry stays on file with its closure");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a criterion sent back to derive-tests more often than policy allows is escalated with its re-derivation", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-redo-limit-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
+    await ruleCalibration(dir, "calibrate-old-1", {
+      rationale: "the status wording is the old system's own defect; the fee criterion's test asserts the wrong thing",
+      conditions: [
+        "defect-in-old R-1.2",
+        "spec-wrong R-1.1: The system shall reject a permit application from an applicant under 19 years old.",
+        "test-wrong R-1.3: the test asserts a fee amount the fee page never shows",
+      ],
+    });
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+    const asked = parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8"));
+    assert.deepEqual(asked.redo.map((r) => r.id), ["R-1.3"]);
+    clearCalibrateEnv();
+
+    // Two earlier sends of the same criterion, each answered by a re-derivation that did not
+    // settle it.
+    const earlier = [1, 2].map((n) => ({ id: "R-1.3", version: 1, why: `earlier send ${n}`, closed: { outcome: "met", why: "derived again", at: `2026-01-0${n}T00:00:00.000Z` } }));
+    writeFileSync(join(dir, "tests/acceptance/redo.yaml"), stringifyYaml({ redo: [...earlier, ...asked.redo] }));
+    git(["add", "-A"], dir);
+    git([...COMMIT, "two earlier sends (test)"], dir);
+
+    // Two criteria go back through the blind stage for two different reasons: R-1.1
+    // because `spec-wrong` moved it to v2 and left its test behind, R-1.3 because
+    // `test-wrong` put it on redo.yaml. The agent rewrites R-1.1's test and leaves R-1.3
+    // not-testable, the surface still exposing no fee amount.
+    const staleMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-redo-limit-mock-"));
+    writeFileSync(join(staleMock, "derive-tests.json"), JSON.stringify({
+      text: "Rewrote R-1.1 against the corrected statement. R-1.3 still has no observable fee amount, so its not-testable entry stands.",
+      files: {
+        "tests/acceptance/applications/R-1.1.spec.ts":
+          "// criterion: @R-1.1 v2\n// provenance: blind, spec@000000000000000000000000000000000000000b, derived 2026-09-07\n"
+          + 'import { test, expect, persona } from "../../fixtures";\n\n'
+          + 'test("The system shall reject a permit application from an applicant under 19 years old.", async ({ surface }) => {\n'
+          + "  await surface.signIn(persona.applicant);\n"
+          + "  await surface.applicationsNew.submit({ age: 17 });\n"
+          + '  expect(await surface.applicationsNew.status()).toBe("rejected");\n});\n',
+      },
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = staleMock;
+    const derived = await runStage(dir, "derive-tests", { domain: "applications", stale: true });
+    assert.equal(derived.ok, true, JSON.stringify(derived.messages));
+
+    // Escalated by the runner to G3's escalation target, with every reason it was sent back.
+    assert.equal(derived.proposal.escalatedTo, "tech-lead");
+    const gate = parseYaml(git(["show", `${derived.proposal.branch}:.sdlc/gates/${derived.proposal.name}.yaml`], dir));
+    assert.deepEqual([gate.verdict, gate.by, gate.held_by, gate.escalate_to], ["escalated", "runner:derive-tests", "runner", "tech-lead"]);
+    assert.match(gate.rationale, /R-1\.3: sent to derive-tests 3 times, past the limit of 2 that policy\.loops\.redo sets/);
+    assert.match(gate.rationale, /the test asserts a fee amount the fee page never shows/);
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);

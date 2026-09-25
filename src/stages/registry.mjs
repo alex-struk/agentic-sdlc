@@ -510,6 +510,9 @@ const archaeology = {
   gate: "G1",
   collect: [],
   implemented: true,
+  // The re-recovery requests this run is told about, which is what `policy.loops.recovery`
+  // counts (`src/runner/owed-limits.mjs`).
+  owedHanded: (projectDir, ctx) => outstandingFor(projectDir, ctx.domain),
   prompt(ctx) {
     const d = ctx.domain;
     if (ctx.revise) {
@@ -1303,6 +1306,9 @@ const deriveTests = {
   // at a gate find the stage its conditions will reach, so a condition naming a path this
   // stage cannot deliver is refused while the ruler is still there to re-address it.
   proposalPrefix: "derive-tests-",
+  // The redo entries a `--stale` run derives again, which is what `policy.loops.redo` counts
+  // (`src/runner/owed-limits.mjs`).
+  owedHanded: (projectDir, ctx) => ctx.deriveTestsRedo ?? [],
   // The paths a `--revise` run's own workspace was overlaid with — see
   // `deriveTestsRevisionScope` above.
   revisionOverlayPaths: (ctx) => deriveTestsRevisionScope(ctx.domain),
@@ -1716,6 +1722,9 @@ const bindAdapter = {
   // at a gate find the stage its conditions will reach, so a condition naming a path this
   // stage cannot deliver is refused while the ruler is still there to re-address it.
   proposalPrefix: "bind-adapter-",
+  // The rebind findings this run reads for its target, which is what `policy.loops.rebind`
+  // counts (`src/runner/owed-limits.mjs`).
+  owedHanded: (projectDir, ctx) => ctx.bindAdapterRebind ?? [],
   // On a `--revise` run the returned branch's own adapter is overlaid into the workspace,
   // so the agent opens the binding it wrote rather than an empty directory. Nothing else
   // is overlaid: `tests/generated` is regenerated from `HEAD`'s contract by `prepare`, and

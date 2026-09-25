@@ -14,6 +14,7 @@ import { endedBecause, runAgent, turnsFor, writeMcpConfig } from "./executor.mjs
 import { skillText } from "../stages/registry.mjs";
 import { postCheckRepairs } from "../config/policy.mjs";
 import { settleRequestedRevision } from "../stages/proposals.mjs";
+import { escalateOverLimit } from "./owed-limits.mjs";
 import { IN_PLACE_MODES } from "./workspace.mjs";
 
 // A stage's own commit-and-journal subject: a plain string for most stages, or (`ratify`,
@@ -405,7 +406,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     const { branch } = propose(projectDir, p.name, {
       gate: stage.gate, question: p.question, recommendation: p.recommendation, page: account, paths: changed,
     });
-    proposal = { name: p.name, gate: stage.gate, branch };
+    // Owed work sent back more times than the policy allows is escalated here, on the
+    // proposal that answers it, before any ruling can be asked of the gate holder
+    // (`src/runner/owed-limits.mjs`).
+    const escalatedTo = escalateOverLimit(projectDir, stage, ctx, { name: p.name });
+    proposal = { name: p.name, gate: stage.gate, branch, ...(escalatedTo ? { escalatedTo } : {}) };
   } else {
     // `changed` still carries whatever `stageSite` already staged above — `.gitignore`,
     // and every `site/*` file if the site itself needed staging — so those are filtered

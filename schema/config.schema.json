@@ -263,6 +263,22 @@
               "type": "integer",
               "minimum": 1
             },
+            "rebind": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "redo": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "recovery": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "request": {
+              "type": "integer",
+              "minimum": 1
+            },
             "ratify_follow_ups": {
               "type": "object",
               "additionalProperties": false,

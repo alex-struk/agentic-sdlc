@@ -8,6 +8,8 @@
 export const DEFAULT_VERIFY_RETURNS = 3;
 export const DEFAULT_RATIFY_FOLLOW_UPS = 2;
 export const DEFAULT_RATIFY_ON_LIMIT = "escalate";
+export const DEFAULT_OWED_LOOP = 2;
+export const OWED_LOOP_KINDS = Object.freeze(["rebind", "redo", "recovery", "request"]);
 export const DEFAULT_POST_CHECK_REPAIRS = 1;
 export const DEFAULT_ESCALATE_TIERS = Object.freeze(["HIGH", "CRITICAL"]);
 export const DEFAULT_BLOCK_UNVERIFIED = Object.freeze(["HIGH", "CRITICAL"]);
@@ -24,6 +26,14 @@ export function verifyReturnLimit(config) {
 export function ratifyFollowUps(config) {
   const v = config?.policy?.loops?.ratify_follow_ups ?? {};
   return { max: v.max ?? DEFAULT_RATIFY_FOLLOW_UPS, onLimit: v.on_limit ?? DEFAULT_RATIFY_ON_LIMIT };
+}
+
+// How many times one item of owed work of this kind may be sent to the stage that owes it
+// before what that stage produces for it is escalated to its gate's escalation target
+// instead of ruled by the holder (spec §7.1). `null` for a kind with no loop to bound.
+export function owedLoopLimit(config, kind) {
+  if (!OWED_LOOP_KINDS.includes(kind)) return null;
+  return config?.policy?.loops?.[kind] ?? DEFAULT_OWED_LOOP;
 }
 
 // How many repair turns a stage whose output failed its post-checks is given.

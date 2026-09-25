@@ -11,6 +11,7 @@ import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig } from 
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
+import { checkOwedLimits } from "../runner/owed-limits.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 // Re-exported for the tests and any caller that reaches it by way of `run`.
@@ -162,6 +163,8 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   if (scope.length) throw new Error(scope.join("\n"));
 
   const pre = stage.preChecks(projectDir, ctx);
+  // After the stage's own pre-checks, which are what read the owed work this run is handed.
+  if (stage.gate) pre.push(checkOwedLimits(projectDir, stage, ctx));
   // A pre-check can pass and still have something to say — a turn ceiling that looks too
   // low for the work in front of it, say. Printed before anything is spent, so the person
   // running the stage sees it while there is still time to change the setting.
@@ -414,6 +417,9 @@ COMMANDS.run = async ({ pos, flags }) => {
   // 0017 each fixed one instance of. The trailer names the verdict instead, and the exit
   // is non-zero.
   if (r.notPassed) { console.error(`run ${pos[0]}: ${r.notPassed}`); return 1; }
-  console.log(`run ${pos[0]}: ok${r.proposal ? ` (opened ${r.proposal.branch})` : ""}`);
+  // A proposal the runner escalated as it opened it is waiting on the escalation target, not
+  // the gate holder, and the line says so.
+  const escalated = r.proposal?.escalatedTo ? `, escalated to ${r.proposal.escalatedTo}: owed work was sent back past its limit` : "";
+  console.log(`run ${pos[0]}: ok${r.proposal ? ` (opened ${r.proposal.branch}${escalated})` : ""}`);
   return 0;
 };
