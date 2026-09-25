@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfig } from "../config/load.mjs";
+import { readFileSync } from "node:fs";
+import { parseConfig } from "../config/load.mjs";
 import { stagesFor } from "../profiles.mjs";
 import { TOKEN_BUDGET_FLOOR, MAX_TURNS_CEILING } from "../runner/executor.mjs";
 import { STAGES_BY_NAME } from "../stages/registry.mjs";
@@ -41,10 +42,16 @@ function agentEntryMessages(config) {
 }
 
 export function checkConfig(projectDir, ctx = {}) {
-  const id = "config";
   const p = join(projectDir, ".sdlc", "config.yaml");
-  if (!existsSync(p)) return { id, ok: false, messages: [".sdlc/config.yaml is missing"], config: null };
-  const { config, errors } = loadConfig(p);
+  if (!existsSync(p)) return { id: "config", ok: false, messages: [".sdlc/config.yaml is missing"], config: null };
+  return checkConfigText(readFileSync(p, "utf8"));
+}
+
+// The same check over a configuration that is not on disk: `sdlc policy set` holds the one it
+// is about to propose to exactly what `checks` will hold it to once it is merged.
+export function checkConfigText(text) {
+  const id = "config";
+  const { config, errors } = parseConfig(text);
   const messages = [...errors];
   try { stagesFor(config?.profile); } catch (e) { messages.push(e.message); }
   if (config) messages.push(...agentEntryMessages(config));
