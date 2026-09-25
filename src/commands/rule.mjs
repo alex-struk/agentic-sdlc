@@ -14,7 +14,7 @@ import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { close as closeOwed, conditionRef, open as openOwed, openOn, owedPath } from "../spec/owed.mjs";
-import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
+import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, restoreUnhanded, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
 import { readSlice } from "../stages/slices.mjs";
 import { loadIndex } from "../checks/tests.mjs";
 import { STAGES_BY_NAME, addressableStages, proposalFamily, requestTakenBy, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
@@ -791,15 +791,18 @@ function settledMessage(name, gate, stage, r) {
   const to = settledByTarget(r);
   const withdrawn = r.withdrawn ?? [];
   const closed = r.closed ?? [];
+  const restored = r.restored ?? [];
   const counts = [
+    ...(restored.length ? [`${restored.length} restored to ${stage}`] : []),
     ...[...to].map(([t, ids]) => `${ids.length} to ${t}`),
     ...(r.kept.length ? [`${r.kept.length} kept by ${stage}`] : []),
     ...(closed.length ? [`${closed.length} closed as run`] : []),
     ...(withdrawn.length ? [`${withdrawn.length} withdrawn with ${withdrawn.length === 1 ? "its criterion" : "their criteria"}`] : []),
   ];
-  const n = r.readdressed.length + r.kept.length + closed.length + withdrawn.length;
+  const n = restored.length + r.readdressed.length + r.kept.length + closed.length + withdrawn.length;
   const subject = `record(${gate ?? "?"}): ${name} settles ${n} missing ${n === 1 ? "test" : "tests"}: ${counts.join(", ")}`;
   const body = [
+    ...(restored.length ? [`restored to ${stage}, moved outside what ${name} was handed: ${restored.map(missingTestRef).join(", ")}`] : []),
     ...[...to].map(([t, ids]) => `re-addressed to ${t}: ${ids.map(missingTestRef).join(", ")}`),
     ...(r.kept.length ? [`kept by ${stage}: ${r.kept.map(missingTestRef).join(", ")}`] : []),
     ...(closed.length ? [`closed, a test ran: ${closed.map(missingTestRef).join(", ")}`] : []),
@@ -824,7 +827,7 @@ export function settleRuling(projectDir, name) {
   }).find((d) => d?.verdict) ?? null;
   if (!doc) throw new Error(`${name} has no ruling to settle`);
   if (doc.verdict === "approve") return { ...settleApproved(projectDir, name), verdict: "approve", addressed: [], unroutable: [] };
-  const none = { verdict: doc.verdict, path: null, readdressed: [], kept: [], closed: [], withdrawn: [], addressed: [], unroutable: [] };
+  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], addressed: [], unroutable: [] };
   if (doc.verdict !== "return" || conditionsAreExecutable(doc.gate, name)) return none;
   const start = enterBranch(projectDir, "main", "rule --settle");
   try {
@@ -839,7 +842,8 @@ export function settleRuling(projectDir, name) {
 }
 
 // Applies to `main` what the recorded approval of `name` settles about the missing tests its
-// run was handed, where `main` does not already hold it. The ruling is read from its gate file on
+// run was handed, where `main` does not already hold it, and reverses any move its merge made to
+// an item the run was not handed (`restoreUnhanded`). The ruling is read from its gate file on
 // `main` and nothing about it changes; what changes is written in a pipeline commit of its own,
 // `record(<gate>): <name> settles …`. A proposal with no approval on `main` is refused, and one
 // with nothing left to settle commits nothing. Not a ruling, so it asks for no seat: the ruling
@@ -857,12 +861,16 @@ export function settleApproved(projectDir, name) {
   try {
     const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
     const { stage, domain } = proposalSubject(name, config);
+    // What the approval's merge moved that its run was never handed goes back first, so what
+    // follows reads the list as the approval should have left it (`restoreUnhanded`).
+    const restored = restoreUnhanded(projectDir, { merge, stage, proposal: name, domain });
     // A pipeline commit that touches the list brings it into line with `main` first, as every
     // other one does (`syncMissingTests`).
     const synced = syncMissingTests(projectDir, { config });
     const settled = settleHandedOn(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, stage, domain });
     const r = {
-      path: settled.path ?? synced.path,
+      path: settled.path ?? synced.path ?? restored.path,
+      restored: restored.restored,
       readdressed: [...synced.readdressed, ...settled.readdressed],
       kept: settled.kept,
       closed: synced.closed,
@@ -1743,6 +1751,7 @@ async function ruleCli({ pos, flags }) {
     for (const stage of new Set(r.addressed)) console.log(`${pos[0]}: requested of ${stage}: filed on main; ${requestCommand(stage)} takes it up`);
     for (const stage of r.unroutable) console.warn(`warning: ${pos[0]}: ${stage} takes no request; nothing was filed for it`);
     if (!r.path && !r.addressed.length) { console.log(`${pos[0]}: nothing left to settle`); return 0; }
+    if (r.restored?.length) console.log(`${pos[0]}: restored, moved outside what its run was handed: ${r.restored.map(missingTestRef).join(", ")}`);
     for (const [to, ids] of settledByTarget(r)) console.log(`${pos[0]}: re-addressed to ${to}: ${ids.map(missingTestRef).join(", ")}`);
     if (r.kept.length) console.log(`${pos[0]}: kept by the stage that could not supply them: ${r.kept.map(missingTestRef).join(", ")}`);
     if (r.closed.length) console.log(`${pos[0]}: closed, a test ran: ${r.closed.map(missingTestRef).join(", ")}`);

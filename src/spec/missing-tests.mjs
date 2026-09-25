@@ -437,6 +437,43 @@ export function settleApprovedMissingTests(projectDir, { stage, proposal, gate =
   return result;
 }
 
+// Reverses each move an approval's merge made to an item the approved run was not handed.
+//
+// The approval of a run acts on what that run was handed (`handedAt`). A merge that moved an item
+// out of the approved stage in another domain, or one owed only after the run's branch was cut,
+// moved what the ruling never saw. Such a move is found by comparing the list on the merge with
+// the list before it, and is reversed where it still stands: the item is open, still where the
+// move left it, the move is its last, and nothing has kept it since. The reversal is a move of its
+// own back to the approved stage, stamped by the runner, naming the proposal whose approval it
+// reverts (`reverts`), and carrying the reason the item had before, since that is what the stage
+// it returns to needs. An item with no record on the merge is left alone: its test exists, and
+// where it is owed follows from that alone. Returns the path written (`null` when nothing changed)
+// and the items restored.
+export function restoreUnhanded(projectDir, { merge, stage, proposal, domain = null, at = new Date().toISOString() } = {}) {
+  const result = { path: null, restored: [] };
+  if (!merge || !stage || !proposal) return result;
+  const base = git(["merge-base", `${merge}^1`, `${merge}^2`], projectDir);
+  const handed = handedAt(projectDir, stage, { base, domain });
+  const recorded = new Set(recordsIn(showAt(projectDir, merge, NOT_TESTABLE_PATH)).map((r) => r.id));
+  const prior = new Map(readAt(projectDir, MISSING_TEST, `${merge}^1`).filter(isOpen).map((e) => [e.item, e]));
+  const wrong = new Map();
+  for (const e of readAt(projectDir, MISSING_TEST, merge)) {
+    if (!isOpen(e) || handed(e) || !recorded.has(e.item)) continue;
+    const moves = e.readdressed ?? [];
+    const i = moves.findLastIndex((m, k) => k >= (prior.get(e.item)?.readdressed?.length ?? 0) && m.from === stage);
+    if (i !== -1) wrong.set(e.item, { move: moves[i], why: moves[i - 1]?.why ?? e.why });
+  }
+  if (!wrong.size) return result;
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  result.path = rewrite(projectDir, MISSING_TEST, (list) => list.map((e) => {
+    const w = isOpen(e) && !e.kept ? wrong.get(e.item) : null;
+    if (!w || e.stage !== w.move.to || !same(e.readdressed?.at(-1), w.move)) return e;
+    result.restored.push(e.item);
+    return moved(e, stage, w.why, "runner", at, {}, { reverts: proposal });
+  }));
+  return result;
+}
+
 // The open items that stop a build slice being approved: every item open on `main` naming a
 // criterion the slice claims, less the ones this ruling withdraws and the ones whose test the
 // slice's own verify result shows ran at the current version (the approval closes those).

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
-import { rule, ruleByAgent } from "../src/commands/rule.mjs";
+import { rule, ruleByAgent, settleRuling } from "../src/commands/rule.mjs";
 import { buildPersonaPrompt } from "../src/runner/persona.mjs";
 import { openMissingTestsAt } from "../src/spec/missing-tests.mjs";
 
@@ -222,4 +222,37 @@ test("approving one domain's derivation hands its own item on and leaves every o
   const now = byItem(d);
   assert.equal(now.get("R-1.1").stage, "verify", "its test exists and has not run");
   for (const id of ["R-2.1", "R-2.2", "R-2.3"]) assert.deepEqual(now.get(id), was.get(id), `${id} is untouched`);
+});
+
+// An approval whose merge moved items its run was never handed is put right by settling it
+// again: each such move is reversed by the pipeline, once, and nothing the approval rightly
+// did is touched.
+test("rule --settle returns to the test writer what an approval moved outside its run's domain, once", (t) => {
+  const d = derivation(t);
+  rule(d, "derive-tests-a", "approve", { by: "tech-lead", note: "fine" });
+  const merge = git(["log", "main", "--first-parent", "--merges", "--format=%H", "-1"], d);
+  assert.equal(git(["rev-parse", "HEAD"], d), merge);
+  // The merge as an approval that acted on every item the writer owed recorded it.
+  const doc = parseYaml(git(["show", "main:.sdlc/owed.yaml"], d));
+  const wrong = { from: "derive-tests", to: "contract", why: "what R-2.1 needs", by: "tech-lead", at: "2026-09-19T02:00:00.000Z" };
+  for (const e of doc.owed) if (e.item === "R-2.1") { e.stage = "contract"; e.readdressed.push(wrong); }
+  put(d, ".sdlc/owed.yaml", stringifyYaml(doc));
+  git(["add", "-A"], d);
+  git(["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost", "commit", "-q", "--amend", "--no-edit"], d);
+  const was = byItem(d);
+
+  const r = settleRuling(d, "derive-tests-a");
+  assert.deepEqual(r.restored, ["R-2.1"]);
+  const now = byItem(d);
+  const back = now.get("R-2.1");
+  assert.equal(back.stage, "derive-tests");
+  assert.deepEqual((({ at: _a, ...m }) => m)(back.readdressed.at(-1)),
+    { from: "contract", to: "derive-tests", why: "seed.b.one", by: "runner", reverts: "derive-tests-a" });
+  for (const id of ["R-1.1", "R-2.2", "R-2.3"]) assert.deepEqual(now.get(id), was.get(id), `${id} is untouched`);
+  assert.match(git(["log", "-1", "--format=%an|%s", "main"], d), /^sdlc\|record\(G3\): derive-tests-a settles 1 missing test: 1 restored to derive-tests/);
+  assert.match(git(["log", "-1", "--format=%b", "main"], d), /restored to derive-tests, moved outside what derive-tests-a was handed: missing-test\/R-2\.1/);
+  assert.equal(git(["status", "--porcelain"], d), "");
+  const head = git(["rev-parse", "HEAD"], d);
+  assert.deepEqual(settleRuling(d, "derive-tests-a").restored, []);
+  assert.equal(git(["rev-parse", "HEAD"], d), head, "settling again commits nothing");
 });
