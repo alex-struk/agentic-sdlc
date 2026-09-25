@@ -43,7 +43,7 @@ function stub(root, name, body) {
 }
 
 const VARS = ["SDLC_CLAUDE_BIN", "SDLC_CODEX_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "SDLC_CODEX_HOME", "SDLC_CODEX_CREDENTIALS", "FAKE_LOGIN", "SDLC_AGENT_BACKEND", "SDLC_AGENT_MODEL",
-  "SDLC_DOCKER_BIN", "FAKE_DOCKER_DOWN", "FAKE_DOCKER_IMAGES", "FAKE_DOCKER_LEFTOVERS", "SDLC_AGENT_ISOLATION"];
+  "SDLC_DOCKER_BIN", "FAKE_LOGIN_ON_STDERR", "FAKE_DOCKER_DOWN", "FAKE_DOCKER_IMAGES", "FAKE_DOCKER_LEFTOVERS", "SDLC_AGENT_ISOLATION"];
 
 // A stand-in for `docker`: up or down, with the images `FAKE_DOCKER_IMAGES` names built
 // (`agent`, `proxy`), and the session containers `FAKE_DOCKER_LEFTOVERS` names left behind.
@@ -70,7 +70,7 @@ function machine({ codexInstalled = true, codexLogin = "Logged in using ChatGPT\
     ? stub(root, "fake-codex", [
       "const a = process.argv.slice(2);",
       'if (a[0] === "--version") { process.stdout.write("codex-cli 9.9.9\\n"); process.exit(0); }',
-      'if (a[0] === "login") { process.stdout.write(process.env.FAKE_LOGIN ?? ""); process.exit(process.env.FAKE_LOGIN ? 0 : 1); }',
+      'if (a[0] === "login") { (process.env.FAKE_LOGIN_ON_STDERR ? process.stderr : process.stdout).write(process.env.FAKE_LOGIN ?? ""); process.exit(process.env.FAKE_LOGIN ? 0 : 1); }',
     ])
     : join(root, "no-such-codex");
   if (codexLogin) process.env.FAKE_LOGIN = codexLogin;
@@ -141,6 +141,15 @@ test("doctor says codex is not signed in, and refuses an API-key sign-in by name
     const { text } = await doctor(project("  agents: { backend: codex }\n"));
     assert.match(text, /^warn codex codex-cli 9\.9\.9, signed in with an API key; the pipeline signs in with ChatGPT only/m);
     assert.ok(!text.includes("ABCDE"), "nothing the CLI says about the account is repeated");
+  } finally { clear(); }
+});
+
+test("doctor reads codex's sign-in status from stderr, where the CLI prints it", async () => {
+  machine();
+  process.env.FAKE_LOGIN_ON_STDERR = "1";
+  try {
+    const { text } = await doctor(project("  agents: { backend: codex }\n"));
+    assert.match(text, /^ok {3}codex codex-cli 9\.9\.9, signed in with ChatGPT$/m);
   } finally { clear(); }
 });
 

@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ensureConfigHome, ensureCodexHome } from "./config-home.mjs";
@@ -271,13 +271,11 @@ function claudeSignIn() {
     : { ok: false, said: "no sign-in: run `claude` and sign in, then run this again" };
 }
 
+// `codex login status` prints its answer on stderr, so both streams are read.
 function codexSignIn() {
-  let out = "";
-  let ok = false;
-  try {
-    out = execFileSync(codexBin(), ["login", "status"], { encoding: "utf8", env: { ...process.env, CODEX_HOME: ensureCodexHome() }, stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
-    ok = true;
-  } catch (e) { out = `${e.stdout ?? ""}`; }
+  const r = spawnSync(codexBin(), ["login", "status"], { encoding: "utf8", env: { ...process.env, CODEX_HOME: ensureCodexHome() }, stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
+  const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
+  const ok = !r.error && r.status === 0;
   if (ok && /chatgpt/i.test(out)) return { ok: true, said: "signed in with ChatGPT" };
   if (ok && /api key/i.test(out)) return { ok: false, said: "signed in with an API key; the pipeline signs in with ChatGPT only: run `codex login` and choose ChatGPT" };
   return { ok: false, said: "not signed in: run `codex login` and choose ChatGPT, then run this again" };
