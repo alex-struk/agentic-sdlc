@@ -22,7 +22,7 @@ import { close as closeOwed, identityOf, isOpen, open as openOwed, openOn, read 
 import { NOT_TESTABLE_PATH, missingTestRef, openMissingTestsAt, recordProblems } from "../spec/missing-tests.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
-import { checkTests, coverage, readNotTestable } from "../checks/tests.mjs";
+import { checkTests, coverage, namesClause, readNotTestable, readWholeNotTestable } from "../checks/tests.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { bindingGaps, loadContract, writeGenerated } from "../spec/surface.mjs";
 import { turnsFor } from "../runner/executor.mjs";
@@ -1012,11 +1012,14 @@ function revisionRedoBlock(ctx) {
 // So the run's own decision is carried out here. Only an entry this run added is acted on —
 // compared against `HEAD` — so an entry that was already on file never deletes a test
 // somebody has written since.
+//
+// A record naming a clause is not that decision: it sits beside the test that asserts the rest
+// of its criterion, and the test is kept.
 export function removeTestsNowRecordedNotTestable(projectDir, domain) {
   if (!domain) return [];
   const before = new Set(notTestableIdsAt(projectDir, "HEAD"));
   const removed = [];
-  for (const entry of readNotTestable(projectDir)) {
+  for (const entry of readWholeNotTestable(projectDir)) {
     const id = entry?.id;
     if (!id || before.has(id)) continue;
     const rel = `tests/acceptance/${domain}/${id}.spec.ts`;
@@ -1033,7 +1036,7 @@ function notTestableIdsAt(projectDir, ref) {
   if (!gitOk(["cat-file", "-e", `${ref}:${rel}`], projectDir)) return [];
   try {
     const parsed = parseYaml(git(["show", `${ref}:${rel}`], projectDir));
-    return (Array.isArray(parsed?.criteria) ? parsed.criteria : []).map((c) => c?.id).filter(Boolean);
+    return (Array.isArray(parsed?.criteria) ? parsed.criteria : []).filter((c) => !namesClause(c)).map((c) => c?.id).filter(Boolean);
   } catch {
     return [];
   }

@@ -62,6 +62,12 @@ function readYamlList(projectDir, relFile, key, messages) {
 // Exported for `runSuite`, which reports one row per not-testable entry the same way this
 // check validates them, and needs the same list rather than a second parse of the file.
 export const readNotTestable = (projectDir, messages) => readYamlList(projectDir, "not-testable.yaml", "criteria", messages);
+
+// A record that names a clause says one part of its criterion is asserted by no test; the test
+// beside it asserts the rest (`docs/decisions/0054`). The criterion is tested, and every reader
+// that treats a record as "this criterion has no test" leaves such a record out.
+export const namesClause = (entry) => entry?.clause !== undefined && entry?.clause !== null;
+export const readWholeNotTestable = (projectDir, messages) => readNotTestable(projectDir, messages).filter((e) => !namesClause(e));
 const readAttestations = (projectDir, messages) => readYamlList(projectDir, "attestations.yaml", "attestations", messages);
 
 // Parses a spec file's two-line provenance header: `// criterion: @<ID> v<n>` then
@@ -211,6 +217,12 @@ export function checkTests(projectDir, ctx = {}) {
     // criterion is unreachable leaves that earlier test sitting there contradicting the
     // entry. A run told only that the two disagree has twice failed to work out that
     // deleting the file is one of the two ways out.
+    if (namesClause(entry)) {
+      if (!testedIds.includes(entry?.id))
+        messages.push(`tests/acceptance/not-testable.yaml: ${entry?.id} names a clause and has no test. A clause record sits beside the test that `
+          + `asserts the rest of its criterion; a criterion no test reaches at all is recorded without a clause.`);
+      continue;
+    }
     if (testedIds.includes(entry?.id))
       messages.push(`tests/acceptance/not-testable.yaml: ${entry?.id} also has tests/acceptance/<domain>/${entry?.id}.spec.ts. `
         + `A criterion is one or the other, never both. The file may be left over from an earlier derivation rather than written by this run: `
@@ -245,7 +257,7 @@ export function coverage(projectDir, domain) {
   }
 
   const notTestableIds = new Set(
-    readNotTestable(projectDir).filter((e) => byId.get(e?.id)?.domain === domain).map((e) => e.id),
+    readWholeNotTestable(projectDir).filter((e) => byId.get(e?.id)?.domain === domain).map((e) => e.id),
   );
 
   return {

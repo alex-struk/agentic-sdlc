@@ -111,7 +111,7 @@ export function checkConditions(projectDir) {
   // seat, handed no prompt, finds the reference to write it against.
   for (const e of openMissingTests(projectDir)) {
     const why = quote(e.readdressed?.at(-1)?.why ?? e.why);
-    warnings.push(`${missingTestRef(e.item)}: owed by ${e.stage} — "${why.length > 200 ? `${why.slice(0, 200)}…` : why}". `
+    warnings.push(`${missingTestRef(e.item)}: owed by ${e.stage}${e.clause ? ` for the clause "${e.clause}", which no test asserts` : ""} — "${why.length > 200 ? `${why.slice(0, 200)}…` : why}". `
       + `Open until a test for it runs; where none is owed, withdraw it on a ruling with \`${CONDITION_WITHDRAWN_FORM}\`.`);
   }
 

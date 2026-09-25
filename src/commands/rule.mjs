@@ -12,13 +12,14 @@ import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typechec
 import { writeJournal } from "../runner/journal.mjs";
 import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
-import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, MISSING_TEST_CONDITION_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedMissingTestConditions, malformedOverreachConditions, missingTestConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { close as closeOwed, conditionRef, isOpen, open as openOwed, openOn, owedPath, read as readOwed, readAt as readOwedAt, sameFiling, withdrawRetired as withdrawOwedRetired } from "../spec/owed.mjs";
 import { revisionLine } from "../stages/proposals.mjs";
 import { dropTestWrongRulings } from "../stages/calibrate.mjs";
-import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, restoreUnhanded, retired, retiredWhy, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
+import { MISSING_TEST, WRITER, blockingMissingTests, missingTestRef, openMissingTestsAt, oweClauses, parseMissingTestRef, restoreUnhanded, retired, retiredWhy, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
 import { readSlice } from "../stages/slices.mjs";
 import { loadIndex } from "../checks/tests.mjs";
+import { STAGES } from "../profiles.mjs";
 import { STAGES_BY_NAME, addressableStages, proposalFamily, requestTakenBy, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { printNextBlock } from "./next.mjs";
@@ -264,6 +265,42 @@ function unknownRefGuidance(ref, open) {
   return `${JSON.stringify(ref)} is not an open condition. ${list}`;
 }
 
+// The first `missing-test` line that cannot be recorded, with what is wrong with it: a line not in
+// the form, a criterion the contract does not hold or asks no test of, an owner that is not a
+// stage, or the test writer as the owner. Each is a line to rewrite. The writer is refused because
+// a clause it could assert and did not is the proposal's to fix, which is a return.
+function missingTestLineDefect(projectDir, conditions) {
+  const [malformed] = malformedMissingTestConditions(conditions);
+  if (malformed) return { line: malformed, why: "form" };
+  const lines = missingTestConditions(conditions);
+  if (!lines.length) return null;
+  const index = loadIndex(projectDir);
+  const byId = new Map(((index && !index.parseError ? index.criteria : null) ?? []).map((c) => [c.id, c]));
+  for (const l of lines) {
+    const c = byId.get(l.id);
+    if (!c || c.state !== "accepted") return { line: l, why: "criterion" };
+    if (retired(c)) return { line: l, why: "retired", row: c };
+    if (!STAGES.includes(l.stage)) return { line: l, why: "stage" };
+    if (l.stage === WRITER) return { line: l, why: "writer" };
+  }
+  return null;
+}
+
+function missingTestLineGuidance(defect) {
+  const { line, why } = defect;
+  if (why === "form") {
+    return `${JSON.stringify(line)} carries no stage or nothing missing. Write it as \`${MISSING_TEST_CONDITION_FORM}\`:`
+      + " the clause is what a passing run of the criterion's test does not establish, the stage is the one handed the item,"
+      + " and what is missing is the whole of what reaches that stage.";
+  }
+  if (why === "criterion") return `${line.id} is not an accepted criterion, so no test is owed for it; name the criterion whose clause no test asserts.`;
+  if (why === "retired") return `${retiredWhy(defect.row)}, so no test is owed for it.`;
+  if (why === "stage") return `${line.stage} is not a stage; name the stage that supplies what a test of the clause needs.`;
+  return `${JSON.stringify(`missing-test ${line.id}`)} names ${WRITER} as the owner. A clause the test writer could assert and did not`
+    + ` is this proposal's to fix: return the proposal with a condition saying what the test must assert, or name the stage`
+    + " that owes what a test of the clause needs.";
+}
+
 // What a refusal here must not cost a second time. None of the three throws below has
 // written anything by the time it fires — no gate file, no proposal section, no commit —
 // so this message is the only place left holding a ruling that may have cost a full agent
@@ -375,6 +412,13 @@ export function assertAccountedRulable(projectDir, name, verdict, conditions) {
   if (unknown) throw new Error(withRulingPreserved(`rule ${name}: ${unknownRefGuidance(unknown.ref, open)}`, verdict, conditions));
 }
 
+// A `missing-test` line that cannot be recorded, refused before a ruling writes anything, on any
+// verdict: an approval may carry the form, which is what it is for (`docs/decisions/0054`).
+export function assertMissingTestRulable(projectDir, name, verdict, conditions) {
+  const defect = missingTestLineDefect(projectDir, conditions);
+  if (defect) throw new Error(withRulingPreserved(`rule ${name}: ${missingTestLineGuidance(defect)}`, verdict, conditions));
+}
+
 // The first defect in a ruling's conditions that a second turn can answer, checked in the
 // order the hard asserts below apply them and reporting only the first, so the re-prompt
 // always names the line the refusal would have named.
@@ -414,6 +458,8 @@ function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
   const refs = new Set(open.map((c) => c.ref));
   const unknown = accountedConditions(conditions).find((a) => !parseMissingTestRef(a.ref) && !refs.has(a.ref));
   if (unknown) return { kind: "unknown-ref", ref: unknown.ref, open };
+  const owedClause = missingTestLineDefect(projectDir, conditions);
+  if (owedClause) return { kind: "missing-test-line", ...owedClause };
   if (verdict === "return") {
     const [undeliverable] = undeliverableConditions(name, conditions);
     if (undeliverable) return { kind: "deliverable", ...undeliverable };
@@ -464,6 +510,7 @@ function defectGuidance(defect) {
   if (defect.kind === "approval-form") return approvalFormGuidance(defect.verb, defect.line);
   if (defect.kind === "approval-evidence") return approvalEvidenceGuidance(defect.reason);
   if (defect.kind === "missing-test-ref") return missingTestRefGuidance(defect.ref, defect.verb, defect.open);
+  if (defect.kind === "missing-test-line") return missingTestLineGuidance(defect);
   if (defect.kind === "missing-tests") return missingTestsGuidance(defect.blocking);
   return deliverableGuidance(defect);
 }
@@ -730,17 +777,51 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   // ruling is recorded and the proposal is returned whatever happens here.
   const ledger = recordConditions(projectDir, { name, gate, by, verdict, conditions, executable });
   let missingTests = null;
+  let clauses = [];
   if (verdict === "approve") {
     mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
     missingTests = recordMissingTests(projectDir, { name, gate, by });
     const redo = closeRedoAnswered(projectDir, { name, gate, by, merge: "HEAD" });
     const retiredRedo = withdrawRetiredRedo(projectDir);
     if (redo.paths.length || retiredRedo.paths.length) stagePaths(projectDir, [...new Set([...redo.paths, ...retiredRedo.paths])]);
+    // After the merge's own settlement, so the ruler's word on a clause is the last thing said
+    // about the item, and in the merge commit, which is where an approval records what it owes.
+    if (!executable) {
+      const owedClauses = oweClauses(projectDir, missingTestConditions(conditions ?? []), { from: name, gate, by });
+      if (owedClauses.path) stagePaths(projectDir, [owedClauses.path]);
+      clauses = owedClauses.owed;
+    }
     amendSiteOntoMergeCommit(projectDir);
   } else {
+    if (!executable) clauses = fileOwedClauses(projectDir, { name, gate, by, lines: missingTestConditions(conditions ?? []) });
     regenerateSiteOnMain(projectDir, `${name} ${verdict}`);
   }
-  return { ...requests, ...ledger, ...(missingTests ? { missingTests } : {}) };
+  return { ...requests, ...ledger, clauses, ...(missingTests ? { missingTests } : {}) };
+}
+
+// The subject line naming what a ruling's `missing-test` lines left owed.
+function owesClauses(owed) {
+  return owed.map((o) => `${missingTestRef(o.id)}'s clause to ${o.stage}`).join(", ");
+}
+
+// A return's, or a recorded ruling's, `missing-test` lines applied on `main` in a commit of their
+// own, for the reason `fileAddressedRequests` gives: the ruling belongs to the proposal branch and
+// what it leaves owed does not. `restates` goes with lines given to `rule --settle`. Returns what
+// is now owed; a line already applied adds nothing and commits nothing.
+function fileOwedClauses(projectDir, { name, gate, by, lines, restates = null, at, subject = "rule" }) {
+  if (!lines?.length) return [];
+  const branch = currentBranch(projectDir);
+  if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
+  try {
+    const r = oweClauses(projectDir, lines, { from: name, gate, by, restates, ...(at ? { at } : {}) });
+    if (r.path) {
+      stagePaths(projectDir, [r.path]);
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", `${subject}(${gate}): ${name} owes ${owesClauses(r.owed)}`], projectDir);
+    }
+    return r.owed;
+  } finally {
+    if (branch !== "main") git(["checkout", "-q", branch], projectDir);
+  }
 }
 
 // What an approval changes about the tests the project is owed, staged into the merge commit:
@@ -880,7 +961,9 @@ function settledMessage(name, gate, stage, r) {
     ...(redo.length ? [`${redo.length} ${redo.length === 1 ? "test" : "tests"} derived again (redo)`] : []),
     ...(redoWithdrawn.length ? [`${redoWithdrawn.length} redo ${redoWithdrawn.length === 1 ? "entry" : "entries"} withdrawn`] : []),
   ];
-  const subject = `record(${gate ?? "?"}): ${name} settles ${settles.join("; ")}`;
+  const owes = r.clauses ?? [];
+  const said = [...(settles.length ? [`settles ${settles.join("; ")}`] : []), ...(owes.length ? [`owes ${owesClauses(owes)}`] : [])];
+  const subject = `record(${gate ?? "?"}): ${name} ${said.join("; ")}`;
   const body = [
     ...(redo.length ? [`redo closed, derived again in the line of work ${name} approved: ${redo.join(", ")}`] : []),
     ...(redoWithdrawn.length ? [`redo withdrawn, the criterion is superseded or obsolete: ${redoWithdrawn.join(", ")}`] : []),
@@ -890,6 +973,7 @@ function settledMessage(name, gate, stage, r) {
     ...(r.kept.length ? [`kept by ${stage}: ${r.kept.map(missingTestRef).join(", ")}`] : []),
     ...(closed.length ? [`closed, a test ran: ${closed.map(missingTestRef).join(", ")}`] : []),
     ...(withdrawn.length ? [`withdrawn, the criterion is superseded or obsolete: ${withdrawn.map(missingTestRef).join(", ")}`] : []),
+    ...owes.map((o) => `owed by ${o.stage}, a clause no test asserts: ${missingTestRef(o.id)}`),
   ].join("\n");
   return { subject, body };
 }
@@ -901,7 +985,14 @@ function settledMessage(name, gate, stage, r) {
 // nothing about it changes. What is filed is committed as the pipeline, in a commit of its own,
 // `record(<gate>): <name> asks <stage> to revise`, stamped with the ruling's own seat and time,
 // and a request already on file is not filed again. Not a ruling, so it asks for no seat.
-export function settleRuling(projectDir, name) {
+//
+// `conditions` are `missing-test` lines restating what the recorded ruling said in words of its
+// own (`docs/decisions/0054`). Each must name a criterion one of the ruling's own plain
+// conditions names, and is recorded with those conditions and their text beside it (`restates`),
+// under the ruling's seat: the ruler's words are the ruling, and the line is their form. Checked,
+// with the guards a ruling's own line passes, before anything is written. The lines the recorded
+// ruling itself carries are applied too, where `main` does not hold them.
+export function settleRuling(projectDir, name, { conditions = [] } = {}) {
   projectDir = resolve(projectDir);
   if (!name) throw new Error("rule --settle needs the name of a ruled proposal");
   const gatePath = `.sdlc/gates/${name}.yaml`;
@@ -909,8 +1000,9 @@ export function settleRuling(projectDir, name) {
     try { return parseYaml(git(["show", `${ref}:${gatePath}`], projectDir)); } catch { return null; }
   }).find((d) => d?.verdict) ?? null;
   if (!doc) throw new Error(`${name} has no ruling to settle`);
-  if (doc.verdict === "approve") return { ...settleApproved(projectDir, name), verdict: "approve", addressed: [], unroutable: [] };
-  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], reopened: [], redo: [], redoWithdrawn: [], addressed: [], unroutable: [] };
+  const clauseLines = settledClauseLines(projectDir, name, doc, conditions);
+  if (doc.verdict === "approve") return { ...settleApproved(projectDir, name, { clauseLines }), verdict: "approve", addressed: [], unroutable: [] };
+  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], reopened: [], redo: [], redoWithdrawn: [], addressed: [], unroutable: [], clauses: [] };
   if (doc.verdict !== "return" || conditionsAreExecutable(doc.gate, name)) return none;
   const start = enterBranch(projectDir, "main", "rule --settle");
   try {
@@ -918,10 +1010,46 @@ export function settleRuling(projectDir, name) {
       name, gate: doc.gate ?? null, by: doc.by ?? null, conditions: doc.conditions ?? [],
       at: doc.at ?? new Date().toISOString(), subject: "record",
     });
-    return { ...none, ...filed };
+    const clauses = clauseLines.flatMap(({ lines, restates }) =>
+      fileOwedClauses(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, lines, restates, subject: "record" }));
+    return { ...none, ...filed, clauses };
   } finally {
     leaveBranch(projectDir, start);
   }
+}
+
+// The `missing-test` lines a settlement applies, grouped by what each restates: the recorded
+// ruling's own, which restate nothing, and each line given to `rule --settle`, with the ruling's
+// plain conditions naming its criterion. Refuses, before anything is written, a given line that is
+// not the form, one the ruling guards would refuse, a ruling whose conditions are a closed
+// grammar, and a criterion none of the ruling's plain conditions names: that clause would be a new
+// ruling, and a new ruling is made at a gate.
+function settledClauseLines(projectDir, name, doc, given) {
+  const recorded = doc.conditions ?? [];
+  const executable = conditionsAreExecutable(doc.gate, name);
+  const own = executable ? [] : missingTestConditions(recorded);
+  const groups = own.length ? [{ lines: own, restates: null }] : [];
+  const lines = [given ?? []].flat().filter((c) => typeof c === "string");
+  if (!lines.length) return groups;
+  if (executable) throw new Error(`${name}'s conditions are read in a closed grammar, where no missing-test line is read`);
+  for (const line of lines) {
+    const [parsed] = missingTestConditions([line]);
+    if (!parsed) {
+      throw new Error(`rule --settle ${name}: ${JSON.stringify(line)} is not a missing-test line; rule --settle applies only `
+        + `\`${MISSING_TEST_CONDITION_FORM}\`${malformedMissingTestConditions([line]).length ? `. ${missingTestLineGuidance({ line, why: "form" })}` : ""}`);
+    }
+    const defect = missingTestLineDefect(projectDir, [line]);
+    if (defect) throw new Error(`rule --settle ${name}: ${missingTestLineGuidance(defect)}`);
+    const named = new RegExp(`(^|[^\\w.-])${parsed.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w.-]|\\.(?!\\d)|$)`);
+    const restates = recorded.map((text, i) => ({ ref: conditionRef(name, i), text }))
+      .filter(({ text }) => splitConditionsByAddressee([text]).mine.length && named.test(text));
+    if (!restates.length) {
+      throw new Error(`rule --settle ${name}: ${name}'s ruling names ${parsed.id} in none of its conditions, so there is nothing of its to restate;`
+        + " a clause it did not name is a new ruling, and is made at a gate");
+    }
+    groups.push({ lines: [parsed], restates });
+  }
+  return groups;
 }
 
 // Applies to `main` what the recorded approval of `name` settles about the missing tests its
@@ -931,7 +1059,7 @@ export function settleRuling(projectDir, name) {
 // `record(<gate>): <name> settles …`. A proposal with no approval on `main` is refused, and one
 // with nothing left to settle commits nothing. Not a ruling, so it asks for no seat: the ruling
 // it applies was made by whoever the gate file names.
-export function settleApproved(projectDir, name) {
+export function settleApproved(projectDir, name, { clauseLines = [] } = {}) {
   projectDir = resolve(projectDir);
   if (!name) throw new Error("rule --settle needs the name of an approved proposal");
   const gatePath = `.sdlc/gates/${name}.yaml`;
@@ -953,8 +1081,12 @@ export function settleApproved(projectDir, name) {
     const settled = settleHandedOn(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, stage, domain });
     const redo = closeRedoAnswered(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, at: doc.at ?? undefined });
     const retiredRedo = withdrawRetiredRedo(projectDir, doc.at ?? undefined);
+    // Last, as an approval applies them: the ruler's word on a clause is the last thing said.
+    const owedClauses = clauseLines.map(({ lines, restates }) =>
+      oweClauses(projectDir, lines, { from: name, gate: doc.gate ?? null, by: doc.by ?? null, restates }));
+    const clausesPath = owedClauses.map((c) => c.path).find(Boolean) ?? null;
     const r = {
-      path: settled.path ?? synced.path ?? restored.path ?? redo.paths[0] ?? retiredRedo.paths[0] ?? null,
+      path: settled.path ?? synced.path ?? restored.path ?? clausesPath ?? redo.paths[0] ?? retiredRedo.paths[0] ?? null,
       restored: restored.restored,
       readdressed: [...synced.readdressed, ...settled.readdressed],
       kept: settled.kept,
@@ -963,10 +1095,11 @@ export function settleApproved(projectDir, name) {
       reopened: synced.reopened,
       redo: redo.closed,
       redoWithdrawn: retiredRedo.withdrawn,
+      clauses: owedClauses.flatMap((c) => c.owed),
     };
     if (!r.path) return r;
     const { subject, body } = settledMessage(name, doc.gate, stage, r);
-    const missingChanged = settled.path ?? synced.path ?? restored.path;
+    const missingChanged = settled.path ?? synced.path ?? restored.path ?? clausesPath;
     stagePaths(projectDir, [...(missingChanged ? [owedPath(MISSING_TEST)] : []), ...new Set([...redo.paths, ...retiredRedo.paths])]);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, "-m", body], projectDir);
     return r;
@@ -1182,6 +1315,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
         assertAddressedRulable(name, verdict, conditions ?? []);
         assertDeliverableRulable(name, verdict, conditions ?? []);
         assertAccountedRulable(projectDir, name, verdict, conditions ?? []);
+        assertMissingTestRulable(projectDir, name, verdict, conditions ?? []);
       }
       assertApprovalEvidence(projectDir, name, verdict,
         Boolean(escalation) && by === g.escalate_to && escalation.by !== by, conditions ?? [], config);
@@ -1616,6 +1750,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       assertAddressedRulable(name, verdict, conditions ?? []);
       assertDeliverableRulable(name, verdict, conditions ?? []);
       assertAccountedRulable(projectDir, name, verdict, conditions ?? []);
+      assertMissingTestRulable(projectDir, name, verdict, conditions ?? []);
     }
     // Here rather than before the persona is asked, because the verdict is what decides
     // whether it applies at all. By this point the typecheck has run and the ruling turn has
@@ -1666,7 +1801,7 @@ function pointedAt(text, gatePath) {
 // Redacted the same way the gate file itself is (`redactLocalPaths`) — an agent's own
 // prose can carry a path off the machine it ran on, and a terminal is not exempt from the
 // rule the committed file is held to.
-function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, opened, closed, missingTests, addressed }) {
+function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, opened, closed, missingTests, addressed, clauses }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   const recordedOn = verdict === "approve" ? "main (merged)" : `proposal/${name}`;
   const lines = [`${name}: ${verdict} at ${gate}`];
@@ -1696,6 +1831,7 @@ function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, 
   if (missingTests?.kept?.length) lines.push(`  tests kept by the stage that could not supply them: ${missingTests.kept.map(missingTestRef).join(", ")}`);
   if (missingTests?.closed?.length) lines.push(`  test ran, closed: ${missingTests.closed.map(missingTestRef).join(", ")}`);
   if (missingTests?.reopened?.length) lines.push(`  reopened, closed on a result that is not of its test as it stood: ${missingTests.reopened.map(missingTestRef).join(", ")}`);
+  for (const c of clauses ?? []) lines.push(`  clause owed: ${missingTestRef(c.id)} by ${c.stage}; a run of its test does not close it`);
   lines.push(`  recorded: ${gatePath} on ${recordedOn}`);
   return redactLocalPaths(lines.join("\n"), projectDir);
 }
@@ -1789,7 +1925,7 @@ export async function rulePending(projectDir) {
       console.log(formatRuling(projectDir, name, {
         gate: r.gate ?? gateMatch[1], verdict: r.escalated ? "escalate" : r.verdict,
         conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, stalled: r.stalled,
-        reprompted: r.reprompted, opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed,
+        reprompted: r.reprompted, opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed, clauses: r.clauses,
       }));
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
@@ -1845,10 +1981,14 @@ async function ruleCli({ pos, flags }) {
   // has not ruled the proposals behind it, which a zero exit reports as a finished batch.
   if (flags.pending) { const r = await rulePending(process.cwd()); return r.stopped ? 1 : 0; }
   if (flags.settle) {
-    const r = settleRuling(process.cwd(), pos[0]);
+    // `--condition` with `--settle` is a `missing-test` line restating what the recorded ruling
+    // said in words of its own (`settleRuling`).
+    const restated = flags.condition === undefined ? [] : [flags.condition].flat().filter((c) => typeof c === "string");
+    const r = settleRuling(process.cwd(), pos[0], { conditions: restated });
     for (const stage of new Set(r.addressed)) console.log(`${pos[0]}: requested of ${stage}: filed on main; ${requestCommand(stage)} takes it up`);
     for (const stage of r.unroutable) console.warn(`warning: ${pos[0]}: ${stage} takes no request; nothing was filed for it`);
-    if (!r.path && !r.addressed.length) { console.log(`${pos[0]}: nothing left to settle`); return 0; }
+    for (const c of r.clauses ?? []) console.log(`${pos[0]}: clause owed: ${missingTestRef(c.id)} by ${c.stage}; a run of its test does not close it`);
+    if (!r.path && !r.addressed.length && !r.clauses?.length) { console.log(`${pos[0]}: nothing left to settle`); return 0; }
     if (r.reopened?.length) console.log(`${pos[0]}: reopened, closed on a result that is not of its test as it stood: ${r.reopened.map(missingTestRef).join(", ")}`);
     if (r.restored?.length) console.log(`${pos[0]}: restored, moved outside what its run was handed: ${r.restored.map(missingTestRef).join(", ")}`);
     for (const [to, ids] of settledByTarget(r)) console.log(`${pos[0]}: re-addressed to ${to}: ${ids.map(missingTestRef).join(", ")}`);
@@ -1867,7 +2007,7 @@ async function ruleCli({ pos, flags }) {
     console.log(formatRuling(process.cwd(), pos[0], {
       gate: r.gate, verdict: r.escalated ? "escalate" : r.verdict,
       conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
-      opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed,
+      opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed, clauses: r.clauses,
     }));
     return 0;
   }
@@ -1877,7 +2017,7 @@ async function ruleCli({ pos, flags }) {
   const conditions = flags.condition === undefined ? undefined
     : [flags.condition].flat().filter((c) => typeof c === "string");
   const r = rule(process.cwd(), pos[0], pos[1], { by: flags.by, note: flags.note ?? "", conditions });
-  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note, opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed }));
+  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note, opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed, clauses: r.clauses }));
   if (r.filed?.length) console.log(`${pos[0]}: ${r.filed.join(", ")} filed for re-derivation — run sdlc run derive-tests --domain <domain> --stale`);
   for (const id of r.unfiled ?? []) console.warn(`warning: ${pos[0]}: ${id} is not an accepted criterion; nothing was filed for it`);
   return 0;

@@ -671,6 +671,42 @@ export function malformedAccountedConditions(lines) {
     && !parseAccountCondition(l));
 }
 
+// The form a ruler keeps part of a criterion owed with: a clause no test asserts, the stage that
+// owes what a test of it needs, and what that is. It is about a criterion and its test rather
+// than about the proposal being ruled, like `test-overreaches`, and unlike that verb it asks no
+// stage to redo anything the ruling judged: the test that exists stands for what it asserts, and
+// the criterion's missing test stays open for the rest (`docs/decisions/0054`). So an approval
+// may carry it, and it is the way an approval says something is still owed — a free-text line on
+// an approval is kept on the gate file and read by no stage.
+export const MISSING_TEST_VERB = "missing-test";
+
+// Restated wherever a ruler has to be told the form exists — the ruling prompt, the persona
+// briefs, and the error a malformed line is refused with.
+export const MISSING_TEST_CONDITION_FORM =
+  `${MISSING_TEST_VERB} <ID>: <clause> — owed by <stage>: <what is missing>`;
+
+// A dash, or two hyphens for whoever types it, separates the clause from its owner. Each of the
+// four parts is required: the clause says what a passing run of the test does not establish, the
+// stage is who is handed the item, and what is missing is the whole of what reaches that stage.
+function parseMissingTestCondition(line) {
+  const m = new RegExp(`^${MISSING_TEST_VERB}\\s+(\\S+):\\s*(.+?)\\s+(?:—|--)\\s*owed by\\s+(\\S+):\\s*(.*)$`).exec(String(line).trim());
+  if (!m) return null;
+  const clause = collapseWhitespace(m[2]);
+  const missing = collapseWhitespace(m[4]);
+  return clause && missing ? { verb: MISSING_TEST_VERB, id: m[1], clause, stage: m[3], missing } : null;
+}
+
+// Every readable `missing-test` line in a ruling's conditions.
+export function missingTestConditions(lines) {
+  return (lines ?? []).map(parseMissingTestCondition).filter(Boolean);
+}
+
+// Lines that open with the verb and are not the form. `missing-test/<id>` is a reference, the
+// target of an accounting line, and never opens one of these.
+export function malformedMissingTestConditions(lines) {
+  return (lines ?? []).filter((l) => new RegExp(`^${MISSING_TEST_VERB}\\s`).test(String(l).trim()) && !parseMissingTestCondition(l));
+}
+
 // Which verdicts each condition form may ride on, and the sentence that says why.
 //
 // One table, read twice and written once. The guards in `src/commands/rule.mjs` refuse a
@@ -711,6 +747,14 @@ export const CONDITION_FORM_RULES = [
     onApproval: true,
     because: "records that an instruction an earlier ruling left owed is no longer asked for,"
       + " which is as true of an approval as of a return",
+  },
+  {
+    verb: MISSING_TEST_VERB,
+    form: MISSING_TEST_CONDITION_FORM,
+    onApproval: true,
+    because: "records a clause of a criterion that no test asserts and the stage that owes what a test of it needs;"
+      + " the criterion's missing test stays open, whatever its test's runs say, until a test asserts the clause"
+      + " or a ruler withdraws it",
   },
 ];
 
@@ -754,9 +798,10 @@ export function conditionPaths(line, owned = null) {
 }
 
 // A ruling's conditions split into the ones the stage being asked to revise is to act on
-// and the ones addressed to some other stage. Both cross-stage forms are read here, since
-// both leave the same hole in a revise prompt: `test-overreaches` names a criterion whose
-// test another stage writes, and `addressed-to` names the stage outright.
+// and the ones addressed to some other stage. The cross-stage forms are read here, since
+// each leaves the same hole in a revise prompt: `test-overreaches` names a criterion whose
+// test another stage writes, `addressed-to` names the stage outright, and `missing-test` names
+// the stage that owes what a test of a clause needs.
 //
 // A stage handed a condition it cannot act on — and in the plain case, one naming a file
 // outside its own overlay — either fails or finds a way, and neither is what the ruler
@@ -775,6 +820,8 @@ export function splitConditionsByAddressee(lines) {
     if (addressed) { elsewhere.push({ stage: addressed.stage, text: addressed.text }); continue; }
     const overreach = parseOverreachCondition(line);
     if (overreach) { elsewhere.push({ stage: OVERREACH_STAGE, text: overreach.text }); continue; }
+    const owedClause = parseMissingTestCondition(line);
+    if (owedClause) { elsewhere.push({ stage: owedClause.stage, text: `${owedClause.id}: ${owedClause.clause} — ${owedClause.missing}` }); continue; }
     mine.push(line);
   }
   return { mine, elsewhere, accounted };

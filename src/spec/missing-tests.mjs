@@ -49,6 +49,14 @@
 // **Retired criteria.** A criterion another supersedes, or one made obsolete, is derived no
 // test, so it is owed none: every reader leaves it out, and the next pipeline commit that
 // touches this list withdraws its item, stamped by the runner.
+//
+// **A clause no test asserts.** A criterion's test can assert part of what it states. A record
+// naming the rest (`clause`) sits beside the test, and a ruler names one on any ruling with a
+// `missing-test` line, which puts the clause on the item itself (`oweClauses`). Either way the
+// item is open and owed by the stage named, and a run of the partial test closes nothing: while a
+// record stands, it owns the item as any record does, and an item carrying a clause is answered
+// only by an approved derivation that was handed it and records none, after which the whole test
+// is owed a run like any other (`docs/decisions/0054`).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -92,6 +100,8 @@ export function recordOwner(record) {
 export function recordProblems(record) {
   const id = record?.id ?? "?";
   const problems = [];
+  if (record?.clause !== undefined && record?.clause !== null && !text(record.clause))
+    problems.push(`${id} names an empty clause: say which part of the criterion no test asserts, or leave clause out where no test reaches the criterion at all`);
   if (!text(record?.missing)) problems.push(`${id} names nothing as missing: say what would have to exist for a test to reach it (missing: "...")`);
   const owner = text(record?.owner);
   if (!owner) problems.push(`${id} names no stage that owns supplying what is missing (owner: <stage>)`);
@@ -143,6 +153,11 @@ export function retiredWhy(row) {
     : `${row.id} is obsolete; no test is derived for it`;
 }
 
+// The clause a record says no test asserts, or `null` for a record about the whole criterion.
+export function recordClause(record) {
+  return text(record?.clause) || null;
+}
+
 function pendingEntry(record, index) {
   return {
     kind: MISSING_TEST,
@@ -159,8 +174,18 @@ function pendingEntry(record, index) {
 
 // The open items as a commit holds them — `main` unless told otherwise: every open entry on
 // file, and an item for each record the entries do not account for. Reads git objects only.
+//
+// An item shows the clause no test asserts: its own, where a ruler named one, or else the one its
+// criterion's record names. A record's clause stays in the record, which is what says whether it
+// still stands, and is read from there rather than copied onto the entry.
 export function openMissingTestsAt(projectDir, rev = "main") {
-  return openFrom(readAt(projectDir, MISSING_TEST, rev), showAt(projectDir, rev, NOT_TESTABLE_PATH), showAt(projectDir, rev, "spec/criteria-index.json"));
+  const recordsText = showAt(projectDir, rev, NOT_TESTABLE_PATH);
+  return withRecordClauses(openFrom(readAt(projectDir, MISSING_TEST, rev), recordsText, showAt(projectDir, rev, "spec/criteria-index.json")), recordsText);
+}
+
+function withRecordClauses(entries, recordsText) {
+  const clauses = new Map(recordsIn(recordsText).filter(recordClause).map((r) => [r.id, recordClause(r)]));
+  return entries.map((e) => (e.clause || !clauses.has(e.item) ? e : { ...e, clause: clauses.get(e.item) }));
 }
 
 // A criterion that is retired is owed nothing, whether or not the list has caught up with it yet.
@@ -424,6 +449,14 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
       result.readdressed.push({ id: e.id, from: e.stage, to: owner });
       return moved(e, owner, recordMissing(record), by ?? "runner", at, { version: record.version });
     }
+    // A clause a ruler named is owed until the test writer, handed it, has a derivation approved
+    // that records nothing for the criterion: that derivation asserts it. Until then no run of
+    // the test that exists answers it.
+    if (e.clause) {
+      if (!(stage === WRITER && e.stage === WRITER && handed(e))) return e;
+      const { clause, ...rest } = e;
+      e = { ...rest, asserted: [...(e.asserted ?? []), { clause, by: from ?? by ?? "runner", ...(gate ? { gate } : {}), at }] };
+    }
     const version = index.get(e.id)?.version ?? e.version;
     const evidence = evidenceIn(tree, e.id, version);
     if (evidence) {
@@ -442,7 +475,7 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
 
 // The open items as the working tree holds them, the way `openMissingTestsAt` reads a commit.
 export function openMissingTests(projectDir) {
-  return openInTree(projectDir);
+  return withRecordClauses(openInTree(projectDir), workingText(projectDir, NOT_TESTABLE_PATH));
 }
 
 function openInTree(projectDir) {
@@ -471,6 +504,45 @@ export function withdrawMissingTest(projectDir, id, { why, by, at = new Date().t
     return { ...e, closed: { outcome: "withdrawn", why: text(why), by, at } };
   }));
   return hit ? path ?? owedPath(MISSING_TEST) : null;
+}
+
+// Applies a ruler's `missing-test` lines (`missingTestConditions`, `src/spec/criteria.mjs`), each
+// `{ id, clause, stage, missing }`: the criterion's open item carries the clause and is moved to
+// the stage named, stamped with the ruling (`proposal`, `gate`), or, where nothing is open for it,
+// an item is opened, stamped the same way. `restates` names the conditions of a recorded ruling a
+// line given to `rule --settle` restates, with their text, and is kept on the item.
+//
+// An item already carrying the clause and owed by the stage named is left alone, so applying the
+// same lines twice changes nothing. A criterion the index does not hold, or one that is retired,
+// is owed no test and is skipped; the ruling guards refuse such a line before anything is written.
+// Returns the path written (`null` when nothing changed) and what is now owed, by criterion.
+export function oweClauses(projectDir, lines, { from = null, gate = null, by = null, restates = null, at = new Date().toISOString() } = {}) {
+  const result = { path: null, owed: [] };
+  const index = indexIn(workingText(projectDir, "spec/criteria-index.json"));
+  const wanted = (lines ?? []).filter((l) => index.has(l.id) && !retired(index.get(l.id)));
+  if (!wanted.length) return result;
+  const opened = materialise(projectDir, at);
+  const byId = new Map();
+  for (const l of wanted) if (!byId.has(l.id)) byId.set(l.id, l);
+  const kept = restates?.length ? { restates } : {};
+  const stamp = { ...(from ? { proposal: from } : {}), ...(gate ? { gate } : {}) };
+  const done = new Set();
+  const moves = rewrite(projectDir, MISSING_TEST, (list) => list.map((e) => {
+    const l = isOpen(e) ? byId.get(e.item) : null;
+    if (!l || done.has(l.id)) return e;
+    done.add(l.id);
+    if (e.clause === l.clause && e.stage === l.stage) return e;
+    result.owed.push({ id: l.id, stage: l.stage });
+    return moved(e, l.stage, l.missing, by ?? "runner", at, { version: index.get(l.id).version, clause: l.clause, ...kept }, stamp);
+  }));
+  const fresh = [...byId.values()].filter((l) => !done.has(l.id)).map((l) => ({
+    item: l.id, id: l.id, version: index.get(l.id).version, domain: index.get(l.id).domain ?? null, stage: l.stage,
+    why: l.missing, clause: l.clause, ...(from ? { from } : {}), ...(gate ? { gate } : {}), by: by ?? "runner", at, ...kept,
+  }));
+  const added = open(projectDir, MISSING_TEST, fresh);
+  result.owed.push(...added.added.map((e) => ({ id: e.item, stage: e.stage })));
+  result.path = added.path ?? moves ?? (result.owed.length ? opened : null);
+  return result;
 }
 
 // Every re-address line in a stage's journal, as `{ id, to, why }`. A list marker or a
@@ -619,8 +691,12 @@ export function blockingMissingTests(projectDir, { claimed = [], withdrawn = [],
   const gone = new Set(withdrawn);
   const index = indexIn(workingText(projectDir, "spec/criteria-index.json"));
   const tree = workingTree(projectDir);
+  // A run of a test that asserts part of its criterion closes nothing, so it lets nothing through
+  // either: where a record names a clause of it, or the item does.
+  const partial = new Set(recordsIn(showAt(projectDir, rev, NOT_TESTABLE_PATH)).filter(recordClause).map((r) => r.id));
   return openMissingTestsAt(projectDir, rev).filter((e) => ids.has(e.item) && !gone.has(e.item)
-    && !ranIn(rows, e.item, index.get(e.item)?.version ?? e.version, (r) => ofTestAsItStands(tree, r, at)));
+    && (partial.has(e.item) || e.clause
+      || !ranIn(rows, e.item, index.get(e.item)?.version ?? e.version, (r) => ofTestAsItStands(tree, r, at))));
 }
 
 // What a stage run is handed: the open items it owes, read from `main`, and the line that moves
@@ -635,7 +711,7 @@ export function handedNote(projectDir, stage, { domain, gated = false } = {}) {
     `## Missing ${one ? "test" : "tests"} this stage owes`,
     `${one ? "A criterion was" : `${owed.length} criteria were`} recorded as untestable, and what ${one ? "its test needs is" : "their tests need is"} owed by ${stage}. `
       + `${one ? "It stays" : "Each stays"} owed until a test for the criterion runs.`,
-    owed.map((e) => `- ${missingTestRef(e.item)} — ${JSON.stringify(e.readdressed?.at(-1)?.why ?? e.why)}`).join("\n"),
+    owed.map((e) => `- ${missingTestRef(e.item)} — ${e.clause ? `the clause ${JSON.stringify(e.clause)} — ` : ""}${JSON.stringify(e.readdressed?.at(-1)?.why ?? e.why)}`).join("\n"),
     "To hand one to another stage — the one that writes its test once you have supplied what it needs, or the one whose it is — "
       + "write a line of its own in your journal:\n\n"
       + "re-address missing-test/<id> to <stage>: <why>\n\n"

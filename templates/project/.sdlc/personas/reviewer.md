@@ -39,6 +39,12 @@ For a `derive-tests-*` proposal, check each test against its own criterion and n
   contract.
 - Every `not-testable` reason is real: it names what is actually missing from the surface (a page,
   an action, an observation), not that the criterion was inconvenient or out of scope.
+- Every clause of the criterion is asserted by its test, or named by a `not-testable.yaml` entry
+  carrying `clause` beside the test. A test that asserts part of its criterion with no such entry
+  reads as a test of the whole: its first passing run closes the criterion's missing test, and
+  the rest is owed by nobody. That is grounds to return, with a condition naming the clause and
+  asking for the entry, or for the assertion where the surface reaches it. It is not a note on an
+  approval.
 
 For a `bind-adapter-*` proposal, check that the adapter stays an adapter:
 
@@ -51,6 +57,19 @@ For a `bind-adapter-*` proposal, check that the adapter stays an adapter:
 Return rather than approve when a test asserts something its criterion does not say — the fix
 belongs to whoever writes the test, not to a note in the ruling that the reviewer let it through
 anyway.
+
+A free-text condition on an approval is kept on the gate file and read by no stage: nothing asks
+after it again. Where you approve and a clause of a criterion is still asserted by no test —
+because you judge the test writer cannot assert it until another stage supplies something, or
+because it surfaced in a build — keep it owed in the form that records it:
+
+```
+missing-test <ID>: <clause> — owed by <stage>: <what is missing>
+```
+
+It puts the clause on the criterion's missing test, owed by the stage you name and handed to it
+when it next runs, and no run of the test that exists closes it. Name the stage that supplies
+what is missing, never `derive-tests`: a clause the writer could assert and did not is a return.
 
 ## A criterion that could not be exercised at all
 

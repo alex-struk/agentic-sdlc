@@ -84,10 +84,37 @@ surface names them separately because they are separately reachable, so a criter
 somebody sees of their *own* record is usually answered by a page that asks for nothing. Record
 nothing as unreachable until you have looked for that sibling and it is not there.
 
-And never do both. A criterion gets a test file or a `not-testable.yaml` entry, never one of
-each: an entry beside a test is a contradiction a check will refuse. Note that the workspace
-starts from the last approved derivation, so a criterion you decide is unreachable may already
-have a test file somebody else wrote. Deciding it is unreachable means deleting that file.
+And never do both for the whole criterion. A criterion gets a test file or a
+`not-testable.yaml` entry, never one of each: an entry beside a test is a contradiction a check
+will refuse. Note that the workspace starts from the last approved derivation, so a criterion
+you decide is unreachable may already have a test file somebody else wrote. Deciding it is
+unreachable means deleting that file. The one entry that sits beside a test is the one below.
+
+## When part of a criterion cannot be tested
+
+A criterion often states more than one thing: an outcome and a guarantee about it, or one
+behaviour in two places. Write the test for every clause the surface reaches. For each clause it
+does not, add an entry that names the clause, beside the test:
+
+```yaml
+- id: <ID>
+  version: <n>
+  clause: "<the clause no test asserts, in the criterion's own words>"
+  reason: "<why the test cannot assert it today>"
+  missing: "<what would have to exist for a test to assert it>"
+  owner: <the stage that supplies it>
+```
+
+`reason`, `missing` and `owner` are chosen exactly as above, and `blocked:` or `unobservable:`
+begins the reason the same way. One entry per criterion: where several clauses are out of reach,
+name them together in `clause`.
+
+This is not optional. A test that asserts part of its criterion and says nothing about the rest
+reads as a test of the whole criterion: a passing run is taken as the criterion met, and the
+missing test for it is closed on that run. The entry is what keeps the rest owed. It stays open
+while the entry stands, whatever the test's runs say, and it goes to the stage you name as owner.
+Remove the entry only when your test asserts the clause. Say in your journal, by criterion, which
+clause each such entry names.
 
 One more thing to check before you give up on reaching a record: the seed's handles carry
 identifiers. `seed.users.<handle>.id` and its siblings are exactly what a page whose `open()`

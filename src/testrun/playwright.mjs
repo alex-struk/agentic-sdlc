@@ -13,7 +13,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { readText } from "../lib/fsx.mjs";
-import { checkTests, loadIndex, readHeader, readNotTestable } from "../checks/tests.mjs";
+import { checkTests, loadIndex, readHeader, readWholeNotTestable } from "../checks/tests.mjs";
 import { compareIds } from "../spec/criteria.mjs";
 import { testFingerprint } from "./results.mjs";
 
@@ -189,7 +189,7 @@ function listSpecFiles(projectDir, domain) {
 function notTestableRows(projectDir, domain) {
   const byId = new Map((loadIndex(projectDir)?.criteria ?? []).map((c) => [c.id, c]));
   const wanted = (entry) => domain === undefined || byId.get(entry.id)?.domain === domain;
-  return readNotTestable(projectDir).filter(wanted).map((entry) => ({
+  return readWholeNotTestable(projectDir).filter(wanted).map((entry) => ({
     id: entry.id,
     version: entry.version,
     domain: byId.get(entry.id)?.domain ?? null,

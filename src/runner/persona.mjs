@@ -4,7 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
 import { deliveredBy, stageForProposal } from "../stages/registry.mjs";
-import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, approvableConditionForms, conditionsAreExecutable, returnOnlyConditionForms } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, MISSING_TEST_CONDITION_FORM, approvableConditionForms, conditionsAreExecutable, returnOnlyConditionForms } from "../spec/criteria.mjs";
 import { openOn } from "../spec/owed.mjs";
 import { missingTestRef, openMissingTestsAt } from "../spec/missing-tests.mjs";
 import { blocksOnMissingTests } from "../config/policy.mjs";
@@ -234,6 +234,10 @@ function conditionFormsNote(name, gate) {
     "the pipeline records neither: return the proposal and keep the condition, or approve and leave it off.",
     "Which you mean is the ruling, so decide it here rather than leaving it to be refused.",
     "",
+    "A free-text line on an approval is kept on the gate file and owed by nobody: no stage reads it, and",
+    "nothing asks after it again. Where you approve and something is still owed, say so in a form that",
+    `records it — a clause of a criterion no test asserts is \`${MISSING_TEST_CONDITION_FORM}\` — or return.`,
+    "",
   ];
 }
 
@@ -294,10 +298,11 @@ function missingTestsNote(projectDir, name, { slice, verify, config }) {
   return [
     "## Tests these criteria are owed",
     "",
-    "Each of these was recorded as untestable and is owed a test that runs. It stays open until a result row",
-    "shows its test ran at the criterion's current version; a ruling cannot say it was met.",
+    "Each of these was recorded as untestable, in whole or in one clause, and is owed a test that runs. It stays",
+    "open until a result row shows its test ran at the criterion's current version, and where it names a clause,",
+    "until a test asserting that clause is derived; a ruling cannot say it was met.",
     "",
-    ...shown.map((e) => `- \`${missingTestRef(e.item)}\` — owed by ${e.stage}: "${quote(e.why)}"`),
+    ...shown.map((e) => `- \`${missingTestRef(e.item)}\` — owed by ${e.stage}${e.clause ? ` for the clause "${quote(e.clause)}", which no test asserts` : ""}: "${quote(e.why)}"`),
     "",
     ...(blocks ? [
       "This project's policy.gates.G3.block_on_missing_tests is true: an approval of this slice is refused while an",
