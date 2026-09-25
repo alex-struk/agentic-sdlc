@@ -65,25 +65,35 @@ export function rulingAgentFor(config, { gate, persona }, env = process.env) {
 
 // Why a stage may not run on Codex as the project has it configured, or null.
 //
-// A stage whose Claude tool allowlist names no shell depends on having none: its session can
-// open files only through the file tools, which read and write inside its workspace, and that
-// is what keeps a blind stage blind — the test writer never reads the application, the
-// designer never reads the acceptance suite. Codex has no tool allowlist. Every Codex session
-// has a shell, and its sandbox confines what the session writes, not what it reads, so the
-// same stage on Codex could read anything on the machine the account can. The runner still
-// seals the workspace and checks everything that comes back out of it, but it cannot see
-// what a session read. That is a weaker stage, and a project gets one only by saying so,
-// stage by stage, in a policy change (`docs/decisions/0060-a-second-agent-backend.md`).
+// A stage that declares a tool allowlist depends on it. Where the list gives no shell, the
+// session opens files only through the file tools, inside its workspace, and that is what
+// keeps a blind stage blind — the test writer never reads the application, the designer never
+// reads the acceptance suite. Where it gives a narrowed shell, the patterns are the whole
+// grant: the commands the stage exists to run and nothing else. Codex has no tool allowlist.
+// Every Codex session has a full shell, and its sandbox limits what the session writes, not
+// what it reads or runs; the project's deny list is a Claude setting Codex never reads. The
+// runner still seals the workspace and checks everything that comes back out of it, but it
+// cannot see what a session read or ran. That is a weaker stage, and a project gets one only
+// by saying so, stage by stage, in a policy change
+// (`docs/decisions/0060-a-second-agent-backend.md`).
+//
+// A stage with no allowlist is confined on Claude by the project's guard and deny list and
+// runs on Codex: the guard reaches a Codex session through its hook. A ruling is never
+// refused: its allowlist exists to keep it read-only, and a Codex ruling runs in a read-only
+// sandbox, which holds that at the operating system rather than in the session.
 export function codexRefusal(stage, config, agent) {
   if (agent?.backend !== "codex") return null;
   const tools = stage.allowedTools ?? [];
-  if (!tools.length || grantsShell(tools)) return null;
+  if (!tools.length) return null;
   if (config?.policy?.agents?.stages?.[stage.name]?.accept_weaker === true) return null;
   const chose = agent.from && agent.from !== "default" ? ` (${agent.from} chose codex)` : "";
+  const held = grantsShell(tools)
+    ? `On claude its session runs only the tools its allowlist names (${tools.join(", ")}), so its shell runs only those commands; on codex it could run any command the sandbox allows, with the network access its commands need.`
+    : `On claude its session has no shell and opens files only through the file tools, inside its workspace; on codex it has a shell and could read outside its workspace, and nothing would record that it had.`;
   return [
     `${stage.name} is set to run on codex${chose}, and it cannot run there as configured.`,
-    `Its tool allowlist gives it no shell, so on claude its session opens files only through the file tools, inside its workspace.`,
-    `Codex has no tool allowlist: every Codex session has a shell, and its sandbox limits what it writes, not what it reads, so this stage's session could read outside its workspace and nothing would record that it had.`,
+    `Codex has no tool allowlist: every Codex session has a full shell, and its sandbox limits what it writes, not what it reads or runs.`,
+    held,
     `Run it on claude (policy.agents.stages.${stage.name}.backend: claude), or accept the weaker stage with policy.agents.stages.${stage.name}.accept_weaker: true, a policy change ruled at G-POL.`,
   ].join(" ");
 }

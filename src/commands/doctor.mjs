@@ -74,7 +74,7 @@ function agentLines(config) {
   }
   for (const name of names) {
     if (!codexRefusal(STAGES_BY_NAME[name], config, agentFor(config, name))) continue;
-    out.push(["warn", `codex refuses ${name}: its tool allowlist gives it no shell; set policy.agents.stages.${name}.accept_weaker: true to run it there, or run it on claude`]);
+    out.push(["warn", `codex refuses ${name}: codex cannot hold it to its tool allowlist; set policy.agents.stages.${name}.accept_weaker: true to run it there, or run it on claude`]);
   }
   return out;
 }

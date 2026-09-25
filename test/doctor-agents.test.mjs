@@ -138,8 +138,9 @@ test("doctor warns which stages codex will refuse, and how a project accepts the
   machine();
   try {
     const { text } = await doctor(project("  agents: { backend: codex }\n"));
-    assert.match(text, /^warn codex refuses plan: its tool allowlist gives it no shell; set policy\.agents\.stages\.plan\.accept_weaker: true to run it there, or run it on claude$/m);
-    assert.doesNotMatch(text, /codex refuses (intent|build)/);
+    assert.match(text, /^warn codex refuses plan: codex cannot hold it to its tool allowlist; set policy\.agents\.stages\.plan\.accept_weaker: true to run it there, or run it on claude$/m);
+    assert.match(text, /^warn codex refuses build: /m);
+    assert.doesNotMatch(text, /codex refuses intent/);
   } finally { clear(); }
 });
 

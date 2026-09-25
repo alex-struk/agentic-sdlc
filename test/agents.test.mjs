@@ -96,14 +96,22 @@ test("a stage whose allowlist gives it no shell is refused on codex, saying why 
   assert.ok(refusal);
   assert.match(refusal, /blind-stage/);
   assert.match(refusal, /no shell/);
+  assert.match(refusal, /read outside its workspace/);
   assert.match(refusal, /policy\.agents\.stages\.blind-stage\.accept_weaker: true/);
 });
 
-test("a stage with a shell, or with no allowlist, runs on codex; any stage runs on claude", () => {
+test("a stage whose allowlist narrows its shell is refused on codex too, naming the commands it is held to", () => {
+  const refusal = codexRefusal(SHELL, config({ backend: "codex" }), { backend: "codex" });
+  assert.ok(refusal);
+  assert.match(refusal, /Bash\(npm \*\)/);
+  assert.match(refusal, /any command/);
+});
+
+test("a stage with no allowlist runs on codex; any stage runs on claude", () => {
   const c = config({ backend: "codex" });
-  assert.equal(codexRefusal(SHELL, c, { backend: "codex" }), null);
   assert.equal(codexRefusal(OPEN, c, { backend: "codex" }), null);
   assert.equal(codexRefusal(NO_SHELL, c, { backend: "claude" }), null);
+  assert.equal(codexRefusal(SHELL, c, { backend: "claude" }), null);
 });
 
 test("the project opts a stage in explicitly, and only that stage", () => {
