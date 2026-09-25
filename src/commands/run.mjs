@@ -12,6 +12,8 @@ import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { checkOwedLimits } from "../runner/owed-limits.mjs";
+import { whatNext, matchesNext, namedByNext, runCommand } from "../runner/next.mjs";
+import { printNextBlock } from "./next.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 // Re-exported for the tests and any caller that reaches it by way of `run`.
@@ -396,8 +398,35 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   }
 }
 
+// A run other than the one `next` names is allowed, and never silently: it needs a reason,
+// and what `next` named, what ran and the reason go into the run record in a commit of their
+// own before the run starts, so the choice is on file whatever the run then does. Refused
+// before anything is written where no reason is given. A dry run changes nothing and needs
+// none.
+export function recordDeviation(projectDir, name, opts, reason) {
+  let named;
+  try { named = whatNext(projectDir); } catch (e) {
+    console.warn(`warning: next could not be read, so this run is not checked against it (${e.message.split("\n")[0]})`);
+    return null;
+  }
+  if (matchesNext(named, name, opts)) return null;
+  const ran = runCommand(name, opts);
+  const said = namedByNext(named);
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new Error(`run ${name}: next names ${named.next ? `\`${said}\`` : said}, not \`${ran}\`.\n`
+      + `Run what next names, or give the reason for running this instead with --reason "<why>"; the reason is kept in the run record.`);
+  }
+  assertCleanTree(projectDir, "run");
+  assertOnMain(projectDir, "run");
+  if (!stageFor(name).implemented) throw new Error(`stage ${name} is not implemented yet`);
+  const runPath = appendRun(projectDir, `deviation: next named \`${said}\`; ran \`${ran}\`; reason: ${reason.trim()}`);
+  stageAll(projectDir, [relative(projectDir, runPath)]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): ran instead of what next named`], projectDir);
+  return { named: said, ran };
+}
+
 COMMANDS.run = async ({ pos, flags }) => {
-  const r = await runStage(process.cwd(), pos[0], {
+  const opts = {
     slice: flags.slice !== undefined ? Number(flags.slice) : undefined,
     domain: flags.domain,
     target: flags.target,
@@ -406,7 +435,18 @@ COMMANDS.run = async ({ pos, flags }) => {
     again: !!flags.again,
     revise: !!flags.revise,
     skipSuite: !!flags["skip-suite"],
-  });
+  };
+  if (opts.dryRun) return runCli(pos, opts);
+  recordDeviation(process.cwd(), pos[0], opts, flags.reason);
+  try {
+    return await runCli(pos, opts);
+  } finally {
+    printNextBlock(process.cwd());
+  }
+};
+
+async function runCli(pos, opts) {
+  const r = await runStage(process.cwd(), pos[0], opts);
   if (r.dryRun) return 0;
   if (!r.ok) { console.error(`run ${pos[0]}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }
   if (r.text) console.log(r.text);
@@ -422,4 +462,4 @@ COMMANDS.run = async ({ pos, flags }) => {
   const escalated = r.proposal?.escalatedTo ? `, escalated to ${r.proposal.escalatedTo}: owed work was sent back past its limit` : "";
   console.log(`run ${pos[0]}: ok${r.proposal ? ` (opened ${r.proposal.branch}${escalated})` : ""}`);
   return 0;
-};
+}

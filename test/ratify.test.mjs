@@ -284,7 +284,7 @@ test("sdlc run ratify: a no-op rerun prints execute's own text, not just \"ok\""
 
     process.chdir(dir);
     console.log = (...a) => logs.push(a.join(" "));
-    const code = await COMMANDS.run({ pos: ["ratify"], flags: { domain: "applications" } });
+    const code = await COMMANDS.run({ pos: ["ratify"], flags: { domain: "applications", reason: "a second pass over a domain already ratified" } });
     assert.equal(code, 0);
     assert.ok(logs.some((l) => /nothing to do|already ratified/.test(l)), logs.join(" | "));
   } finally {

@@ -17,6 +17,7 @@ import { close as closeOwed, conditionRef, open as openOwed, openOn, owedPath } 
 import { loadIndex } from "../checks/tests.mjs";
 import { proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
+import { printNextBlock } from "./next.mjs";
 import { heldByFor } from "../lib/seat.mjs";
 import { approvesUnasserted, escalateTiers } from "../config/policy.mjs";
 import { proposedPolicyChange } from "../runner/ruling-config.mjs";
@@ -1428,7 +1429,15 @@ export async function rulePending(projectDir) {
   return results;
 }
 
-COMMANDS.rule = async ({ pos, flags }) => {
+COMMANDS.rule = async (args) => {
+  try {
+    return await ruleCli(args);
+  } finally {
+    printNextBlock(process.cwd());
+  }
+};
+
+async function ruleCli({ pos, flags }) {
   // A batch that stopped early exits non-zero: it is holding a proposal branch open and
   // has not ruled the proposals behind it, which a zero exit reports as a finished batch.
   if (flags.pending) { const r = await rulePending(process.cwd()); return r.stopped ? 1 : 0; }
@@ -1455,4 +1464,4 @@ COMMANDS.rule = async ({ pos, flags }) => {
   if (r.filed?.length) console.log(`${pos[0]}: ${r.filed.join(", ")} filed for re-derivation — run sdlc run derive-tests --domain <domain> --stale`);
   for (const id of r.unfiled ?? []) console.warn(`warning: ${pos[0]}: ${id} is not an accepted criterion; nothing was filed for it`);
   return 0;
-};
+}
