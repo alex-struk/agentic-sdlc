@@ -1275,3 +1275,34 @@ test("policy.calibrate.environment_faults lets a project tolerate that many rows
     restoreEgress(prevEgress);
   }
 });
+
+// A row the machine failed but that stayed under the policy limit is not a halt — it is
+// written into the result set like any other row, error text and all. That text is a
+// reset command's own failure and carries this machine's path the same way the halted
+// case does, and the result file is committed to the project, so rule E-2 applies to it
+// exactly as it applies to the run record (docs/decisions/0020).
+test("a row's error is redacted in the written result file, the same as the halted case", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-redact-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  const cfgPath = join(dir, ".sdlc", "config.yaml");
+  writeFileSync(cfgPath, readFileSync(cfgPath, "utf8").replace(/^policy:\n/m, "policy:\n  calibrate: { environment_faults: 1 }\n"));
+  git(["add", "-A"], dir);
+  git([...COMMIT, "tolerate one environment fault (test)"], dir);
+  calibrateEnv(mockRunnerDir("redact", [resetFailedRow(PASSING_ROW), FAILING_ROW]));
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    const raw = readFileSync(join(dir, "tests/results/old/latest.json"), "utf8");
+    assert.ok(!raw.includes(ELSEWHERE), "a local path is not written into the result file");
+    const row = rowFor(latest(dir), "R-1.1");
+    assert.match(row.tests[0].error, /~\/agentic-sdlc\/bin\/sdlc\.mjs/);
+    // The dated file this run writes alongside latest.json is the same text, so it is
+    // clean too.
+    const today = new Date().toISOString().slice(0, 10);
+    const dated = readFileSync(join(dir, `tests/results/old/${today}.json`), "utf8");
+    assert.ok(!dated.includes(ELSEWHERE));
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});

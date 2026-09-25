@@ -698,7 +698,11 @@ export const calibrate = {
       return { ...row, ...(verb ? { ruled: verb } : {}), ...(sorted ? { triage: "product-question" } : {}) };
     });
     const results = { target, base_url: configured, spec: generatedFrom, at: new Date().toISOString(), rows: ruledRows };
-    const text = `${JSON.stringify(results, null, 2)}\n`;
+    // Each row carries the acceptance test's own error, which is a reset command's or a
+    // browser's stack trace and can name the file it was thrown from. This file is
+    // committed to the project, so rule E-2's redaction applies to it as it does to every
+    // other agent-produced text this pipeline commits (`src/lib/redact.mjs`).
+    const text = redactLocalPaths(`${JSON.stringify(results, null, 2)}\n`, projectDir);
     const dir = calibrateResultsDir(projectDir, target);
     // A run that ran nothing writes no dated file: that file is the record of a suite having
     // run, and a second one for the same results would read as a second run.
