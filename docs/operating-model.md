@@ -123,20 +123,19 @@ engine.
 **Where each kind of rule lives.** The limits and permissions a project could want different are
 config keys with defaults the engine applies when they are absent (`docs/config.md`, `policy`):
 how many times verify returns a slice before escalating, how many follow-up rulings ratify gives a
-domain and whether it then escalates (the default) or drops what is unresolved, how many repair
+domain and whether it then escalates (the default) or drops what is unresolved, how many times an
+adapter is rebound, a test re-derived, a requirement re-recovered or a stage sent back by one line of
+work before what the owing stage produces is escalated (section 6), how many repair
 turns a stage gets after a failed post-check, which tiers force an escalation and which block an
 unverified test (both always including CRITICAL), whether G3 may approve a build on criteria
 nobody asserted, each stage's turn ceiling (`policy.turns`), and which egress rules the egress
 check applies. Keys the schema accepts and nothing reads (`policy.triage`, `policy.rungs`) are
 marked reserved, and `sdlc checks` says so when they are set. Verify refuses to run when G3
-names no escalation target, and ratify refuses to run past its follow-up limit when G1 names
-none. A proposal that changes the config's `policy` block is ruled at G-POL only, and its seat
+names no escalation target, ratify refuses to run past its follow-up limit when G1 names
+none, and a stage handed owed work past its limit refuses to run when its gate names none. A proposal that changes the config's `policy` block is ruled at G-POL only, and its seat
 is checked against the policy on `main`. A project can supply its own copy of a stage skill
 (`.sdlc/skills/<stage>.md`), and the judgement a stage works by is in its skill rather than its
 prompt. A persona brief names only escalation triggers the persona can act on.
-
-**Decided, not yet built.** Send-back loops with no limit get one, set in config: rebinding an
-adapter, re-deriving a test, re-recovering a requirement, and cross-stage requests.
 
 Risk tiers exist in the schema and in the criteria format, but nothing passes a criterion's
 tier to the proposals that touch it, so tier-based escalation does not fire. They stay dormant
@@ -147,11 +146,15 @@ unused.
 
 Several things the pipeline asks for are owed across runs: a ruling's condition, a request a
 ruling addressed to another stage, a test to re-derive, an adapter to rebind, a requirement to
-recover again. Each is kept on `main` as a file in the project, and when a stage starts, what
-it owes is read from `main` and put in front of its agent. The ruler of the resulting proposal
-is shown the same list.
+recover again. They are one mechanism in the engine (`src/spec/owed.mjs`): one list of entries,
+each with a kind, kept on `main` in the project. When a stage starts, what it owes is read from
+`main` and put in front of its agent, and the ruler of the resulting proposal is shown the same
+list.
 
-Every entry has the same shape:
+Every entry has the same shape: what is owed, the stage that owes it, why, in the words of whoever
+asked, who opened it at which ruling, and whether it is open, closed as met with the evidence, or
+withdrawn with the reason. A kind adds what it needs beside those, such as the criterion version a
+re-derivation was asked at.
 
 ```mermaid
 stateDiagram-v2
@@ -161,8 +164,25 @@ stateDiagram-v2
   Open --> Withdrawn: withdrawn by a ruler<br/>with a written reason
 ```
 
-**Decided, not yet built.** The separate lists become one mechanism in the engine, one entry
-shape with a kind, instead of one module per list.
+| Kind | Opened by | Owed by | Closed by |
+|---|---|---|---|
+| `condition` | a plain condition on a return | the stage the proposal goes back to | a later ruling's `condition-met` or `condition-withdrawn` |
+| `request` | `addressed-to <stage>: <why>` on a return | that stage's `--revise` run | the run that takes it up; a request cannot be withdrawn |
+| `redo` | `test-wrong` at calibration, `test-overreaches` on a return | `derive-tests --stale` | the run that derives the test again |
+| `rebind` | `adapter-wrong` in a calibration's triage | `bind-adapter` for that target | `calibrate`, once the adapter has changed |
+| `recovery` | `recovery-wrong` at ratification | `archaeology` for that domain | the run that recovers the criterion again |
+
+Each kind is stored in its own file (`.sdlc/conditions.yaml`, `.sdlc/revision-requests.yaml`,
+`tests/acceptance/redo.yaml`, `tests/adapters/rebind.yaml`, `spec/recovery.yaml`), and a kind with no
+file of its own shares `.sdlc/owed.yaml`, so a new kind needs no new machinery
+(`docs/decisions/0044-owed-work-is-one-list-kept-where-each-kind-lives.md`). A condition is never a
+reason to start a run: only a request opens a `--revise` run by itself.
+
+Nothing is removed. A closed entry stays on file, and an item asked for again is a new entry, so the
+list says how many times each item has been sent. The sending loops are bounded in policy
+(`policy.loops.rebind`, `redo`, `recovery` and `request`, two by default): a run handed an item sent
+more times than that still does the work, and the proposal it opens is escalated by the runner to
+its gate's escalation target rather than put to the gate holder for another round.
 
 ## 7. A requirement with no test
 

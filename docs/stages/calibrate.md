@@ -95,20 +95,23 @@ dated file beside it records when that was.
   <n> condition(s) not applied` instead, and does not record the ruling those conditions came from as
   applied, so the next run — once the file is fixed — reads it again.
 
-- **`tests/adapters/rebind.yaml`** — `{ rebind: [{ id, target, why }] }`, appended by the reviewer's
-  `adapter-wrong` triage verdicts (`src/spec/rebind.mjs`). The next `bind-adapter` run for that target
-  reads its own entries into its prompt. `calibrate` removes them once it runs against an adapter that
-  has changed since they were written. Keyed by target as well as by
-  criterion, because an adapter exists per target and a finding about one says nothing about
-  another's.
+- **`tests/adapters/rebind.yaml`** — `{ rebind: [{ id, target, why, closed? }] }`, owed work of kind
+  `rebind` (`src/spec/owed.mjs`), appended by the reviewer's `adapter-wrong` triage verdicts. The next
+  `bind-adapter` run for that target reads its own open entries into its prompt. `calibrate` closes
+  them once it runs against an adapter that has changed since they were written, and a closed entry
+  stays on file, so a finding made again about the new adapter counts as a second send of the same
+  binding (`policy.loops.rebind`). Keyed by target as well as by criterion, because an adapter exists
+  per target and a finding about one says nothing about another's.
 
-- **`tests/acceptance/redo.yaml`** — `{ redo: [{ id, version, why }] }`, appended by `test-wrong`
-  (`src/spec/redo.mjs`). It is the list `derive-tests --stale` reads to know a criterion needs its
-  test written again even though the criterion itself has not moved; `version` is the version the
-  criterion carried when the ruling was made. An id already on the list is left as it is, so the
-  first reason recorded is the one somebody wrote about. Entries are removed by `derive-tests`, which
-  takes off the ids it has just derived — a request that has been answered must not send the same id
-  back through `--stale` forever (`docs/stages/derive-tests.md`).
+- **`tests/acceptance/redo.yaml`** — `{ redo: [{ id, version, why, closed? }] }`, owed work of kind
+  `redo` (`src/spec/owed.mjs`), appended by `test-wrong`. It is the list `derive-tests --stale` reads
+  to know a criterion needs its test written again even though the criterion itself has not moved;
+  `version` is the version the criterion carried when the ruling was made. An id already open on the
+  list is left as it is, so the first reason recorded is the one somebody wrote about. `derive-tests`
+  closes the entries for the ids it has just derived — a request that has been answered must not send
+  the same id back through `--stale` forever (`docs/stages/derive-tests.md`) — and a closed entry stays
+  on file, so a later `test-wrong` on the same criterion counts as a second send
+  (`policy.loops.redo`).
 
 - **`spec/criteria-index.json`** and **`spec/spec.md`**, regenerated whenever a ruling changed a
   domain file. This happens *before* the suite runs, not after: staleness is the comparison between a
@@ -248,7 +251,7 @@ personas in turn:
 
 An `adapter-wrong` verdict changes no criterion. It takes its row out of both queues, puts the
 criterion on `tests/adapters/rebind.yaml` for the next `bind-adapter` run, and records which version
-of the adapter it was about. It lapses — row back to an open question, rebind entry removed — once a
+of the adapter it was about. It lapses — row back to an open question, rebind entry closed — once a
 calibration runs against an adapter that has changed since.
 
 `--skip-suite` applies whatever rulings have come back and asks the next question over the rows

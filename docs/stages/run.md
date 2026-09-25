@@ -74,6 +74,14 @@ is the only place a re-run decision is made.
   `proposal/<name>` branch instead of on `main` (`docs/stages/propose.md`). The run gives the
   checkout back to `main`, and what it produced is read off `proposal/<name>` from then on.
 
+  **A run handed owed work past its loop limit** (checked above) escalates the proposal it has just
+  opened, before any ruling is asked of the gate holder: a gate file on the branch with `verdict:
+  escalated`, `by: runner:<stage>`, `held_by: runner` and the gate's `escalate_to`, whose rationale
+  names each item, how many times it was sent, the key that sets its limit, and every reason it was
+  sent for. The trailer reads `run <stage>: ok (opened proposal/<name>, escalated to <role>: owed
+  work was sent back past its limit)`. How the item is closed does not change: it closes exactly as
+  it would have under the gate holder.
+
   **A gated stage builds no state site.** Every page of the site is regenerated whole from the
   whole project, so a copy carried on a proposal branch would differ from every other open
   proposal's on every page and the second merge would conflict on all of them, for content neither
@@ -259,7 +267,15 @@ In the order they are reached:
    returned ruling to revise from; `bind-adapter` requires a target that is configured and answering;
    `calibrate` requires a target that is either the configured oracle or a `config.targets` entry
    with a `base_url`.
-6. **For a gated stage, the proposal this run would open must not already be open.**
+6. **For a gated stage, owed work past its loop limit must have somewhere to go**
+   (`owed-limits`, `src/runner/owed-limits.mjs`). Run after the stage's own pre-checks, which are
+   what read the owed work this run is handed: the round of revision requests a `--revise` run
+   opened by requests answers, `derive-tests --stale`'s redo entries, `bind-adapter`'s rebind
+   entries for its target, and `archaeology`'s outstanding re-recovery requests. An item sent to
+   the stage more times than `policy.loops.<kind>` allows (`docs/config.md`) is escalated with the
+   proposal this run opens, so a gate whose policy names no `escalate_to` refuses the run, naming
+   the item, how many times it was sent, and the key.
+7. **For a gated stage, the proposal this run would open must not already be open.**
    `checkProposalNotOpen` (`src/runner/finish-stage.mjs`) calls `stage.proposal({ ...ctx,
    projectDir, agentText: "" })` to learn the name a real run would use. If a `proposal/<name>`
    branch exists with no `.sdlc/gates/<name>.yaml` on it, the run is refused. If the branch exists
@@ -273,8 +289,8 @@ In the order they are reached:
    own `# ` heading — the rule the skill gives the agent for naming its own file — using the
    `projectDir` this check adds to `ctx` for exactly that. Only when the brief has no heading at
    all does `proposal(ctx)` return `null` and this check get skipped.
-7. **The stage's own `postChecks(projectDir, ctx)` must all pass**, run after the session ends.
-8. **The open-proposal check runs a second time**, now against the stage's real (not derived)
+8. **The stage's own `postChecks(projectDir, ctx)` must all pass**, run after the session ends.
+9. **The open-proposal check runs a second time**, now against the stage's real (not derived)
    proposal name — a safety net for a name the check above had nothing to test yet, because it
    depended on a file the agent had not written. A collision found here is reported the same way
    any other post-check failure is, since by this point the agent has run and left files worth

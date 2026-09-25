@@ -21,6 +21,13 @@ by `sdlc oracle up` and never committed. Any other `--target <t>` must be a key 
 `config.targets`, and its base URL comes straight from `targets.<t>.base_url` — a real target has
 no local file and no mail catcher of its own for this stage to point at.
 
+The run also reads the open entries for its target on `tests/adapters/rebind.yaml`: the bindings a
+calibration's triage found wanting (`docs/stages/calibrate.md`), each with the reviewer's words,
+which go into the prompt. `calibrate` closes them once it has run against an adapter that changed
+since. A binding sent back more often than `policy.loops.rebind` allows (two by default,
+`docs/config.md`) is still rebound, and the proposal the run opens is escalated by the runner to
+G3's escalation target instead of being put to G3's holder (`docs/stages/run.md`, "Outputs").
+
 ### Binding a target whose application is still in an unmerged proposal
 
 A `build` slice writes the application under `app/` on `proposal/build-slice-<n>` and opens it at

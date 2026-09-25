@@ -328,6 +328,12 @@ against it, so `sdlc checks` goes on reporting it. An entry is marked rather tha
 way, so what was asked for and who asked survives the revision being merged
 (`docs/decisions/0034-a-queue-read-as-though-it-held-one-thing.md`).
 
+How many times one line of work may send a stage back this way is `policy.loops.request` (two by
+default, `docs/config.md`), counted by ruling: the requests one ruling files together are one send.
+A `--revise` run whose round includes a line of work past that limit still answers it, and the
+proposal it opens is escalated by the runner to that stage's gate's escalation target instead of
+being put to its holder (`docs/stages/run.md`, "Outputs").
+
 Reopening is not accepting, and the guard is the same shape as the one above: an `approve` carrying
 the form is refused, a form with no reason refuses the ruling before anything is written,
 the filing commit touches the request file and nothing else, and the change itself is ruled by the

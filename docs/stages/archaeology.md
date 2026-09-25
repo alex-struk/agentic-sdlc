@@ -222,7 +222,10 @@ contract.
 A criterion sent back a second time, because the first re-recovery answered the wrong question, is a
 second entry against the same id. `ratify`'s journal says how many times a criterion has been sent
 back, which is what makes a row that keeps coming back unchanged legible as a problem rather than as
-routine.
+routine. The number of times is bounded by `policy.loops.recovery` (two by default, `docs/config.md`):
+a run handed a criterion sent back more often than that still recovers it, and the proposal it opens
+is escalated by the runner to G1's escalation target instead of being put to G1's holder
+(`docs/stages/run.md`, "Outputs"). A G1 that names no `escalate_to` refuses that run.
 
 ## Failure modes
 

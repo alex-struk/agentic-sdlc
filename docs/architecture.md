@@ -115,11 +115,11 @@ what the results *mean*.
   every reader shares. `SDLC_TEST_RUNNER=mock` reads a canned row set instead.
   `calibrate` is the stage around it: it applies any calibration ruling not yet applied, runs the
   suite, writes `tests/results/<target>/<date>.json` and `latest.json`, and opens a G1 proposal
-  listing every failure that has no ruling yet. `src/spec/redo.mjs` is the small file that carries
-  a ruling about a test forward — `tests/acceptance/redo.yaml`, written by `calibrate` for a
-  `test-wrong` ruling and by `sdlc rule` for a `test-overreaches` one, and cleared by the
-  `derive-tests` run that answers it. `src/spec/revisions.mjs` is its counterpart for a ruling
-  about a whole stage's output — `.sdlc/revision-requests.yaml`, written by `sdlc rule` for an
+  listing every failure that has no ruling yet. A ruling that has to be carried out by another
+  stage is carried forward as owed work (`src/spec/owed.mjs`, `docs/operating-model.md` §6): a
+  redo entry on `tests/acceptance/redo.yaml`, written by `calibrate` for a `test-wrong` ruling and
+  by `sdlc rule` for a `test-overreaches` one and closed by the `derive-tests` run that answers it;
+  a revision request on `.sdlc/revision-requests.yaml`, written by `sdlc rule` for an
   `addressed-to <stage>` condition and read whole — every open request addressed to a stage, as one
   round — by that stage's own `--revise` run, which is what makes an artifact its own gate has
   already approved revisable again.
