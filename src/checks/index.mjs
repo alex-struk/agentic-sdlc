@@ -10,6 +10,7 @@ import { checkGenerated } from "./generated.mjs";
 import { checkTests } from "./tests.mjs";
 import { checkBriefs } from "./briefs.mjs";
 import { checkConditions } from "./conditions.mjs";
+import { checkHandEdits } from "./hand-edits.mjs";
 
 // `opts.skip` names check ids to leave out of the result entirely — not run and not
 // reported, as distinct from a check that ran and passed. `buildPersonaPrompt` is the
@@ -30,7 +31,7 @@ export async function runChecks(projectDir, opts = {}) {
   const ctx = { config: cfg.config };
   // Unconditional: a project with no ruling yet has an empty ledger and this passes
   // silently, and a project that has ruled one is never without the question again.
-  const checks = [cfg, checkLayout(projectDir, ctx), checkConstitution(projectDir, ctx), checkEgress(projectDir, ctx), checkBriefs(projectDir), checkConditions(projectDir)];
+  const checks = [cfg, checkLayout(projectDir, ctx), checkConstitution(projectDir, ctx), checkEgress(projectDir, ctx), checkBriefs(projectDir), checkConditions(projectDir), checkHandEdits(projectDir, ctx)];
   // `spec/domains` is only meaningful once a project has run archaeology (or has hand-
   // authored criteria in it); a project that has not reached that stage yet has nothing
   // for this check to read and is not penalised for it.

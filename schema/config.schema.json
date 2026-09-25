@@ -325,6 +325,18 @@
               }
             }
           }
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hand_edits": {
+              "enum": [
+                "warn",
+                "fail"
+              ]
+            }
+          }
         }
       }
     },

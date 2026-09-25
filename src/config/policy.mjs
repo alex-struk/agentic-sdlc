@@ -66,3 +66,10 @@ export function nextOrder(config) {
   const order = config?.policy?.next?.order;
   return Array.isArray(order) && order.length ? [...order] : [...NEXT_KINDS];
 }
+
+// Whether a change to a record file made outside a pipeline commit warns or fails `checks`.
+export const DEFAULT_HAND_EDITS = "warn";
+
+export function handEditSeverity(config) {
+  return config?.policy?.checks?.hand_edits ?? DEFAULT_HAND_EDITS;
+}
