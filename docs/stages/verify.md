@@ -24,6 +24,10 @@ asks for happens at the gate it is returned to, not here.
 - `SDLC_SANDBOX_PASSWORD` in the environment, where the `new` target's identity is `sandbox-idp`.
   The pre-check reads only whether the variable is set — never its value, which is passed to compose
   by environment alone and never printed, logged or written to a file.
+- `policy.gates.G3.escalate_to`, the role a slice goes to once it reaches the return limit. A G3
+  with none fails the pre-check: verify has nowhere else to send a slice, and a role it chose
+  itself may not exist in the project.
+- `policy.loops.verify_returns`, the return limit, three when the key is absent.
 - The slice's own text and claimed criteria, from `plan/tasks.md`.
 - `tests/acceptance/<domain>/<id>.spec.ts` for each criterion the slice claims.
 
@@ -72,12 +76,12 @@ asks for happens at the gate it is returned to, not here.
    `verdict: return`, `by: runner:verify`, `held_by: runner`, and one condition per failing
    criterion (`<id>: <its first error>`) — the same gate-file shape a reviewer's own return would
    leave, so `build --slice <n> --revise` reads either one the same way
-   (`docs/decisions/0011-build-verify-review.md`). The third such return for this slice
-   (`MAX_VERIFY_RETURNS`) escalates instead: `verdict: escalated`, `escalate_to` set to whoever
-   `policy.gates.G3.escalate_to` names (the tech lead, in the default policy), naming that the
-   failures below may not even be the application's to fix. Only verify's own returns
-   (`by: runner:verify`) count toward that third strike; a reviewer's return of the same proposal
-   does not.
+   (`docs/decisions/0011-build-verify-review.md`). The return that reaches the project's limit
+   (`policy.loops.verify_returns`, three by default) escalates instead: `verdict: escalated`,
+   `escalate_to` set to whoever `policy.gates.G3.escalate_to` names, naming that the failures
+   below may not even be the application's to fix. Only verify's own returns
+   (`by: runner:verify`) count toward the limit, across every cause verify returns a build for;
+   a reviewer's return of the same proposal does not.
 8. **On `unbound`, report and stop.** Nothing is written to a gate file. What is printed depends
    on whether `tests/adapters/new/index.ts` exists.
 
@@ -125,13 +129,13 @@ the proposal branch.
 
 - `tests/results/new/slice-<n>.json`, on the proposal's own branch, committed as
   `verify(slice <n>): <verdict>`.
-- `.sdlc/gates/<name>.yaml`, only on a `fail` verdict — `return`, or on the third such return for
-  the slice, `escalated` naming G3's `escalate_to`.
+- `.sdlc/gates/<name>.yaml`, only on a `fail` verdict — `return`, or on the return that reaches
+  the limit, `escalated` naming G3's `escalate_to`.
 - A merge commit on the proposal's branch, whenever `main` has moved since the branch was cut.
 - A run-record line, on every attempt — including one that failed part-way and one that left the
   branch dirty.
 - No gate of its own on `pass`, `pass-unasserted` or `unbound`: nothing is asked of a person until
-  either the reviewer rules the proposal, or the third failure's escalation reaches G3's
+  either the reviewer rules the proposal, or the escalation at the return limit reaches G3's
   `escalate_to`.
 
 ## The verdict table
@@ -184,16 +188,17 @@ would still be rulable as approved.
 
 `cause: environment` halts the run, non-zero, with nothing recorded. A result that names no cause at
 all is treated as the machine's: halting costs a re-run, and returning a build wrongly spends one of
-the three attempts the slice has before a person is asked.
+the attempts the slice has before a person is asked.
 
-A sandbox return counts toward the three-strikes ceiling alongside a criteria return, so the third
-escalates. An environment halt writes no gate file and cannot count.
+A sandbox return counts toward the return limit alongside a criteria return, so the one that
+reaches it escalates. An environment halt writes no gate file and cannot count.
 `docs/decisions/0017-a-sandbox-that-is-not-up.md` has the reasoning.
 
 ## Failure modes
 
 - **No open build proposal for the slice**: the pre-check fails, naming `build --slice <n>` as the
   step to run first.
+- **G3 names no `escalate_to`**: the pre-check fails before anything is started, naming the key.
 - **`SDLC_SANDBOX_PASSWORD` unset for a `sandbox-idp` target**: the pre-check fails before anything
   is started. Without it every test in the slice fails at the sign-in form, and verify would read a
   suite of sign-in failures as the application's fault and return the slice to a builder that
@@ -204,7 +209,7 @@ escalates. An environment halt writes no gate file and cannot count.
 - **The sandbox does not start, `cause: environment`**: reported in the run's own text; nothing is
   written and the branch is left exactly as it was.
 - **The sandbox does not start, `cause: application`**: the build proposal is returned (or
-  escalated on the third return running), with the failed service and the end of its own log as the
+  escalated on the return that reaches the limit), with the failed service and the end of its own log as the
   conditions. The run itself succeeds, the way a failing slice's does — the verdict is the outcome,
   not an error.
 - **A throw leaves the branch dirty** — between the result write and the commit landing: verify

@@ -124,3 +124,13 @@ test("checkConfig warns where a target signs in through a provider it never says
   write("  new: { base_url: http://localhost:8080, identity: session-route }");
   assert.deepEqual(checkConfig(d).warnings, [], "a target that signs in through the application itself stands up no provider");
 });
+
+// Each limit the engine applies is a policy value with a default, and a value the engine
+// could not act on is refused where it is written rather than where it is read.
+const withPolicy = (lines) => GOOD.replace("  default_tier: STANDARD\n", `  default_tier: STANDARD\n${lines.map((l) => `  ${l}\n`).join("")}`);
+
+test("policy.loops.verify_returns is a positive whole number", () => {
+  assert.deepEqual(parseConfig(withPolicy(["loops: { verify_returns: 2 }"])).errors, []);
+  assert.ok(parseConfig(withPolicy(["loops: { verify_returns: 0 }"])).errors.length > 0);
+  assert.ok(parseConfig(withPolicy(["loops: { verify_retries: 2 }"])).errors.length > 0, "an unknown loop is an error");
+});

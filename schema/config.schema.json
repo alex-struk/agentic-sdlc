@@ -239,6 +239,16 @@
             "type": "integer",
             "minimum": 1
           }
+        },
+        "loops": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "verify_returns": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         }
       }
     },

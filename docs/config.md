@@ -85,6 +85,8 @@ Required. Container of governance gates, tiers, and budgets.
   - `escalate_to` (string, optional, pattern `^[a-z][a-z0-9-]*$`): A role to escalate to if the holder cannot decide. Lowercase, no agent: prefix.
   - `human_sample_per_week` (integer, optional, min 0): If set, the human reviewing this gate samples 1 in N decisions.
 - `default_tier` (enum): One of `LOW`, `STANDARD`, `HIGH`, `CRITICAL`. The default risk tier for decisions.
+- `loops` (object, optional): How many times a loop between stages goes round before a person is asked. Each key is optional and has the default shown.
+  - `verify_returns` (integer, min 1, default 3): How many times `verify` returns one slice's build to `build` before the return that reaches this number escalates to G3's `escalate_to` instead. Counted per slice, across every cause verify returns a build for: failing criteria and a sandbox that did not start for a reason in the build. A reviewer's own return does not count. `verify` refuses to run at all where G3 names no `escalate_to`.
 - `rungs` (object, optional): A map of risk tier escalation rules. Keys are tier names, values are strings.
 - `triage` (object, optional): Thresholds for automatic triage.
   - `direct_max_files` (integer, optional, min 1): Maximum files changed to bypass triage.

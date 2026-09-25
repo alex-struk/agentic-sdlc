@@ -5,9 +5,10 @@
 // A slice that passes is ready for G3; the reviewer's ruling is refused without this result
 // (src/commands/rule.mjs). A slice that fails is returned by the runner itself, through the
 // same gate file a ruling writes, so `build --slice N --revise` picks the failures up the
-// way `design --revise` picks up a returned design. The third such return escalates to the
-// tech lead instead: a slice that fails three builds running is usually failing for a
-// reason a fourth build will not fix (spec §7.1).
+// way `design --revise` picks up a returned design. The return that reaches the project's
+// limit (`policy.loops.verify_returns`, three by default) escalates to G3's escalation
+// target instead: a slice that fails that many builds running is usually failing for a
+// reason another build will not fix (spec §7.1).
 import { join, relative } from "node:path";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
@@ -22,8 +23,7 @@ import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./sl
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
 import { ADDRESSED_CONDITION_FORM, OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
 import { isNotAsserted, notAssertedEntries } from "../testrun/results.mjs";
-
-export const MAX_VERIFY_RETURNS = 3;
+import { verifyReturnLimit } from "../config/policy.mjs";
 
 // Four outcomes, because a slice's claims come apart four ways and a reader has to be able
 // to tell them apart. `fail` and `unbound` are what they were. `pass` is reserved for the
@@ -116,7 +116,7 @@ function openBuildProposal(projectDir, slice) {
 // by the time a later verify run asks this question, an earlier return's gate file is no
 // longer under `proposal/<name>` at all — only on `main` and on `returned/<name>`.
 // Counting just `proposal/*` (as an earlier version of this did) undercounts every return
-// that has already been revised from, which makes `MAX_VERIFY_RETURNS` unreachable: three
+// that has already been revised from, which makes the return limit unreachable: three
 // real fail-then-revise cycles would report `return` every time and never `escalated`.
 // Names are de-duplicated (the same name can carry an identical gate copy on both `main`
 // and `returned/<name>` at once) rather than counted once per place it is found.
@@ -193,11 +193,11 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted 
 }
 
 // One return by verify, written the one way. `by: "runner:verify"` is what makes
-// `returnsByVerify` count it, and the count is read here so the third return escalates
-// instead of asking for a fourth build — the same ceiling whether the slice failed its
-// criteria or never started at all (docs/decisions/0017-a-sandbox-that-is-not-up.md).
-function writeVerifyReturn(projectDir, { name, slice, escalateTo, conditions, rationale, escalatedRationale }) {
-  const escalate = returnsByVerify(projectDir, slice) + 1 >= MAX_VERIFY_RETURNS;
+// `returnsByVerify` count it, and the count is read here so the return that reaches the
+// limit escalates instead of asking for another build — the same ceiling whether the slice
+// failed its criteria or never started at all (docs/decisions/0017-a-sandbox-that-is-not-up.md).
+function writeVerifyReturn(projectDir, { name, slice, limit, escalateTo, conditions, rationale, escalatedRationale }) {
+  const escalate = returnsByVerify(projectDir, slice) + 1 >= limit;
   const gateRel = `.sdlc/gates/${name}.yaml`;
   // The conditions are a service's own log or an acceptance test's own error, quoted
   // verbatim so the builder has the evidence. Both come off this machine and name paths
@@ -267,6 +267,16 @@ export const verify = {
     // a rebuild that cannot fix an environment defect (spec 7.1). The check reads only
     // whether the variable is set; its value is never read, printed or stored.
     const password = checkSandboxPassword("verify", ctx, "verifying", "new");
+    // Where a slice that reaches the return limit goes is the project's policy, and a
+    // project whose G3 names nowhere has not said. Refused before anything is started,
+    // rather than discovered on the build that reaches the limit, and never answered with
+    // a role written in here: that role may not exist in the project, and a gate file
+    // naming it names somebody who never receives the question.
+    if (!ctx.config?.policy?.gates?.G3?.escalate_to) {
+      return [password, { id: "verify-escalation", ok: false, messages: [
+        `policy.gates.G3 names no escalate_to. Verify escalates a slice to it once the slice has failed verify ${verifyReturnLimit(ctx.config)} times, and has nowhere else to send it; add escalate_to to G3 in .sdlc/config.yaml`,
+      ] }];
+    }
     // The proposal has to exist before the slice's own text does: a build proposal is
     // named from the slice number alone, so a slice that plan/tasks.md has not yet (or
     // no longer) defined a heading for is still reported as "no open build proposal" —
@@ -286,9 +296,10 @@ export const verify = {
     const down = ctx.sandbox?.down ?? ((d) => sandboxDown(d, config, "new"));
     // Who a G3 escalation goes to is the project's policy, not this stage's: `rule.mjs`
     // already routes by `policy.gates.G3.escalate_to`, and the name written here is the
-    // same answer rendered for a reader. A project that escalates G3 elsewhere would
-    // otherwise read a gate file naming a role that never gets the question.
-    const escalateTo = config?.policy?.gates?.G3?.escalate_to ?? "tech-lead";
+    // same answer rendered for a reader. The pre-check has already refused a policy that
+    // names none.
+    const escalateTo = config.policy.gates.G3.escalate_to;
+    const limit = verifyReturnLimit(config);
     const branch = `proposal/${name}`;
     // The tree goes to the proposal the slice was built on and comes back afterwards, the
     // same borrow `sdlc sandbox --from` makes (`enterBranch`/`leaveBranch`,
@@ -354,17 +365,17 @@ export const verify = {
           notVerified: "the sandbox did not start, so no acceptance test ran",
         });
         const { escalate, gateRel } = writeVerifyReturn(projectDir, {
-          name, slice: slice.number, escalateTo,
+          name, slice: slice.number, limit, escalateTo,
           conditions: sandboxConditions(started),
           rationale: `Slice ${slice.number} builds an application that does not start, so none of its criteria could be tested. The compose file, the images it builds and the configuration they read are all part of this build, and each condition names a service, what became of it and what it said on the way down.`,
-          escalatedRationale: `Slice ${slice.number} has been returned by verify ${MAX_VERIFY_RETURNS} times, this time because the sandbox never came up. What is wrong may not be the application's to fix — the compose file, the stack profile and this machine can each be the cause (spec 7.1) — and a fourth build would not find out which.`,
+          escalatedRationale: `Slice ${slice.number} has been returned by verify ${limit} times, this time because the sandbox never came up. What is wrong may not be the application's to fix — the compose file, the stack profile and this machine can each be the cause (spec 7.1) — and another build would not find out which.`,
         });
         commitOnBranch(projectDir, [resultRel, gateRel], `verify(slice ${slice.number}): sandbox`);
         notPassed = escalate
-          ? `escalated to ${escalateTo} — the sandbox did not start after ${MAX_VERIFY_RETURNS} builds`
+          ? `escalated to ${escalateTo} — the sandbox did not start after ${limit} builds`
           : "returned — the sandbox did not start, so nothing was verified";
         text = escalate
-          ? `verify slice ${slice.number}: the sandbox did not start after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`
+          ? `verify slice ${slice.number}: the sandbox did not start after ${limit} builds; escalated to ${escalateTo}.`
           : `verify slice ${slice.number}: returned — the sandbox did not start, so nothing was verified. ${(started.messages[0] ?? "").split("\n")[0]} Next: sdlc run build --slice ${slice.number} --revise`;
       } else {
         const { rows } = runSuite({
@@ -376,17 +387,17 @@ export const verify = {
         const paths = [writeVerifyResult(projectDir, { slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted })];
         if (v.verdict === "fail") {
           const { escalate, gateRel } = writeVerifyReturn(projectDir, {
-            name, slice: slice.number, escalateTo,
+            name, slice: slice.number, limit, escalateTo,
             conditions: v.failing.map((r) => `${r.id}: ${firstError(r)}`),
             rationale: `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say. Each condition is the criterion and what the running application did.`,
-            escalatedRationale: `Slice ${slice.number} has failed verify ${MAX_VERIFY_RETURNS} times. The failures below may not be the application's: a test, the adapter, the criterion or the sandbox can each be what is wrong (spec 7.1), and a fourth build would not find out which.`,
+            escalatedRationale: `Slice ${slice.number} has failed verify ${limit} times. The failures below may not be the application's: a test, the adapter, the criterion or the sandbox can each be what is wrong (spec 7.1), and another build would not find out which.`,
           });
           paths.push(gateRel);
           notPassed = escalate
-            ? `escalated to ${escalateTo} — ${v.failing.length} of ${slice.criteria.length} criteria still fail after ${MAX_VERIFY_RETURNS} builds`
+            ? `escalated to ${escalateTo} — ${v.failing.length} of ${slice.criteria.length} criteria still fail after ${limit} builds`
             : `returned — ${v.failing.length} of ${slice.criteria.length} criteria fail against the application`;
           text = escalate
-            ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${MAX_VERIFY_RETURNS} builds; escalated to ${escalateTo}.`
+            ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${limit} builds; escalated to ${escalateTo}.`
             : `verify slice ${slice.number}: returned — ${v.failing.map((r) => r.id).join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`;
         } else if (v.verdict === "unbound") {
           const head = `verify slice ${slice.number}: ${v.unbound.length} of the ${slice.criteria.length} criteria this slice claims could not be exercised at all — ${v.unbound.join(", ")}.`;

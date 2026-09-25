@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { runSuite } from "../src/testrun/playwright.mjs";
-import { verify, verifyVerdict, mergeFailureText, unboundReasons, MAX_VERIFY_RETURNS } from "../src/stages/verify.mjs";
+import { verify, verifyVerdict, mergeFailureText, unboundReasons } from "../src/stages/verify.mjs";
+import { DEFAULT_VERIFY_RETURNS as MAX_VERIFY_RETURNS } from "../src/config/policy.mjs";
 import { build } from "../src/stages/build.mjs";
 import { buildVerified } from "../src/commands/rule.mjs";
 import { buildProposalBase } from "../src/stages/slices.mjs";
@@ -67,7 +68,7 @@ test("a criterion nobody asserted against the application is neither a failure n
 });
 
 // A real project, a build proposal on its branch, the suite and the sandbox both mocked.
-function buildProject(t, { escalateTo = "tech-lead", notTestable = [] } = {}) {
+function buildProject(t, { escalateTo = "tech-lead", notTestable = [], policy = [] } = {}) {
   const d = mkdtempSync(join(tmpdir(), "sdlc-verify-"));
   t.after(() => rmSync(d, { recursive: true, force: true }));
   const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
@@ -81,8 +82,9 @@ function buildProject(t, { escalateTo = "tech-lead", notTestable = [] } = {}) {
     "targets:", "  new: { base_url: \"http://localhost:8080\", identity: sandbox-idp }",
     "policy:", "  gates:",
     ...["G0", "G1", "G-DESIGN", "G2"].map((g) => `    ${g}: { holder: tech-lead }`),
-    `    G3: { holder: "agent:reviewer", escalate_to: ${escalateTo} }`, "    G-POL: { holder: \"agent:tech-lead\", escalate_to: tech-lead }",
-    "  default_tier: STANDARD", "skills: { packs: [] }", "egress: { rules: [E-2] }", "",
+    escalateTo ? `    G3: { holder: "agent:reviewer", escalate_to: ${escalateTo} }` : "    G3: { holder: reviewer }",
+    "    G-POL: { holder: \"agent:tech-lead\", escalate_to: tech-lead }",
+    "  default_tier: STANDARD", ...policy.map((l) => `  ${l}`), "skills: { packs: [] }", "egress: { rules: [E-2] }", "",
   ].join("\n"));
   writeFileSync(join(d, ".gitattributes"), ".sdlc/runs/*.md merge=union\n");
   writeFileSync(join(d, "plan", "tasks.md"), "### Slice 1 · Sign in\n- criteria: R-4.1, R-4.2\n");
@@ -239,6 +241,40 @@ test("the escalation names whoever the project's G3 policy escalates to", async 
   const gate = parseYaml(execFileSync("git", ["show", "proposal/build-slice-1-3:.sdlc/gates/build-slice-1-3.yaml"], { cwd: d, encoding: "utf8" }));
   assert.equal(gate.escalate_to, "delivery-manager");
   assert.match(r.text, /escalated to delivery-manager/);
+});
+
+// How many builds a slice gets before verify stops returning it is the project's policy
+// (spec §7.1: retry bounds are policy values in config), counted the same way.
+test("the return limit is read from policy.loops.verify_returns", async (t) => {
+  const d = buildProject(t, { policy: ["loops: { verify_returns: 2 }"] });
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  run(["checkout", "-q", "-b", "proposal/build-slice-1-2", "proposal/build-slice-1"]);
+  run(["checkout", "-q", "proposal/build-slice-1"]);
+  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "gates", "build-slice-1.yaml"), "gate: G3\nverdict: return\nby: runner:verify\nheld_by: runner\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
+  run(["checkout", "-q", "main"]);
+  mockSuite(t, [row("R-4.1", "fail", "Error: still wrong"), row("R-4.2", "pass")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  assert.equal(ctx.verifyProposal, "build-slice-1-2");
+  const r = await verify.execute(d, ctx);
+  const gate = parseYaml(execFileSync("git", ["show", "proposal/build-slice-1-2:.sdlc/gates/build-slice-1-2.yaml"], { cwd: d, encoding: "utf8" }));
+  assert.equal(gate.verdict, "escalated", "the second failing verify is the limit when the policy says two");
+  assert.match(gate.rationale, /returned by verify 2 times|failed verify 2 times/);
+  assert.match(r.text, /after 2 builds/);
+});
+
+// A slice that reaches the limit is handed to G3's escalation target. A project whose G3
+// names none has nowhere to hand it, and a role written in its place is a role the
+// project may not have: the gate file would name somebody who never gets the question.
+test("verify refuses to run when G3 names no escalation target", (t) => {
+  const d = buildProject(t, { escalateTo: null });
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const ctx = ctxFor(d);
+  const failed = verify.preChecks(d, ctx).filter((c) => !c.ok);
+  assert.equal(failed.length, 1);
+  assert.match(failed[0].messages.join("\n"), /policy\.gates\.G3 names no escalate_to/);
 });
 
 // Only verify's own returns feed the three-strikes escalation. A reviewer who returns the
