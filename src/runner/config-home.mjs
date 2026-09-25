@@ -97,33 +97,38 @@ export function ensureCodexHome() {
 
 // A copy of a pipeline home for one isolated session (`docs/decisions/0061`): the credential,
 // read through the link to the operator's own, and the files named in `files`, into `dest`,
-// which is private to the account. The credential keeps its source's modification time, so a
-// copy the session never touched is not mistaken for a refresh when it comes back. Nothing
-// else of the home is copied, and nothing reads what the credential holds.
+// which is private to the account. Nothing else of the home is copied, and nothing reads what
+// the credential holds. Returns the copied credential's modification time as the copy carries
+// it, which is how `keepRefreshed` tells a copy the session rewrote from one it never touched.
 export function copyHome(home, credential, files, dest) {
   mkdirSync(dest, { recursive: true, mode: 0o700 });
   chmodSync(dest, 0o700);
   const src = join(home, credential);
   const st = statSync(src, { throwIfNoEntry: false });
+  let stagedMtimeMs = null;
   if (st?.isFile()) {
     const to = join(dest, credential);
     copyFileSync(src, to);
     chmodSync(to, 0o600);
     utimesSync(to, st.atime, st.mtime);
+    stagedMtimeMs = statSync(to).mtimeMs;
   }
   for (const f of files) if (existsSync(join(home, f))) copyFileSync(join(home, f), join(dest, f));
-  return dest;
+  return stagedMtimeMs;
 }
 
 // The credential an isolated session leaves in its copy of the home, kept in the pipeline's
-// own home when it is newer than the one there: the rule `0035` sets for a refresh, applied
-// across the container boundary. It replaces the link by rename, as a refresh on the host
-// does, so it lands as a regular file that `ensureHome` keeps while it is the newer of the
-// two. Returns whether it was kept.
-export function keepRefreshed(copyDir, home, credential) {
+// own home when the session rewrote it and it is newer than the one there: the rule `0035` sets
+// for a refresh, applied across the container boundary. A copy's timestamp is set to the
+// source's and can only be set to the millisecond, so it can read as a fraction newer than a
+// source it is identical to; only a copy whose time moved since it was staged is a refresh. It
+// replaces the link by rename, as a refresh on the host does, so it lands as a regular file that
+// `ensureHome` keeps while it is the newer of the two. Returns whether it was kept.
+export function keepRefreshed(copyDir, home, credential, stagedMtimeMs) {
   const copy = join(copyDir, credential);
   const st = lstatSync(copy, { throwIfNoEntry: false });
   if (!st?.isFile() || st.size === 0) return false;
+  if (st.mtimeMs === stagedMtimeMs) return false;
   const target = join(home, credential);
   const current = statSync(target, { throwIfNoEntry: false });
   if (current && st.mtimeMs <= current.mtimeMs) return false;

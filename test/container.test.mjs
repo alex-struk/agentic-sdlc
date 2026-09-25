@@ -225,6 +225,18 @@ test("the credential reaches the container as a copy and appears in no argument,
   } finally { Object.assign(console, orig); clear(); }
 });
 
+test("a copy the session never rewrote is not copied back, however its timestamp rounds", async () => {
+  const { ws, cred } = machine();
+  // A source written the ordinary way carries a modification time finer than a millisecond,
+  // finer than a copy's timestamp can be set to; one in the upper half of its millisecond is
+  // the case where the copy's time rounds to later than the source's.
+  do writeFileSync(cred, SENTINEL); while (statSync(cred).mtimeMs % 1 < 0.5);
+  try {
+    await runAgent({ cwd: ws, prompt: "x", stage: "design", allowedTools: ["Read", "Write"], agent: ISOLATED });
+    assert.ok(lstatSync(join(process.env.SDLC_CODEX_HOME, "auth.json")).isSymbolicLink());
+  } finally { clear(); }
+});
+
 test("a credential the session refreshed is kept in the pipeline's home, and an untouched one is not copied back", async () => {
   const { ws } = machine();
   try {

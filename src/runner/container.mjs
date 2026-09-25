@@ -220,10 +220,11 @@ export async function runInContainer(backend, opts, agent, { recorded = true, li
   const staging = mkdtempSync(join(tmpdir(), "sdlc-session-"));
   const pipelineHome = backend.ensureHome();
   const homeCopy = join(staging, "home");
+  let staged = null;
   try {
     if (opts.cwd) symlinkSync(opts.cwd, join(staging, "workspace"));
     else mkdirSync(join(staging, "workspace"));
-    copyHome(pipelineHome, backend.credential, backend.homeFiles ?? [], homeCopy);
+    staged = copyHome(pipelineHome, backend.credential, backend.homeFiles ?? [], homeCopy);
     // A CLI that is handed its skill and its MCP servers as files reads them inside the
     // container, so they are staged beside the home and named by their container path.
     const inside = { ...opts, isolated: true };
@@ -259,7 +260,7 @@ export async function runInContainer(backend, opts, agent, { recorded = true, li
   } finally {
     quietly(["rm", "-f", names.agent, names.proxy]);
     quietly(["network", "rm", names.network]);
-    keepRefreshed(homeCopy, pipelineHome, backend.credential);
+    keepRefreshed(homeCopy, pipelineHome, backend.credential, staged);
     rmSync(staging, { recursive: true, force: true });
   }
 }
