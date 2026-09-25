@@ -228,6 +228,49 @@ export function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", 
   else git(["branch", "-D", branch], projectDir);
 }
 
+// The returned proposal whose return `commit` recorded on `main`, or `null`. A revision's
+// pre-check records the return it answers (`recordReturnOnMain`) and the revision's branch is
+// cut from that commit, since nothing commits to `main` while a stage runs, so a revision's
+// branch point names the proposal it revised: the one gate file that commit added, ruled
+// `return`.
+function returnRecordedAt(projectDir, commit) {
+  let added;
+  try {
+    added = git(["diff-tree", "--no-commit-id", "--name-only", "--diff-filter=A", "-r", commit, "--", ".sdlc/gates"], projectDir)
+      .split("\n").filter((p) => p.endsWith(".yaml"));
+  } catch { return null; }
+  if (added.length !== 1) return null;
+  let doc;
+  try { doc = parseYaml(git(["show", `${commit}:${added[0]}`], projectDir)); } catch { return null; }
+  if (doc?.verdict !== "return") return null;
+  return added[0].slice(".sdlc/gates/".length, -".yaml".length);
+}
+
+// The proposals of one line of work that an approved proposal rests on, newest first: the
+// approved proposal itself (`name`, its branch tip `tip`, the commit it was cut from `base`),
+// then each returned proposal it revised, and the one that one revised, back to a proposal no
+// return led to. Each comes with the tip its branch holds (`returned/<name>`, else
+// `proposal/<name>`) and the commit that branch was cut from, so a caller can read what each
+// run wrote on its own branch against what it was handed. A proposal `sameLine` refuses, or
+// one whose branch no longer exists, ends the line.
+export function revisionLine(projectDir, { name, tip, base, sameLine = () => true }) {
+  const line = [{ name, tip, base }];
+  const seen = new Set([name]);
+  let at = base;
+  for (;;) {
+    const prev = returnRecordedAt(projectDir, at);
+    if (!prev || seen.has(prev) || !sameLine(prev)) break;
+    const ref = [`returned/${prev}`, `proposal/${prev}`].find((r) => gitOk(["rev-parse", "--verify", "-q", `${r}^{commit}`], projectDir));
+    if (!ref) break;
+    const prevTip = git(["rev-parse", ref], projectDir);
+    const prevBase = git(["merge-base", prevTip, at], projectDir);
+    line.push({ name: prev, tip: prevTip, base: prevBase });
+    seen.add(prev);
+    at = prevBase;
+  }
+  return line;
+}
+
 // A revision read off a returned ruling, plus the requests addressed to the same stage that
 // are open while it runs. That revision answers the ruling and no part of those, so the
 // prompt names them (`addressedElsewhereNote`) rather than letting a stage be handed less

@@ -14,7 +14,7 @@ import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { propose } from "../src/commands/propose.mjs";
-import { rule, ruleByAgent, buildVerified } from "../src/commands/rule.mjs";
+import { rule, ruleByAgent, buildVerified, settleRuling } from "../src/commands/rule.mjs";
 import { stageFor } from "../src/stages/registry.mjs";
 import { loadConfig } from "../src/config/load.mjs";
 import { overreachConditions, malformedOverreachConditions } from "../src/spec/criteria.mjs";
@@ -322,4 +322,104 @@ test("a line in this form at a gate with a closed grammar is left to that gramma
   // own reader will report it.
   const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/archaeology-fees.yaml"), "utf8"));
   assert.deepEqual(gate.conditions, [CONDITION]);
+});
+
+// --- a line of work that took a redo entry up and was approved on a later revision ---
+
+// A test for R-1.2 written again, as the `--stale` run and its revision each write it. Both
+// assert only what the criterion states; they differ so each run changes the file.
+const rederived = (age) => "// criterion: @R-1.2 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+  + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+  + "test(\"When a permit application is accepted, the system shall change its status to accepted.\", async ({ surface }) => {\n"
+  + `  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: ${age} });\n`
+  + "  expect(await surface.applicationsNew.status()).toBe(\"accepted\");\n});\n";
+
+function writerReply(age) {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-redo-line-mock-"));
+  writeFileSync(join(d, "derive-tests.json"), JSON.stringify({
+    text: "Wrote R-1.2's test again from its criterion alone; it reads the status and nothing else.",
+    files: { "tests/acceptance/applications/R-1.2.spec.ts": rederived(age) },
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = d;
+}
+
+const REVISE_CONDITION = "R-1.2: submit as an applicant well past the age limit, so the status read cannot depend on the boundary";
+
+// The sequence a project runs: a ruling files a redo entry, `--stale` takes it up, that
+// proposal is returned, `--revise` answers the return, and the revision is approved. The
+// `--stale` run wrote its closure on its own branch, which was returned and never merged.
+async function staleReturnedThenRevisedAndApproved(dir) {
+  openProposal(dir, "build-slice-1");
+  rule(dir, "build-slice-1", "return", { by: "tech-lead", note: "returned", conditions: [CONDITION] });
+  git(["checkout", "-q", "main"], dir);
+  assert.equal(redoOnMain(dir).find((e) => e.id === "R-1.2")?.closed, undefined);
+
+  writerReply(30);
+  const stale = await runStage(dir, "derive-tests", { domain: "applications", stale: true });
+  mock(false);
+  assert.equal(stale.ok, true, JSON.stringify(stale.messages));
+  rule(dir, stale.proposal.name, "return", { by: "tech-lead", note: "go again", conditions: [REVISE_CONDITION] });
+  git(["checkout", "-q", "main"], dir);
+  assert.equal(redoOnMain(dir).find((e) => e.id === "R-1.2")?.closed, undefined, "a returned proposal closes nothing on main");
+
+  writerReply(40);
+  const revised = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+  mock(false);
+  assert.equal(revised.ok, true, JSON.stringify(revised.messages));
+  rule(dir, revised.proposal.name, "approve", {
+    by: "tech-lead", conditions: [`condition-met ${stale.proposal.name}#1: R-1.2 now submits as an applicant aged 40`],
+  });
+  return { stale: stale.proposal.name, revised: revised.proposal.name };
+}
+
+test("a redo entry a --stale run took up is closed on main when a later revision of that run is approved", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-redo-line-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  const { stale, revised } = await staleReturnedThenRevisedAndApproved(dir);
+
+  const entry = redoOnMain(dir).find((e) => e.id === "R-1.2");
+  assert.equal(entry?.closed?.outcome, "met", "the approval of the line of work answers the request");
+  assert.match(entry.closed.why, new RegExp(stale), "the evidence names the run that derived it again");
+  assert.equal(entry.closed.by, revised, "and the approval that brought it onto main");
+  assert.equal(entry.closed.gate, "G3");
+  assert.equal(entry.closed.approved_by, "tech-lead");
+  assert.match(git(["log", "-1", "--format=%s", "main"], dir), /^merge: /, "written in the approval's own merge");
+
+  const { whatNext, formatNext } = await import("../src/runner/next.mjs");
+  const next = formatNext(whatNext(dir));
+  assert.ok(!next.includes("derive again (redo)"), next);
+});
+
+test("rule --settle closes the redo entries an approved line of work answered, once", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-redo-settle-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  const { stale, revised } = await staleReturnedThenRevisedAndApproved(dir);
+  // An approval whose merge left the entry open, as `main` holds it after one.
+  git(["checkout", "-q", "main~1", "--", "tests/acceptance/redo.yaml"], dir);
+  if (git(["status", "--porcelain"], dir)) git([...COMMIT, "an approval that left the redo entry open"], dir);
+  assert.equal(redoOnMain(dir).find((e) => e.id === "R-1.2")?.closed, undefined);
+  // A request filed after the line of work was approved was never handed to any run in it.
+  openProposal(dir, "build-slice-2");
+  rule(dir, "build-slice-2", "return", { by: "tech-lead", note: "returned", conditions: [`test-overreaches R-1.1: ${WHY}`] });
+  git(["checkout", "-q", "main"], dir);
+
+  const r = settleRuling(dir, revised);
+  assert.deepEqual(r.redo, ["R-1.2"]);
+  assert.equal(redoOnMain(dir).find((e) => e.id === "R-1.1")?.closed, undefined, "what the line was never handed stays open");
+  const entry = redoOnMain(dir).find((e) => e.id === "R-1.2");
+  assert.equal(entry?.closed?.outcome, "met");
+  assert.match(entry.closed.why, new RegExp(stale));
+  assert.equal(entry.closed.by, revised);
+  assert.equal(git(["log", "-1", "--format=%an", "main"], dir), "sdlc", "committed as the pipeline");
+  assert.match(git(["log", "-1", "--format=%s", "main"], dir), new RegExp(`^record\\(G3\\): ${revised} `));
+
+  const head = git(["rev-parse", "main"], dir);
+  const again = settleRuling(dir, revised);
+  assert.deepEqual(again.redo, []);
+  assert.equal(git(["rev-parse", "main"], dir), head, "settling twice commits nothing");
 });

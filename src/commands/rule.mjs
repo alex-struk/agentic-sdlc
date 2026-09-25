@@ -13,7 +13,9 @@ import { writeJournal } from "../runner/journal.mjs";
 import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { close as closeOwed, conditionRef, open as openOwed, openOn, owedPath } from "../spec/owed.mjs";
+import { close as closeOwed, conditionRef, isOpen, open as openOwed, openOn, owedPath, read as readOwed, readAt as readOwedAt, sameFiling } from "../spec/owed.mjs";
+import { revisionLine } from "../stages/proposals.mjs";
+import { dropTestWrongRulings } from "../stages/calibrate.mjs";
 import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, restoreUnhanded, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
 import { readSlice } from "../stages/slices.mjs";
 import { loadIndex } from "../checks/tests.mjs";
@@ -731,6 +733,8 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   if (verdict === "approve") {
     mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
     missingTests = recordMissingTests(projectDir, { name, gate, by });
+    const redo = closeRedoAnswered(projectDir, { name, gate, by, merge: "HEAD" });
+    if (redo.paths.length) stagePaths(projectDir, redo.paths);
     amendSiteOntoMergeCommit(projectDir);
   } else {
     regenerateSiteOnMain(projectDir, `${name} ${verdict}`);
@@ -763,6 +767,57 @@ function recordMissingTests(projectDir, { name, gate, by }) {
 function proposalSubject(name, config) {
   const route = routeOf(name, config);
   return { stage: route?.stage ?? stageForProposal(name), domain: route?.domain ?? null };
+}
+
+// The redo entries an approved line of work answered, closed on `main`. A run that derives a
+// criterion again closes its entry on its own proposal branch, so approving that proposal
+// merges the closure. A proposal returned and then revised is approved as a later proposal,
+// cut from `main` after the return, where the entry is still open; the closure is on a branch
+// nothing merges. So the line is read back from the approved proposal through every return it
+// answered (`revisionLine`), and each entry one of its runs closed on its branch, out of those
+// open where that branch was cut, is closed here as met: the evidence names the run that
+// derived it again, and the closure is stamped with this approval (`by`, `gate`,
+// `approved_by`). The calibration records the entry was filed from go with it, as they do when
+// the run's own proposal is approved (`dropTestWrongRulings`). An entry filed again since is a
+// different filing and stays open.
+//
+// `merge` is the approval's merge commit. Writes the working tree, stages nothing, and
+// returns the paths written and the criteria closed; applying it twice changes nothing.
+function closeRedoAnswered(projectDir, { name, gate = null, by = null, merge, at = new Date().toISOString() }) {
+  const none = { paths: [], closed: [] };
+  const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+  const { stage, domain } = proposalSubject(name, config);
+  if (!stage || !readOwed(projectDir, "redo").some((e) => isOpen(e) && e.stage === stage)) return none;
+  const line = revisionLine(projectDir, {
+    name,
+    tip: git(["rev-parse", `${merge}^2`], projectDir),
+    base: git(["merge-base", `${merge}^1`, `${merge}^2`], projectDir),
+    sameLine: (p) => {
+      const s = proposalSubject(p, config);
+      return s.stage === stage && s.domain === domain;
+    },
+  });
+  const answered = line.flatMap(({ name: run, tip, base }) => {
+    const handed = openOn(projectDir, "redo", base).filter((e) => e.stage === stage);
+    return readOwedAt(projectDir, "redo", tip)
+      .filter((e) => !isOpen(e) && handed.some((h) => sameFiling(h, e)))
+      .map((entry) => ({ entry, run }));
+  });
+  const owedNow = readOwed(projectDir, "redo").filter((e) => isOpen(e) && e.stage === stage);
+  const byRun = new Map();
+  for (const e of owedNow) {
+    const a = answered.find((x) => sameFiling(x.entry, e));
+    if (a) byRun.set(a.run, [...(byRun.get(a.run) ?? []), e]);
+  }
+  if (!byRun.size) return none;
+  const stamp = { ...(gate ? { gate } : {}), ...(by ? { approved_by: by } : {}) };
+  for (const [run, entries] of byRun) {
+    closeOwed(projectDir, "redo", (e) => entries.some((x) => sameFiling(x, e)), {
+      outcome: "met", why: `derived again by ${run}${run === name ? "" : `, in the line of work approved as ${name}`}`, by: name, at, ...stamp,
+    });
+  }
+  const closed = [...byRun.values()].flat().map((e) => e.item);
+  return { paths: [owedPath("redo"), ...dropTestWrongRulings(projectDir, closed)], closed };
 }
 
 // Settles the missing tests the run behind an approved proposal was handed, from the approval's
@@ -800,8 +855,14 @@ function settledMessage(name, gate, stage, r) {
     ...(withdrawn.length ? [`${withdrawn.length} withdrawn with ${withdrawn.length === 1 ? "its criterion" : "their criteria"}`] : []),
   ];
   const n = restored.length + r.readdressed.length + r.kept.length + closed.length + withdrawn.length;
-  const subject = `record(${gate ?? "?"}): ${name} settles ${n} missing ${n === 1 ? "test" : "tests"}: ${counts.join(", ")}`;
+  const redo = r.redo ?? [];
+  const settles = [
+    ...(n ? [`${n} missing ${n === 1 ? "test" : "tests"}: ${counts.join(", ")}`] : []),
+    ...(redo.length ? [`${redo.length} ${redo.length === 1 ? "test" : "tests"} derived again (redo)`] : []),
+  ];
+  const subject = `record(${gate ?? "?"}): ${name} settles ${settles.join("; ")}`;
   const body = [
+    ...(redo.length ? [`redo closed, derived again in the line of work ${name} approved: ${redo.join(", ")}`] : []),
     ...(restored.length ? [`restored to ${stage}, moved outside what ${name} was handed: ${restored.map(missingTestRef).join(", ")}`] : []),
     ...[...to].map(([t, ids]) => `re-addressed to ${t}: ${ids.map(missingTestRef).join(", ")}`),
     ...(r.kept.length ? [`kept by ${stage}: ${r.kept.map(missingTestRef).join(", ")}`] : []),
@@ -827,7 +888,7 @@ export function settleRuling(projectDir, name) {
   }).find((d) => d?.verdict) ?? null;
   if (!doc) throw new Error(`${name} has no ruling to settle`);
   if (doc.verdict === "approve") return { ...settleApproved(projectDir, name), verdict: "approve", addressed: [], unroutable: [] };
-  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], addressed: [], unroutable: [] };
+  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], redo: [], addressed: [], unroutable: [] };
   if (doc.verdict !== "return" || conditionsAreExecutable(doc.gate, name)) return none;
   const start = enterBranch(projectDir, "main", "rule --settle");
   try {
@@ -868,17 +929,20 @@ export function settleApproved(projectDir, name) {
     // other one does (`syncMissingTests`).
     const synced = syncMissingTests(projectDir, { config });
     const settled = settleHandedOn(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, stage, domain });
+    const redo = closeRedoAnswered(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, at: doc.at ?? undefined });
     const r = {
-      path: settled.path ?? synced.path ?? restored.path,
+      path: settled.path ?? synced.path ?? restored.path ?? redo.paths[0] ?? null,
       restored: restored.restored,
       readdressed: [...synced.readdressed, ...settled.readdressed],
       kept: settled.kept,
       closed: synced.closed,
       withdrawn: synced.withdrawn,
+      redo: redo.closed,
     };
     if (!r.path) return r;
     const { subject, body } = settledMessage(name, doc.gate, stage, r);
-    stagePaths(projectDir, [owedPath(MISSING_TEST)]);
+    const missingChanged = settled.path ?? synced.path ?? restored.path;
+    stagePaths(projectDir, [...(missingChanged ? [owedPath(MISSING_TEST)] : []), ...redo.paths]);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, "-m", body], projectDir);
     return r;
   } finally {
@@ -1756,6 +1820,7 @@ async function ruleCli({ pos, flags }) {
     if (r.kept.length) console.log(`${pos[0]}: kept by the stage that could not supply them: ${r.kept.map(missingTestRef).join(", ")}`);
     if (r.closed.length) console.log(`${pos[0]}: closed, a test ran: ${r.closed.map(missingTestRef).join(", ")}`);
     if (r.withdrawn.length) console.log(`${pos[0]}: withdrawn, the criterion is superseded or obsolete: ${r.withdrawn.map(missingTestRef).join(", ")}`);
+    if (r.redo?.length) console.log(`${pos[0]}: redo closed, derived again in the line of work it approved: ${r.redo.join(", ")}`);
     return 0;
   }
   if (typeof flags.by === "string" && flags.by.startsWith("agent:")) {

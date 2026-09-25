@@ -409,6 +409,22 @@ export function identityOf(entry) {
   return def(entry?.kind).identity(entry);
 }
 
+// Whether two entries are the same filing, whatever each says about its closure: everything
+// the kind stores for them, closure aside, is equal. A second send of an item has the same
+// identity as the first and is a different filing.
+export function sameFiling(a, b) {
+  if (!a || !b || a.kind !== b.kind) return false;
+  const d = def(a.kind);
+  const bare = (v) => JSON.stringify(sortKeys(d.store({ ...v, closed: null })));
+  return bare(a) === bare(b);
+}
+
+function sortKeys(v) {
+  if (Array.isArray(v)) return v.map(sortKeys);
+  if (!v || typeof v !== "object") return v;
+  return Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(v[k])]));
+}
+
 // What a run did to a kind's list, judged against the list it started from — `null` when the
 // only change is the closure the runner writes on its way out, and a reason otherwise.
 //
