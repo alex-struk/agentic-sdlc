@@ -25,7 +25,7 @@ function commit(d, files, message = "record") {
   git(d, [...AS_PIPELINE, "commit", "-q", "--allow-empty", "-m", message]);
 }
 
-function config({ profile = "rebuild", domains = ["alpha", "beta"], gates = {}, policy = [] } = {}) {
+function config({ profile = "rebuild", domains = ["alpha", "beta"], gates = {}, policy = [], extra = [] } = {}) {
   const seat = { holder: "agent:owner", escalate_to: "lead" };
   const all = { G0: seat, G1: seat, "G-DESIGN": seat, G2: seat, G3: seat, "G-POL": { holder: "agent:lead", escalate_to: "lead" }, ...gates };
   return [
@@ -34,7 +34,7 @@ function config({ profile = "rebuild", domains = ["alpha", "beta"], gates = {}, 
     "policy:", "  gates:",
     ...Object.entries(all).map(([g, v]) => `    ${g}: ${JSON.stringify(v)}`),
     "  default_tier: STANDARD", ...policy.map((l) => `  ${l}`),
-    "skills: { packs: [] }", "egress: { rules: [E-2] }", "",
+    "skills: { packs: [] }", "egress: { rules: [E-2] }", ...extra, "",
   ].join("\n");
 }
 
@@ -294,6 +294,81 @@ test("a test written against an older version of its criterion is stale and owed
   const r = whatNext(d);
   assert.deepEqual(r.stale, [{ domain: "alpha", ids: ["R-1.1"] }]);
   assert.equal(r.next.command, "sdlc run derive-tests --domain alpha --stale");
+});
+
+// A project with an oracle target and a second target, both of whose adapters were bound
+// against a contract that declared one member fewer than the contract on main does.
+const TARGETS = [
+  "oracle: { target: old, compose: c.yml, seed: tests/seed/, base_url: http://localhost:3100, identity: session-route }",
+  "targets: { new: { base_url: http://localhost:3200, identity: session-route } }",
+];
+const SURFACE = stringifyYaml({ pages: [{ id: "a-page", route: "/a", actions: { go: {}, stop: {} }, observations: { shown: {} } }] });
+const bindingsFor = (target, members = { actions: { go: "bound" }, observations: { shown: "bound" } }) =>
+  stringifyYaml({ target, pages: { "a-page": members } });
+const FULL = { actions: { go: "bound", stop: "bound" }, observations: { shown: "bound" } };
+
+function adaptersBound(d, { old = bindingsFor("old"), fresh = bindingsFor("new") } = {}) {
+  approved(d, ["contract-v1"]);
+  commit(d, {
+    "spec/contract/surface.yaml": SURFACE,
+    "tests/adapters/old/index.ts": "export default 1;\n", "tests/adapters/old/bindings.yaml": old,
+    "tests/adapters/new/index.ts": "export default 1;\n", "tests/adapters/new/bindings.yaml": fresh,
+  }, "contract and adapters");
+  approved(d, ["bind-adapter-old", "bind-adapter-new"], "G3");
+}
+
+// A contract revision that adds members leaves every adapter bound before it out of date,
+// and the bind-adapter post-check refuses an adapter that does not name them. So the oracle's
+// adapter is owed a binding run, one run carrying both its owed rebinds and the members it
+// does not bind, rather than a rebind-only run its own post-check then fails.
+test("an adapter the contract has outgrown is owed a binding, in the same run as its rebinds", (t) => {
+  const d = project(t, { extra: TARGETS });
+  specDone(d);
+  adaptersBound(d);
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [{ id: "R-1.1", target: "old", why: "reads the wrong heading" }] }) });
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run bind-adapter --target old");
+  assert.equal(r.next.kind, "owed");
+  assert.match(r.next.why, /^1 binding to fix \(rebind\), 1 contract member the adapter does not name for target old owed by bind-adapter$/);
+  assert.equal(r.ready.filter((c) => c.stage === "bind-adapter").length, 1, "the oracle's work is one run, and the other target's waits");
+  assert.deepEqual(r.staleAdapters, [
+    { target: "old", missing: ["a-page.stop"], extra: [], offered: true, waits: null },
+    { target: "new", missing: ["a-page.stop"], extra: [], offered: false, waits: "bound in phase 4 Build" },
+  ]);
+  assert.match(formatNext(r), /^stale adapters: 1 member in old, 1 member in new \(bound in phase 4 Build\)$/m);
+});
+
+test("an adapter that names what the contract no longer declares is stale too, and one that agrees is not", (t) => {
+  const d = project(t, { extra: TARGETS });
+  specDone(d);
+  adaptersBound(d, {
+    old: bindingsFor("old", { actions: { go: "bound", stop: "bound", leave: "bound" }, observations: { shown: "bound" } }),
+    fresh: bindingsFor("new", FULL),
+  });
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run bind-adapter --target old");
+  assert.match(r.next.why, /^1 name the contract no longer declares for target old owed by bind-adapter$/);
+  assert.deepEqual(r.staleAdapters.map((a) => [a.target, a.extra]), [["old", ["a-page.leave"]]]);
+});
+
+// Outside the oracle, a target is bound in the Build phase, against an application that exists
+// only on a build proposal until it merges; offering it earlier names a run with nothing to bind
+// against. Once it is offered, the oracle's adapter still comes first.
+test("another target's stale adapter is offered once the Build phase is reached, after the oracle's", (t) => {
+  const d = project(t, { extra: TARGETS });
+  specDone(d);
+  adaptersBound(d);
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ rows: [{ id: "R-1.1", result: "pass" }, { id: "R-2.1", result: "pass" }] }) });
+  approved(d, ["design-alpha", "design-beta"], "G-DESIGN");
+  const r = whatNext(d);
+  assert.equal(r.phase.number, 4);
+  assert.deepEqual(r.ready.filter((c) => c.kind === "owed").map((c) => c.command), [
+    "sdlc run bind-adapter --target old",
+    "sdlc run bind-adapter --target new",
+  ]);
+  assert.ok(r.staleAdapters.every((a) => a.offered));
+  assert.match(formatNext(r), /^stale adapters: 1 member in old, 1 member in new$/m);
 });
 
 test("which kind of ready work goes first is policy.next.order", (t) => {

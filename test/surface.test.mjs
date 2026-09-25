@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadContract, generateTypes, writeGenerated, routeParams } from "../src/spec/surface.mjs";
+import { loadContract, generateTypes, writeGenerated, routeParams, bindingGaps } from "../src/spec/surface.mjs";
 
 function project() {
   return mkdtempSync(join(tmpdir(), "sdlc-surface-"));
@@ -417,4 +417,31 @@ test("open is typed from the page's own route, whatever the route says", () => {
   assert.deepEqual(routeParams(undefined), []);
   // A query string is not a path parameter and must not become one.
   assert.deepEqual(routeParams("/opportunities/:id?tab=addenda"), ["id"]);
+});
+
+// An adapter is out of date with the contract when the two disagree on what exists: a member
+// the contract declares and the bindings file does not name, or a name the bindings file
+// carries that the contract no longer declares. The same comparison is the bind-adapter
+// post-check and the signal `next` reads, so what a run is asked to bind is what it is held to.
+test("bindingGaps names what the contract declares and the bindings leave out, and what they name that it does not", () => {
+  const pages = [
+    { id: "a-page", route: "/a", actions: { go: {}, stop: {} }, observations: { shown: {} } },
+    { id: "b-page", route: "/b", actions: {}, observations: { total: {} } },
+  ];
+  const doc = { target: "t", pages: {
+    "a-page": { actions: { go: "bound", gone: "bound" }, observations: { shown: "maybe" } },
+    "c-page": { actions: { x: "bound" } },
+  } };
+  const gaps = bindingGaps(pages, doc);
+  assert.deepEqual(gaps.missing, [
+    { page: "a-page", group: "actions", name: "stop" },
+    { page: "b-page", group: "observations", name: "total" },
+  ]);
+  assert.deepEqual(gaps.extra, [{ page: "a-page", group: "actions", name: "gone" }, { page: "c-page" }]);
+  assert.deepEqual(gaps.invalid, [{ page: "a-page", group: "observations", name: "shown", verdict: "maybe" }]);
+  const clean = bindingGaps(pages, { pages: {
+    "a-page": { actions: { go: "bound", stop: "unbound: no control" }, observations: { shown: "bound" } },
+    "b-page": { observations: { total: "bound" } },
+  } });
+  assert.deepEqual(clean, { missing: [], extra: [], invalid: [] });
 });

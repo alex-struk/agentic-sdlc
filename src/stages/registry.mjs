@@ -24,7 +24,7 @@ import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
 import { checkTests, coverage, readNotTestable } from "../checks/tests.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
-import { loadContract, writeGenerated } from "../spec/surface.mjs";
+import { bindingGaps, loadContract, writeGenerated } from "../spec/surface.mjs";
 import { turnsFor } from "../runner/executor.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
@@ -1602,29 +1602,12 @@ function checkBindAdapterBindings(projectDir, target) {
   const { surface, errors } = loadContract(projectDir);
   if (errors.length) return { id, ok: false, messages: errors.map((e) => `${e.file}: ${e.message}`) };
 
-  const messages = [];
-  const isVerdict = (v) => v === "bound" || (typeof v === "string" && v.startsWith("unbound:"));
-  const pages = doc.pages && typeof doc.pages === "object" && !Array.isArray(doc.pages) ? doc.pages : {};
-  const surfaceIds = new Set(surface.pages.map((p) => p.id));
-
-  for (const page of surface.pages) {
-    const entry = pages[page.id] ?? {};
-    for (const group of ["actions", "observations"]) {
-      const named = Object.keys(page[group] ?? {});
-      const bound = entry[group] && typeof entry[group] === "object" && !Array.isArray(entry[group]) ? entry[group] : {};
-      for (const name of named) {
-        const verdict = bound[name];
-        if (verdict === undefined) messages.push(`${file}: ${page.id}.${name} is missing`);
-        else if (!isVerdict(verdict)) messages.push(`${file}: ${page.id}.${name} must be "bound" or "unbound: <reason>", got ${JSON.stringify(verdict)}`);
-      }
-      for (const name of Object.keys(bound)) {
-        if (!named.includes(name)) messages.push(`${file}: ${page.id}.${group}.${name} is not in the surface`);
-      }
-    }
-  }
-  for (const pageId of Object.keys(pages)) {
-    if (!surfaceIds.has(pageId)) messages.push(`${file}: page "${pageId}" is not in the surface`);
-  }
+  const gaps = bindingGaps(surface.pages, doc);
+  const messages = [
+    ...gaps.missing.map((m) => `${file}: ${m.page}.${m.name} is missing`),
+    ...gaps.invalid.map((m) => `${file}: ${m.page}.${m.name} must be "bound" or "unbound: <reason>", got ${JSON.stringify(m.verdict)}`),
+    ...gaps.extra.map((m) => (m.name ? `${file}: ${m.page}.${m.group}.${m.name} is not in the surface` : `${file}: page "${m.page}" is not in the surface`)),
+  ];
   return { id, ok: messages.length === 0, messages };
 }
 
@@ -1750,6 +1733,49 @@ function bindAdapterCalibrationFindings(ctx) {
   ].join("\n\n");
 }
 
+// Where the adapter already committed for a target disagrees with the contract: the
+// members the contract declares that its `bindings.yaml` does not name, and the names it
+// carries that the contract no longer declares. Read from the working tree, which `sdlc run`
+// has already required to be clean on `main`, so it is the adapter and contract the workspace
+// is archived from. `null` where the target has no bindings file yet: a first binding is
+// asked for the whole surface already.
+function adapterContractGaps(projectDir, target) {
+  const full = join(projectDir, "tests", "adapters", target, "bindings.yaml");
+  if (!existsSync(full)) return null;
+  let doc;
+  try { doc = parseYaml(readText(full)) ?? {}; } catch { return null; }
+  const { surface, errors } = loadContract(projectDir);
+  if (errors.length) return null;
+  const { missing, extra } = bindingGaps(surface.pages, doc);
+  return missing.length || extra.length ? { missing, extra } : null;
+}
+
+// What a run is told when the contract has moved on from this target's adapter. The
+// post-check holds the adapter to the whole surface, so a run sent only to fix a few
+// findings would fail it on members nobody asked it to bind; naming them here makes the
+// work the run is asked for the work it is judged on. The existing bindings stand, so the
+// run adds to them rather than walking the target from the start.
+function bindAdapterContractGaps(ctx) {
+  const gaps = ctx.bindAdapterGaps;
+  if (!gaps) return null;
+  const noun = (group) => (group === "actions" ? "action" : "observation");
+  const lines = (list) => {
+    const byPage = new Map();
+    for (const m of list) {
+      if (!byPage.has(m.page)) byPage.set(m.page, []);
+      if (m.name) byPage.get(m.page).push(`${m.name} (${noun(m.group)})`);
+    }
+    return [...byPage].map(([page, names]) => `- ${page}: ${names.length ? names.join(", ") : "the whole page"}`).join("\n");
+  };
+  const file = `tests/adapters/${ctx.target}/bindings.yaml`;
+  const n = gaps.missing.length;
+  return [
+    `The bindings already there stand: the adapter at tests/adapters/${ctx.target}/ was bound against an earlier contract, and this run brings it up to the one in this workspace. Open it and add to it rather than walking the target from the start.`,
+    n ? `The contract declares ${n} ${n === 1 ? "action or observation" : "actions and observations"} that ${file} does not name. Bind each one in index.ts and name it in ${file}, or report it unbound with what you did to reach it:\n\n${lines(gaps.missing)}` : null,
+    gaps.extra.length ? `${file} names these, which the contract no longer declares. Remove them from ${file} and from index.ts:\n\n${lines(gaps.extra)}` : null,
+  ].filter(Boolean).join("\n\n");
+}
+
 const bindAdapter = {
   name: "bind-adapter",
   title: "bind adapter",
@@ -1819,6 +1845,7 @@ const bindAdapter = {
       `Your territory is tests/adapters/${t}/ alone. Never write under tests/acceptance or spec/ — this workspace does not even have them for you to touch by mistake.`,
       `Finish with your journal entry: what was bound, what was not and why, and any page whose route in surface.yaml did not resolve on the target.`,
       ctx.revise ? bindAdapterRevisionInstructions(ctx) : null,
+      bindAdapterContractGaps(ctx),
       bindAdapterCalibrationFindings(ctx),
     ].filter(Boolean).join("\n\n");
   },
@@ -1838,6 +1865,7 @@ const bindAdapter = {
     // it still needs the findings. `calibrate` clears them once it has run against an
     // adapter that changed since they were written.
     ctx.bindAdapterRebind = ctx.target ? readOwed(projectDir, "rebind").filter((e) => isOpen(e) && e.target === ctx.target) : [];
+    ctx.bindAdapterGaps = ctx.target ? adapterContractGaps(projectDir, ctx.target) : null;
     return [
       checkTargetOption("bind-adapter", ctx),
       checkSandboxPassword("bind-adapter", ctx, "binding against"),

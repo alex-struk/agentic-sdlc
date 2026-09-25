@@ -25,6 +25,7 @@ import { parseConfig } from "../config/load.mjs";
 import { nextOrder } from "../config/policy.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
 import { openAcross } from "../spec/owed.mjs";
+import { bindingGaps } from "../spec/surface.mjs";
 import { MISSING_TEST, openMissingTestsAt } from "../spec/missing-tests.mjs";
 import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, revisableStages } from "../stages/registry.mjs";
@@ -157,6 +158,17 @@ export function routeOf(name, config) {
   return null;
 }
 
+// Where a target's bindings on `rev` disagree with the contract on `rev`, by name, or `null`
+// where they agree or either is absent. An approved adapter named every member the contract
+// declared when it was ruled (the bind-adapter post-check), so a disagreement means the
+// contract has changed since: the adapter is out of date and owed a binding run.
+function contractGaps(surface, bindings) {
+  if (!bindings || !Array.isArray(surface?.pages)) return null;
+  const { missing, extra } = bindingGaps(surface.pages, bindings);
+  const name = (m) => (m.name ? `${m.page}.${m.name}` : m.page);
+  return missing.length || extra.length ? { missing: missing.map(name), extra: extra.map(name) } : null;
+}
+
 // Everything `next` reads, from `rev`.
 export function readRecord(projectDir, rev = "main") {
   if (!gitOk(["rev-parse", "--verify", "-q", `${rev}^{commit}`], projectDir)) {
@@ -174,10 +186,10 @@ export function readRecord(projectDir, rev = "main") {
   const targets = [...new Set([config.oracle?.target, ...Object.keys(config.targets ?? {})].filter(Boolean))];
 
   const wanted = [
-    at("spec/criteria-index.json"), at("plan/tasks.md"),
+    at("spec/criteria-index.json"), at("plan/tasks.md"), at("spec/contract/surface.yaml"),
     ...gateFiles.map((f) => at(`.sdlc/gates/${f}`)),
     ...domains.map((d) => at(`spec/domains/${d}.md`)),
-    ...targets.flatMap((t) => [at(`tests/results/${t}/latest.json`), at(`tests/results/${t}/applied.yaml`)]),
+    ...targets.flatMap((t) => [at(`tests/results/${t}/latest.json`), at(`tests/results/${t}/applied.yaml`), at(`tests/adapters/${t}/bindings.yaml`)]),
     ...proposalBranches.flatMap((b) => {
       const name = b.slice("proposal/".length);
       return [`${b}:.sdlc/gates/${name}.yaml`, `${b}:.sdlc/proposals/${name}.md`];
@@ -205,10 +217,12 @@ export function readRecord(projectDir, rev = "main") {
     const text = objects.get(at(`spec/domains/${d}.md`));
     return [d, text == null ? null : [...text.matchAll(/^### (\S+) · /gm)].map((m) => m[1])];
   }));
+  const surface = yamlOf(objects.get(at("spec/contract/surface.yaml")));
   const results = new Map(targets.map((t) => [t, {
     latest: jsonOf(objects.get(at(`tests/results/${t}/latest.json`))),
     applied: yamlOf(objects.get(at(`tests/results/${t}/applied.yaml`))),
     adapter: gitOk(["rev-parse", "-q", "--verify", at(`tests/adapters/${t}`)], projectDir) ? git(["rev-parse", at(`tests/adapters/${t}`)], projectDir) : "",
+    gaps: contractGaps(surface, yamlOf(objects.get(at(`tests/adapters/${t}/bindings.yaml`)))),
   }]));
   // Missing tests are read with the records nothing has written an entry for yet, which are
   // owed all the same (`src/spec/missing-tests.mjs`).
@@ -395,14 +409,15 @@ function proposalState(projectDir, record) {
 }
 
 // The open owed work as runnable items, grouped by the run that answers them.
-function owedWork(record, inFlight) {
+function owedWork(record, inFlight, bindsNow) {
   const byId = new Map((record.index?.criteria ?? []).map((c) => [c.id, c]));
   const groups = new Map();
-  const group = (stage, args, one, many) => {
-    const key = `${stage}\u0000${JSON.stringify(args)}`;
+  const groupKey = (stage, args) => `${stage}\u0000${JSON.stringify(args)}`;
+  const group = (stage, args, one, many, n = 1) => {
+    const key = groupKey(stage, args);
     if (!groups.has(key)) groups.set(key, { stage, args, parts: new Map() });
     const parts = groups.get(key).parts;
-    parts.set(one, { many, n: (parts.get(one)?.n ?? 0) + 1 });
+    parts.set(one, { many, n: (parts.get(one)?.n ?? 0) + n });
   };
   const summary = new Map();
   const unanswered = new Map();
@@ -445,6 +460,23 @@ function owedWork(record, inFlight) {
       group(e.stage, s && e[s] !== undefined ? { [s]: e[s] } : {}, `${e.kind} item`, `${e.kind} items`);
     }
   }
+  // An adapter the contract has outgrown is bound again by the run that answers its target's
+  // rebinds, so the two are one item. A target is offered when it is bound now (`bindsNow`)
+  // or already has a run for its rebinds; otherwise it is listed and waits.
+  const staleAdapters = [];
+  for (const t of byOracleFirst(record, [...record.results.keys()])) {
+    const gaps = record.results.get(t)?.gaps;
+    if (!gaps) continue;
+    const args = { target: t };
+    const flying = inFlight.has(subjectKey("bind-adapter", args));
+    const offered = !flying && (bindsNow(t) || groups.has(groupKey("bind-adapter", args)));
+    if (offered) {
+      if (gaps.missing.length) group("bind-adapter", args, "contract member the adapter does not name", "contract members the adapter does not name", gaps.missing.length);
+      if (gaps.extra.length) group("bind-adapter", args, "name the contract no longer declares", "names the contract no longer declares", gaps.extra.length);
+    }
+    staleAdapters.push({ target: t, missing: gaps.missing, extra: gaps.extra, offered,
+      waits: offered ? null : flying ? "a binding proposal is open" : `bound in phase ${BUILD.number} ${BUILD.name}` });
+  }
   const stale = new Map();
   for (const h of record.headers) {
     const c = byId.get(h.id);
@@ -470,14 +502,25 @@ function owedWork(record, inFlight) {
     return { on: "a ruler", kind: MISSING_TEST, count: w.n, name: `missing tests (${w.stage})`, gate: null, why,
       command: `condition-withdrawn missing-test/<id>: <why> on any ruling${rerun} (sdlc checks lists each)` };
   });
-  return { items, waiting, summary: [...summary.values()], stale: [...stale].map(([domain, ids]) => ({ domain, ids })) };
+  return { items, waiting, summary: [...summary.values()], stale: [...stale].map(([domain, ids]) => ({ domain, ids })), staleAdapters };
+}
+
+// Targets in the order their work is taken: the oracle's first, since calibration measures
+// the suite against it before anything is built, then the rest by name.
+function compareTargets(record, a, b) {
+  const rank = (t) => (t === record.config?.oracle?.target ? 0 : 1);
+  return rank(a) - rank(b) || String(a ?? "").localeCompare(String(b ?? ""));
+}
+
+function byOracleFirst(record, targets) {
+  return [...targets].sort((a, b) => compareTargets(record, a, b));
 }
 
 function ordered(items, record) {
   const domainRank = (d) => { const i = record.domains.indexOf(d); return i === -1 ? record.domains.length : i; };
   return [...items].sort((a, b) => stageRank(a.stage) - stageRank(b.stage)
     || domainRank(a.args?.domain) - domainRank(b.args?.domain)
-    || String(a.args?.target ?? "").localeCompare(String(b.args?.target ?? ""))
+    || compareTargets(record, a.args?.target, b.args?.target)
     || (a.args?.slice ?? 0) - (b.args?.slice ?? 0));
 }
 
@@ -487,18 +530,29 @@ const WITHIN = {
   sequence: "the first phase whose exit criterion is not met, in the sequence's order",
 };
 
+const BUILD = PHASES.find((p) => p.name === "Build");
+
+// Whether a target's adapter is bound now. The oracle's is bound in the Tests phase, where
+// calibration measures the suite against it; any other target's application exists only
+// on a build proposal until it merges, so its adapter is bound in the Build phase.
+function bindsNowFor(record, phaseNumber) {
+  const has = new Set(stagesFor(record.config.profile));
+  const oracle = has.has("calibrate") ? record.config.oracle?.target : null;
+  return (t) => has.has("bind-adapter") && (t === oracle || phaseNumber === null || phaseNumber >= BUILD.number);
+}
+
 // What runs next, and why, from the record on `rev`.
 export function whatNext(projectDir, { rev = "main" } = {}) {
   const record = readRecord(projectDir, rev);
   const order = nextOrder(record.config);
   const props = proposalState(projectDir, record);
-  const owed = owedWork(record, props.inFlight);
 
   const steps = sequenceSteps(record);
   const byKey = new Map(steps.map((s) => [s.key, s]));
   const open = steps.filter((s) => !s.done);
   const phaseNumber = open.length ? open[0].phase : null;
   const phase = phaseNumber ? PHASES.find((p) => p.number === phaseNumber) : null;
+  const owed = owedWork(record, props.inFlight, bindsNowFor(record, phaseNumber));
   const sequence = [];
   let blocked = null;
   for (const s of open.filter((x) => x.phase === phaseNumber)) {
@@ -526,6 +580,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     waiting,
     owed: owed.summary,
     stale: owed.stale,
+    staleAdapters: owed.staleAdapters,
     phase: phase ? { ...phase } : null,
     complete: open.length === 0,
     blocked,
@@ -568,6 +623,9 @@ export function formatNext(r) {
   const owed = r.owed.filter((o) => o.count);
   lines.push(`owed: ${owed.length ? owed.map((o) => `${o.count} ${o.kind} (${o.stage})`).join(", ") : "nothing open"}`);
   lines.push(`stale tests: ${r.stale.length ? r.stale.map((s) => `${s.ids.length} in ${s.domain}`).join(", ") : "none"}`);
+  if (r.staleAdapters?.length) {
+    lines.push(`stale adapters: ${r.staleAdapters.map((a) => `${plural(a.missing.length + a.extra.length, "member")} in ${a.target}${a.waits ? ` (${a.waits})` : ""}`).join(", ")}`);
+  }
   return lines.join("\n");
 }
 

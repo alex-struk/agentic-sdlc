@@ -875,6 +875,41 @@ test("sdlc run bind-adapter --target old --dry-run: names the mcp server, the en
     assert.match(printed, /^mcp: playwright$/m);
     assert.match(printed, /^env: SDLC_TARGET_URL, SDLC_MAIL_API, SDLC_SANDBOX_PASSWORD$/m);
     assert.ok(printed.includes("http://localhost:3100"), printed);
+    assert.doesNotMatch(printed, /does not name/, "a first binding has no bindings file to be out of date");
+  } finally {
+    console.log = origLog;
+    delete process.env.SDLC_ORACLE;
+    restoreEgress(prevEgress);
+  }
+});
+
+// An adapter on main that the contract has since outgrown is rebound by a run asked to bind
+// exactly what the post-check will demand: every member the contract declares that the
+// bindings file does not name, and every name it carries that the contract no longer declares.
+test("sdlc run bind-adapter --target old --dry-run: an adapter the contract has outgrown is asked for the members it does not bind", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-stale-"));
+  const { dir, prevEgress } = await makeReadyForBindAdapter(tmp);
+  writeOldOracleLocal(dir);
+  mkdirSync(join(dir, "tests", "adapters", "old"), { recursive: true });
+  writeFileSync(join(dir, "tests", "adapters", "old", "index.ts"), "export default 1;\n");
+  writeFileSync(join(dir, "tests", "adapters", "old", "bindings.yaml"),
+    "target: old\npages:\n  applications-new:\n    actions: { submit: bound, submit_proposal: bound }\n    observations: { status: bound }\n"
+    + "  fees-quote:\n    actions: { calculate: bound, refund: bound }\n    observations: {}\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "an adapter bound before the contract changed (test)"], dir);
+  process.env.SDLC_ORACLE = "mock";
+  const logs = [];
+  const origLog = console.log;
+  try {
+    console.log = (...a) => logs.push(a.join(" "));
+    const r = await runStage(dir, "bind-adapter", { target: "old", dryRun: true });
+    console.log = origLog;
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    const printed = logs.join("\n");
+    assert.match(printed, /The contract declares 1 action or observation that tests\/adapters\/old\/bindings\.yaml does not name/);
+    assert.match(printed, /^- fees-quote: amount \(observation\)$/m);
+    assert.match(printed, /^- fees-quote: refund \(action\)$/m);
+    assert.match(printed, /The bindings already there stand/);
   } finally {
     console.log = origLog;
     delete process.env.SDLC_ORACLE;

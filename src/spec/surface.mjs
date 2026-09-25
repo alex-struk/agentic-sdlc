@@ -123,6 +123,38 @@ export function loadContract(dir) {
   return { surface, personas, observables, manifest, errors };
 }
 
+// How an adapter's `bindings.yaml` disagrees with the surface: each member a page declares
+// that the file does not name (`missing`), each name the file carries that the surface does
+// not declare, a whole page or one member (`extra`), and each verdict that is neither
+// `bound` nor `unbound: <reason>` (`invalid`). Names are compared as `surface.yaml` spells
+// them. It is the bind-adapter post-check, and read against `main` it is also whether an
+// approved adapter is out of date with the contract: an adapter the post-check accepted
+// disagrees later only because the contract changed under it.
+export function bindingGaps(pages, doc) {
+  const gaps = { missing: [], extra: [], invalid: [] };
+  const isMap = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+  const isVerdict = (v) => v === "bound" || (typeof v === "string" && v.startsWith("unbound:"));
+  const named = isMap(doc?.pages) ? doc.pages : {};
+  const declared = new Set();
+  for (const page of pages ?? []) {
+    declared.add(page.id);
+    const entry = isMap(named[page.id]) ? named[page.id] : {};
+    for (const group of ["actions", "observations"]) {
+      const members = Object.keys(isMap(page[group]) ? page[group] : {});
+      const bound = isMap(entry[group]) ? entry[group] : {};
+      for (const name of members) {
+        if (bound[name] === undefined) gaps.missing.push({ page: page.id, group, name });
+        else if (!isVerdict(bound[name])) gaps.invalid.push({ page: page.id, group, name, verdict: bound[name] });
+      }
+      for (const name of Object.keys(bound)) {
+        if (!members.includes(name)) gaps.extra.push({ page: page.id, group, name });
+      }
+    }
+  }
+  for (const pageId of Object.keys(named)) if (!declared.has(pageId)) gaps.extra.push({ page: pageId });
+  return gaps;
+}
+
 // kebab-case or snake_case -> camelCase ("opportunity-cwu-view" -> "opportunityCwuView").
 // `applications-new` -> `applicationsNew`, `submit_proposal` -> `submitProposal`. Only the
 // very first character is lowercased: a surface name already written in camel case
