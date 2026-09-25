@@ -5,7 +5,7 @@ import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
 import { deliveredBy, stageForProposal } from "../stages/registry.mjs";
 import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, approvableConditionForms, conditionsAreExecutable, returnOnlyConditionForms } from "../spec/criteria.mjs";
-import { openConditionsOnMain } from "../spec/conditions.mjs";
+import { openOn } from "../spec/owed.mjs";
 import { stackBulk } from "../lib/stack.mjs";
 import { configSection, rulingConfig } from "./ruling-config.mjs";
 import { runChecks } from "../checks/index.mjs";
@@ -404,7 +404,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
       "The writer can fix reported TypeScript errors; the runner owns executing the check.",
       "",
     ] : []),
-    ...accountingNote(openConditionsOnMain(projectDir)),
+    ...accountingNote(openOn(projectDir, "condition")),
     ...conditionFormsNote(name, gate),
     ...deliverabilityNote(name),
     `Finish with one fenced \`\`\`json block: {"verdict": "approve"|"return"|"escalate", "rationale": "...", "conditions": [...]}. Nothing after the block.`,

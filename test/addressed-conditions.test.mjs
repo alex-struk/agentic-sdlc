@@ -19,7 +19,16 @@ import { rule, ruleByAgent } from "../src/commands/rule.mjs";
 import { stageFor, revisableStages } from "../src/stages/registry.mjs";
 import { loadConfig } from "../src/config/load.mjs";
 import { addressedConditions, malformedAddressedConditions, splitConditionsByAddressee } from "../src/spec/criteria.mjs";
-import { addRevisionRequests, readRevisionRequests, settleRevisionRound } from "../src/spec/revisions.mjs";
+import { open as openOwed, openFor, settle } from "../src/spec/owed.mjs";
+
+// The request list as the file stores it, entry for entry.
+const readRevisionRequests = (d) => {
+  const p = join(d, ".sdlc", "revision-requests.yaml");
+  return existsSync(p) ? parseYaml(readFileSync(p, "utf8"))?.requests ?? [] : [];
+};
+const addRevisionRequests = (d, entries) => openOwed(d, "request", entries).path;
+const settleRevisionRound = (d, { taken }) => settle(d, "request", { close: taken });
+const openRevisionRequestsFor = (d, stage) => openFor(d, stage, { kinds: ["request"] });
 import { finishStage } from "../src/runner/finish-stage.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
@@ -440,7 +449,6 @@ test("a line in this form at a gate with a closed grammar is left to that gramma
 import { mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { requestedRevision, returnedRulingOn, settleRequestedRevision } from "../src/stages/proposals.mjs";
-import { openRevisionRequestsFor } from "../src/spec/revisions.mjs";
 
 const OVERREACH = "test-overreaches R-1.3: the test signs in as a reviewer and reads an audit log the criterion never names";
 

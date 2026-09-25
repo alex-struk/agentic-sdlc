@@ -17,10 +17,8 @@ import { runCatalogueScan } from "../runner/catalogue.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
-import { readRebindFor } from "../spec/rebind.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { RECOVERY_PATH, addRecovery, answerRecoveries, entriesIn, keyOf, outstandingRecoveries, readRecovery, readRecoveryFor, recoveryRequestCount, unexpectedLedgerChange } from "../spec/recovery.mjs";
-import { dropTestWrongRulings, readRedo, removeRedo } from "../spec/redo.mjs";
+import { close as closeOwed, identityOf, isOpen, open as openOwed, read as readOwed, readAt, rewrite, sends, unexpectedChange } from "../spec/owed.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
 import { checkTests, coverage, readNotTestable } from "../checks/tests.mjs";
@@ -33,7 +31,7 @@ import { propose } from "../commands/propose.mjs";
 import { escalateOnBranch } from "../runner/escalation.mjs";
 import { ratifyFollowUps } from "../config/policy.mjs";
 import { SKILLS_DIR, checkSandboxPassword, checkTargetOption, escapeRe, followUpState, projectSkillPath, skillPath } from "./shared.mjs";
-import { calibrate } from "./calibrate.mjs";
+import { calibrate, dropTestWrongRulings } from "./calibrate.mjs";
 // Naming and revision-source helpers a stage module needs too (`build.mjs` in
 // particular): kept in their own module rather than defined here, so a stage can import
 // them without importing the registry itself, which imports every stage and would make
@@ -347,14 +345,14 @@ function checkArchaeologyRevisionScope(projectDir, ctx) {
 
 // The re-recovery requests a domain is carrying right now: every `spec/recovery.yaml`
 // entry for it whose criterion is still, field for field, the one the ratification ruling
-// sent back (`outstandingRecoveries`, `src/spec/recovery.mjs`). A domain with no file yet
+// sent back (`outstandingRecoveries`, below). A domain with no file yet
 // carries none, which is the ordinary case for a first recovery.
 function outstandingFor(projectDir, domain) {
   if (!projectDir || !domain) return [];
   const file = join(projectDir, "spec", "domains", `${domain}.md`);
   if (!existsSync(file)) return [];
   const { criteria } = parseDomainFile(readText(file), domain);
-  return outstandingRecoveries(readRecoveryFor(projectDir, domain), criteria);
+  return outstandingRecoveries(recoveriesFor(projectDir, domain), criteria);
 }
 
 // What an `archaeology` run is told about the criteria it is being asked to recover a
@@ -379,8 +377,7 @@ function recoveryPromptBlock(ctx) {
 // A project with no ledger, or a domain file `HEAD` does not have yet, is owed nothing.
 function recoveryAtHead(projectDir, domain) {
   if (!domain) return { ledger: [], outstanding: [], byId: new Map() };
-  let ledger = [];
-  try { ledger = entriesIn(git(["show", `HEAD:${RECOVERY_PATH}`], projectDir)); } catch { ledger = []; }
+  const ledger = readAt(projectDir, "recovery", "HEAD");
   let criteria = [];
   try { ({ criteria } = parseDomainFile(git(["show", `HEAD:spec/domains/${domain}.md`], projectDir), domain)); } catch { criteria = []; }
   return {
@@ -417,13 +414,13 @@ function criteriaNow(projectDir, domain) {
 // rather than by asking whether it changed at all, because the runner's own stamp lands in
 // this same working tree before the run commits and these checks can run over it again —
 // after a repair turn, or when `sdlc resume` picks up a run that died between the stamp and
-// the commit. `unexpectedLedgerChange` allows that one shape of change and nothing else.
+// the commit. `unexpectedChange` (`src/spec/owed.mjs`) allows that one shape of change and nothing else.
 function checkArchaeologyRecovery(projectDir, ctx) {
   const id = "archaeology-recovery";
   if (!ctx.domain) return { id, ok: true, messages: [] };
   const messages = [];
   const { ledger, outstanding, byId } = recoveryAtHead(projectDir, ctx.domain);
-  const wrote = unexpectedLedgerChange(ledger, readRecovery(projectDir), new Set(outstanding.map(keyOf)));
+  const wrote = unexpectedChange("recovery", ledger, readOwed(projectDir, "recovery"), new Set(outstanding.map(identityOf)));
   if (wrote) messages.push(wrote);
   const now = criteriaNow(projectDir, ctx.domain);
   const whysById = new Map();
@@ -452,6 +449,49 @@ function answerArchaeologyRecoveries(projectDir, domain) {
   const { outstanding } = recoveryAtHead(projectDir, domain);
   if (!outstanding.length) return;
   answerRecoveries(projectDir, domain, outstanding.map((e) => e.id), criteriaNow(projectDir, domain));
+}
+
+// Every re-recovery request filed for one domain, answered or not, in filing order: what an
+// `archaeology` run recovering that domain needs and all it needs, since a request about
+// another domain's criterion is another run's work.
+export function recoveriesFor(projectDir, domain) {
+  return readOwed(projectDir, "recovery").filter((e) => e.domain === domain);
+}
+
+// The requests still owed work, given the criteria as they stand: unanswered, and naming a
+// criterion that is still in the domain file. A criterion a recovery removed altogether is not
+// owed a re-recovery — there is no row to recover and nothing to ask the stage for — which is
+// the one way besides the stamp that a request stops being outstanding, and it is a fact about
+// the domain file rather than about any one field in it.
+export function outstandingRecoveries(entries, criteria) {
+  const ids = new Set(criteria.map((c) => c.id));
+  return entries.filter((e) => isOpen(e) && ids.has(e.id));
+}
+
+// Records, on every request for `domain` that `ids` names, that an archaeology run answered it
+// and at what version the criterion came back, or that the recovery removed the row. The
+// runner writes this, never the agent, and only for a run already judged to have recovered the
+// rows it was asked about. Returns the project-relative path when the file was written.
+//
+// The domain as well as the id: a run recovers one domain, and an id is only domain-scoped by
+// convention, which is not a thing to stake another domain's outstanding work on.
+//
+// An entry this run was owed is unanswered at `HEAD` by construction — that is what `ids` is
+// read from — so whatever it carries now was written during the run, and overwriting it is
+// always right. Skipping an already-answered entry here would let a session author its own
+// answer and keep it: the ledger is read by a person, and the version a criterion came back at
+// is not the agent's to assert. Written only where it differs, so a second call over a ledger
+// this run already stamped changes nothing.
+export function answerRecoveries(projectDir, domain, ids, criteriaById) {
+  const wanted = new Set(ids);
+  if (!wanted.size) return null;
+  return rewrite(projectDir, "recovery", (list) => list.map((e) => {
+    if (e.domain !== domain || !wanted.has(e.id)) return e;
+    const c = criteriaById.get(e.id);
+    const answered = c ? { version: c.version } : { removed: true };
+    if (JSON.stringify(e.answered ?? null) === JSON.stringify(answered)) return e;
+    return { ...e, answered, closed: { outcome: "met", why: c ? `recovered again at v${c.version}` : "the recovery removed the row" } };
+  }));
 }
 
 // `archaeology` recovers one business domain's behaviour from the old application,
@@ -855,7 +895,7 @@ function acceptedCriteria(projectDir, domain) {
 // accepted criteria is silently not this domain's business, the same way a stray id
 // elsewhere in the file is not an error here.
 function readRedoFor(projectDir, domain, byId) {
-  return readRedo(projectDir).filter((r) => byId.get(r?.id)?.domain === domain);
+  return readOwed(projectDir, "redo").filter((r) => isOpen(r) && byId.get(r.id)?.domain === domain);
 }
 
 // The criteria this run will actually write tests for: every accepted criterion of the
@@ -1219,7 +1259,10 @@ function checkDeriveTestsBlindHeader(projectDir, domain) {
 function clearDeriveTestsRedo(projectDir, ctx) {
   const derived = (ctx.deriveTestsCriteria ?? []).map((c) => c.id);
   if (!derived.length) return;
-  removeRedo(projectDir, derived);
+  const ids = new Set(derived);
+  closeOwed(projectDir, "redo", (e) => ids.has(e.id), {
+    outcome: "met", why: `derived again by a derive-tests run on ${ctx.domain}`, by: "runner:derive-tests",
+  });
   // The redo entry and the `test-wrong` ruling record that produced it are two halves of
   // the same answer, so both are retired together: leaving the record behind would mark
   // the freshly written test's next failure as already ruled on, and no new question
@@ -1747,7 +1790,7 @@ const bindAdapter = {
     // cleared by this stage: a proposal that is returned has fixed nothing, and a revise of
     // it still needs the findings. `calibrate` clears them once it has run against an
     // adapter that changed since they were written.
-    ctx.bindAdapterRebind = ctx.target ? readRebindFor(projectDir, ctx.target) : [];
+    ctx.bindAdapterRebind = ctx.target ? readOwed(projectDir, "rebind").filter((e) => isOpen(e) && e.target === ctx.target) : [];
     return [
       checkTargetOption("bind-adapter", ctx),
       checkSandboxPassword("bind-adapter", ctx, "binding against"),
@@ -2191,7 +2234,7 @@ const ratify = {
     // whether the request it names has already been filed and already answered, which is
     // the only thing that stops a ruling — read again on every pass, since a gate file is
     // never consumed — from undoing the recovery that answered it.
-    const recoveryEntries = readRecoveryFor(projectDir, domain);
+    const recoveryEntries = recoveriesFor(projectDir, domain);
 
     const { criteria: before, preamble } = parseDomainFile(originalText, domain, domainOrdinal);
     const { criteria: withConditions, applied, unknown } = applyConditions(before, conditions, recoveryEntries);
@@ -2257,11 +2300,11 @@ const ratify = {
     // Filed after minting rather than while the condition is applied, so each entry names
     // the id and version the criterion actually ends up with in the file. One entry per
     // reason: a ruling that names a criterion twice is two requests, each owed its own
-    // answer. `addRecovery` files nothing when the same criterion already carries the same
+    // answer. Opening one files nothing when the same criterion already carries the same
     // request, which is what makes replaying a ruling that already sent a row back a no-op
     // rather than a second request.
-    const recoveryPath = addRecovery(projectDir, minted.flatMap((c) =>
-      (c.recoveryRequests ?? []).map((why) => ({ id: c.id, domain, version: c.version, why }))));
+    const recoveryPath = openOwed(projectDir, "recovery", minted.flatMap((c) =>
+      (c.recoveryRequests ?? []).map((why) => ({ id: c.id, domain, version: c.version, why })))).path;
 
     // The preamble the file arrived with is written straight back: everything above the
     // first criterion block is a person's or an agent's own text, and nothing in this
@@ -2293,10 +2336,10 @@ const ratify = {
     }
 
     const accepted = minted.filter((c) => c.state === "accepted");
-    // Read back from the file `addRecovery` has just written, against the criteria as
+    // Read back from the file just written, against the criteria as
     // minted, so this is every request the domain is carrying — the ones filed on this
     // pass and any an earlier one filed that archaeology has not answered yet.
-    const entriesNow = readRecoveryFor(projectDir, domain);
+    const entriesNow = recoveriesFor(projectDir, domain);
     const awaitingRecovery = outstandingRecoveries(entriesNow, minted);
     const awaitingIds = new Set(awaitingRecovery.map((e) => e.id));
     const stillOpen = minted.filter((c) => c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete" && !awaitingIds.has(c.id));
@@ -2308,7 +2351,7 @@ const ratify = {
     if (awaitingRecovery.length) {
       lines.push(`Out for re-recovery — run \`sdlc run archaeology --domain ${domain}\` to recover these again:`);
       for (const e of awaitingRecovery) {
-        const n = recoveryRequestCount(entriesNow, e.id);
+        const n = sends(entriesNow, e.item);
         lines.push(`- ${e.id}${n > 1 ? ` (sent back ${n} times)` : ""} — ${e.why}`);
       }
     }
@@ -2374,7 +2417,7 @@ const ratify = {
     // waiting on `archaeology` reading the old application again, and asking about it on a
     // follow-up would ask for a ruling on evidence that is known to be wrong. The rest of
     // the domain closes out around it.
-    const awaiting = new Set(outstandingRecoveries(readRecoveryFor(projectDir, domain), criteria).map((e) => e.id));
+    const awaiting = new Set(outstandingRecoveries(recoveriesFor(projectDir, domain), criteria).map((e) => e.id));
     const unresolved = criteria.filter((c) => (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete" && !awaiting.has(c.id));
     const { answered, unparsed, read } = readRulings(projectDir, domain);
     if (unresolved.length === 0 && unparsed.length === 0) return null;

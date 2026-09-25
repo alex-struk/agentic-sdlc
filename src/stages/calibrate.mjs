@@ -13,8 +13,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
 import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR, TRIAGE_GRAMMAR, parseTriageConditions } from "../spec/criteria.mjs";
-import { addRedo } from "../spec/redo.mjs";
-import { addRebind, removeRebind } from "../spec/rebind.mjs";
+import { close as closeOwed, open as openOwed } from "../spec/owed.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp, instancesOf } from "../commands/oracle.mjs";
@@ -206,7 +205,7 @@ function applyCalibrateGates(projectDir, target, today) {
     }
   }
 
-  const redoPath = addRedo(projectDir, redo);
+  const redoPath = openOwed(projectDir, "redo", redo).path;
   if (redoPath) result.changed.push(redoPath);
 
 
@@ -300,7 +299,7 @@ export function applyTriageGates(projectDir, target) {
   if (result.gateNames.length === 0) return result;
   const rel = writeApplied(projectDir, target, [...state.applied, ...result.gateNames], [...state.rulings, ...result.applied]);
   if (rel) result.changed.push(rel);
-  const rebindPath = addRebind(projectDir, rebind);
+  const rebindPath = openOwed(projectDir, "rebind", rebind).path;
   if (rebindPath) result.changed.push(rebindPath);
   return result;
 }
@@ -310,7 +309,8 @@ export function applyTriageGates(projectDir, target) {
 // already landed — so a fix that did not work would never be noticed, because nothing would
 // ask about the row again. Dropped here, the row is a question again on this run: if it now
 // passes, nothing more happens, and if it still fails, the reviewer sees it afresh. Its entry
-// on the rebind list goes too, since a new adapter has been written since it was added.
+// on the rebind list is closed too, since a new adapter has been written since it was added;
+// a finding made again about the new adapter is a second send of the same binding.
 export function expireAdapterVerdicts(projectDir, target) {
   const state = readCalibrateApplied(projectDir, target);
   const tree = adapterTree(projectDir, target);
@@ -319,7 +319,10 @@ export function expireAdapterVerdicts(projectDir, target) {
   const changed = [];
   const rel = writeApplied(projectDir, target, state.applied, state.rulings.filter((r) => !lapsed.includes(r)));
   if (rel) changed.push(rel);
-  const rebindPath = removeRebind(projectDir, target, lapsed.map((r) => r.id));
+  const lapsedIds = new Set(lapsed.map((r) => r.id));
+  const rebindPath = closeOwed(projectDir, "rebind", (e) => e.target === target && lapsedIds.has(e.id), {
+    outcome: "met", why: `tests/adapters/${target} has changed since this was found`, by: "runner:calibrate",
+  });
   if (rebindPath) changed.push(rebindPath);
   return changed;
 }
@@ -755,3 +758,37 @@ export const calibrate = {
     return { name, gate: "G1", branch, failing: unruled.length };
   },
 };
+
+// The `test-wrong` ruling records naming any of `ids`, dropped from every target's
+// `tests/results/<target>/applied.yaml`. A `test-wrong` ruling says the criterion is right and
+// its test is not; the record of it is what marks that criterion's row as already ruled on, so
+// once `derive-tests` has written the test again the record has outlived its answer — left in
+// place, the freshly written test's next failure would come back marked `ruled` and the
+// product owner would never be asked about it.
+//
+// Only the per-id record in `rulings` is removed. The gate file stays named in `applied`, which
+// is what stops a ruling that has already been acted on from being applied to the spec a
+// second time.
+export function dropTestWrongRulings(projectDir, ids) {
+  const wanted = new Set(ids);
+  const resultsDir = join(projectDir, "tests", "results");
+  if (!wanted.size || !existsSync(resultsDir)) return [];
+  const changed = [];
+  for (const entry of readdirSync(resultsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const rel = `tests/results/${entry.name}/applied.yaml`;
+    const abs = join(projectDir, rel);
+    if (!existsSync(abs)) continue;
+    let doc;
+    try { doc = parseYaml(readText(abs)) ?? {}; } catch { continue; }
+    const rulings = Array.isArray(doc.rulings) ? doc.rulings : [];
+    // The reviewer's `product-question` sorting of the same criterion goes too: it was a
+    // verdict about the test that has just been replaced, and a test written again can fail
+    // for a reason the adapter owns, so it is sorted afresh rather than sent straight on.
+    const kept = rulings.filter((r) => !((r?.verb === "test-wrong" || r?.verb === "product-question") && wanted.has(r?.id)));
+    if (kept.length === rulings.length) continue;
+    writeText(abs, stringifyYaml({ ...doc, rulings: kept }));
+    changed.push(rel);
+  }
+  return changed;
+}

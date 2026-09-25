@@ -738,7 +738,7 @@ test("an escalated calibration ruling leaves the question open rather than count
   }
 });
 
-test("derive-tests --stale takes the ids it has just derived off redo.yaml", async () => {
+test("derive-tests --stale closes the redo entries it has just answered", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-redo-"));
   const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
   calibrateEnv(MOCK_DIR);
@@ -782,7 +782,8 @@ test("derive-tests --stale takes the ids it has just derived off redo.yaml", asy
     assert.equal(derived.ok, true, JSON.stringify(derived.messages));
 
     const after = parseYaml(git(["show", `${derived.proposal.branch}:tests/acceptance/redo.yaml`], dir));
-    assert.deepEqual(after.redo, [], "the request has been answered, so it is off the list");
+    assert.deepEqual(after.redo.filter((r) => !r.closed), [], "the request has been answered, so nothing is owed");
+    assert.deepEqual(after.redo.map((r) => [r.id, r.closed?.outcome]), [["R-1.3", "met"]], "and the entry stays on file with its closure");
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);
@@ -937,7 +938,7 @@ test("after derive-tests --stale answers a test-wrong ruling, the same failure o
     assert.deepEqual(applied.applied, ["calibrate-triage-old-1", "calibrate-old-1"]);
     // …but the per-criterion record is gone, so the row can be asked about again.
     assert.deepEqual(applied.rulings.filter((x) => x.id === "R-1.2"), []);
-    assert.deepEqual(parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8")).redo, []);
+    assert.deepEqual(parseYaml(readFileSync(join(dir, "tests/acceptance/redo.yaml"), "utf8")).redo.filter((e) => !e.closed), []);
 
     // The freshly written test still fails against the old target, and that is a new
     // question rather than one already answered. It is sorted afresh, not sent straight to
@@ -1054,7 +1055,7 @@ test("a failure the reviewer blames on the adapter never reaches the product own
     assert.deepEqual(rebind.map((e) => `${e.target} ${e.id}`), ["old R-1.2"]);
 
     // The binding is rewritten. A verdict about the old adapter says nothing about the new
-    // one, so the row is a question again and the rebind entry goes.
+    // one, so the row is a question again and the rebind entry is closed.
     const adapterPath = join(dir, "tests/adapters/old/index.ts");
     writeFileSync(adapterPath, `${readFileSync(adapterPath, "utf8")}\n// rebound\n`);
     git(["add", "-A"], dir);
@@ -1064,7 +1065,9 @@ test("a failure the reviewer blames on the adapter never reaches the product own
     assert.equal(again.ok, true, JSON.stringify(again.messages));
     assert.equal(rowFor(latest(dir), "R-1.2").ruled, undefined, "the verdict lapsed with the adapter it was about");
     assert.equal(again.proposal?.name, "calibrate-triage-old-2", "the same failure is sorted afresh");
-    assert.deepEqual(parseYaml(readFileSync(join(dir, "tests/adapters/rebind.yaml"), "utf8")).rebind, []);
+    const closed = parseYaml(readFileSync(join(dir, "tests/adapters/rebind.yaml"), "utf8")).rebind;
+    assert.deepEqual(closed.filter((e) => !e.closed), []);
+    assert.match(closed[0].closed.why, /tests\/adapters\/old has changed/);
   } finally {
     clearCalibrateEnv();
     restoreEgress(prevEgress);

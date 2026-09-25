@@ -129,7 +129,22 @@ const KINDS = {
     },
     identity: (e) => `${e.id}\n${e.why}`,
     dedupe: "all",
+    words: {
+      purpose: "it records what was sent back for re-recovery",
+      closure: "an answer",
+      closed: "answered",
+      once: "a request is answered once",
+      ask: "recover",
+    },
   },
+};
+
+const WORDS = {
+  purpose: "it records what is owed",
+  closure: "a closure",
+  closed: "closed",
+  once: "an entry is closed once",
+  ask: "answer",
 };
 
 // Every kind the engine has no file for shares one, in the entry shape itself.
@@ -197,6 +212,19 @@ export function read(projectDir, kind, opts) {
 export function readAt(projectDir, kind, rev = "main", opts) {
   try { return entriesIn(kind, git(["show", `${rev}:${def(kind).path}`], projectDir), opts); }
   catch { return []; }
+}
+
+// The open entries of a kind as a commit holds them — `main` unless told otherwise.
+export function openOn(projectDir, kind, rev = "main", opts) {
+  return readAt(projectDir, kind, rev, opts).filter(isOpen);
+}
+
+// How a ruler names one condition to a later ruling: the proposal it was written on and its
+// position in that ruling's own list, one-based, the way the list is printed everywhere. A
+// reference rather than the condition's text, because a condition is a sentence and asking a
+// turn to quote a sentence back byte for byte is asking it to fail.
+export function conditionRef(proposal, index) {
+  return `${proposal}#${index + 1}`;
 }
 
 export function isOpen(entry) {
@@ -358,4 +386,38 @@ export function sends(entries, item) {
     rounds.add(d.round ? d.round(e) : `#${i}`);
   });
   return rounds.size;
+}
+
+// What makes two entries of one kind the same entry.
+export function identityOf(entry) {
+  return def(entry?.kind).identity(entry);
+}
+
+// What a run did to a kind's list, judged against the list it started from — `null` when the
+// only change is the closure the runner writes on its way out, and a reason otherwise.
+//
+// A stage whose runner closes entries in the working tree before the run's own commit can have
+// its post-checks run twice over that tree (a repair turn, or `sdlc resume` picking up a run
+// that died between the write and the commit), so "this file changed" cannot be the test: it
+// would report the runner's own write as the session's. What is allowed is exactly one shape
+// of change — a closure appearing on an entry this run was owed, `owed` naming those by
+// identity — and anything else is a session writing a record that is not its to write.
+export function unexpectedChange(kind, before, after, owed) {
+  const d = def(kind);
+  const w = d.words ?? WORDS;
+  const stored = (v) => JSON.stringify(d.store(v));
+  const bare = (v) => JSON.stringify(d.store({ ...v, closed: null }));
+  if (before.length !== after.length)
+    return `${d.path} gained or lost entries; ${w.purpose} and is not a run's to write`;
+  for (const [i, was] of before.entries()) {
+    const is = after[i];
+    if (bare(was) !== bare(is))
+      return `${d.path} entry ${i + 1} was rewritten; ${w.purpose} and is not a run's to write`;
+    if (stored(was) === stored(is)) continue;
+    if (!isOpen(was))
+      return `${d.path} changes ${w.closure} already recorded for ${was.item}; ${w.once}`;
+    if (!owed.has(d.identity(is)))
+      return `${d.path} marks ${is.item} ${w.closed}, which this run was not asked to ${w.ask}`;
+  }
+  return null;
 }

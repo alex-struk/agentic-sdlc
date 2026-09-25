@@ -5,7 +5,11 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { addRebind, readRebind, readRebindFor, removeRebind, REBIND_PATH } from "../src/spec/rebind.mjs";
+import { close, isOpen, open, owedPath, read } from "../src/spec/owed.mjs";
+
+const REBIND_PATH = owedPath("rebind");
+const addRebind = (dir, entries) => open(dir, "rebind", entries).path;
+const openRebindFor = (dir, target) => read(dir, "rebind").filter((e) => isOpen(e) && e.target === target);
 import { CALIBRATE_GRAMMAR, TRIAGE_GRAMMAR, calibrateConditionParses, triageConditionParses } from "../src/spec/criteria.mjs";
 import { conditionGrammarFor, rulingTurns } from "../src/commands/rule.mjs";
 import { applyTriageGates, expireAdapterVerdicts } from "../src/stages/calibrate.mjs";
@@ -50,19 +54,20 @@ test("a finding is kept per target, and the first reason for a pair is the one k
   assert.equal(addRebind(dir, [{ id: "R-1.1", target: "old", why: "first" }]), REBIND_PATH);
   addRebind(dir, [{ id: "R-1.1", target: "old", why: "second" }]);
   addRebind(dir, [{ id: "R-1.1", target: "new", why: "a different adapter" }]);
-  assert.deepEqual(readRebind(dir).map((e) => [e.target, e.why]), [["old", "first"], ["new", "a different adapter"]]);
-  assert.deepEqual(readRebindFor(dir, "new").map((e) => e.why), ["a different adapter"]);
+  assert.deepEqual(read(dir, "rebind").map((e) => [e.target, e.why]), [["old", "first"], ["new", "a different adapter"]]);
+  assert.deepEqual(openRebindFor(dir, "new").map((e) => e.why), ["a different adapter"]);
 });
 
-test("removing findings for one target leaves the others", (t) => {
+test("closing findings for one target leaves the others open, and keeps the closed ones on file", (t) => {
   const dir = project(t);
   addRebind(dir, [
     { id: "R-1.1", target: "old", why: "x" },
     { id: "R-1.2", target: "old", why: "y" },
     { id: "R-1.1", target: "new", why: "z" },
   ]);
-  removeRebind(dir, "old", ["R-1.1"]);
-  assert.deepEqual(readRebind(dir).map((e) => `${e.target} ${e.id}`), ["old R-1.2", "new R-1.1"]);
+  close(dir, "rebind", (e) => e.target === "old" && e.id === "R-1.1", { outcome: "met", why: "tests/adapters/old has changed since this was found" });
+  assert.deepEqual(read(dir, "rebind").filter(isOpen).map((e) => `${e.target} ${e.id}`), ["old R-1.2", "new R-1.1"]);
+  assert.equal(read(dir, "rebind").length, 3);
   assert.ok(Array.isArray(parseYaml(readFileSync(join(dir, REBIND_PATH), "utf8")).rebind));
 });
 
@@ -115,7 +120,7 @@ test("applying a triage ruling lists the adapter's failures for rebinding and to
   const before = readFileSync(join(dir, "spec", "criteria-index.json"), "utf8");
   const r = applyTriageGates(dir, "old");
   assert.deepEqual(r.gateNames, ["calibrate-triage-old-1"]);
-  assert.deepEqual(readRebindFor(dir, "old").map((e) => [e.id, e.why]), [["R-1.1", "reads the browser tab title, not the page heading"]]);
+  assert.deepEqual(openRebindFor(dir, "old").map((e) => [e.id, e.why]), [["R-1.1", "reads the browser tab title, not the page heading"]]);
   const applied = parseYaml(readFileSync(join(dir, "tests", "results", "old", "applied.yaml"), "utf8"));
   assert.deepEqual(applied.rulings.map((x) => `${x.id} ${x.verb}`), ["R-1.1 adapter-wrong", "R-1.2 product-question"]);
   assert.ok(applied.rulings.find((x) => x.verb === "adapter-wrong").adapter, "an adapter verdict records which adapter it was about");
@@ -137,6 +142,6 @@ test("an adapter verdict lapses once the adapter changes, and a passed-on failur
   assert.ok(changed.length > 0);
   const applied = parseYaml(readFileSync(join(dir, "tests", "results", "old", "applied.yaml"), "utf8"));
   assert.deepEqual(applied.rulings.map((x) => `${x.id} ${x.verb}`), ["R-1.2 product-question"]);
-  assert.deepEqual(readRebindFor(dir, "old"), []);
+  assert.deepEqual(openRebindFor(dir, "old"), []);
   assert.ok(existsSync(join(dir, REBIND_PATH)));
 });

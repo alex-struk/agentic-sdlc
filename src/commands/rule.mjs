@@ -13,9 +13,8 @@ import { writeJournal } from "../runner/journal.mjs";
 import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { CONDITIONS_PATH, addConditions, closeCondition, conditionRef, openConditionsOnMain } from "../spec/conditions.mjs";
-import { REDO_PATH, addRedo, overreachRedoEntries, readRedo } from "../spec/redo.mjs";
-import { REVISION_REQUESTS_PATH, addRevisionRequests, readRevisionRequests } from "../spec/revisions.mjs";
+import { close as closeOwed, conditionRef, open as openOwed, openOn, owedPath } from "../spec/owed.mjs";
+import { loadIndex } from "../checks/tests.mjs";
 import { proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { heldByFor } from "../lib/seat.mjs";
@@ -311,7 +310,7 @@ export function assertDeliverableRulable(name, verdict, conditions) {
 export function assertAccountedRulable(projectDir, name, verdict, conditions) {
   const bad = malformedAccountedConditions(conditions);
   if (bad.length) throw new Error(withRulingPreserved(`rule ${name}: ${accountedGuidance(bad[0])}`, verdict, conditions));
-  const open = openConditionsOnMain(projectDir);
+  const open = openOn(projectDir, "condition");
   const refs = new Set(open.map((c) => c.ref));
   const unknown = accountedConditions(conditions).find((a) => !refs.has(a.ref));
   if (unknown) throw new Error(withRulingPreserved(`rule ${name}: ${unknownRefGuidance(unknown.ref, open)}`, verdict, conditions));
@@ -348,7 +347,7 @@ function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
   // A reference to a condition nothing has open is the same kind of slip: the persona was
   // shown the open list and wrote a name that is not on it, which a rewrite fixes and a
   // refusal only throws a ruling away over.
-  const open = openConditionsOnMain(projectDir);
+  const open = openOn(projectDir, "condition");
   const refs = new Set(open.map((c) => c.ref));
   const unknown = accountedConditions(conditions).find((a) => !refs.has(a.ref));
   if (unknown) return { kind: "unknown-ref", ref: unknown.ref, open };
@@ -482,18 +481,44 @@ function fileAddressedRequests(projectDir, { name, gate, by, conditions }) {
       if (!revisable.has(a.stage)) { unroutable.push(a.stage); continue; }
       entries.push({ stage: a.stage, why: a.text, from: name, gate, by, at });
     }
-    const before = readRevisionRequests(projectDir);
-    const addressed = entries
-      .filter((e) => !before.some((r) => r?.stage === e.stage && r?.from === e.from && r?.why === e.why))
-      .map((e) => e.stage);
-    if (addRevisionRequests(projectDir, entries)) {
-      stagePaths(projectDir, [REVISION_REQUESTS_PATH]);
+    const { path, added } = openOwed(projectDir, "request", entries);
+    const addressed = added.map((e) => e.stage);
+    if (path) {
+      stagePaths(projectDir, [path]);
       git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} asks ${addressed.join(", ")} to revise`], projectDir);
     }
     return { addressed, unroutable };
   } finally {
     if (branch !== "main") git(["checkout", "-q", branch], projectDir);
   }
+}
+
+// The redo entries a ruling's `test-overreaches` conditions ask for, built against the
+// contract the project actually holds. The version is the one the criterion carries now, the
+// same version `test-wrong` records, so the writer and the person reading the list afterwards
+// both know which statement the test was judged to have reached past.
+//
+// `verb` is on these entries and not on a `test-wrong` one, and the difference is the point
+// rather than an inconsistency: both ask for the same test to be written again, and they say
+// different things about why. `test-wrong` says the test got the criterion wrong; this says
+// the test asked for more than the criterion, which is an instruction about what the
+// replacement must *not* do. `derive-tests` words the two differently, and an entry with no
+// verb on it is the unmarked kind.
+//
+// An id the contract does not hold is not filed at all and comes back in `unfiled`: a request
+// naming a criterion nothing can derive would sit on the list for ever, since only a run that
+// derives that id ever closes it.
+export function overreachRedoEntries(projectDir, conditions) {
+  const index = loadIndex(projectDir);
+  const byId = new Map(((index && !index.parseError ? index.criteria : null) ?? []).map((c) => [c.id, c]));
+  const entries = [];
+  const unfiled = [];
+  for (const { id, text } of overreachConditions(conditions)) {
+    const c = byId.get(id);
+    if (!c) { unfiled.push(id); continue; }
+    entries.push({ id, version: c.version, why: text, verb: OVERREACH_VERB });
+  }
+  return { entries, unfiled };
 }
 
 // Files the criteria a ruling's `test-overreaches` conditions name onto
@@ -515,10 +540,10 @@ function fileOverreachRequests(projectDir, { name, gate, conditions }) {
   if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
   try {
     const { entries, unfiled } = overreachRedoEntries(projectDir, conditions);
-    const already = new Set(readRedo(projectDir).map((r) => r?.id));
-    const filed = entries.filter((e) => !already.has(e.id)).map((e) => e.id);
-    if (addRedo(projectDir, entries)) {
-      stagePaths(projectDir, [REDO_PATH]);
+    const { path, added } = openOwed(projectDir, "redo", entries);
+    const filed = added.map((e) => e.id);
+    if (path) {
+      stagePaths(projectDir, [path]);
       git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} sends ${filed.join(", ")} back to derive-tests`], projectDir);
     }
     return { filed, unfiled };
@@ -557,15 +582,15 @@ function recordConditions(projectDir, { name, gate, by, verdict, conditions, exe
   const branch = currentBranch(projectDir);
   if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
   try {
-    const opened = addConditions(projectDir, owed) ? owed.map((o) => o.ref) : [];
+    const opened = openOwed(projectDir, "condition", owed).path ? owed.map((o) => o.ref) : [];
     const closed = [];
     for (const a of accounted) {
-      if (closeCondition(projectDir, a.ref, { outcome: a.outcome, why: a.text, by })) closed.push({ ref: a.ref, outcome: a.outcome });
+      if (closeOwed(projectDir, "condition", (c) => c.ref === a.ref, { outcome: a.outcome, why: a.text, by })) closed.push({ ref: a.ref, outcome: a.outcome });
     }
     if (opened.length || closed.length) {
       const said = [opened.length ? `owes ${opened.join(", ")}` : "", closed.length ? `closes ${closed.map((c) => `${c.ref} ${c.outcome}`).join(", ")}` : ""]
         .filter(Boolean).join("; ");
-      stagePaths(projectDir, [CONDITIONS_PATH]);
+      stagePaths(projectDir, [owedPath("condition")]);
       git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${said}`], projectDir);
     }
     return { opened, closed };

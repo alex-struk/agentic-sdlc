@@ -14,8 +14,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM } from "../spec/criteria.mjs";
-import { openConditions } from "../spec/conditions.mjs";
-import { readRevisionRequests } from "../spec/revisions.mjs";
+import { isOpen, read } from "../spec/owed.mjs";
 import { proposalFamily, stageForProposal } from "../stages/registry.mjs";
 
 // Every approval recorded in this project, as `{ name, family, at }`. Only an approval's
@@ -70,7 +69,7 @@ export function checkConditions(projectDir) {
   const messages = [];
   const warnings = [];
 
-  for (const c of openConditions(projectDir)) {
+  for (const c of read(projectDir, "condition").filter(isOpen)) {
     const where = `ruled at ${c.gate ?? "?"} on ${c.from ?? "?"} by ${c.by ?? "?"}`;
     const line = `${c.ref}: "${quote(c.text)}" — asked of ${c.stage ?? "?"}, ${where}`;
     const overtaken = approvedSince(all, c.family ?? proposalFamily(c.from), c.at);
@@ -91,8 +90,7 @@ export function checkConditions(projectDir) {
   // to clear a revision request is to take it up: there is no ruling that withdraws one. A
   // failure nobody can answer except by running a stage is a failure that gets worked around,
   // and giving requests a withdrawal of their own is its own change.
-  for (const r of readRevisionRequests(projectDir)) {
-    if (!r || r.taken) continue;
+  for (const r of read(projectDir, "request").filter(isOpen)) {
     // A request a run was given and could not answer carries its own account of why, and
     // that is the thing worth reading back: without it the line says only that nobody has
     // taken the request up, which is also what it said before a run tried.

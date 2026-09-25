@@ -3,15 +3,19 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { resume } from "../src/commands/resume.mjs";
 import { ruleByAgent } from "../src/commands/rule.mjs";
-import { stageFor } from "../src/stages/registry.mjs";
+import { answerRecoveries, outstandingRecoveries, recoveriesFor, stageFor } from "../src/stages/registry.mjs";
 import { applyConditions, conditionParses, parseDomainFile, criterionFingerprint, CONDITION_GRAMMAR } from "../src/spec/criteria.mjs";
-import { addRecovery, answerRecoveries, outstandingRecoveries, readRecovery, readRecoveryFor, recoveryRequestCount } from "../src/spec/recovery.mjs";
+import { entriesIn, identityOf, open, read, sends, unexpectedChange } from "../src/spec/owed.mjs";
+
+const addRecovery = (dir, entries) => open(dir, "recovery", entries).path;
+const readRecovery = (dir) => read(dir, "recovery");
+const readRecoveryFor = recoveriesFor;
 
 // A gated stage commits its work to its proposal branch and leaves the checkout on
 // `main`, so reading what the stage produced means reading that branch. `read` is run
@@ -108,7 +112,7 @@ test("a recovery request is outstanding until an archaeology run answers it", ()
   // A second reason on the same row is a second request, and both are owed.
   addRecovery(tmp, [{ ...entry, why: "and the citation points at a file the release never shipped" }]);
   const both = readRecoveryFor(tmp, "content");
-  assert.equal(recoveryRequestCount(both, "D-content-1"), 2);
+  assert.equal(sends(both, "D-content-1"), 2);
   assert.equal(outstandingRecoveries(both, [c]).length, 2);
 
   // The stamp an archaeology run writes is what ends them, and it ends every request that
@@ -118,7 +122,7 @@ test("a recovery request is outstanding until an archaeology run answers it", ()
   const after = readRecoveryFor(tmp, "content");
   assert.deepEqual(after.map((e) => e.answered), [{ version: 3 }, { version: 3 }]);
   assert.deepEqual(outstandingRecoveries(after, [recovered]), []);
-  assert.equal(recoveryRequestCount(after, "D-content-1"), 2, "an answered request stays on file as the record that it was made");
+  assert.equal(sends(after, "D-content-1"), 2, "an answered request stays on file as the record that it was made");
   assert.equal(answerRecoveries(tmp, "content", ["D-content-1"], new Map([["D-content-1", recovered]])), null, "nothing is rewritten once there is nothing left to stamp");
 
   // A recovery that removed the row records that instead of a version.
@@ -593,7 +597,7 @@ test("ratify: a criterion whose re-recovery did not answer the question can be s
     assert.equal(r.ok, true, JSON.stringify(r.messages));
 
     const entries = readRecoveryFor(dir, "applications");
-    assert.equal(recoveryRequestCount(entries, "D-applications-2"), 2, "a second reason is a second request, not a repeat of the first");
+    assert.equal(sends(entries, "D-applications-2"), 2, "a second reason is a second request, not a repeat of the first");
     const text = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
     assert.match(text, /### D-applications-2 · v2 · open · recovered/);
     assert.ok(text.includes(`- note: sent back for re-recovery: ${why2}`), text);
@@ -1217,20 +1221,21 @@ test("a recovery that finds the behaviour is not there at all removes the row, a
 // The ledger is the record of what was sent back, and a run may leave exactly one mark in
 // it: the answer it was itself owed. Every other shape of change is a session writing the
 // record of its own work, which is how a recovery gets marked done without being done.
-test("the ledger guard permits only the answer this run was owed", async () => {
-  const { unexpectedLedgerChange, keyOf } = await import("../src/spec/recovery.mjs");
+test("the ledger guard permits only the answer this run was owed", () => {
+  const views = (list) => entriesIn("recovery", stringifyYaml({ recovery: list }));
+  const guard = (before, after, owed) => unexpectedChange("recovery", views(before), views(after), owed);
   const head = [
     { id: "D-a-1", domain: "a", version: 1, why: "the guard cannot fire" },
     { id: "D-a-2", domain: "a", version: 1, why: "the citation is dead code" },
   ];
-  const owed = new Set(head.map(keyOf));
+  const owed = new Set(views(head).map(identityOf));
   const clone = () => JSON.parse(JSON.stringify(head));
 
-  assert.equal(unexpectedLedgerChange(head, clone(), owed), null, "an untouched ledger is fine");
+  assert.equal(guard(head, clone(), owed), null, "an untouched ledger is fine");
 
   const answered = clone();
   answered[0].answered = { version: 2 };
-  assert.equal(unexpectedLedgerChange(head, answered, owed), null, "the answer it was owed is the one permitted change");
+  assert.equal(guard(head, answered, owed), null, "the answer it was owed is the one permitted change");
 
   // An answer already recorded is not this run's to revise: a request is answered once, by
   // the run that did the work.
@@ -1238,16 +1243,16 @@ test("the ledger guard permits only the answer this run was owed", async () => {
   already[0].answered = { version: 2 };
   const revised = JSON.parse(JSON.stringify(already));
   revised[0].answered = { version: 7 };
-  assert.match(unexpectedLedgerChange(already, revised, owed), /changes an answer already recorded for D-a-1/);
+  assert.match(guard(already, revised, owed), /changes an answer already recorded for D-a-1/);
 
   // An answer on a request this run was never asked to recover.
   const notOwed = clone();
   notOwed[1].answered = { version: 2 };
-  assert.match(unexpectedLedgerChange(head, notOwed, new Set([keyOf(head[0])])), /marks D-a-2 answered, which this run was not asked to recover/);
+  assert.match(guard(head, notOwed, new Set([identityOf(views(head)[0])])), /marks D-a-2 answered, which this run was not asked to recover/);
 
   // The shapes that are never a run's to make.
   const reworded = clone();
   reworded[1].why = "a reason the run preferred";
-  assert.match(unexpectedLedgerChange(head, reworded, owed), /entry 2 was rewritten/);
-  assert.match(unexpectedLedgerChange(head, [head[0]], owed), /gained or lost entries/);
+  assert.match(guard(head, reworded, owed), /entry 2 was rewritten/);
+  assert.match(guard(head, [head[0]], owed), /gained or lost entries/);
 });

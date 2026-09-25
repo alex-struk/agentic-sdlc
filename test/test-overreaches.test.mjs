@@ -18,7 +18,6 @@ import { rule, ruleByAgent, buildVerified } from "../src/commands/rule.mjs";
 import { stageFor } from "../src/stages/registry.mjs";
 import { loadConfig } from "../src/config/load.mjs";
 import { overreachConditions, malformedOverreachConditions } from "../src/spec/criteria.mjs";
-import { readRedo } from "../src/spec/redo.mjs";
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
@@ -124,12 +123,11 @@ function agentReply(verdict, conditions, rationale = "the criterion is right; it
   process.env.SDLC_MOCK_DIR = d;
 }
 
+// The redo list as `main` stores it, entry for entry.
 const redoOnMain = (dir) => {
-  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], dir);
-  if (branch !== "main") git(["checkout", "-q", "main"], dir);
-  const list = readRedo(dir);
-  if (branch !== "main") git(["checkout", "-q", branch], dir);
-  return list;
+  let text;
+  try { text = git(["show", "main:tests/acceptance/redo.yaml"], dir); } catch { return []; }
+  return parseYaml(text)?.redo ?? [];
 };
 
 // --- the form itself ---

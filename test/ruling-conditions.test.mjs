@@ -14,8 +14,12 @@ import { propose } from "../src/commands/propose.mjs";
 import { rule } from "../src/commands/rule.mjs";
 import { runChecks } from "../src/checks/index.mjs";
 import { checkConditions } from "../src/checks/conditions.mjs";
-import { CONDITIONS_PATH, readConditions, openConditions } from "../src/spec/conditions.mjs";
-import { addRevisionRequests } from "../src/spec/revisions.mjs";
+import { isOpen, open, owedPath, read } from "../src/spec/owed.mjs";
+
+const CONDITIONS_PATH = owedPath("condition");
+const readConditions = (d) => read(d, "condition");
+const openConditions = (d) => readConditions(d).filter(isOpen);
+const addRevisionRequests = (d, entries) => open(d, "request", entries).path;
 import { ruleByAgent } from "../src/commands/rule.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { fileURLToPath } from "node:url";

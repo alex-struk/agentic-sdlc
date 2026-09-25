@@ -9,8 +9,7 @@ import { readText, writeText } from "../lib/fsx.mjs";
 import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { escapeRe } from "./shared.mjs";
 import { conditionsAreExecutable, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { REVISION_REQUESTS_PATH, openRevisionRequestsFor, revisionRound, settleRevisionRound } from "../spec/revisions.mjs";
-import { openConditionsOnMain } from "../spec/conditions.mjs";
+import { openFor, openOn, owedPath, settle } from "../spec/owed.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 
 // One sentence off the front of `text`, plus whatever is left after it. The terminator
@@ -236,7 +235,7 @@ export function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", 
 // spent by the run that answers it, and nothing here can tell an ask the return already
 // covers from one about something else entirely.
 export function withOpenRequests(projectDir, stage, revision) {
-  const openRequests = openRevisionRequestsFor(projectDir, stage);
+  const openRequests = openFor(projectDir, stage, { kinds: ["request"] });
   return openRequests.length ? { ...revision, openRequests } : revision;
 }
 
@@ -246,7 +245,7 @@ export function withOpenRequests(projectDir, stage, revision) {
 // against it; a stage handed only the ruling that returned it is asked for less than its
 // ruler will expect, and is returned again for something nobody asked it to do.
 //
-// Read from `main` through the same `openConditionsOnMain` the ruler's prompt and the
+// Read from `main` through the same `openOn` the ruler's prompt and the
 // ruling guard read, so the stage and its ruler are shown one list. The family is the
 // caller's, because naming it takes the stage registry (`proposalFamily`), which a stage
 // module cannot import; every ledger row carries the family its ruling computed. The
@@ -257,7 +256,7 @@ export function withOpenRequests(projectDir, stage, revision) {
 // belongs to no line of work in the ledger's sense and is returned as it came.
 export function withOwedConditions(projectDir, revision, family) {
   if (!revision?.name || !family) return revision;
-  const owed = openConditionsOnMain(projectDir).filter((c) => c.family === family && c.from !== revision.name);
+  const owed = openOn(projectDir, "condition").filter((c) => c.family === family && c.from !== revision.name);
   return owed.length ? { ...revision, owedConditions: owed } : revision;
 }
 
@@ -279,6 +278,25 @@ export function owedConditionsNote(ctx) {
       : "The ruling that reads this revision will be shown each of these as owed, by its reference, and will expect each one met or accounted for. "
         + "Meet each one here. Where one cannot be met in this run, say which and why in your journal entry, by its reference.",
   ].join("\n\n");
+}
+
+// The requests addressed to one stage that nothing has taken up, as the round a `--revise`
+// run answers: all of them, oldest first, with the ones a single ruling filed kept together.
+//
+// Grouping is what a ruler means by routing two conditions to one stage. They are halves of
+// one observation — the work downstream showed something about this artifact, and both
+// halves describe it — so an artifact that answers one of them alone can be consistent with
+// neither. Between groups the order is the order they were filed in, because a request older
+// than another was asked about an artifact that has since been approved again, and reading it
+// first is what puts the two in the sequence they happened.
+export function revisionRound(projectDir, stage) {
+  const groups = new Map();
+  for (const r of openFor(projectDir, stage, { kinds: ["request"] })) {
+    const key = `${r.from ?? ""}\u0000${r.gate ?? ""}\u0000${r.by ?? ""}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  return [...groups.values()].flat();
 }
 
 // The other thing a `--revise` run can start from: the requests filed by rulings elsewhere
@@ -354,7 +372,9 @@ export function settleRequestedRevision(projectDir, stage, ctx, agentText, propo
     if (why) deferred.push({ request, why, proposal: proposalName ?? "" });
     else taken.push(request);
   });
-  if (!settleRevisionRound(projectDir, { taken, deferred })) return { taken: [], deferred: [], unknown, written: false };
+  if (!settle(projectDir, "request", { close: taken, defer: deferred.map((d) => ({ entry: d.request, why: d.why, proposal: d.proposal })) })) {
+    return { taken: [], deferred: [], unknown, written: false };
+  }
   const noun = (n) => `${n} revision request${n === 1 ? "" : "s"}`;
   const by = proposalName ? ` by ${proposalName}` : "";
   const subject = deferred.length
@@ -364,7 +384,7 @@ export function settleRequestedRevision(projectDir, stage, ctx, agentText, propo
     ...deferred.map((d) => `deferred, still open: ${d.request.from} (${d.request.gate}) — ${d.why}`),
     ...unknown.map((n) => `deferred-request ${n} names no request in this round`),
   ].join("\n");
-  stagePaths(projectDir, [REVISION_REQUESTS_PATH]);
+  stagePaths(projectDir, [owedPath("request")]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, ...(body ? ["-m", redactLocalPaths(body, projectDir)] : [])], projectDir);
   return { taken, deferred, unknown, written: true };
 }

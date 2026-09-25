@@ -833,7 +833,7 @@ export function calibrateConditionIds(lines) {
 // failing test against the old target does not change.
 //
 // `test-wrong` changes no criterion at all: it returns a `redo` entry the caller writes
-// to `tests/acceptance/redo.yaml` (`src/spec/redo.mjs`), which is what `derive-tests
+// to `tests/acceptance/redo.yaml` (`src/spec/owed.mjs`), which is what `derive-tests
 // --stale` reads to know a criterion needs its test written again even though the
 // criterion itself has not moved.
 export function applyCalibrateRulings(criteria, conditions, today) {
@@ -1002,12 +1002,12 @@ export function applyConditions(criteria, conditions, filed = []) {
         // to come from reading the old application again. What is recorded here is the
         // request — on the row, as a note, and on the criterion object as
         // `recoveryRequests`, which `ratify` reads after minting to write the entries
-        // `archaeology` picks the work up from (`src/spec/recovery.mjs`).
+        // `archaeology` picks the work up from (`src/spec/owed.mjs`).
         //
         // A ruling is read again on every pass — a gate file is never consumed — so this
         // verb has to know when its own work is done. It is done when an archaeology run
         // has answered the request and stamped it (`answerRecoveries`,
-        // `src/spec/recovery.mjs`): re-applying the condition then would push the note back
+        // `src/stages/registry.mjs`): re-applying the condition then would push the note back
         // onto a row that had been recovered again, drop it to `open`, and put it back in a
         // queue it has already left. Anything short of that stamp leaves the request
         // outstanding, including a row some other verb has since changed — an `edit` or a
