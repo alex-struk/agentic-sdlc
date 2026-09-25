@@ -180,6 +180,70 @@ test("a returned proposal is revised by its stage, and one a later proposal repl
   assert.ok(!r.waiting.some((w) => w.name === "policy-v1"), "policy-v2 replaced it");
 });
 
+// A request is offered as the run that takes it up: `--revise` for a stage that revises, the
+// stage's own run for one whose every run starts from `main`.
+test("a request is offered as the run of the stage it is addressed to", (t) => {
+  const d = project(t);
+  specDone(d);
+  approved(d, ["contract-v1"]);
+  commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [
+    { stage: "contract", why: "seed a second record", from: "derive-tests-alpha-stale-1", gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" },
+  ] }) });
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run contract");
+  assert.equal(r.next.kind, "owed");
+  assert.match(r.next.why, /1 revision request owed by contract/);
+});
+
+// A return whose ruling also asked another stage for what the revision is to be built on is not
+// revised until that stage has answered and its answer is approved: the revision would otherwise
+// be built on the artifact the ruling said has to change.
+test("a returned proposal waits for what its own ruling asked of another stage", (t) => {
+  const d = project(t);
+  specDone(d);
+  approved(d, ["contract-v1"]);
+  approved(d, ["derive-tests-alpha"], "G3");
+  proposal(d, "derive-tests-alpha-stale-1", "G3", { ruling: { verdict: "return" } });
+  const request = { stage: "contract", why: "seed a second record", from: "derive-tests-alpha-stale-1", gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" };
+  commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [request] }) });
+  const revise = "sdlc run derive-tests --domain alpha --revise";
+
+  let r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run contract", "the request first");
+  assert.ok(!r.ready.some((c) => c.command === revise), "the revision is not offered while the request is open");
+  assert.match(r.held.find((h) => h.command === revise)?.why ?? "", /derive-tests-alpha-stale-1 asked contract .* not yet answered/);
+  assert.match(formatNext(r), /^held:\n {2}sdlc run derive-tests --domain alpha --revise — /m);
+
+  // Answered, and the answer still in front of its own gate.
+  commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [{ ...request, taken: "2026-01-03T00:00:00.000Z", taken_by: "contract-v2" }] }) });
+  proposal(d, "contract-v2", "G1");
+  r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.command === revise));
+  assert.match(r.held.find((h) => h.command === revise)?.why ?? "", /answered by contract-v2, which is not yet approved/);
+
+  // Approved: the revision is what comes next.
+  approved(d, ["contract-v2"]);
+  r = whatNext(d);
+  assert.equal(r.next.command, revise);
+  assert.deepEqual(r.held, []);
+});
+
+// Only another stage's answer is waited for. A request a ruling addressed to the stage it
+// returned is answered by the same revision.
+test("a returned proposal does not wait for a request addressed to its own stage", (t) => {
+  const d = project(t);
+  specDone(d);
+  approved(d, ["contract-v1"]);
+  approved(d, ["derive-tests-alpha"], "G3");
+  proposal(d, "derive-tests-alpha-stale-1", "G3", { ruling: { verdict: "return" } });
+  commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [
+    { stage: "derive-tests", why: "and the other suite too", from: "derive-tests-alpha-stale-1", gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" },
+  ] }) });
+  const r = whatNext(d);
+  assert.ok(r.ready.some((c) => c.command === "sdlc run derive-tests --domain alpha --revise"));
+  assert.deepEqual(r.held, []);
+});
+
 test("a build proposal is verified before it is ruled", (t) => {
   const d = project(t, { profile: "feature" });
   approved(d, ["intent-thing"], "G0");

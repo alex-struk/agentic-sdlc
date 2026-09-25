@@ -24,11 +24,11 @@ import { git, gitOk } from "../lib/git.mjs";
 import { parseConfig } from "../config/load.mjs";
 import { nextOrder } from "../config/policy.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
-import { openAcross } from "../spec/owed.mjs";
+import { openAcross, readAt } from "../spec/owed.mjs";
 import { bindingGaps } from "../spec/surface.mjs";
 import { MISSING_TEST, openMissingTestsAt } from "../spec/missing-tests.mjs";
 import { parseTasks } from "../checks/plan.mjs";
-import { STAGES_BY_NAME, proposalFamily, revisableStages } from "../stages/registry.mjs";
+import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
 import { stallReason } from "./escalation.mjs";
 import { buildVerifiedOnBranch, simulatedRole } from "../commands/rule.mjs";
 
@@ -60,10 +60,10 @@ const ROUTES = [
 // The flag each stage needs to say what it runs on.
 const SUBJECT_OF = { archaeology: "domain", ratify: "domain", "derive-tests": "domain", design: "domain", "bind-adapter": "target", calibrate: "target", build: "slice", verify: "slice" };
 
-// Stages whose returned proposal is taken up by `--revise`. `archaeology` revises from its
-// returned ruling without an overlay, so it is not among the registry's revisable stages.
+// Stages whose returned proposal, and whose requests, are taken up by `--revise`. Any other
+// stage takes both up by being run again.
 function revises(stage) {
-  return stage === "archaeology" || revisableStages().includes(stage);
+  return requestTakenBy(stage) === "revise";
 }
 
 const stageRank = (stage) => { const i = STAGES.indexOf(stage); return i === -1 ? STAGES.length : i; };
@@ -230,12 +230,15 @@ export function readRecord(projectDir, rev = "main") {
     ...openAcross(projectDir, { rev, familyOf: proposalFamily }).filter((e) => e.kind !== MISSING_TEST),
     ...openMissingTestsAt(projectDir, rev),
   ];
+  // Every request, answered or not: a return waits on what its own ruling asked of another
+  // stage until the answer is approved, which the open list alone cannot say.
+  const requests = readAt(projectDir, "request", rev, { familyOf: proposalFamily });
   const names = [
     ...gates.keys(),
     ...proposalBranches.map((b) => b.slice("proposal/".length)),
     ...returnedBranches.map((b) => b.slice("returned/".length)),
   ];
-  return { rev, config, domains, targets, gates, proposals, names, index, tasks, domainIds, results, owed, headers: specHeaders(projectDir, rev) };
+  return { rev, config, domains, targets, gates, proposals, names, index, tasks, domainIds, results, owed, requests, headers: specHeaders(projectDir, rev) };
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────────────
@@ -327,8 +330,28 @@ function sequenceSteps(record) {
   return steps;
 }
 
+// What a returned proposal's own ruling asked of another stage and has not yet seen answered
+// and approved, as the reason its revision waits, or `null` when nothing holds it. A request is
+// answered when a run takes it up, and approved when a proposal in the line of work of the one
+// that took it, at or after it, is approved on `main`. A request taken before the proposal that
+// took it was recorded names none, and is read as answered.
+function heldBy(record, name, stage) {
+  const approved = (proposal) => {
+    const { family, n } = lineage(proposal);
+    return [...record.gates].some(([g, { doc }]) => doc?.verdict === "approve" && lineage(g).family === family && lineage(g).n >= n);
+  };
+  for (const q of record.requests ?? []) {
+    if (q.from !== name || q.stage === stage) continue;
+    if (!q.closed) return `${name} asked ${q.stage} for work this revision rests on, not yet answered (${runCommand(q.stage, revises(q.stage) ? { revise: true } : {})})`;
+    const by = q.closed.proposal;
+    if (by && !approved(by)) return `${name} asked ${q.stage} for work this revision rests on, answered by ${by}, which is not yet approved`;
+  }
+  return null;
+}
+
 // Every proposal branch not yet merged, sorted into what a seat played by an agent can rule
-// now, what waits on a person, and what has been returned for its stage to revise.
+// now, what waits on a person, what has been returned for its stage to revise, and what is
+// returned and held until what its ruling asked of another stage is approved.
 function proposalState(projectDir, record) {
   const { config } = record;
   const newest = new Map();
@@ -340,6 +363,7 @@ function proposalState(projectDir, record) {
   const ready = [];
   const waiting = [];
   const returned = [];
+  const held = [];
   const inFlight = new Set();
   for (const p of record.proposals) {
     if (p.merged || superseded(p.name)) continue;
@@ -401,11 +425,16 @@ function proposalState(projectDir, record) {
       inFlight.add(subjectKey(route.stage, route));
       const s = SUBJECT_OF[route.stage];
       const args = { ...(s ? { [s]: route[s] ?? undefined } : {}), ...(revises(route.stage) ? { revise: true } : {}) };
+      const hold = heldBy(record, p.name, route.stage);
+      if (hold) {
+        held.push({ kind: "owed", stage: route.stage, args, command: runCommand(route.stage, args), name: p.name, why: hold });
+        continue;
+      }
       returned.push({ kind: "owed", stage: route.stage, args, command: runCommand(route.stage, args), name: p.name,
         why: `${p.name} was returned at ${code} by ${p.gate.by}${revises(route.stage) ? "" : `; ${route.stage} is run again to take the ruling up`}` });
     }
   }
-  return { ready, waiting, returned, inFlight };
+  return { ready, waiting, returned, held, inFlight };
 }
 
 // The open owed work as runnable items, grouped by the run that answers them.
@@ -427,7 +456,7 @@ function owedWork(record, inFlight, bindsNow) {
     if (e.kind === "condition") continue;
     if (e.kind === "request") {
       const s = SUBJECT_OF[e.stage];
-      group(e.stage, { ...(s ? { [s]: e[s] ?? undefined } : {}), revise: true }, "revision request", "revision requests");
+      group(e.stage, { ...(s ? { [s]: e[s] ?? undefined } : {}), ...(revises(e.stage) ? { revise: true } : {}) }, "revision request", "revision requests");
     } else if (e.kind === "redo") {
       group("derive-tests", { domain: byId.get(e.id)?.domain ?? undefined, stale: true }, "test to derive again (redo)", "tests to derive again (redo)");
     } else if (e.kind === "recovery") {
@@ -577,6 +606,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     state,
     next,
     ready,
+    held: props.held,
     waiting,
     owed: owed.summary,
     stale: owed.stale,
@@ -616,6 +646,10 @@ export function formatNext(r) {
     lines.push("also ready:");
     for (const c of r.ready.slice(1)) lines.push(`  ${c.command} — ${c.why}`);
   }
+  if (r.held?.length) {
+    lines.push("held:");
+    for (const h of r.held) lines.push(`  ${h.command} — ${h.why}`);
+  }
   if (r.waiting.length) {
     lines.push("waiting on a person:");
     for (const w of r.waiting) lines.push(`  ${w.on}: ${w.name} — ${w.why} — ${w.command}`);
@@ -637,6 +671,7 @@ export function formatNextShort(r) {
   else lines.push(`next: ${idleLine(r)}`);
   const more = [];
   if (r.ready.length > 1) more.push(`${r.ready.length - 1} more ready`);
+  if (r.held?.length) more.push(`${plural(r.held.length, "revision")} held`);
   const proposals = r.waiting.filter((w) => w.kind !== MISSING_TEST);
   const tests = r.waiting.filter((w) => w.kind === MISSING_TEST).reduce((n, w) => n + w.count, 0);
   if (proposals.length) more.push(`${plural(proposals.length, "proposal")} waiting on a person`);
