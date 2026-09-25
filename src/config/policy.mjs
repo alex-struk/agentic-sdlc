@@ -57,6 +57,12 @@ export function approvesUnasserted(config) {
   return config?.policy?.gates?.G3?.approve_unasserted ?? true;
 }
 
+// Whether a G3 ruler is refused an approval of a build slice while a criterion it claims is
+// owed a test that runs (`src/spec/missing-tests.mjs`).
+export function blocksOnMissingTests(config) {
+  return config?.policy?.gates?.G3?.block_on_missing_tests ?? true;
+}
+
 // The kinds of ready work `sdlc next` weighs against each other, and the order it takes them
 // in when more than one kind is ready (`src/runner/next.mjs`). The record orders the work
 // inside a kind; which kind goes first is not something the record can settle.

@@ -6,6 +6,9 @@ import { git, gitOk } from "../lib/git.mjs";
 import { deliveredBy, stageForProposal } from "../stages/registry.mjs";
 import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, approvableConditionForms, conditionsAreExecutable, returnOnlyConditionForms } from "../spec/criteria.mjs";
 import { openOn } from "../spec/owed.mjs";
+import { missingTestRef, openMissingTestsAt } from "../spec/missing-tests.mjs";
+import { blocksOnMissingTests } from "../config/policy.mjs";
+import { readSlice } from "../stages/slices.mjs";
 import { stackBulk } from "../lib/stack.mjs";
 import { configSection, rulingConfig } from "./ruling-config.mjs";
 import { runChecks } from "../checks/index.mjs";
@@ -273,6 +276,41 @@ function accountingNote(open) {
   ];
 }
 
+// The tests the proposal's criteria are owed, and the ones its stage owes, read from `main` the
+// way the condition ledger is. A build slice's ruler is shown every item naming a criterion the
+// slice claims, and whether the project's policy refuses an approval past them; the ruler of any
+// other stage's proposal is shown what that stage owes, which is what its proposal may have
+// supplied or handed on. A person in the seat reads the same list from `sdlc checks`, and both
+// seats withdraw an item with the same line.
+function missingTestsNote(projectDir, name, { slice, verify, config }) {
+  const open = openMissingTestsAt(projectDir, "main");
+  if (!open.length) return [];
+  const stage = stageForProposal(name);
+  const claimed = slice ? new Set([...(readSlice(projectDir, slice)?.criteria ?? []), ...(verify?.rows ?? []).map((r) => r?.id)]) : new Set();
+  const shown = open.filter((e) => claimed.has(e.item) || (stage && e.stage === stage));
+  if (!shown.length) return [];
+  const quote = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+  const blocks = slice && blocksOnMissingTests(config) && shown.some((e) => claimed.has(e.item));
+  return [
+    "## Tests these criteria are owed",
+    "",
+    "Each of these was recorded as untestable and is owed a test that runs. It stays open until a result row",
+    "shows its test ran at the criterion's current version; a ruling cannot say it was met.",
+    "",
+    ...shown.map((e) => `- \`${missingTestRef(e.item)}\` — owed by ${e.stage}: "${quote(e.why)}"`),
+    "",
+    ...(blocks ? [
+      "This project's policy.gates.G3.block_on_missing_tests is true: an approval of this slice is refused while an",
+      "item above names one of its criteria, unless the ruling withdraws it.",
+      "",
+    ] : []),
+    "Where no test is owed for one after all, withdraw it in a condition of your own, with the reason:",
+    "",
+    `- \`${CONDITION_WITHDRAWN_FORM}\``,
+    "",
+  ];
+}
+
 export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null, escalation = null }) {
   const brief = readPersonaBrief(projectDir, persona);
   const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
@@ -405,6 +443,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
       "",
     ] : []),
     ...accountingNote(openOn(projectDir, "condition")),
+    ...missingTestsNote(projectDir, name, { slice, verify, config: resolved.config }),
     ...conditionFormsNote(name, gate),
     ...deliverabilityNote(name),
     `Finish with one fenced \`\`\`json block: {"verdict": "approve"|"return"|"escalate", "rationale": "...", "conditions": [...]}. Nothing after the block.`,

@@ -14,12 +14,14 @@ import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { close as closeOwed, conditionRef, open as openOwed, openOn, owedPath } from "../spec/owed.mjs";
+import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
+import { readSlice } from "../stages/slices.mjs";
 import { loadIndex } from "../checks/tests.mjs";
 import { proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { printNextBlock } from "./next.mjs";
 import { heldByFor } from "../lib/seat.mjs";
-import { approvesUnasserted, escalateTiers } from "../config/policy.mjs";
+import { approvesUnasserted, blocksOnMissingTests, escalateTiers } from "../config/policy.mjs";
 import { proposedPolicyChange } from "../runner/ruling-config.mjs";
 
 // Which grammar a proposal's conditions are read in is a property of the conditions, so it
@@ -207,6 +209,39 @@ function approvalEvidenceGuidance(reason) {
     + " Which you mean is the ruling.";
 }
 
+// A missing test is closed by a test that runs and by nothing a ruler writes, so the one
+// accounting line it takes is a withdrawal. The open items are listed the way the conditions
+// are, so the line can be written again against what is actually owed.
+function missingTestRefGuidance(ref, verb, open) {
+  if (verb === "met") {
+    return `${JSON.stringify(ref)} is a missing test, and a missing test is closed only by a test that runs: a result row for`
+      + " its criterion at the current version that passed or failed. No ruling can say it was met. Where no test is owed after all,"
+      + ` withdraw it with \`${CONDITION_WITHDRAWN_FORM}\` and say why.`;
+  }
+  const list = open.length
+    ? `The missing tests still open are: ${open.map((e) => `${missingTestRef(e.item)} (owed by ${e.stage})`).join("; ")}.`
+    : "No missing test is open in this project, so there is nothing here to withdraw.";
+  return `${JSON.stringify(ref)} is not an open missing test. ${list}`;
+}
+
+// The first accounting line naming a missing test that cannot be recorded: `condition-met` on
+// one, or a reference to an item nothing has open on `main`.
+function missingTestAccountDefect(projectDir, conditions) {
+  const lines = accountedConditions(conditions).filter((a) => parseMissingTestRef(a.ref));
+  if (!lines.length) return null;
+  const met = lines.find((a) => a.outcome === "met");
+  if (met) return { ref: met.ref, verb: "met", open: [] };
+  const open = openMissingTestsAt(projectDir, "main");
+  const ids = new Set(open.map((e) => e.item));
+  const unknown = lines.find((a) => !ids.has(parseMissingTestRef(a.ref)));
+  return unknown ? { ref: unknown.ref, verb: "withdrawn", open } : null;
+}
+
+// The criteria a ruling withdraws the missing tests of.
+function withdrawnMissingTests(conditions) {
+  return accountedConditions(conditions).filter((a) => a.outcome === "withdrawn").map((a) => parseMissingTestRef(a.ref)).filter(Boolean);
+}
+
 function unknownRefGuidance(ref, open) {
   const list = open.length
     ? `The conditions still open are: ${open.map((c) => `${c.ref} (${JSON.stringify(collapse(c.text))})`).join("; ")}.`
@@ -311,9 +346,11 @@ export function assertDeliverableRulable(name, verdict, conditions) {
 export function assertAccountedRulable(projectDir, name, verdict, conditions) {
   const bad = malformedAccountedConditions(conditions);
   if (bad.length) throw new Error(withRulingPreserved(`rule ${name}: ${accountedGuidance(bad[0])}`, verdict, conditions));
+  const missing = missingTestAccountDefect(projectDir, conditions);
+  if (missing) throw new Error(withRulingPreserved(`rule ${name}: ${missingTestRefGuidance(missing.ref, missing.verb, missing.open)}`, verdict, conditions));
   const open = openOn(projectDir, "condition");
   const refs = new Set(open.map((c) => c.ref));
-  const unknown = accountedConditions(conditions).find((a) => !refs.has(a.ref));
+  const unknown = accountedConditions(conditions).find((a) => !parseMissingTestRef(a.ref) && !refs.has(a.ref));
   if (unknown) throw new Error(withRulingPreserved(`rule ${name}: ${unknownRefGuidance(unknown.ref, open)}`, verdict, conditions));
 }
 
@@ -348,9 +385,11 @@ function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
   // A reference to a condition nothing has open is the same kind of slip: the persona was
   // shown the open list and wrote a name that is not on it, which a rewrite fixes and a
   // refusal only throws a ruling away over.
+  const missing = missingTestAccountDefect(projectDir, conditions);
+  if (missing) return { kind: "missing-test-ref", ...missing };
   const open = openOn(projectDir, "condition");
   const refs = new Set(open.map((c) => c.ref));
-  const unknown = accountedConditions(conditions).find((a) => !refs.has(a.ref));
+  const unknown = accountedConditions(conditions).find((a) => !parseMissingTestRef(a.ref) && !refs.has(a.ref));
   if (unknown) return { kind: "unknown-ref", ref: unknown.ref, open };
   if (verdict === "return") {
     const [undeliverable] = undeliverableConditions(name, conditions);
@@ -383,6 +422,12 @@ function firstRepromptableDefect(projectDir, name, verdict, conditions, { execut
     const verified = buildVerified(projectDir, name, config);
     if (!verified.ok) return { kind: "approval-evidence", reason: verified.reason };
   }
+  // And the tests the slice's criteria are owed, on the same footing: a fact about the
+  // record, quoted back with every way out still open to the ruler.
+  if (verdict === "approve") {
+    const blocking = missingTestsBlocking(projectDir, name, conditions, config);
+    if (blocking.length) return { kind: "missing-tests", blocking };
+  }
   return null;
 }
 
@@ -394,6 +439,8 @@ function defectGuidance(defect) {
   if (defect.kind === "unknown-ref") return unknownRefGuidance(defect.ref, defect.open);
   if (defect.kind === "approval-form") return approvalFormGuidance(defect.verb, defect.line);
   if (defect.kind === "approval-evidence") return approvalEvidenceGuidance(defect.reason);
+  if (defect.kind === "missing-test-ref") return missingTestRefGuidance(defect.ref, defect.verb, defect.open);
+  if (defect.kind === "missing-tests") return missingTestsGuidance(defect.blocking);
   return deliverableGuidance(defect);
 }
 
@@ -420,6 +467,12 @@ const REPROMPT_CLOSING = {
     "with the JSON block as before. A reply that approves again is refused, and nothing of the ruling is",
     "recorded.",
   ],
+  missing: [
+    "Rule again. Return or escalate the slice, or, for each item you judge is owed no test at all, withdraw it",
+    "in a condition of its own with the reason. Keep the rest of the ruling exactly as it was, and finish with",
+    "the JSON block as before. A reply that approves with an item still open is refused, and nothing of the",
+    "ruling is recorded.",
+  ],
 };
 
 // The heading the second turn reads, the closing it is given, and the line a person watching
@@ -436,6 +489,11 @@ const REPROMPT_SHAPE = {
     closing: "evidence",
     heading: "Your previous reply approved a proposal with no passing verify result",
     said: "the first reply approved with no passing verify result",
+  },
+  "missing-tests": {
+    closing: "missing",
+    heading: "Your previous reply approved a slice whose criteria are still owed a test",
+    said: "the first reply approved a slice whose criteria are still owed a test",
   },
 };
 const REWRITE_SHAPE = {
@@ -585,13 +643,25 @@ function recordConditions(projectDir, { name, gate, by, verdict, conditions, exe
   try {
     const opened = openOwed(projectDir, "condition", owed).path ? owed.map((o) => o.ref) : [];
     const closed = [];
+    const paths = new Set(opened.length ? [owedPath("condition")] : []);
     for (const a of accounted) {
-      if (closeOwed(projectDir, "condition", (c) => c.ref === a.ref, { outcome: a.outcome, why: a.text, by })) closed.push({ ref: a.ref, outcome: a.outcome });
+      const id = parseMissingTestRef(a.ref);
+      if (id) {
+        if (a.outcome === "withdrawn" && withdrawMissingTest(projectDir, id, { why: a.text, by })) {
+          closed.push({ ref: a.ref, outcome: a.outcome });
+          paths.add(owedPath(MISSING_TEST));
+        }
+        continue;
+      }
+      if (closeOwed(projectDir, "condition", (c) => c.ref === a.ref, { outcome: a.outcome, why: a.text, by })) {
+        closed.push({ ref: a.ref, outcome: a.outcome });
+        paths.add(owedPath("condition"));
+      }
     }
     if (opened.length || closed.length) {
       const said = [opened.length ? `owes ${opened.join(", ")}` : "", closed.length ? `closes ${closed.map((c) => `${c.ref} ${c.outcome}`).join(", ")}` : ""]
         .filter(Boolean).join("; ");
-      stagePaths(projectDir, [owedPath("condition")]);
+      stagePaths(projectDir, [...paths]);
       git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${said}`], projectDir);
     }
     return { opened, closed };
@@ -628,13 +698,30 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   // After the request ledgers and for the same reason they run after the ruling commit: the
   // ruling is recorded and the proposal is returned whatever happens here.
   const ledger = recordConditions(projectDir, { name, gate, by, verdict, conditions, executable });
+  let missingTests = null;
   if (verdict === "approve") {
     mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
+    missingTests = recordMissingTests(projectDir, { name, gate, by });
     amendSiteOntoMergeCommit(projectDir);
   } else {
     regenerateSiteOnMain(projectDir, `${name} ${verdict}`);
   }
-  return { ...requests, ...ledger };
+  return { ...requests, ...ledger, ...(missingTests ? { missingTests } : {}) };
+}
+
+// What an approval changes about the tests the project is owed, staged into the merge commit:
+// an item for every untestable record the merge brought onto `main` (and for any record already
+// there that nothing had written down), an item moved where the merge rewrote its record's owner,
+// and an item closed where the merge brought a result showing its test ran
+// (`src/spec/missing-tests.mjs`). `main` is checked out and the merge is `HEAD`, so the commit
+// before it is what `main` held when the ruling began.
+function recordMissingTests(projectDir, { name, gate, by }) {
+  const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+  const before = git(["rev-parse", "HEAD^1"], projectDir);
+  const r = syncMissingTests(projectDir, { before, from: name, stage: stageForProposal(name), gate, by, config });
+  if (!r.path) return null;
+  stagePaths(projectDir, [owedPath(MISSING_TEST)]);
+  return { opened: r.opened, readdressed: r.readdressed, closed: r.closed };
 }
 
 // An escalation, whether the persona ruled one or the brief and the tier made it mandatory.
@@ -847,6 +934,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
       }
       assertApprovalEvidence(projectDir, name, verdict,
         Boolean(escalation) && by === g.escalate_to && escalation.by !== by, conditions ?? [], config);
+      assertNoMissingTests(projectDir, name, verdict, conditions ?? [], config);
     } catch (e) {
       recordRefusal(projectDir, { name, gate, by, heldBy, reason: e.message, metrics: {},
         produced: { verdict, rationale: note, conditions: conditions ?? [] } });
@@ -999,6 +1087,53 @@ function assertApprovalEvidence(projectDir, name, verdict, onEscalation, conditi
   const verified = buildVerified(projectDir, name, config);
   if (!verified.ok)
     throw new Error(withRulingPreserved(`rule ${name}: ${approvalEvidenceGuidance(verified.reason)}`, verdict, conditions));
+}
+
+// The criteria a build slice claims: the plan's list for it, and every criterion its verify
+// result has a row for.
+function claimedBySlice(projectDir, slice) {
+  const ids = new Set(readSlice(projectDir, slice)?.criteria ?? []);
+  for (const r of verifyRows(projectDir, slice)) if (r?.id) ids.add(r.id);
+  return [...ids];
+}
+
+function verifyRows(projectDir, slice) {
+  const path = join(projectDir, "tests", "results", "new", `slice-${slice}.json`);
+  if (!existsSync(path)) return [];
+  try { return JSON.parse(readText(path)).rows ?? []; } catch { return []; }
+}
+
+// The missing tests an approval of this build slice would pass over: every item open on `main`
+// naming a criterion the slice claims, less those this ruling withdraws and those whose test the
+// slice's verify result shows ran. Empty for anything but a build slice, and where the project's
+// policy lets G3 approve past them (`policy.gates.G3.block_on_missing_tests`).
+function missingTestsBlocking(projectDir, name, conditions, config) {
+  const m = /^build-slice-(\d+)(?:-\d+)?$/.exec(name);
+  if (!m || !blocksOnMissingTests(config)) return [];
+  return blockingMissingTests(projectDir, {
+    claimed: claimedBySlice(projectDir, m[1]),
+    withdrawn: withdrawnMissingTests(conditions),
+    rows: verifyRows(projectDir, m[1]),
+  });
+}
+
+function missingTestsGuidance(blocking) {
+  const one = blocking.length === 1;
+  return `${one ? "A criterion" : `${blocking.length} criteria`} this slice claims ${one ? "is" : "are"} owed a test that runs: `
+    + `${blocking.map((e) => `${missingTestRef(e.item)} (owed by ${e.stage}: ${JSON.stringify(String(e.why ?? "").replace(/\s+/g, " ").trim())})`).join("; ")}.`
+    + " This project's policy.gates.G3.block_on_missing_tests is true, so an approval is recorded only once none is open."
+    + ` Return the slice, escalate it, or withdraw each item no test is owed for with \`${CONDITION_WITHDRAWN_FORM}\`, saying why.`;
+}
+
+// Refuses an approval of a build slice that would pass over a missing test, for either seat and
+// in the same words. Unlike the verify evidence above, a standing escalation does not lift it:
+// the item is withdrawn on the record, with its reason, by whoever rules, and an approval that
+// passes over one without saying so is the omission this exists to stop.
+function assertNoMissingTests(projectDir, name, verdict, conditions, config) {
+  if (verdict !== "approve") return;
+  const blocking = missingTestsBlocking(projectDir, name, conditions, config);
+  if (blocking.length)
+    throw new Error(withRulingPreserved(`rule ${name}: ${missingTestsGuidance(blocking)}`, verdict, conditions));
 }
 
 // The agent path: no human types --by approve|return. A persona brief is handed to a
@@ -1228,6 +1363,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // answered, both read-only against a tree asserted clean; no gate file, no proposal page,
     // no commit and no merge has been written for this ruling.
     assertApprovalEvidence(projectDir, name, verdict, ruleEscalation, conditions ?? [], config);
+    assertNoMissingTests(projectDir, name, verdict, conditions ?? [], config);
 
     // The ruling has to land in the proposal page's own commit, not a follow-up one, so
     // it is appended and written before `commitRuling` stages and commits.
@@ -1271,7 +1407,7 @@ function pointedAt(text, gatePath) {
 // Redacted the same way the gate file itself is (`redactLocalPaths`) — an agent's own
 // prose can carry a path off the machine it ran on, and a terminal is not exempt from the
 // rule the committed file is held to.
-function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, opened, closed }) {
+function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, opened, closed, missingTests }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   const recordedOn = verdict === "approve" ? "main (merged)" : `proposal/${name}`;
   const lines = [`${name}: ${verdict} at ${gate}`];
@@ -1293,6 +1429,10 @@ function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, 
   // reference is what a later ruling needs in order to close it.
   if (opened?.length) lines.push(`  now owed: ${opened.join(", ")} (close with \`${CONDITION_MET_FORM}\`)`);
   for (const c of closed ?? []) lines.push(`  closed: ${c.ref} ${c.outcome}`);
+  // The same for the tests this approval left owed, moved or saw run.
+  if (missingTests?.opened?.length) lines.push(`  tests now owed: ${missingTests.opened.map(missingTestRef).join(", ")}`);
+  for (const m of missingTests?.readdressed ?? []) lines.push(`  test re-addressed: ${missingTestRef(m.id)} from ${m.from} to ${m.to}`);
+  if (missingTests?.closed?.length) lines.push(`  test ran, closed: ${missingTests.closed.map(missingTestRef).join(", ")}`);
   lines.push(`  recorded: ${gatePath} on ${recordedOn}`);
   return redactLocalPaths(lines.join("\n"), projectDir);
 }
@@ -1386,7 +1526,7 @@ export async function rulePending(projectDir) {
       console.log(formatRuling(projectDir, name, {
         gate: r.gate ?? gateMatch[1], verdict: r.escalated ? "escalate" : r.verdict,
         conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, stalled: r.stalled,
-        reprompted: r.reprompted, opened: r.opened, closed: r.closed,
+        reprompted: r.reprompted, opened: r.opened, closed: r.closed, missingTests: r.missingTests,
       }));
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
@@ -1450,7 +1590,7 @@ async function ruleCli({ pos, flags }) {
     console.log(formatRuling(process.cwd(), pos[0], {
       gate: r.gate, verdict: r.escalated ? "escalate" : r.verdict,
       conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
-      opened: r.opened, closed: r.closed,
+      opened: r.opened, closed: r.closed, missingTests: r.missingTests,
     }));
     return 0;
   }
@@ -1460,7 +1600,7 @@ async function ruleCli({ pos, flags }) {
   const conditions = flags.condition === undefined ? undefined
     : [flags.condition].flat().filter((c) => typeof c === "string");
   const r = rule(process.cwd(), pos[0], pos[1], { by: flags.by, note: flags.note ?? "", conditions });
-  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note, opened: r.opened, closed: r.closed }));
+  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note, opened: r.opened, closed: r.closed, missingTests: r.missingTests }));
   if (r.filed?.length) console.log(`${pos[0]}: ${r.filed.join(", ")} filed for re-derivation — run sdlc run derive-tests --domain <domain> --stale`);
   for (const id of r.unfiled ?? []) console.warn(`warning: ${pos[0]}: ${id} is not an accepted criterion; nothing was filed for it`);
   return 0;

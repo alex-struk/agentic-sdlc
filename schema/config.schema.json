@@ -534,6 +534,9 @@
         },
         "approve_unasserted": {
           "type": "boolean"
+        },
+        "block_on_missing_tests": {
+          "type": "boolean"
         }
       }
     }
