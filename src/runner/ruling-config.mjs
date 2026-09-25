@@ -19,7 +19,10 @@
 //
 //   1. `main` governs, because it is what is true now.
 //   2. `policy` is read from the branch: it is the policy the proposal was made under, and
-//      it is what the runner acts on when it decides which seat may rule (`0013`).
+//      it is what the runner acts on when it decides which seat may rule (`0013`). A
+//      proposal that changes `policy` is the exception: it is ruled at G-POL alone, and
+//      under `main`'s policy, so a change cannot choose its own ruler (`0043`,
+//      `proposedPolicyChange` below).
 //   3. A block the proposal itself changes is read from the branch, whichever kind it is.
 //      A policy proposal, a proposal that republishes a target — its change IS the thing
 //      being ruled on, and a ruler shown `main`'s copy instead would be ruling on the
@@ -89,13 +92,17 @@ function quoteBlock(key, value) {
 //
 // A project whose `main` carries no configuration at all falls back to the branch entirely,
 // the same fallback a persona brief has for a brief written and not yet committed.
+function mergeBaseConfig(projectDir, branch) {
+  const baseRev = gitOk(["merge-base", "main", branch], projectDir)
+    ? git(["merge-base", "main", branch], projectDir) : null;
+  return baseRev ? readAt(projectDir, baseRev) : null;
+}
+
 export function rulingConfig(projectDir, branch) {
   const main = readAt(projectDir, "main");
   const head = readAt(projectDir, branch);
   if (!main) return { config: head, blocks: [], fallback: "branch" };
-  const baseRev = gitOk(["merge-base", "main", branch], projectDir)
-    ? git(["merge-base", "main", branch], projectDir) : null;
-  const base = baseRev ? readAt(projectDir, baseRev) : null;
+  const base = mergeBaseConfig(projectDir, branch);
 
   const keys = [...new Set([...Object.keys(main), ...Object.keys(head ?? {})])].sort();
   const config = {};
@@ -193,4 +200,16 @@ export function configSection(resolved) {
   }
 
   return lines;
+}
+
+// Whether the proposal on `branch` changes the `policy` block, compared the same way
+// `rulingConfig` compares every block: the branch against its merge base with `main`, on
+// the value rather than the text. Where it does, `mainPolicy` is the policy it is ruled
+// under. A project whose `main` carries no configuration has no policy to change yet.
+export function proposedPolicyChange(projectDir, branch) {
+  const main = readAt(projectDir, "main");
+  if (!main) return { changed: false, mainPolicy: null };
+  const head = readAt(projectDir, branch);
+  const base = mergeBaseConfig(projectDir, branch);
+  return { changed: !same(base?.policy, head?.policy), mainPolicy: main.policy ?? null };
 }

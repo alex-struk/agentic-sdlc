@@ -506,7 +506,8 @@ the file on the branch:
   depends on, the stack profile its toolchain is — these describe the world the project runs in,
   and the branch's copy of them is a stale snapshot.
 - `policy` is read from the branch. It is the terms the proposal was made under, and it is the copy
-  the pipeline already acted on when it chose the seat ruling this gate.
+  the pipeline already acted on when it chose the seat ruling this gate — except on a proposal that
+  changes `policy` itself, which is ruled at G-POL under `main`'s policy (below).
 - A block the proposal itself changes is read from the branch, whichever kind it is, with `main`'s
   current value quoted beside it. A proposal whose subject *is* the configuration is ruled on what
   it proposes; `main`'s copy would be the absence of the change it was asked about.
@@ -547,6 +548,13 @@ Nothing is materialised into a separate workspace for a ruling.
 - `.sdlc/proposals/<name>.md` must exist and its `gate:` front-matter line must be present.
 - The project's configuration must load and validate.
 - The named gate must exist in `policy.gates`.
+- **A proposal whose branch changes the `policy` block of `.sdlc/config.yaml`** (compared with
+  its merge base, on the value) is ruled only at G-POL. At any other gate it is refused, from
+  either seat, and `rule --pending` leaves it open and prints why. At G-POL, the seat, the
+  escalation target and every other policy value the ruling acts on are read from `main`'s
+  policy, not the branch's: the policy a proposal asks for is its subject, and cannot name who
+  rules it (`docs/decisions/0043-a-policy-change-is-ruled-under-the-policy-it-changes.md`). The
+  prompt still quotes the proposed policy as the proposal's change, with `main`'s beside it.
 - `by` must equal that gate's `holder` or `escalate_to`; anyone else is rejected, and the error
   names who is allowed.
 - **Approving a `build-slice-<n>` proposal requires a current passing verify result**
@@ -630,6 +638,8 @@ the gate log will show both. Treat a proposal as ruled once its verdict is recor
 - Bad verdict string, missing `--by`, or no such proposal branch: throws immediately.
 - The proposal file is missing its `gate:` line: throws naming the proposal.
 - The named gate is not in the project's policy: throws.
+- The proposal changes the `policy` block and is not at G-POL: throws, naming the gate it is at
+  and saying a policy change is ruled only at G-POL. Nothing is written.
 - `by` is not a listed holder or escalation target for that gate: throws, naming who is allowed.
 - The working tree is dirty: throws before anything is checked out, listing the dirty paths.
 - The approval merge conflicts: the merge is aborted, `main` is left as it was, the working tree

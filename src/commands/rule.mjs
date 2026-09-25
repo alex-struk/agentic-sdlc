@@ -20,6 +20,7 @@ import { proposalFamily, revisableStages, stageForProposal, undeliverableConditi
 import { COMMANDS } from "../cli.mjs";
 import { heldByFor } from "../lib/seat.mjs";
 import { approvesUnasserted, escalateTiers } from "../config/policy.mjs";
+import { proposedPolicyChange } from "../runner/ruling-config.mjs";
 
 // Which grammar a proposal's conditions are read in is a property of the conditions, so it
 // is defined with them; `rule` is what applies it, and is where a caller reaches it.
@@ -751,14 +752,32 @@ function openGate(projectDir, name) {
     const gateMatch = proposalText ? proposalText.match(/^gate:\s*(\S+)/m) : null;
     if (!gateMatch) throw new Error(`proposal ${name} has no gate line`);
     const gate = gateMatch[1];
-    const { config, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+    const { config: branchConfig, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
     if (errors.length) throw new Error(`config invalid:\n  ${errors.join("\n  ")}`);
+    const governed = governingConfig(projectDir, branch, name, gate, branchConfig);
+    if (governed.refusal) throw new Error(governed.refusal);
+    const { config } = governed;
     const g = config.policy.gates[gate];
     if (!g) throw new Error(`gate ${gate} is not in policy`);
     return { branch, start, proposalPath, proposalText, gate, g, config };
   } catch (e) {
     throw leaveRuling(projectDir, start, branch, e);
   }
+}
+
+// The configuration a ruling acts on, and whether the proposal may be ruled at `gate` at all.
+// Ordinarily it is the branch's own (`0013`, `0038`). A proposal that changes the `policy`
+// block is ruled at G-POL and nowhere else, and under the policy on `main`: the policy it
+// proposes is its subject, and a change that could name who rules it would be ruled by
+// whoever it named (`0043`). The same for both seats, since both reach it through here or
+// through `rulePending`.
+function governingConfig(projectDir, branch, name, gate, branchConfig) {
+  const change = proposedPolicyChange(projectDir, branch);
+  if (!change.changed) return { config: branchConfig, refusal: null };
+  if (gate !== "G-POL") {
+    return { config: branchConfig, refusal: `proposal ${name} changes the policy block of .sdlc/config.yaml and is at ${gate}; a change to policy is ruled only at G-POL. Withdraw it and propose the policy change at G-POL on its own` };
+  }
+  return { config: { ...branchConfig, policy: change.mainPolicy }, refusal: null };
 }
 
 // `conditions` is what a person in a gate seat attaches to a verdict, and it is the same
@@ -1291,17 +1310,23 @@ export async function rulePending(projectDir) {
     // retry ceiling counts.
     let configText;
     try { configText = git(["show", `${branch}:.sdlc/config.yaml`], projectDir); } catch { continue; }
-    const { config, errors } = parseConfig(configText);
+    const { config: branchConfig, errors } = parseConfig(configText);
     if (errors.length) continue;
+    let proposalText;
+    try { proposalText = git(["show", `${branch}:.sdlc/proposals/${name}.md`], projectDir); } catch { continue; }
+    const gateMatch = proposalText.match(/^gate:\s*(\S+)/m);
+    if (!gateMatch) continue;
+    const governed = governingConfig(projectDir, branch, name, gateMatch[1], branchConfig);
+    if (governed.refusal) {
+      console.log(`${name}: left open — ${governed.refusal}`);
+      continue;
+    }
+    const { config } = governed;
     const verified = escalation ? { ok: true } : buildVerifiedOnBranch(projectDir, branch, name, config);
     if (!verified.ok) {
       if (verified.notPassed) console.log(`${name}: left open — ${verified.reason}; rule it by name to return or escalate it`);
       continue;
     }
-    let proposalText;
-    try { proposalText = git(["show", `${branch}:.sdlc/proposals/${name}.md`], projectDir); } catch { continue; }
-    const gateMatch = proposalText.match(/^gate:\s*(\S+)/m);
-    if (!gateMatch) continue;
     const g = config.policy.gates[gateMatch[1]];
     if (!g) continue;
     let persona;
