@@ -128,8 +128,9 @@ adapter is rebound, a test re-derived, a requirement re-recovered or a stage sen
 work before what the owing stage produces is escalated (section 6), how many repair
 turns a stage gets after a failed post-check, which tiers force an escalation and which block an
 unverified test (both always including CRITICAL), whether G3 may approve a build on criteria
-nobody asserted, each stage's turn ceiling (`policy.turns`), and which egress rules the egress
-check applies. Keys the schema accepts and nothing reads (`policy.triage`, `policy.rungs`) are
+nobody asserted, each stage's turn ceiling (`policy.turns`), which kind of ready work `next`
+takes first (`policy.next.order`), whether a record file changed outside a pipeline commit warns or
+fails (`policy.checks.hand_edits`), and which egress rules the egress check applies. Keys the schema accepts and nothing reads (`policy.triage`, `policy.rungs`) are
 marked reserved, and `sdlc checks` says so when they are set. Verify refuses to run when G3
 names no escalation target, ratify refuses to run past its follow-up limit when G1 names
 none, and a stage handed owed work past its limit refuses to run when its gate names none. A proposal that changes the config's `policy` block is ruled at G-POL only, and its seat
@@ -213,19 +214,22 @@ longer relied on to notice which omissions matter.
 
 ## 8. What runs next
 
-The design defines the phases, their order and their exit criteria. Choosing which stage runs
-next is currently done by the operator. The operator is making a decision the pipeline's own
-records could settle.
-
-**Decided, not yet built.** `sdlc next` reads the recorded state and names the next stage and
-why: phase exit criteria, what each stage owes, stale tests, open proposals, slice order.
+The design defines the phases, their order and their exit criteria, and the recorded state says
+how far a project has got through them. `sdlc next` reads that state on `main` and names the next
+command and the rule that chose it (`docs/stages/next.md`): phase exit criteria, what each stage
+owes, stale tests, open and escalated proposals, and the plan's slice order.
 
 - It only reads. Records change only through stage runs and rulings, which are commits.
-- Running something other than what `next` named is allowed and recorded, with a required
-  reason, so every deviation is visible.
-- A change to a record file that did not come from a pipeline commit is flagged by a check.
-  Whether the check warns or fails is policy: warn while the pipeline is being developed, fail
-  in live operation.
+- Where more than one kind of work is ready (an open proposal, owed work, the next step of the
+  sequence), which goes first is policy: `policy.next.order`.
+- Where nothing can run without a person, it says so, names who the work waits on, and exits
+  differently from when something can run.
+- Running something other than what `next` named is allowed and recorded: `sdlc run` needs
+  `--reason`, and what `next` named, what ran and the reason go into the run record, so every
+  deviation is visible.
+- A change to a record file that did not come from a pipeline commit is flagged by the
+  `hand-edits` check. Whether the check warns or fails is policy (`policy.checks.hand_edits`):
+  warn while the pipeline is being developed, fail in live operation.
 
 It is triggered by a change of state, never by time: a stage finishing or a ruling being
 recorded.
@@ -233,5 +237,5 @@ recorded.
 | Level | Behaviour |
 |---|---|
 | 1 | Every run and every ruling ends by printing what is next. The operator still types the command, but no longer chooses it. |
-| 2 | A loop runs whatever is next, and stops by itself at a seat held by a person, a failure, or a dead end. Whether it continues unprompted is policy. |
-| 3 | With people in seats, a person's ruling (a pull-request approval) restarts the loop through the repository's workflow. |
+| 2 | **Decided, not yet built.** A loop runs whatever is next, and stops by itself at a seat held by a person, a failure, or a dead end. Whether it continues unprompted is policy. |
+| 3 | **Decided, not yet built.** With people in seats, a person's ruling (a pull-request approval) restarts the loop through the repository's workflow. |

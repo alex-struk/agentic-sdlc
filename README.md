@@ -24,7 +24,7 @@ allows 22 or later.
   reconcile the persona briefs against the pipeline's templates, and generate the CI caller
   workflow for an existing project.
 - `sdlc checks [dir] [--self] [--json]` — run the structural checks (config, layout, constitution,
-  egress, briefs, plus criteria and criteria-index once `spec/domains` exists); `--self` checks
+  egress, briefs, conditions, hand-edits, plus criteria and criteria-index once `spec/domains` exists); `--self` checks
   this pipeline repository itself.
 - `sdlc doctor [dir]` — check that required and optional tools, the agent deny list, the egress
   name list, the persona briefs and the project configuration are all in place.
@@ -47,6 +47,10 @@ allows 22 or later.
   on, `--target` the running application it acts against, `--stale` restricts `derive-tests` to the
   criteria that have moved on since their tests were written, and `--revise` sends `archaeology`
   back over a domain from a returned G1 ruling.
+- `sdlc next [dir] [--json]` — name the next command to run and the rule of the record that
+  chose it, read from `main`, with what else is ready and what waits on a person. Exits 0 when
+  something can run, 3 when nothing can until a person acts, 4 when nothing is left
+  (`docs/stages/next.md`). A `sdlc run` of anything else needs `--reason`, which is recorded.
 - `sdlc resume [--again]` — continue a run an interrupted process left mid-stage, re-judging
   whatever the agent session left behind against the stage's post-checks.
 - `sdlc status [dir]` — regenerate the generated state site (`site/index.md`, `site/gates.md`,

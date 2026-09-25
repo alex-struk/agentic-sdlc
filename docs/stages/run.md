@@ -10,7 +10,12 @@ proposal, depending on whether the stage holds a gate.
 ## Inputs
 
 `sdlc run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--dry-run] [--again]
-[--revise]`, run from inside the project's working tree, on `main`.
+[--revise] [--reason "..."]`, run from inside the project's working tree, on `main`.
+
+A run other than the one `sdlc next` names needs `--reason`, and without one it is refused before
+anything is written, with a message naming what `next` names. With one, what `next` named, what
+ran and the reason are appended to the run record and committed before the run starts
+(`docs/stages/next.md`, "Running something else"). A `--dry-run` needs no reason.
 
 `<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Implemented today:
 `probe` (which proves the runner itself and is not one of the pipeline's own stages), `intent`,
@@ -301,7 +306,8 @@ In the order they are reached:
 Exits 0 and prints `run <stage>: ok`, with `(opened <branch>)` appended when a proposal was
 opened, and `execute`'s own text printed above it for a stage with no agent turn. A dry run exits
 0 having printed the prompt and skill path (or the one-line `agent: false` note) only. Any check
-failure exits 1 and prints `run <stage>: failed` followed by the check messages.
+failure exits 1 and prints `run <stage>: failed` followed by the check messages. Every run but a
+dry run then ends with the short `next` block (`docs/stages/next.md`), whatever its outcome.
 
 ## Re-run behaviour
 

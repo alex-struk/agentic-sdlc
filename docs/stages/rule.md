@@ -630,7 +630,8 @@ before running `--pending` again — the one way a batch can end off `main` on i
 
 Exits 0. Human path prints `<name>: <verdict> at <gate>`. Agent path prints `<name>: <verdict>` on
 approve/return, or `<name>: escalated (<rationale>)` on escalation; `--pending` prints one such
-line per proposal it rules.
+line per proposal it rules. Every ruling, and every `--pending` batch, then ends with the short
+`next` block (`docs/stages/next.md`), read from `main` whichever branch the ruling left checked out.
 
 ## Re-run behaviour
 

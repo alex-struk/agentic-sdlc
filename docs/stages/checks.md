@@ -48,6 +48,15 @@ No agent.
   `condition-met <ref>: <what was done>` or `condition-withdrawn <ref>: <why it is no longer
   asked for>`; see `docs/stages/rule.md`. An untaken revision request is always a warning,
   because the only way to clear one is to take it up.
+- **hand-edits** — a commit on the checked-out branch, not authored as the pipeline
+  (`SDLC_AUTHOR`, `src/lib/git.mjs`), that changes a record file: an owed-work list
+  (`src/spec/owed.mjs`), a gate file under `.sdlc/gates/`, or `.sdlc/lock.json`. Each finding names
+  the commit, its subject and the record files it changed, never its author. It is a warning, or a
+  failure where `policy.checks.hand_edits` is `fail`. Merge commits are not read, since a merge
+  brings in changes whose own commits are read. Only commits made on or after the day the check
+  exists from (`HAND_EDITS_SINCE`) are read; earlier history was never held to it. `sdlc init`
+  rewrites `.sdlc/lock.json` and leaves the commit to the project's owner, so that commit is
+  reported like any other change to the file.
 - **constitution** — `constitution.md` exists, has no unfilled `{{placeholder}}`, has at least one
   `### P<n>` platform article, and every such article has a `Source:` line that is either the
   literal word `convention` or an `http(s)://` URL.
