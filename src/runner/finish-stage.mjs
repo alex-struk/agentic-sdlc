@@ -11,7 +11,7 @@ import { propose } from "../commands/propose.mjs";
 import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
 import { endedBecause, runAgent, turnsFor, writeMcpConfig, metricsOf } from "./executor.mjs";
-import { agentFor } from "./agents.mjs";
+import { stageAgent } from "./agents.mjs";
 import { engineLabel } from "../lib/engine.mjs";
 
 // The run-record tail naming what ran the turn (`onEngine` in `src/commands/run.mjs`).
@@ -200,8 +200,8 @@ async function runFixTurn(cwd, stage, ctx, messages) {
       mcpConfig,
       allowedTools: stage.allowedTools,
       env: stage.env?.(ctx, ctx.config),
-      // The same backend and model as the turn it repairs, resolved the same way.
-      agent: agentFor(ctx.config, stage.name),
+      // The same backend, model and isolation as the turn it repairs, resolved the same way.
+      agent: stageAgent(ctx.config, stage),
     });
   } finally {
     rmSync(skillDir, { recursive: true, force: true });

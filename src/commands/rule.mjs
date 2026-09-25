@@ -8,7 +8,7 @@ import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } from "../runner/persona.mjs";
 import { runAgent, endedBecause, preflightAuth, turnsFor, DEFAULT_MAX_TURNS, metricsOf } from "../runner/executor.mjs";
-import { rulingAgentFor } from "../runner/agents.mjs";
+import { rulingAgent, isolationUnavailable } from "../runner/agents.mjs";
 import { engineFrontMatter, engineLabel } from "../lib/engine.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { writeJournal } from "../runner/journal.mjs";
@@ -1621,7 +1621,11 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // The backend and model this persona's ruling runs on (`src/runner/agents.mjs`): the
     // project's `policy.agents.rulings` for this gate or persona, its default, or an
     // operator's `SDLC_AGENT_BACKEND` for this run. Every backend runs a ruling read-only.
-    const agent = rulingAgentFor(config, { gate, persona });
+    // Whether it runs in a container is resolved with it, and a ruling the policy isolates is
+    // refused on a machine with no Docker rather than run on the host.
+    const agent = rulingAgent(config, { gate, persona });
+    const unavailable = isolationUnavailable(agent);
+    if (unavailable) throw new Error(`the ruling on ${name} was not started: ${unavailable}`);
     await preflightAuth(agent);
 
     const typecheck = await acceptanceTypecheck(projectDir, {

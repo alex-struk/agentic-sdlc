@@ -2,7 +2,8 @@ import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ensureConfigHome, ensureCodexHome } from "./config-home.mjs";
-import { buildCodexArgs, codexBin, parseCodexOutput, codexWallClockMs, CODEX_AUTH_ADVICE } from "./codex.mjs";
+import { buildCodexArgs, codexBin, parseCodexOutput, codexWallClockMs, CODEX_AUTH_ADVICE, writesFiles } from "./codex.mjs";
+import { runInContainer } from "./container.mjs";
 import { writeText } from "../lib/fsx.mjs";
 
 // The MCP servers a stage names (`stage.mcp?.(ctx, config)`) live in their own scratch
@@ -202,7 +203,7 @@ function runMock({ cwd, stage, prompt, systemPromptFile }, agent) {
   // The engine a mock turn reports is the one the run resolved, marked as a mock, so a test
   // can follow provenance from configuration to every page that shows it.
   return { ok: m.ok !== false, text: m.text ?? "", cost: 0, turns: 1, sessionId: "mock", raw: m,
-    engine: { backend: agent.backend, model: agent.model, version: "mock" } };
+    engine: { backend: agent.backend, model: agent.model, version: "mock", ...(agent.isolation === "container" ? { isolation: "container", image: "mock", egress: agent.egress } : {}) } };
 }
 
 // The binary a real agent turn spawns. Overridable so the executor's own behaviour —
@@ -244,10 +245,11 @@ function claudeModel(j) {
   return ranked[0]?.[0] ?? "";
 }
 
-// The backend and model a turn runs on. `claude` with the CLI's own default model is what
-// a caller that names nothing gets, which is what every turn was before there was a choice.
+// The backend, model and isolation a turn runs on. `claude` with the CLI's own default model,
+// on the host, is what a caller that names nothing gets.
 export function normaliseAgent(agent) {
-  return { backend: agent?.backend || "claude", model: agent?.model || "" };
+  return { backend: agent?.backend || "claude", model: agent?.model || "", isolation: agent?.isolation === "container" ? "container" : "none",
+    egress: agent?.egress ?? null, allow: agent?.allow ?? [] };
 }
 
 // Claude's `-p --output-format json` result: one JSON object for the whole session.
@@ -289,6 +291,12 @@ function codexSignIn() {
 // `stopAfterMs` is the ceiling the runner enforces for a CLI with no turn cap of its own;
 // Claude has one (`--max-turns`) and gets none.
 //
+// For a turn in a container (`src/runner/container.mjs`): `credential` is the sign-in file its
+// home holds, `homeEnv` the variable that names the home, `homeFiles` what else of the home the
+// session is given (read-only), `filesInSession` whether its arguments name files the session
+// reads for itself, and `writes` whether a turn with this tool list may write its workspace,
+// which is mounted read-only when it may not.
+//
 // `endpoints` are the hosts the CLI reaches its model and its sign-in at, which an isolated
 // session is always allowed (`docs/decisions/0061`): without them there is no session at all.
 // Codex's were observed through the egress proxy from a signed-in session (the model at
@@ -308,6 +316,11 @@ export const BACKENDS = {
     maxBuffer: 64 * 1024 * 1024,
     stopAfterMs: () => undefined,
     signIn: claudeSignIn,
+    credential: ".credentials.json",
+    homeEnv: "CLAUDE_CONFIG_DIR",
+    homeFiles: [],
+    filesInSession: true,
+    writes: writesFiles,
     endpoints: ["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "statsig.anthropic.com"],
   },
   codex: {
@@ -322,6 +335,11 @@ export const BACKENDS = {
     maxBuffer: 256 * 1024 * 1024,
     stopAfterMs: (opts) => opts.wallClockMs ?? codexWallClockMs(opts.maxTurns ?? DEFAULT_MAX_TURNS),
     signIn: codexSignIn,
+    credential: "auth.json",
+    homeEnv: "CODEX_HOME",
+    homeFiles: ["hooks.json"],
+    filesInSession: false,
+    writes: writesFiles,
     endpoints: ["chatgpt.com", "ab.chatgpt.com", "auth.openai.com"],
   },
 };
@@ -345,28 +363,13 @@ export async function runAgent(opts) {
   const agent = normaliseAgent(opts.agent);
   if (process.env.SDLC_EXECUTOR === "mock") return runMock(opts, agent);
   const backend = backendFor(agent.backend);
-  const bin = backend.bin();
-  const { args, env, input } = backend.buildArgs({ ...opts, model: agent.model }, backend.ensureHome());
-  // Asked before the session rather than after it, so the record names the binary that is
-  // about to run and nothing the version probe does can land on top of the session's work.
-  const version = recorded(opts) ? cliVersion(bin) : "";
   const limitMs = backend.stopAfterMs(opts);
-  const { stdout, stopped } = await new Promise((resolve, reject) => {
-    const child = execFile(bin, args, { cwd: opts.cwd, env, maxBuffer: backend.maxBuffer, ...(limitMs ? { timeout: limitMs, killSignal: "SIGTERM" } : {}) }, (err, out, stderr) => {
-      if (limitMs && err?.killed) return resolve({ stdout: out ?? "", stopped: true });
-      if (err && !out) return reject(new Error(withAuthAdvice(`${backend.name} failed: ${stderr || err.message}`, backend.advice)));
-      resolve({ stdout: out, stopped: false });
-    });
-    // A child that exits before reading all of stdin (a crash, a non-zero exit before
-    // the prompt is fully drained) raises 'error' on the stream; left unhandled that is
-    // an uncaught exception that would crash this process instead of surfacing through
-    // the exec callback's own err/stderr above, which is where a failure like that
-    // already gets reported.
-    child.stdin.on("error", () => {});
-    child.stdin.end(input);
-  });
+  const turn = { ...opts, model: agent.model };
+  const { stdout, stopped, version, isolation } = agent.isolation === "container"
+    ? await inContainer(backend, turn, agent, limitMs)
+    : await onHost(backend, turn, limitMs);
   const parsed = backend.parse(stdout);
-  const engine = { backend: backend.name, model: parsed?.model || agent.model, version };
+  const engine = { backend: backend.name, model: parsed?.model || agent.model, version, ...isolation };
   // A session the runner ended is a failed turn, and says how it ended in the CLI's own
   // vocabulary (`endedBecause`), with whatever it had reported by then.
   if (stopped) {
@@ -382,4 +385,40 @@ export async function runAgent(opts) {
   // in a stage's own account of what it built.
   const { model: _model, ...result } = parsed;
   return { ...result, text: result.ok ? result.text : withAuthAdvice(result.text, backend.advice), engine };
+}
+
+async function onHost(backend, opts, limitMs) {
+  const bin = backend.bin();
+  const { args, env, input } = backend.buildArgs(opts, backend.ensureHome());
+  // Asked before the session rather than after it, so the record names the binary that is
+  // about to run and nothing the version probe does can land on top of the session's work.
+  const version = recorded(opts) ? cliVersion(bin) : "";
+  const out = await new Promise((resolve, reject) => {
+    const child = execFile(bin, args, { cwd: opts.cwd, env, maxBuffer: backend.maxBuffer, ...(limitMs ? { timeout: limitMs, killSignal: "SIGTERM" } : {}) }, (err, stdout, stderr) => {
+      if (limitMs && err?.killed) return resolve({ stdout: stdout ?? "", stopped: true });
+      if (err && !stdout) return reject(new Error(withAuthAdvice(`${backend.name} failed: ${stderr || err.message}`, backend.advice)));
+      resolve({ stdout, stopped: false });
+    });
+    // A child that exits before reading all of stdin (a crash, a non-zero exit before
+    // the prompt is fully drained) raises 'error' on the stream; left unhandled that is
+    // an uncaught exception that would crash this process instead of surfacing through
+    // the exec callback's own err/stderr above, which is where a failure like that
+    // already gets reported.
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
+  });
+  return { ...out, version, isolation: {} };
+}
+
+// A turn in a throwaway container (`docs/decisions/0061`). The record names the image that
+// ran it and the allowlist it could reach, beside the CLI version the image reports.
+async function inContainer(backend, opts, agent, limitMs) {
+  let out;
+  try {
+    out = await runInContainer(backend, opts, agent, { recorded: recorded(opts), limitMs });
+  } catch (e) {
+    throw new Error(withAuthAdvice(e.message, backend.advice));
+  }
+  return { stdout: out.stdout, stopped: out.stopped, version: out.version,
+    isolation: { isolation: "container", image: out.image, egress: agent.egress } };
 }

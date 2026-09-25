@@ -1,5 +1,6 @@
 import { backendFor, BACKENDS } from "./executor.mjs";
 import { grantsShell } from "./codex.mjs";
+import { dockerStatus } from "./container.mjs";
 
 // Which agent backend, and which model, does a turn run on.
 //
@@ -165,6 +166,15 @@ export function isolationRefusal(stage, config, agent) {
     `${stage.name} is set to run in a container (${agent.isolationFrom}), and it cannot: ${blocker}`,
     `Set policy.agents.stages.${stage.name}.isolation: none to run it on the host${agent.backend === "codex" ? `, which on codex also needs policy.agents.stages.${stage.name}.accept_weaker: true` : ""}, or run it on claude.`,
   ].join(" ");
+}
+
+// Whether this machine can run a turn in a container at all, checked with the pre-checks, before
+// anything is spent: a turn the policy isolates is refused rather than run on the host when
+// Docker is not there. A mock turn reaches no container and is not checked.
+export function isolationUnavailable(agent, status = () => dockerStatus()) {
+  if (agent?.isolation !== "container" || process.env.SDLC_EXECUTOR === "mock") return null;
+  const s = status();
+  return s.ok ? null : `this turn runs in a container (${agent.isolationFrom}), and ${s.said}. Start Docker, or change the isolation in policy.agents (a policy change ruled at G-POL).`;
 }
 
 // Why a stage may not run on Codex as the project has it configured, or null.

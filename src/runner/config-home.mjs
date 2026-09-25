@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, statSync, mkdirSync, symlinkSync, rmSync, chmodSync } from "node:fs";
+import { existsSync, lstatSync, statSync, mkdirSync, symlinkSync, rmSync, chmodSync, copyFileSync, utimesSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { writeText } from "../lib/fsx.mjs";
@@ -93,4 +93,44 @@ export function ensureCodexHome() {
   const home = ensureHome(codexHomePath(), "auth.json", codexCredentialsSource());
   writeText(join(home, "hooks.json"), JSON.stringify(CODEX_HOOKS, null, 2) + "\n");
   return home;
+}
+
+// A copy of a pipeline home for one isolated session (`docs/decisions/0061`): the credential,
+// read through the link to the operator's own, and the files named in `files`, into `dest`,
+// which is private to the account. The credential keeps its source's modification time, so a
+// copy the session never touched is not mistaken for a refresh when it comes back. Nothing
+// else of the home is copied, and nothing reads what the credential holds.
+export function copyHome(home, credential, files, dest) {
+  mkdirSync(dest, { recursive: true, mode: 0o700 });
+  chmodSync(dest, 0o700);
+  const src = join(home, credential);
+  const st = statSync(src, { throwIfNoEntry: false });
+  if (st?.isFile()) {
+    const to = join(dest, credential);
+    copyFileSync(src, to);
+    chmodSync(to, 0o600);
+    utimesSync(to, st.atime, st.mtime);
+  }
+  for (const f of files) if (existsSync(join(home, f))) copyFileSync(join(home, f), join(dest, f));
+  return dest;
+}
+
+// The credential an isolated session leaves in its copy of the home, kept in the pipeline's
+// own home when it is newer than the one there: the rule `0035` sets for a refresh, applied
+// across the container boundary. It replaces the link by rename, as a refresh on the host
+// does, so it lands as a regular file that `ensureHome` keeps while it is the newer of the
+// two. Returns whether it was kept.
+export function keepRefreshed(copyDir, home, credential) {
+  const copy = join(copyDir, credential);
+  const st = lstatSync(copy, { throwIfNoEntry: false });
+  if (!st?.isFile() || st.size === 0) return false;
+  const target = join(home, credential);
+  const current = statSync(target, { throwIfNoEntry: false });
+  if (current && st.mtimeMs <= current.mtimeMs) return false;
+  const tmp = join(home, `.${credential}.${process.pid}.tmp`);
+  copyFileSync(copy, tmp);
+  chmodSync(tmp, 0o600);
+  utimesSync(tmp, st.atime, st.mtime);
+  renameSync(tmp, target);
+  return true;
 }

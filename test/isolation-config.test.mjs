@@ -200,3 +200,18 @@ test("checks refuses an egress naming a list that neither the pipeline nor the p
   assert.ok(r.messages.some((m) => /policy\.agents\.rulings\.G3\.egress.*elsewhere/.test(m)), r.messages.join("\n"));
   assert.deepEqual(checkConfig(project({ allowlists: { mirror: ["npm.example.org"] }, stages: { build: { egress: "mirror" } } })).messages, []);
 });
+
+test("an isolated turn on a machine with no Docker is refused before anything is spent, and a mock turn is never checked", async () => {
+  const { isolationUnavailable } = await import("../src/runner/agents.mjs");
+  const agent = stageAgent(config({ backend: "codex" }), BLIND, NO_ENV);
+  const down = () => ({ ok: false, said: "Docker is not reachable" });
+  const prev = process.env.SDLC_EXECUTOR;
+  delete process.env.SDLC_EXECUTOR;
+  try {
+    assert.match(isolationUnavailable(agent, down), /runs in a container \(default\), and Docker is not reachable/);
+    assert.equal(isolationUnavailable(agent, () => ({ ok: true })), null);
+    assert.equal(isolationUnavailable(stageAgent(config(), BLIND, NO_ENV), down), null);
+    process.env.SDLC_EXECUTOR = "mock";
+    assert.equal(isolationUnavailable(agent, down), null);
+  } finally { if (prev === undefined) delete process.env.SDLC_EXECUTOR; else process.env.SDLC_EXECUTOR = prev; }
+});

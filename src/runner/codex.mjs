@@ -118,15 +118,22 @@ function mcpOverrides(mcpConfig) {
 // ephemeral workspace is an extracted archive, not a repository; and
 // `--dangerously-bypass-hook-trust` because the one hook in that directory is the one the
 // pipeline wrote (`ensureCodexHome`), and Codex runs no hook it has not been told to trust.
-export function buildCodexArgs({ prompt, stage, systemPromptFile, addDirs = [], allowedTools = [], env = {}, mcpConfig, model, cwd }, codexHome) {
+//
+// In a container (`isolated`, `docs/decisions/0061`) the container is the sandbox: Codex's own
+// runs commands under bubblewrap, which cannot create a namespace in an unprivileged container
+// and fails every command there, so the session is given full access to a container whose
+// mounts, network and account are what confine it. A turn that only reads has its workspace
+// mounted read-only.
+export function buildCodexArgs({ prompt, stage, systemPromptFile, addDirs = [], allowedTools = [], env = {}, mcpConfig, model, cwd, isolated = false }, codexHome) {
   const writes = writesFiles(allowedTools);
+  const sandbox = isolated ? "danger-full-access" : writes ? "workspace-write" : "read-only";
   const args = ["exec", "--json", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config",
     "--dangerously-bypass-hook-trust",
-    "--sandbox", writes ? "workspace-write" : "read-only",
+    "--sandbox", sandbox,
     "-c", 'approval_policy="never"'];
   // A stage given a shell was given it to reach something — a package registry, the
   // oracle — and Codex's workspace sandbox has no network unless it is granted.
-  if (writes && grantsShell(allowedTools)) args.push("-c", "sandbox_workspace_write.network_access=true");
+  if (!isolated && writes && grantsShell(allowedTools)) args.push("-c", "sandbox_workspace_write.network_access=true");
   if (model) args.push("--model", model);
   const instructions = [systemPromptFile ? readFileSync(systemPromptFile, "utf8") : "", skillsIndex(cwd)]
     .filter(Boolean).join("\n\n");

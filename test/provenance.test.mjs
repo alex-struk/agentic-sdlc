@@ -124,10 +124,10 @@ function registerBlind(name, gate = null) {
   });
 }
 
-test("a stage with no shell is refused on codex before anything is spent, and the refusal is recorded", async () => {
+test("a stage with no shell is refused on codex on the host before anything is spent, and the refusal is recorded", async () => {
   const { dir, prevEgress } = await makeProject(mkdtempSync(join(tmpdir(), "sdlc-prov-refuse-")));
   registerBlind("blind-probe");
-  setPolicy(dir, "agents:", "  backend: codex");
+  setPolicy(dir, "agents:", "  backend: codex", "  isolation: none");
   // No canned reply: a turn that ran would fail the mock outright.
   mock({});
   try {
@@ -139,9 +139,10 @@ test("a stage with no shell is refused on codex before anything is spent, and th
   } finally { cleanup(prevEgress); }
 });
 
-test("the environment override cannot move a stage with no shell onto codex", async () => {
+test("the environment override cannot move a stage with no shell onto codex on the host", async () => {
   const { dir, prevEgress } = await makeProject(mkdtempSync(join(tmpdir(), "sdlc-prov-refuse-env-")));
   registerBlind("blind-probe-env");
+  setPolicy(dir, "agents:", "  isolation: none");
   mock({});
   process.env.SDLC_AGENT_BACKEND = "codex";
   try {

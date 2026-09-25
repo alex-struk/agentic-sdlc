@@ -9,7 +9,7 @@ import { stageFor, skillText } from "../stages/registry.mjs";
 import { handedNote } from "../spec/missing-tests.mjs";
 import { materialise, collect, workspaceScopeNote, workspaceScopeViolations } from "../runner/workspace.mjs";
 import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig, metricsOf } from "../runner/executor.mjs";
-import { agentFor, codexRefusal } from "../runner/agents.mjs";
+import { stageAgent, codexRefusal, isolationRefusal, isolationUnavailable } from "../runner/agents.mjs";
 import { engineLabel } from "../lib/engine.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
@@ -176,13 +176,16 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
   // Which backend and model this stage's turns run on (`src/runner/agents.mjs`): the project's
   // `policy.agents`, or an operator's `SDLC_AGENT_BACKEND` for this run.
-  const agent = stage.agent === false ? null : agentFor(config, name);
+  // Whether it runs in a container, and what it may reach from there, is resolved with it.
+  const agent = stage.agent === false ? null : stageAgent(config, stage);
   const pre = stage.preChecks(projectDir, ctx);
   // A stage whose safety rests on something the chosen backend cannot give is refused here,
-  // with the pre-checks, before anything is spent: a stage with no shell on Codex, unless the
-  // project accepted the weaker stage in its policy.
-  const refusal = agent ? codexRefusal(stage, config, agent) : null;
-  if (refusal) pre.push({ ok: false, messages: [refusal] });
+  // with the pre-checks, before anything is spent: a stage with an allowlist on Codex on the
+  // host, unless the project accepted the weaker stage in its policy; a stage set to run in a
+  // container that cannot be isolated; an isolated stage on a machine with no Docker.
+  for (const refusal of agent ? [codexRefusal(stage, config, agent), isolationRefusal(stage, config, agent), isolationUnavailable(agent)] : []) {
+    if (refusal) pre.push({ ok: false, messages: [refusal] });
+  }
   // After the stage's own pre-checks, which are what read the owed work this run is handed.
   if (stage.gate) pre.push(checkOwedLimits(projectDir, stage, ctx));
   // A pre-check can pass and still have something to say — a turn ceiling that looks too
@@ -311,6 +314,9 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       console.log(`skill: ${skillPath}`);
       console.log(`workspace: ${wsMode}`);
       console.log(`agent: ${agent.backend}${agent.model ? ` ${agent.model}` : " (the CLI's default model)"}, from ${agent.from}`);
+      console.log(agent.isolation === "container"
+        ? `isolation: container, from ${agent.isolationFrom}; egress ${agent.egress}: ${agent.allow.join(", ")}`
+        : `isolation: none, from ${agent.isolationFrom}`);
       // `prepare` writes real files, so it does not run on a dry run at all — this is
       // the only account of it a dry run gives, and only for a stage that has one.
       if (stage.prepare) console.log("prepare: skipped on dry run");
