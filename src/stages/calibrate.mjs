@@ -14,6 +14,7 @@ import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
 import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR, TRIAGE_GRAMMAR, parseTriageConditions } from "../spec/criteria.mjs";
 import { close as closeOwed, open as openOwed } from "../spec/owed.mjs";
+import { syncMissingTests } from "../spec/missing-tests.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp, instancesOf } from "../commands/oracle.mjs";
@@ -664,6 +665,12 @@ export const calibrate = {
       writeText(join(projectDir, rel), text);
       changed.push(rel);
     }
+
+    // A missing test whose test these rows show ran at its current version is closed, with the
+    // row as its evidence; one whose test exists and has not run is handed to this stage
+    // (`src/spec/missing-tests.mjs`).
+    const owed = syncMissingTests(projectDir, { config: ctx.config });
+    if (owed.path) changed.push(owed.path);
 
     // 5. What happened, in the order a person reads it: how the suite came out, which
     // criteria are still questions, and what the last ruling actually did.

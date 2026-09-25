@@ -261,6 +261,13 @@ test("derive-tests leaves how to judge a not-testable reason to its skill", () =
   assert.match(skill, /owner: <the stage that supplies it>/);
 });
 
+test("contract's skill says what to do with a missing test it is handed, and the runner states only the form", () => {
+  const skill = readFileSync(skillPath("contract"), "utf8");
+  assert.match(skill, /## Missing tests handed to you/);
+  assert.match(skill, /re-address missing-test\/<id> to derive-tests: <what you added, by name>/);
+  assert.ok(!stageFor("contract").prompt({ config: {} }).includes("re-address"), "the stage's own prompt carries none of it");
+});
+
 test("recommendationFrom extracts the first sentence, handling dots in filenames", () => {
   const result = recommendationFrom("Read intent/brief.md and wrote intent/x.md. Then more.");
   assert.equal(result, "Read intent/brief.md and wrote intent/x.md.");

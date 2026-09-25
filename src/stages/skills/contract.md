@@ -126,6 +126,29 @@ honest attempt, and say in your journal exactly what happens, what you tried, an
 needed. A contract whose surface is complete and whose oracle does not start is a reasonable thing
 to put in front of a gate.
 
+## Missing tests handed to you
+
+A criterion the test writer could not reach is owed a test, and when what it lacked is yours to
+supply — a page, an action, an observation, a sign-in, a seeded record — the item is handed to
+this stage. Your prompt lists every one you owe, each with what the writer said was missing.
+
+Supply what you can. A run of them in one area usually wants one thing — the same missing
+observation named five ways — so read them together before you add anything, and add the one
+thing rather than five near-copies. Then hand each item you supplied to `derive-tests`, which
+writes its test next, saying in the line what now reaches it:
+
+```
+re-address missing-test/<id> to derive-tests: <what you added, by name>
+```
+
+An item that is not yours to supply goes to the stage whose it is, the same way, with the reason.
+A criterion that asks for something contradictory or unobservable in itself goes to `ratify`. Do
+not hand on an item you did not supply: it comes straight back, and the gate that rules this
+proposal reads the line as a claim that you did.
+
+An item you write no line for stays owed by this stage, which is the right answer for one you
+could not supply this run. Say why in the journal, so the next run does not start from nothing.
+
 ## The journal
 
 Your final message is read by whoever writes tests against this contract next, and by the

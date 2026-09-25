@@ -385,6 +385,37 @@ test("sdlc run calibrate --target old: a result set with no failures opens nothi
   }
 });
 
+// A missing test whose test now exists is owed a run, and the calibration that runs it closes
+// the item with the row it ran as the evidence.
+test("sdlc run calibrate --target old: a missing test whose test ran is closed, with the row as its evidence", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-missing-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  const owedPath = join(dir, ".sdlc/owed.yaml");
+  const owed = parseYaml(readFileSync(owedPath, "utf8"));
+  assert.deepEqual(owed.owed.filter((e) => e.kind === "missing-test").map((e) => [e.item, e.stage]), [["R-1.3", "contract"]],
+    "approving the derivation opened the record's item");
+  owed.owed.push({ kind: "missing-test", item: "R-1.2", id: "R-1.2", version: 1, domain: "applications", stage: "calibrate", target: "old",
+    why: "a test for v1 exists and has not run", by: "runner", at: "2026-01-01T00:00:00.000Z" });
+  writeFileSync(owedPath, stringifyYaml(owed));
+  git(["add", "-A"], dir);
+  git([...COMMIT, "an item owed a run (test)"], dir);
+  const green = mockRunnerDir("missing", [PASSING_ROW, { ...FAILING_ROW, result: "pass", tests: [{ title: "status", status: "passed" }] }]);
+  calibrateEnv(green);
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    const after = parseYaml(git(["show", "main:.sdlc/owed.yaml"], dir)).owed.filter((e) => e.kind === "missing-test");
+    const ran = after.find((e) => e.item === "R-1.2");
+    assert.equal(ran.closed.outcome, "met");
+    assert.equal(ran.closed.why, "tests/results/old/latest.json: R-1.2 v1 pass");
+    assert.equal(after.find((e) => e.item === "R-1.3").closed, undefined, "a criterion still recorded untestable stays owed");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
 test("a calibration proposal ruled with a ratification verb is re-prompted once, and recorded as unparsed if it comes back the same", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-grammar-"));
   const { dir, prevEgress } = await makeReadyForCalibrate(tmp);

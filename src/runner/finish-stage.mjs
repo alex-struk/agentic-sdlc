@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
-import { git, gitOk, changedPaths, stageAll, stageSite, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, changedPaths, stageAll, stagePaths, stageSite, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { writeJournal } from "./journal.mjs";
 import { stalledOn } from "./escalation.mjs";
@@ -14,6 +14,9 @@ import { endedBecause, runAgent, turnsFor, writeMcpConfig } from "./executor.mjs
 import { skillText } from "../stages/registry.mjs";
 import { postCheckRepairs } from "../config/policy.mjs";
 import { settleRequestedRevision } from "../stages/proposals.mjs";
+import { MISSING_TEST, missingTestRef, readdressMissingTests } from "../spec/missing-tests.mjs";
+import { owedPath } from "../spec/owed.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
 import { escalateOverLimit } from "./owed-limits.mjs";
 import { IN_PLACE_MODES } from "./workspace.mjs";
 
@@ -255,6 +258,20 @@ export function finishDeterministicNoOp(projectDir, stage, ctx, text) {
 // already made sure `.sdlc/run-state.json` exists (`runStage` wrote it before the
 // agent ran; `resume` read it to find `stage`/`ctx` before calling here), so it is
 // re-read rather than threaded through, and rewritten at each phase change.
+// Moves the missing tests a run's journal hands to another stage, attributed to the proposal the
+// run opened, and commits the move. A line the run was not entitled to write — an item it does
+// not owe, a stage that does not exist — moves nothing and is named in the commit.
+function recordReaddressed(projectDir, stageName, journal, proposalName) {
+  const r = readdressMissingTests(projectDir, stageName, journal, { by: proposalName ?? stageName });
+  if (!r.path) return r;
+  const by = proposalName ? ` by ${proposalName}` : "";
+  const subject = `record(${stageName}): ${r.readdressed.map((m) => `${missingTestRef(m.id)} re-addressed to ${m.to}`).join(", ")}${by}`;
+  const body = r.refused.map((x) => `not moved: ${x}`).join("\n");
+  stagePaths(projectDir, [owedPath(MISSING_TEST)]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, ...(body ? ["-m", redactLocalPaths(body, projectDir)] : [])], projectDir);
+  return r;
+}
+
 export async function finishStage(projectDir, stage, ctx, agentResult, { workspaceDir, recollect } = {}) {
   const state = readRunState(projectDir) ?? { stage: stage.name, ctx, startedAt: new Date().toISOString() };
   state.phase = "post-checks";
@@ -431,6 +448,10 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
   // request exactly where it found it, because an ask marked answered is an ask nothing
   // raises again.
   settleRequestedRevision(projectDir, stage.name, ctx, result.text, proposal?.name ?? null);
+  // And the missing tests the run handed on (`re-address missing-test/<id> to <stage>: <why>`),
+  // in a commit of their own on `main` for the same reason: the owed list lives there, and
+  // a run that never got this far hands nothing on.
+  recordReaddressed(projectDir, stage.name, result.text, proposal?.name ?? null);
 
   clearRunState(projectDir);
   return { ok: true, proposal, journal, cost: result.cost, turns: result.turns };

@@ -101,6 +101,48 @@ test("sdlc run contract: the mock run opens proposal/contract-v1 at G1 carrying 
   }
 });
 
+// The stage that owes a missing test is handed it when it runs, and may say it is another
+// stage's; the move is recorded on main against the proposal the run opened.
+test("sdlc run contract: the missing tests contract owes are in its prompt, and a re-address line moves one", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-owed-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  writeFileSync(join(dir, "tests/acceptance/not-testable.yaml"),
+    "criteria:\n  - { id: R-1.3, version: 1, reason: \"blocked: no observation of the fee\" }\n  - { id: R-1.4, version: 1, reason: \"blocked: two states at once\", missing: \"a criterion that asks for one state\", owner: contract }\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "records (test)"], dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-owed-mock-"));
+  const mock = JSON.parse(readFileSync(join(MOCK_DIR, "contract.json"), "utf8"));
+  mock.text = `${mock.text}\n\nre-address missing-test/R-1.4 to ratify: the criterion asks for two states at once`;
+  writeFileSync(join(mockDir, "contract.json"), JSON.stringify(mock));
+  const logs = [];
+  const origLog = console.log;
+  try {
+    console.log = (...a) => logs.push(a.join(" "));
+    const dry = await runStage(dir, "contract", { dryRun: true });
+    console.log = origLog;
+    assert.equal(dry.ok, true, JSON.stringify(dry.messages));
+    const printed = logs.join("\n");
+    assert.match(printed, /missing-test\/R-1\.3 — "blocked: no observation of the fee"/);
+    assert.match(printed, /re-address missing-test\/<id> to <stage>: <why>/);
+
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const r = await runStage(dir, "contract");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    const owed = parseYaml(git(["show", "main:.sdlc/owed.yaml"], dir)).owed;
+    const moved = owed.find((e) => e.item === "R-1.4");
+    assert.equal(moved.stage, "ratify");
+    assert.deepEqual([moved.readdressed[0].from, moved.readdressed[0].by], ["contract", "contract-v1"]);
+    assert.equal(owed.find((e) => e.item === "R-1.3").stage, "contract");
+    assert.match(git(["log", "-1", "--format=%s", "main"], dir), /record\(contract\): missing-test\/R-1\.4 re-addressed to ratify by contract-v1/);
+  } finally {
+    console.log = origLog;
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("sdlc run contract: a mock whose applicant persona has no sign_in for the configured identity fails the post-check", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-nosignin-"));
   const { dir, prevEgress } = await makeProject(tmp);

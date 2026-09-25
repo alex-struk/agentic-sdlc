@@ -1342,6 +1342,8 @@ const deriveTests = {
   // The redo entries a `--stale` run derives again, which is what `policy.loops.redo` counts
   // (`src/runner/owed-limits.mjs`).
   owedHanded: (projectDir, ctx) => ctx.deriveTestsRedo ?? [],
+  // A `--stale` run's own prompt hands it the missing tests it owes (`missingPromptBlock`).
+  missingTestsInPrompt: true,
   // The paths a `--revise` run's own workspace was overlaid with — see
   // `deriveTestsRevisionScope` above.
   revisionOverlayPaths: (ctx) => deriveTestsRevisionScope(ctx.domain),

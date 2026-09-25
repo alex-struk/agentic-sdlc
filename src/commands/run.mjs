@@ -6,6 +6,7 @@ import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
+import { handedNote } from "../spec/missing-tests.mjs";
 import { materialise, collect, workspaceScopeNote, workspaceScopeViolations } from "../runner/workspace.mjs";
 import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig } from "../runner/executor.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
@@ -281,7 +282,11 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
     // read-only path — the criteria a slice claims, read from the plan — is then followed
     // by the statement that the path is not this stage's to change.
     const scopeNote = workspaceScopeNote(wsMode, collectPaths, contextPaths);
-    const prompt = [stage.prompt(ctx), scopeNote].filter(Boolean).join("\n\n");
+    // The missing tests this stage owes, appended by the runner for the same reason: which
+    // items a stage owes is read from `main`, not from anything a stage's own prompt knows. A
+    // stage whose prompt already works through them (`derive-tests --stale`) says so.
+    const owedNote = stage.missingTestsInPrompt ? null : handedNote(projectDir, name, ctx);
+    const prompt = [stage.prompt(ctx), owedNote, scopeNote].filter(Boolean).join("\n\n");
     const mcpServers = stage.mcp?.(ctx, config);
     const envVars = stage.env?.(ctx, config);
     if (dryRun) {

@@ -118,15 +118,19 @@ function pendingEntry(record, index) {
     stage: recordOwner(record),
     why: recordMissing(record),
     closed: null,
+    pending: true,
   };
 }
 
 // The open items as a commit holds them — `main` unless told otherwise: every open entry on
 // file, and an item for each record the entries do not account for. Reads git objects only.
 export function openMissingTestsAt(projectDir, rev = "main") {
-  const stored = readAt(projectDir, MISSING_TEST, rev);
-  const index = indexIn(showAt(projectDir, rev, "spec/criteria-index.json"));
-  const pending = recordsIn(showAt(projectDir, rev, NOT_TESTABLE_PATH)).filter((r) => !covered(stored, r));
+  return openFrom(readAt(projectDir, MISSING_TEST, rev), showAt(projectDir, rev, NOT_TESTABLE_PATH), showAt(projectDir, rev, "spec/criteria-index.json"));
+}
+
+function openFrom(stored, recordsText, indexText) {
+  const index = indexIn(indexText);
+  const pending = recordsIn(recordsText).filter((r) => !covered(stored, r));
   return [...stored.filter(isOpen), ...pending.map((r) => pendingEntry(r, index))];
 }
 
@@ -214,7 +218,7 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
     fresh.push({ ...pendingEntry(r, index), ...stamp });
   }
   if (fresh.length) {
-    const { path, added } = open(projectDir, MISSING_TEST, fresh.map(({ kind: _k, closed: _c, ...e }) => e));
+    const { path, added } = open(projectDir, MISSING_TEST, fresh.map(({ kind: _k, closed: _c, pending: _p, ...e }) => e));
     result.path = path;
     result.opened = added.map((e) => e.item);
   }
@@ -252,12 +256,30 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
   return result;
 }
 
+// The open items as the working tree holds them, the way `openMissingTestsAt` reads a commit.
+export function openMissingTests(projectDir) {
+  return openInTree(projectDir);
+}
+
+function openInTree(projectDir) {
+  return openFrom(read(projectDir, MISSING_TEST), workingText(projectDir, NOT_TESTABLE_PATH), workingText(projectDir, "spec/criteria-index.json"));
+}
+
+// Writes an entry, stamped by the runner, for every record on file that nothing accounts for,
+// so a withdrawal or a move has an entry to stand on. Nothing else about the list changes.
+function materialise(projectDir, at) {
+  const pending = openInTree(projectDir).filter((e) => e.pending);
+  if (!pending.length) return null;
+  return open(projectDir, MISSING_TEST, pending.map(({ kind: _k, closed: _c, pending: _p, ...e }) => ({ ...e, by: "runner", at }))).path;
+}
+
 // Withdraws one item, as a ruler does: with a reason, and never an item nothing has open. An
 // item read from its record alone is written first, so the withdrawal has an entry to stand on.
 // Returns the path written, or `null` where nothing open names the criterion.
 export function withdrawMissingTest(projectDir, id, { why, by, at = new Date().toISOString() } = {}) {
   if (!text(why)) throw new Error(`withdrawing ${missingTestRef(id)} needs a reason`);
-  syncMissingTests(projectDir, { at });
+  if (!openInTree(projectDir).some((e) => e.item === id)) return null;
+  materialise(projectDir, at);
   let hit = false;
   const path = rewrite(projectDir, MISSING_TEST, (list) => list.map((e) => {
     if (!isOpen(e) || e.item !== id) return e;
@@ -281,9 +303,8 @@ export function readdressMissingTests(projectDir, stage, journal, { by, at = new
   const lines = readdressLines(journal);
   const result = { path: null, readdressed: [], refused: [] };
   if (!lines.length) return result;
-  syncMissingTests(projectDir, { at });
   const moves = new Map();
-  const owned = new Set(read(projectDir, MISSING_TEST).filter((e) => isOpen(e) && e.stage === stage).map((e) => e.item));
+  const owned = new Set(openInTree(projectDir).filter((e) => e.stage === stage).map((e) => e.item));
   for (const l of lines) {
     const ref = missingTestRef(l.id);
     if (!STAGES.includes(l.to)) result.refused.push(`${ref}: ${l.to} is not a stage`);
@@ -292,6 +313,7 @@ export function readdressMissingTests(projectDir, stage, journal, { by, at = new
     else if (!moves.has(l.id)) moves.set(l.id, l);
   }
   if (!moves.size) return result;
+  materialise(projectDir, at);
   result.path = rewrite(projectDir, MISSING_TEST, (list) => list.map((e) => {
     const m = isOpen(e) && e.stage === stage ? moves.get(e.item) : null;
     if (!m) return e;
@@ -310,4 +332,24 @@ export function blockingMissingTests(projectDir, { claimed = [], withdrawn = [],
   const index = indexIn(workingText(projectDir, "spec/criteria-index.json"));
   return openMissingTestsAt(projectDir, rev).filter((e) => ids.has(e.item) && !gone.has(e.item)
     && !ranIn(rows, e.item, index.get(e.item)?.version ?? e.version));
+}
+
+// What a stage run is handed: the open items it owes, read from `main`, and the line that moves
+// one to another stage. A stage with a domain is handed the items in its domain. `null` where
+// the stage owes nothing, so an ordinary run's prompt reads exactly as it would without this.
+export function handedNote(projectDir, stage, { domain } = {}) {
+  const owed = openMissingTestsAt(projectDir, "main")
+    .filter((e) => e.stage === stage && (!domain || !e.domain || e.domain === domain));
+  if (!owed.length) return null;
+  const one = owed.length === 1;
+  return [
+    `## Missing ${one ? "test" : "tests"} this stage owes`,
+    `${one ? "A criterion was" : `${owed.length} criteria were`} recorded as untestable, and what ${one ? "its test needs is" : "their tests need is"} owed by ${stage}. `
+      + `${one ? "It stays" : "Each stays"} owed until a test for the criterion runs.`,
+    owed.map((e) => `- ${missingTestRef(e.item)} — ${JSON.stringify(e.readdressed?.at(-1)?.why ?? e.why)}`).join("\n"),
+    "To hand one to another stage — the one that writes its test once you have supplied what it needs, or the one whose it is — "
+      + "write a line of its own in your journal:\n\n"
+      + "re-address missing-test/<id> to <stage>: <why>\n\n"
+      + `It is recorded against this run's proposal when the run finishes. An item you write no such line for stays owed by ${stage}.`,
+  ].join("\n\n");
 }
