@@ -128,7 +128,7 @@ adapter is rebound, a test re-derived, a requirement re-recovered or a stage sen
 work before what the owing stage produces is escalated (section 6), how many repair
 turns a stage gets after a failed post-check, which tiers force an escalation and which block an
 unverified test (both always including CRITICAL), whether G3 may approve a build on criteria
-nobody asserted, each stage's turn ceiling (`policy.turns`), which kind of ready work `next`
+nobody asserted and whether it may approve one while a criterion it claims is owed a test, each stage's turn ceiling (`policy.turns`), which kind of ready work `next`
 takes first (`policy.next.order`), whether a record file changed outside a pipeline commit warns or
 fails (`policy.checks.hand_edits`), and which egress rules the egress check applies. Keys the schema accepts and nothing reads (`policy.triage`, `policy.rungs`) are
 marked reserved, and `sdlc checks` says so when they are set. Verify refuses to run when G3
@@ -172,10 +172,11 @@ stateDiagram-v2
 | `redo` | `test-wrong` at calibration, `test-overreaches` on a return | `derive-tests --stale` | the run that derives the test again |
 | `rebind` | `adapter-wrong` in a calibration's triage | `bind-adapter` for that target | `calibrate`, once the adapter has changed |
 | `recovery` | `recovery-wrong` at ratification | `archaeology` for that domain | the run that recovers the criterion again |
+| `missing-test` | an untestable record on `main` (section 7) | the stage the record names, `contract` where it names none | a result row showing its test ran; or a ruler's `condition-withdrawn` |
 
 Each kind is stored in its own file (`.sdlc/conditions.yaml`, `.sdlc/revision-requests.yaml`,
 `tests/acceptance/redo.yaml`, `tests/adapters/rebind.yaml`, `spec/recovery.yaml`), and a kind with no
-file of its own shares `.sdlc/owed.yaml`, so a new kind needs no new machinery
+file of its own — `missing-test` — shares `.sdlc/owed.yaml`, so a new kind needs no new machinery
 (`docs/decisions/0044-owed-work-is-one-list-kept-where-each-kind-lives.md`). A condition is never a
 reason to start a run: only a request opens a `--revise` run by itself.
 
@@ -189,7 +190,7 @@ its gate's escalation target rather than put to the gate holder for another roun
 
 The test writer is blind: it sees the criterion and the contract, never the code. When the
 contract gives it no way to reach or observe what a criterion describes, it records the
-criterion as untestable, with the reason and what would unblock it.
+criterion as untestable in `tests/acceptance/not-testable.yaml`.
 
 In practice most such records are **not yet testable** rather than untestable: the seed has no
 record in the state the test needs, or the contract's observations are too thin (a mail
@@ -197,15 +198,54 @@ observation that exposes the subject and recipient but not the body). A few are 
 inside of the system or about proving that something never happens, and cannot be observed from
 outside at all.
 
-**Decided, not yet built.** A missing test is an owed item (section 6):
+A missing test is an owed item (section 6) of kind `missing-test`, named `missing-test/<id>`
+(`src/spec/missing-tests.mjs`, `docs/decisions/0046-a-missing-test-is-owed-until-a-test-runs.md`).
 
-- The record must name what is missing and which stage owns supplying it. The pipeline keeps
-  no list of reasons; a new kind of blocker needs no new rule.
-- The item stays open until a test that runs exists, and a slice is not done while one of its
-  criteria is open. Whether that blocks approval is policy.
-- Proof by other means counts only when it runs: a named test inside the application that
-  verify executes and reports. A written assurance never closes the item.
-- An item nobody can close is withdrawn by a ruler with the reason written down.
+```mermaid
+stateDiagram-v2
+  [*] --> Owed: record on main<br/>names what is missing and its owner
+  Owed --> Owed: owing stage supplies it<br/>and re-addresses it (to derive-tests, or elsewhere)
+  Owed --> Closed: a result row shows its test ran<br/>at the current version
+  Owed --> Withdrawn: a ruler withdraws it<br/>with a written reason
+```
+
+- **The record names what is missing and who supplies it.** Beside its reason, a record carries
+  `missing` and `owner`, a stage. The pipeline keeps no list of reasons; a new kind of blocker
+  needs no new rule. `derive-tests` is refused a record it writes or changes without both, or
+  naming itself, and is told how to choose in its skill. A record that names no owner is owed by
+  `contract`, whose surface, seed and observations a blind test reaches the application through
+  (`docs/decisions/0007`), and its reason stands for what is missing.
+- **It is owed from the moment its record is on `main`.** The approval that merges a record writes
+  its entry in the merge, stamped with the ruling. A record on `main` that no entry accounts for
+  is read as open by every reader (`sdlc next`,
+  `sdlc checks`, the ruling prompt, the G3 guard), and its entry is written, stamped by the runner,
+  by the next pipeline commit that touches the list: an approval, a withdrawal or a re-address.
+  Reading never writes, and a project's files change only through pipeline commits.
+- **The owing stage is handed it.** Its open items are appended to its prompt when it runs, read
+  from `main`. It supplies what it can and hands each item on in its journal —
+  `re-address missing-test/<id> to <stage>: <why>` — to `derive-tests` once what was missing
+  exists, or to the stage whose it is; a criterion that is itself the problem goes to `ratify`. The
+  move is recorded on `main` against the proposal the run opened. A derivation that keeps the
+  record hands the item to the record's owner, and a test that exists and has not run is owed by
+  `calibrate`, or by `verify` in a project that does not calibrate. Rulers are shown the items the
+  proposal's stage owes and, for a build slice, the items its criteria are owed; `sdlc next` lists
+  them and routes each to the run that answers it.
+- **It closes only when a test runs.** A result row for the criterion, at its current version,
+  from a spec file, `pass` or `fail`, closes it as met with the row cited as evidence — written by
+  the calibration that ran it, or by the G3 approval of a slice whose verify ran it. A written
+  assurance never closes it: `condition-met` on a missing test is refused, and an `attested` row
+  closes nothing.
+- **A ruler withdraws one** with the reason written down, `condition-withdrawn missing-test/<id>:
+  <why>`, on any ruling and from either seat. The withdrawal holds for the criterion's version; a
+  record at a later version is owed again.
+- **Whether it blocks is policy.** While `policy.gates.G3.block_on_missing_tests` is true, the
+  default, neither seat may approve a build slice while an open item names a criterion it claims,
+  unless the ruling withdraws it. The refusal is recorded like every other.
+
+**Decided, not yet built.** Proof by other means that runs: an `attested` result naming a test the
+application itself carries, which verify executes and reports, closes an item. Verify runs the
+acceptance suite and nothing else today, so no row can name an in-application test verify ran,
+and an acceptance test that ran is the only thing that closes one.
 
 This replaces two alternatives. Escalating by the criterion's risk tier needs something to
 assign tiers and a rule for every tier below the threshold. Escalating every untestable record

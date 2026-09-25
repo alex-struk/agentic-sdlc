@@ -134,6 +134,11 @@ the proposal branch.
 - A merge commit on the proposal's branch, whenever `main` has moved since the branch was cut.
 - A run-record line, on every attempt — including one that failed part-way and one that left the
   branch dirty.
+- Nothing on the owed list. A row showing a missing test's test ran is evidence the G3 approval of
+  the slice reads: that approval closes the item, citing the row (`docs/stages/rule.md`, "A test a
+  criterion is owed"). A criterion recorded untestable is a `not-testable` row here as it always
+  is, and while its missing test is open G3 does not approve the slice unless the ruling withdraws
+  it (`policy.gates.G3.block_on_missing_tests`). An `attested` row closes nothing.
 - No gate of its own on `pass`, `pass-unasserted` or `unbound`: nothing is asked of a person until
   either the reviewer rules the proposal, or the escalation at the return limit reaches G3's
   `escalate_to`.

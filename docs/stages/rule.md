@@ -385,6 +385,49 @@ it and on which ruling, and with the statement that the next ruler will be shown
 is read through the same function the ruling prompt reads, so the stage and its ruler are shown
 one list (`docs/decisions/0041-an-instruction-owed-by-a-stage-nobody-told.md`).
 
+### A test a criterion is owed
+
+A criterion `derive-tests` recorded as untestable is an owed item of kind `missing-test`
+(`docs/operating-model.md` §7), named `missing-test/<id>`. A ruling touches these three ways.
+
+**An approval writes them down.** Once the merge is on `main`, every untestable record it brought
+there gets its item, stamped with this ruling (`from`, `gate`, `by`), and so does any record
+already on `main` that nothing had written an entry for, stamped by the runner. An item whose
+record the merge rewrote with a different owner moves to that owner; an item handed to
+`derive-tests` whose approved derivation kept the record goes back to the record's owner; an item
+whose test now exists and has not run is handed to `calibrate` (a project that calibrates) or
+`verify`. An item whose test the merge shows ran — a result row for the criterion, at its current
+version, from a spec file, `pass` or `fail` — is closed as met with that row as the evidence. All
+of it is staged into the merge commit, and the terminal says which items were opened, moved or
+closed.
+
+**A ruler withdraws one** with the line a condition is withdrawn with, on any verdict and from
+either seat:
+
+```
+condition-withdrawn missing-test/<id>: <why no test is owed>
+```
+
+It is closed as withdrawn, with the reason and the ruler, and holds for the criterion's version at
+the time; a record at a later version is owed again. `condition-met` on a missing test is refused —
+a missing test is closed by a test that runs, and by nothing a ruler writes — and so is a
+reference to an item nothing has open, with the open list in the message. On the agent seat each
+gets the one re-prompt a fixable line always gets.
+
+**G3 does not pass over one.** While `policy.gates.G3.block_on_missing_tests` is true (the
+default), approving a `build-slice-<n>` proposal is refused while an item open on `main` names a
+criterion the slice claims (the plan's list for it and every row of its verify result), unless the
+same ruling withdraws it, or the slice's verify result shows that criterion's test ran — the
+approval then closes it. Either seat is refused in the same words and the refusal is recorded like
+every other; on the agent seat the open items are quoted back for one more turn first. A standing
+escalation does not lift it: whoever rules withdraws the item on the record, with the reason, or
+does not approve. `false` lets G3 approve past open items, which stay open.
+
+The ruler is shown them. A build slice's ruling prompt lists every open item naming a criterion
+the slice claims, and whether the policy refuses an approval past them; the ruling prompt of any
+other stage's proposal lists the items that stage owes. A person in the seat reads the same list,
+with the withdrawal line, from `sdlc checks`.
+
 ### A condition asking for a path the stage cannot deliver
 
 A stage's workspace is writable only where it is collected
@@ -576,6 +619,11 @@ Nothing is materialised into a separate workspace for a ruling.
   is the one made by the target of a standing escalation, on either seat, on an escalation somebody
   else raised — the escalation and the ruling on top of it are together the record of the override
   (`docs/decisions/0022-a-guard-that-stopped-the-failure-being-recorded.md`).
+
+- **Approving a `build-slice-<n>` proposal while a criterion it claims is owed a test** is refused
+  where `policy.gates.G3.block_on_missing_tests` is true (the default), from either seat and
+  whatever escalation stands, unless the ruling withdraws each such item — see "A test a criterion
+  is owed" above.
 
 - **On the agent path, that this machine can sign in at all**, asked before the acceptance
   typecheck and the ruling turn rather than discovered inside them. It is a one-turn session

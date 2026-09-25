@@ -34,11 +34,17 @@ first when more than one is ready is `policy.next.order` (`docs/config.md`), `pr
 | Kind | What is ready | Order within the kind |
 |---|---|---|
 | `proposals` | an open proposal whose holder is an agent (`sdlc rule <name> --by agent:<persona>`); an escalation to a role an agent plays, raised by someone else (`--by agent:<target>`); a build proposal with no verify result for the application it carries (`sdlc run verify --slice <n>`) | oldest proposal branch first |
-| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again); open requests (`--revise`); redo entries and stale tests (`derive-tests --domain <d> --stale`); rebind entries (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed); recovery entries (`archaeology --domain <d> --revise`); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target, then slice |
+| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again); open requests (`--revise`); redo entries and stale tests (`derive-tests --domain <d> --stale`); rebind entries (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target, then slice |
 | `sequence` | the next stage the phases call for | the first phase whose exit criterion is not met; within it, the sequence's order |
 
 A condition is owed and listed, and is never a reason to start a run
-(`docs/decisions/0032-an-instruction-nobody-had-to-account-for.md`).
+(`docs/decisions/0032-an-instruction-nobody-had-to-account-for.md`). A missing test owed a run by
+`verify` is counted and not offered either: its slice is verified by the build sequence.
+
+**Missing tests.** An untestable record on `main` is owed a test whether or not an entry has been
+written for it yet (`docs/operating-model.md` §7): `next` reads the entries in `.sdlc/owed.yaml`
+and, beside them, an item for each record nothing accounts for, owed by the stage the record names
+or by `contract`. The `owed:` line counts them by owing stage (`69 missing-test (contract)`).
 
 **Proposals.** A proposal is open when nobody has ruled it, on its branch or on `main` — the same
 test `rule --pending` and the revise pre-checks use. A proposal is left out when a later proposal

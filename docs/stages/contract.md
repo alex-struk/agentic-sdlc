@@ -61,6 +61,29 @@ names a criterion id from whichever domain it belongs to; `ratify --domain <d>` 
 ratify.md`, "Inputs") applies every condition whose id belongs to `<d>`, on the next run for that
 domain, the same way it applies its own archaeology and follow-up rulings.
 
+## Missing tests it owes
+
+A criterion `derive-tests` records as untestable is an owed item of kind `missing-test`
+(`docs/operating-model.md` §7), owed by the stage its record names, and `contract` where the record
+names none. Every open item `contract` owes is appended to its prompt by the runner, read from
+`main`, with what the record says is missing (or, for an item another stage handed on, what that
+stage said).
+
+The run supplies what it can and hands each item on in its journal, on a line of its own:
+
+```
+re-address missing-test/<id> to <stage>: <why>
+```
+
+An item whose missing piece this run supplied goes to `derive-tests`, which writes its test on the
+next `--stale` run of its domain; one that is another stage's goes to that stage, and one whose
+criterion is itself the problem to `ratify`. The lines are applied when the run finishes, in a
+commit of their own on `main` attributed to the proposal the run opened (`record(contract): …`). A
+line for an item `contract` does not owe, or naming something that is not a stage, moves nothing
+and is named in that commit. An item the journal says nothing about stays owed by `contract`. When
+to hand an item on, and to whom, is judgement, and is in the contract skill ("Missing tests handed
+to you"); the runner states only the form.
+
 ## Route parameters a test can actually obtain
 
 A page's route may carry a parameter, and a test can only open that page if it can get a value

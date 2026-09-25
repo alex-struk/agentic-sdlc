@@ -87,6 +87,13 @@ is the only place a re-run decision is made.
   work was sent back past its limit)`. How the item is closed does not change: it closes exactly as
   it would have under the gate holder.
 
+  **Missing tests handed on.** A run's journal may move a missing test the stage owes to another
+  stage with `re-address missing-test/<id> to <stage>: <why>` (`docs/operating-model.md` §7). Once
+  the proposal is open — or the gate-less commit made — the lines are applied on `main` in a commit
+  of their own, `record(<stage>): missing-test/<id> re-addressed to <stage> by <proposal>`, and a
+  line for an item the stage does not owe moves nothing and is named in that commit's body. A run
+  that fails before this point hands nothing on.
+
   **A gated stage builds no state site.** Every page of the site is regenerated whole from the
   whole project, so a copy carried on a proposal branch would differ from every other open
   proposal's on every page and the second merge would conflict on all of them, for content neither
@@ -162,6 +169,11 @@ sees the application it is meant to be blind to. The temporary directory is remo
 The prompt says the same thing. `runStage` appends a scope note generated from these two
 declarations, naming what travels back and what is there to be read, so a stage's own prompt and
 what the runner enforces cannot come apart.
+
+Before the scope note it appends the missing tests the stage owes, read from `main` — in its
+domain, for a stage run on one — each with what is missing, and the line that hands one to another
+stage. A stage owing none gets no such section. `derive-tests` is handed its own in its `--stale`
+prompt instead (`docs/stages/derive-tests.md`).
 
 Inside the workspace, the agent session is isolated from the operator's own Claude Code
 configuration — see `docs/decisions/0004-isolated-stage-sessions.md` for what that means and why.
