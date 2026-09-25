@@ -114,3 +114,40 @@ test("an unknown stage blocks everything and names the guard table", () => {
   assert.match(r.stderr, /unknown stage 'not-a-stage'; add it to the guard table/);
   assert.equal(run("README.md", "not-a-stage").status, 2);
 });
+
+// A Codex session edits files through a patch, not through tools that name one path, and its
+// PreToolUse hook is handed the tool's input as it is: the patch as a string, or a shell
+// command carrying one. The guard reads every path a patch names — added, updated, deleted
+// or moved to — and refuses the call when any of them is outside the stage's territory.
+function runInput(toolInput, stage) {
+  return spawnSync("bash", [HOOK], { input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: toolInput }),
+    cwd: process.cwd(), env: { ...process.env, PWD: process.cwd(), SDLC_STAGE: stage ?? "" }, encoding: "utf8" });
+}
+const patch = (...headers) => ["*** Begin Patch", ...headers.flatMap((h) => [h, "+x"]), "*** End Patch"].join("\n");
+
+test("a patch that updates a path outside the stage's territory is refused, naming it", () => {
+  const r = runInput({ command: patch("*** Update File: spec/spec.md") }, "build");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /stage 'build' may not edit 'spec\/spec\.md'/);
+  assert.equal(runInput({ input: patch("*** Add File: app/src/x.ts") }, "build").status, 0);
+});
+
+test("a patch carried inside a shell command is read the same way", () => {
+  const shell = (p) => ({ command: ["bash", "-lc", `apply_patch <<'EOF'\n${p}\nEOF`] });
+  assert.equal(runInput(shell(patch("*** Add File: tests/acceptance/x.spec.ts")), "build").status, 2);
+  assert.equal(runInput(shell(patch("*** Add File: app/x.ts")), "build").status, 0);
+});
+
+test("every path in a patch is checked, including a deletion and a move's destination", () => {
+  assert.equal(runInput({ command: patch("*** Update File: app/a.ts", "*** Delete File: constitution.md") }, "build").status, 2);
+  assert.equal(runInput({ command: patch("*** Update File: app/a.ts", "*** Move to: spec/moved.md") }, "build").status, 2);
+  assert.equal(runInput({ command: patch("*** Update File: intent/a.md", "*** Add File: intent/b.md") }, "intent").status, 0);
+});
+
+test("a patch naming a path by its absolute spelling inside the project is still checked", () => {
+  assert.equal(runInput({ command: patch(`*** Update File: ${join(process.cwd(), "spec/spec.md")}`) }, "build").status, 2);
+});
+
+test("a tool call that names no path and carries no patch is not the guard's business", () => {
+  assert.equal(runInput({ command: ["bash", "-lc", "ls"] }, "build").status, 0);
+});
