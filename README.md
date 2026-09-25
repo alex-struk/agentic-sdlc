@@ -76,6 +76,9 @@ SDLC_LIVE=1 npm test
 
 - [`docs/architecture.md`](docs/architecture.md) — the runner loop, the two repositories, and
   where state lives.
+- [`docs/operating-model.md`](docs/operating-model.md) — who does the work and who judges it,
+  live operation and simulation, the three layers a rule can live in, what is owed between
+  stages, and what runs next.
 - [`docs/stages/`](docs/stages) — one contract per command: purpose, inputs, outputs, checks, exit
   criterion, re-run behaviour, and failure modes.
 - [`docs/config.md`](docs/config.md) — the configuration reference.
