@@ -172,6 +172,15 @@ async function makeProject(tmp) {
   return { dir, prevEgress };
 }
 
+// Adds lines under `policy:` in a project's committed config, so a test can run the same
+// project under a policy other than the defaults.
+function setPolicy(dir, ...lines) {
+  const p = join(dir, ".sdlc/config.yaml");
+  writeFileSync(p, readFileSync(p, "utf8").replace(/^  default_tier: (\S+)$/m, (m) => `${m}\n${lines.map((l) => `  ${l}`).join("\n")}`));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "policy"], dir);
+}
+
 function restoreEgress(prev) {
   if (prev === undefined) delete process.env.SDLC_EGRESS_NAMES;
   else process.env.SDLC_EGRESS_NAMES = prev;
@@ -358,6 +367,7 @@ test("archaeology: recovering the criterion again answers the request and passes
 test("the closing loop's bound never force-obsoletes a criterion that is out for re-recovery", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-sweep-"));
   const { dir, prevEgress } = await makeProject(tmp);
+  setPolicy(dir, "loops: { ratify_follow_ups: { on_limit: obsolete } }");
   try {
     assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
 
@@ -493,6 +503,7 @@ test("ratify: the ruling that sent a criterion back does not send it back again 
 test("the closing loop's bound reaches a criterion again once its re-recovery has come back", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-bound-lifts-"));
   const { dir, prevEgress } = await makeProject(tmp);
+  setPolicy(dir, "loops: { ratify_follow_ups: { on_limit: obsolete } }");
   try {
     assert.equal((await ratifyWithOneSentBack(dir)).ok, true);
 
@@ -780,6 +791,7 @@ test("applyConditions: a ruling that both confirms and sends back the same crite
 test("a criterion out for re-recovery stays out when another ruling edits or spikes it", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-recovery-spiked-"));
   const { dir, prevEgress } = await makeProject(tmp);
+  setPolicy(dir, "loops: { ratify_follow_ups: { on_limit: obsolete } }");
   try {
     process.env.SDLC_EXECUTOR = "mock";
     process.env.SDLC_MOCK_DIR = MOCK_DIR;

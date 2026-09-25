@@ -247,6 +247,22 @@
             "verify_returns": {
               "type": "integer",
               "minimum": 1
+            },
+            "ratify_follow_ups": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "max": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "on_limit": {
+                  "enum": [
+                    "escalate",
+                    "obsolete"
+                  ]
+                }
+              }
             }
           }
         }

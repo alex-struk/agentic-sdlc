@@ -87,6 +87,9 @@ Required. Container of governance gates, tiers, and budgets.
 - `default_tier` (enum): One of `LOW`, `STANDARD`, `HIGH`, `CRITICAL`. The default risk tier for decisions.
 - `loops` (object, optional): How many times a loop between stages goes round before a person is asked. Each key is optional and has the default shown.
   - `verify_returns` (integer, min 1, default 3): How many times `verify` returns one slice's build to `build` before the return that reaches this number escalates to G3's `escalate_to` instead. Counted per slice, across every cause verify returns a build for: failing criteria and a sandbox that did not start for a reason in the build. A reviewer's own return does not count. `verify` refuses to run at all where G3 names no `escalate_to`.
+  - `ratify_follow_ups` (object): The closing loop `ratify` runs over provisional criteria still `inferred` or `open` (`docs/stages/ratify.md`, "The closing loop").
+    - `max` (integer, min 1, default 2): How many approved follow-up rulings a domain gets before the bound applies.
+    - `on_limit` (enum `escalate` | `obsolete`, default `escalate`): What happens at the bound. `escalate` opens the next follow-up and escalates it to G1's `escalate_to`, recorded as any escalation is, so nothing leaves the contract without somebody deciding it; `ratify` refuses to run once the bound is reached if G1 names no `escalate_to`. `obsolete` marks every provisional criterion still unresolved `obsolete`, noted `unresolved after <n> rulings`.
 - `rungs` (object, optional): A map of risk tier escalation rules. Keys are tier names, values are strings.
 - `triage` (object, optional): Thresholds for automatic triage.
   - `direct_max_files` (integer, optional, min 1): Maximum files changed to bypass triage.

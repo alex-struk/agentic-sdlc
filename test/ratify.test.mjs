@@ -7,7 +7,7 @@ import { parse as parseYaml } from "yaml";
 import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
-import { ruleByAgent } from "../src/commands/rule.mjs";
+import { ruleByAgent, rule as ruleAs } from "../src/commands/rule.mjs";
 import { COMMANDS } from "../src/cli.mjs";
 import { stageFor } from "../src/stages/registry.mjs";
 import { parseDomainFile } from "../src/spec/criteria.mjs";
@@ -60,6 +60,15 @@ async function makeRatifiableProject(tmp) {
   const { dir: repoDir, commit } = makeOldRepo(tmp);
   const from = sourcesConfigWithAgentG1(tmp, repoDir, commit);
   return makeProject(tmp, { from, name: "permit-intake-ratify" });
+}
+
+// Adds lines under `policy:` in a project's committed config, so a test can run the same
+// project under a policy other than the defaults.
+function setPolicy(dir, ...lines) {
+  const p = join(dir, ".sdlc/config.yaml");
+  writeFileSync(p, readFileSync(p, "utf8").replace(/^  default_tier: (\S+)$/m, (m) => `${m}\n${lines.map((l) => `  ${l}`).join("\n")}`));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "policy"], dir);
 }
 
 function restoreEgress(prev) {
@@ -612,9 +621,10 @@ async function rule(dir, name) {
   return verdict;
 }
 
-test("the closing loop's bound: a criterion answered `contract` twice on follow-ups becomes obsolete on the third ratify, and the loop closes", async () => {
+test("the closing loop's bound, where the policy says obsolete: a criterion answered `contract` twice on follow-ups becomes obsolete on the third ratify, and the loop closes", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-loopbound-"));
   const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  setPolicy(dir, "loops: { ratify_follow_ups: { on_limit: obsolete } }");
   try {
     process.env.SDLC_EXECUTOR = "mock";
     process.env.SDLC_MOCK_DIR = MOCK_DIR;
@@ -686,6 +696,115 @@ test("the closing loop's bound: a criterion answered `contract` twice on follow-
     assert.equal(pass4.proposal ?? null, null);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// Nothing leaves the contract without somebody deciding it. Past the follow-up limit the
+// question goes to the gate's escalation target, recorded the way any escalation is, and the
+// criterion stays exactly as it was until that ruling says otherwise.
+test("the closing loop's bound, by default: the follow-up past the limit is escalated to G1's escalation target, and nothing is marked obsolete", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-loopescalate-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    assert.equal((await runStage(dir, "archaeology", { domain: "applications" })).ok, true);
+    process.env.SDLC_MOCK_DIR = mockRuling("approve", "the fee basis is confirmed; the age minimum needs a decision",
+      ["spike D-applications-1: does the age minimum hold for renewals too?", "confirm D-applications-2"]);
+    assert.equal((await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" })).verdict, "approve");
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+
+    for (const n of [1, 2]) {
+      const pass = await runStage(dir, "ratify", { domain: "applications" });
+      assert.equal(pass.ok, true, JSON.stringify(pass.messages));
+      assert.equal(pass.proposal.name, `ratify-applications-${n}`);
+      process.env.SDLC_MOCK_DIR = mockRuling("approve", "leaving the age minimum as recovered", ["contract D-applications-1"]);
+      assert.equal(await rule(dir, `ratify-applications-${n}`), "approve");
+    }
+
+    const pass3 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(pass3.ok, true, JSON.stringify(pass3.messages));
+    const domainText = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    assert.ok(!/- state: obsolete/.test(domainText), "nothing is dropped from the contract by the runner");
+    assert.ok(!/unresolved after/.test(domainText));
+    assert.match(domainText, /### D-applications-1 · v1 · open · recovered/);
+
+    assert.equal(pass3.proposal.name, "ratify-applications-3");
+    assert.equal(pass3.proposal.escalatedTo, "tech-lead");
+    const gate = parseYaml(git(["show", "proposal/ratify-applications-3:.sdlc/gates/ratify-applications-3.yaml"], dir));
+    assert.equal(gate.gate, "G1");
+    assert.equal(gate.verdict, "escalated");
+    assert.equal(gate.by, "runner:ratify");
+    assert.equal(gate.held_by, "runner");
+    assert.equal(gate.escalate_to, "tech-lead");
+    assert.match(gate.rationale, /2 follow-up rulings/);
+    assert.match(gate.rationale, /D-applications-1/);
+    assert.match(git(["show", "proposal/ratify-applications-3:.sdlc/proposals/ratify-applications-3.md"], dir), /escalated to tech-lead/);
+    assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+
+    // An escalation is not an answer, so the loop waits on it rather than asking again.
+    const waiting = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(waiting.ok, true, JSON.stringify(waiting.messages));
+    assert.equal(waiting.proposal ?? null, null);
+
+    // The escalation target rules it like any other escalated proposal, and the answer is
+    // applied like any other follow-up ruling.
+    ruleAs(dir, "ratify-applications-3", "approve", { by: "tech-lead", note: "the age minimum holds for renewals", conditions: ["confirm D-applications-1"] });
+    const pass4 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(pass4.ok, true, JSON.stringify(pass4.messages));
+    assert.match(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), /### R-1\.2 /);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("the follow-up limit is policy: a domain escalates after as many follow-up rulings as policy.loops.ratify_follow_ups.max says", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-loopmax-"));
+  const { dir, prevEgress } = await makeRatifiableProject(tmp);
+  setPolicy(dir, "loops: { ratify_follow_ups: { max: 1 } }");
+  try {
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = MOCK_DIR;
+    assert.equal((await runStage(dir, "archaeology", { domain: "applications" })).ok, true);
+    process.env.SDLC_MOCK_DIR = mockRuling("approve", "the age minimum needs a decision",
+      ["spike D-applications-1: does the age minimum hold for renewals too?", "confirm D-applications-2"]);
+    assert.equal((await ruleByAgent(dir, "archaeology-applications", { persona: "product-owner" })).verdict, "approve");
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    assert.equal((await runStage(dir, "ratify", { domain: "applications" })).proposal.escalatedTo, undefined);
+    process.env.SDLC_MOCK_DIR = mockRuling("approve", "leaving it as recovered", ["contract D-applications-1"]);
+    assert.equal(await rule(dir, "ratify-applications-1"), "approve");
+    const pass2 = await runStage(dir, "ratify", { domain: "applications" });
+    assert.equal(pass2.proposal.name, "ratify-applications-2");
+    assert.equal(pass2.proposal.escalatedTo, "tech-lead");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// Escalating needs somewhere to escalate to, and a G1 that names nowhere is refused before
+// the pass that would need it runs, not after its work has landed.
+test("ratify refuses to run past the follow-up limit when G1 names no escalation target", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-ratify-noescalate-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    const gatesDir = join(dir, ".sdlc", "gates");
+    mkdirSync(gatesDir, { recursive: true });
+    const approvedGate = "gate: G1\nverdict: approve\nby: tech-lead\nheld_by: person\nconditions: []\n";
+    for (const n of ["archaeology-applications", "ratify-applications-1", "ratify-applications-2"]) writeFileSync(join(gatesDir, `${n}.yaml`), approvedGate);
+    const config = { project: { domains: ["applications"] }, policy: { gates: { G1: { holder: "tech-lead" } } } };
+    const checks = stageFor("ratify").preChecks(dir, { domain: "applications", config });
+    const failed = checks.filter((c) => !c.ok && c.id === "ratify-escalation");
+    assert.equal(failed.length, 1);
+    assert.match(failed[0].messages.join("\n"), /policy\.gates\.G1 names no escalate_to/);
+
+    const obsolete = { ...config, policy: { ...config.policy, loops: { ratify_follow_ups: { on_limit: "obsolete" } } } };
+    assert.ok(!stageFor("ratify").preChecks(dir, { domain: "applications", config: obsolete }).some((c) => c.id === "ratify-escalation" && !c.ok),
+      "a project whose policy drops the criteria instead needs no escalation target");
+  } finally {
     restoreEgress(prevEgress);
   }
 });
@@ -801,7 +920,7 @@ When a permit application is accepted, the system shall calculate an intake fee 
     writeFileSync(join(gatesDir, "ratify-applications-1.yaml"), approvedGate);
     writeFileSync(join(gatesDir, "ratify-applications-2.yaml"), approvedGate);
 
-    const ctx = { domain: "applications", config: { project: { domains: ["applications", "fees"] } } };
+    const ctx = { domain: "applications", config: { project: { domains: ["applications", "fees"] }, policy: { loops: { ratify_follow_ups: { on_limit: "obsolete" } } } } };
     stageFor("ratify").execute(dir, ctx);
 
     const domainText = readFileSync(join(domainsDir, "applications.md"), "utf8");

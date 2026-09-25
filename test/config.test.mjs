@@ -134,3 +134,10 @@ test("policy.loops.verify_returns is a positive whole number", () => {
   assert.ok(parseConfig(withPolicy(["loops: { verify_returns: 0 }"])).errors.length > 0);
   assert.ok(parseConfig(withPolicy(["loops: { verify_retries: 2 }"])).errors.length > 0, "an unknown loop is an error");
 });
+
+test("policy.loops.ratify_follow_ups takes a positive max and one of two outcomes", () => {
+  assert.deepEqual(parseConfig(withPolicy(["loops: { ratify_follow_ups: { max: 3, on_limit: obsolete } }"])).errors, []);
+  assert.deepEqual(parseConfig(withPolicy(["loops: { ratify_follow_ups: { on_limit: escalate } }"])).errors, []);
+  assert.ok(parseConfig(withPolicy(["loops: { ratify_follow_ups: { max: 0 } }"])).errors.length > 0);
+  assert.ok(parseConfig(withPolicy(["loops: { ratify_follow_ups: { on_limit: ignore } }"])).errors.length > 0);
+});

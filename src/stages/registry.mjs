@@ -30,6 +30,8 @@ import { turnsFor } from "../runner/executor.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
 import { propose } from "../commands/propose.mjs";
+import { escalateOnBranch } from "../runner/escalation.mjs";
+import { ratifyFollowUps } from "../config/policy.mjs";
 import { SKILLS_DIR, checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skillPath } from "./shared.mjs";
 import { calibrate } from "./calibrate.mjs";
 // Naming and revision-source helpers a stage module needs too (`build.mjs` in
@@ -1935,6 +1937,12 @@ function readRulings(projectDir, domain) {
 // as long as archaeology has not been re-run for this domain since (a rerun can add
 // fresh `D-` ids partway through the loop that have not actually been asked about yet;
 // closing that gap is not part of what this count is for).
+// The note a criterion swept obsolete by the closing loop's bound carries on its own row.
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+function unresolvedNote(max) {
+  return `unresolved after ${NUMBER_WORDS[max] ?? max} rulings`;
+}
+
 function followUpRulingsRead(read, domain) {
   const re = new RegExp(`^ratify-${escapeRe(domain)}-\\d+$`);
   return read.filter((n) => re.test(n)).length;
@@ -2004,16 +2012,23 @@ function checkRevisionSource(projectDir, ctx) {
 // The page of the follow-up proposal: every criterion still short of the contract, with
 // everything the persona needs to rule on it without opening the domain file, and the
 // grammar its answer has to be written in.
-function followUpPage(domain, unresolved, answered, unparsed) {
+function followUpPage(domain, unresolved, answered, unparsed, { max, onLimit, escalatedTo = null }) {
+  const bound = onLimit === "obsolete"
+    ? `through ${max} follow-up ruling(s) this way is marked \`obsolete\` by \`ratify\` itself, noted "${unresolvedNote(max)}", rather than being asked about forever.`
+    : `through ${max} follow-up ruling(s) this way is escalated to this gate's escalation target on the next follow-up, rather than being asked about forever.`;
   const lines = [
     `${unresolved.length} criterion(s) in the **${domain}** domain are still \`inferred\` or \`open\`, so`,
     "`ratify` has not minted a permanent id for them and no later stage can build against them.",
     "Rule on each one below. `contract` and `spike` record a decision without ever raising a",
     "criterion's confidence, so neither one closes it out — a criterion left short of the contract",
-    "through two follow-ups this way is marked `obsolete` by `ratify` itself, noted",
-    "\"unresolved after two rulings\", rather than being asked about forever.",
+    bound,
     "",
   ];
+  if (escalatedTo) {
+    lines.push(`**This follow-up is escalated to ${escalatedTo}.** The domain has had ${max} follow-up ruling(s) already`,
+      "and these criteria are still short of the contract, so the question is no longer the gate holder's alone.",
+      "");
+  }
   if (unparsed.length) {
     lines.push("An earlier ruling on this domain carries condition lines the ratification grammar cannot",
       "read. They are listed here so they can be restated in the grammar below; until they are, `ratify`",
@@ -2083,6 +2098,22 @@ function checkNoUnparsedConditions(projectDir, domain) {
       `${unparsed.length} condition line(s) on the ruling(s) for "${domain}" do not match the ratification grammar and were not applied. Rewrite them in the gate file(s) (see docs/stages/rule.md, "Ratification conditions") and run ratify again:`,
       ...unparsed.map((u) => `  ${u}`),
     ],
+  };
+}
+
+// A pass that has reached the follow-up bound, under a policy that escalates at the bound,
+// hands its next follow-up to G1's escalation target. A G1 that names none leaves it nowhere
+// to go, so the pass is refused before its work lands rather than failing after it has.
+function checkRatifyEscalationTarget(projectDir, ctx) {
+  const id = "ratify-escalation";
+  if (!ctx.domain) return { id, ok: true, messages: [] };
+  const bound = ratifyFollowUps(ctx.config);
+  if (bound.onLimit !== "escalate" || ctx.config?.policy?.gates?.G1?.escalate_to) return { id, ok: true, messages: [] };
+  const ruled = followUpRulingsRead(readRulings(projectDir, ctx.domain).read, ctx.domain);
+  if (ruled < bound.max) return { id, ok: true, messages: [] };
+  return {
+    id, ok: false,
+    messages: [`policy.gates.G1 names no escalate_to. The ${ctx.domain} domain has had ${ruled} follow-up rulings, reaching the limit of ${bound.max} policy.loops.ratify_follow_ups sets, and its next follow-up is escalated to G1's escalation target; add escalate_to to G1 in .sdlc/config.yaml`],
   };
 }
 
@@ -2179,10 +2210,12 @@ const ratify = {
     // takes a criterion out of `inferred`/`open` before this sweep ever runs. A persona
     // that keeps choosing `contract` or `spike` — or simply says nothing, which the
     // grammar treats the same as `contract` — would otherwise never close the loop out.
-    // Once a still-unresolved criterion has been through two follow-up rulings with
-    // nothing resolving it, `ratify` decides for it: `obsolete`, with the reason on the
-    // row itself, so the next `followUp` call finds nothing left to ask about and the
-    // loop actually terminates. Guarded to `D-` ids only: an `R-` criterion was minted
+    // The bound is policy (`policy.loops.ratify_follow_ups`): once the domain has had
+    // `max` follow-up rulings with criteria still unresolved, either the next follow-up is
+    // escalated to G1's escalation target (`escalate`, in `followUp` below — nothing leaves
+    // the contract without somebody deciding it), or `ratify` decides for them here:
+    // `obsolete`, with the reason on the row itself, so the next `followUp` call finds
+    // nothing left to ask about and the loop terminates. Guarded to `D-` ids only: an `R-` criterion was minted
     // because a prior pass already confirmed it, so it can never legitimately be the
     // target of this sweep — the only way one could carry `inferred`/`open` confidence
     // at all is a stray `spike` condition naming an already-minted id, and that must not
@@ -2214,12 +2247,14 @@ const ratify = {
       if (outForRecovery.has(c.id) && c.id.startsWith("D-") && c.confidence === "confirmed") c.confidence = "open";
     }
 
-    if (followUpRulingsRead(read, domain) >= 2) {
+    const bound = ratifyFollowUps(ctx.config);
+    if (bound.onLimit === "obsolete" && followUpRulingsRead(read, domain) >= bound.max) {
+      const note = unresolvedNote(bound.max);
       for (const c of withConditions) {
         if (outForRecovery.has(c.id)) continue;
         if (c.id.startsWith("D-") && (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete") {
           c.state = "obsolete";
-          if (!c.notes.includes("unresolved after two rulings")) c.notes.push("unresolved after two rulings");
+          if (!c.notes.includes(note)) c.notes.push(note);
         }
       }
     }
@@ -2310,6 +2345,7 @@ const ratify = {
       checkArchaeologyApproved(projectDir, ctx.domain),
       checkNoUnparsedConditions(projectDir, ctx.domain),
       checkDomainFileParses(projectDir, ctx.domain, "ratify-domain-file"),
+      checkRatifyEscalationTarget(projectDir, ctx),
     ];
   },
   postChecks(projectDir, ctx) {
@@ -2347,20 +2383,36 @@ const ratify = {
     // the domain closes out around it.
     const awaiting = new Set(outstandingRecoveries(readRecoveryFor(projectDir, domain), criteria).map((e) => e.id));
     const unresolved = criteria.filter((c) => (c.confidence === "inferred" || c.confidence === "open") && c.state !== "obsolete" && !awaiting.has(c.id));
-    const { answered, unparsed } = readRulings(projectDir, domain);
+    const { answered, unparsed, read } = readRulings(projectDir, domain);
     if (unresolved.length === 0 && unparsed.length === 0) return null;
 
     const { open, highest } = followUpState(projectDir, `ratify-${domain}`);
     if (open) return null;
+
+    // Past the bound, with the policy saying `escalate`: the follow-up is opened as usual
+    // and handed straight to G1's escalation target, so the criteria stay exactly as they
+    // are until somebody with the authority to drop them from the contract, or to settle
+    // them, rules. The pre-check has already refused a G1 that names no target.
+    const bound = ratifyFollowUps(ctx.config);
+    const ruled = followUpRulingsRead(read, domain);
+    const escalatedTo = bound.onLimit === "escalate" && ruled >= bound.max
+      ? ctx.config?.policy?.gates?.G1?.escalate_to ?? null : null;
 
     const name = followUpName(domain, highest + 1);
     const { branch } = propose(projectDir, name, {
       gate: "G1",
       question: `Which of the ${domain} criteria that are still inferred or open become the contract?`,
       recommendation: `${unresolved.length} criterion(s) in ${domain} are still short of the contract; rule on each with a ratification condition so the next ratify pass can mint them.`,
-      page: followUpPage(domain, unresolved, answered, unparsed),
+      page: followUpPage(domain, unresolved, answered, unparsed, { ...bound, escalatedTo }),
     });
-    return { name, gate: "G1", branch, unresolved: unresolved.length };
+    if (escalatedTo) {
+      escalateOnBranch(projectDir, {
+        name, gate: "G1", by: "runner:ratify", escalateTo: escalatedTo,
+        rationale: `The ${domain} domain has had ${ruled} follow-up rulings and ${unresolved.length} criterion(s) are still short of the contract: ${unresolved.map((c) => c.id).join(", ")}. `
+          + `The project's policy (policy.loops.ratify_follow_ups) escalates them at this point rather than asking the gate holder again or dropping them from the contract.`,
+      });
+    }
+    return { name, gate: "G1", branch, unresolved: unresolved.length, ...(escalatedTo ? { escalatedTo } : {}) };
   },
 };
 

@@ -160,6 +160,10 @@ before handing it to the same `finishStage` every agent-run stage finishes throu
     rewrites the file from what the parser understood, so a block the parser could not read would
     be dropped on the way back out; failing first, naming the file and line of every parse error,
     is what keeps a malformed block from being deleted instead of reported.
+  - `ratify-escalation` — where the policy escalates at the loop bound (the default) and the
+    domain has already had as many follow-up rulings as the bound allows, G1 must name an
+    `escalate_to`, since the next follow-up is escalated to it. Checked before `execute`, so the
+    pass is refused before its work lands rather than failing after it has.
 - **Post-checks**, run against the working tree after `execute` returns:
   - `checkCriteria` — the same structural check every stage that touches `spec/domains` runs:
     every domain file parses, IDs are unique across domains, and no criterion is `accepted` while
@@ -250,7 +254,7 @@ closed.
 A criterion out for re-recovery is outside the loop while it is out. It is not listed on a
 follow-up — the question it is waiting on is one for the old application's source, not one this
 persona can answer by ruling again — and it is not counted toward the loop bound below, which would
-otherwise mark it `obsolete` for failing to resolve through two follow-ups it was never asked about.
+otherwise act on it for failing to resolve through follow-ups it was never asked about.
 The exemption is exactly as wide as the outstanding request: it ends when an `archaeology` run
 answers that request, and nothing else ends it. Once the row has been recovered again it is an
 ordinary criterion with whatever confidence that recovery graded it, the next pass asks about it
@@ -262,20 +266,33 @@ domain is swept, asked and minted exactly as it would be if nothing had ever bee
 choosing one of them (or a follow-up nobody rules on the way the grammar means it to be ruled)
 would otherwise never close the loop. `confirm`, `edit` and `defect` are the three verbs that
 actually resolve a criterion (`applyConditions` raises confidence to `confirmed` for all three),
-so a criterion ruled on with any of them is already out of `inferred`/`open` — and therefore out of
-this sweep's reach — before this bound is even checked. `execute` counts how many of a domain's
-approved follow-up rulings (`ratify-<d>-<n>`, not the archaeology ruling itself) have been read so
-far; once a criterion still `inferred` or `open` has been through two of them with nothing
-resolving it, `execute` marks it `state: obsolete` itself, with the note `unresolved after two
-rulings`, before minting anything else in that pass. The sweep only ever considers a `D-` id — an
-`R-` criterion was already minted, which only happens once it was already `confirmed`, so it can
-never legitimately be looked at here; the guard exists in case a condition line names an
-already-minted `R-` id (a stray `spike` re-run, say) and leaves it with a stale `inferred`/`open`
-confidence that must never cost it its permanent-id status. The journal lists a swept criterion
-under "Obsolete" the same way any other obsoleted criterion is listed. Once it is `obsolete` it is
-no longer an open question, so the next `followUp` call does not list it and, once every criterion
-in the domain has resolved this way or another, opens no further proposal — the loop always
-terminates, whether or not the persona ever rules a criterion out of `inferred`/`open` directly.
+so a criterion ruled on with any of them is already out of `inferred`/`open` before this bound is
+even checked. `ratify` counts how many of a domain's approved follow-up rulings (`ratify-<d>-<n>`,
+not the archaeology ruling itself) have been read so far, and the bound is that count reaching
+`policy.loops.ratify_follow_ups.max` (two by default). What happens then is
+`policy.loops.ratify_follow_ups.on_limit`:
+
+- **`escalate`** (the default). Nothing is marked `obsolete`. The next follow-up is opened as usual
+  and escalated at once to G1's `escalate_to`, the way any escalation is recorded: the gate file on
+  its branch carries `verdict: escalated`, `by: runner:ratify`, `held_by: runner`, `escalate_to`
+  and a rationale naming the criteria still short of the contract, with a run-record line and a
+  commit `rule(G1): ratify-<d>-<n> escalated to <role>`. Its page says it was escalated and why.
+  The escalation target rules it with the same ratification grammar, and the next pass applies that
+  ruling like any other follow-up's. An escalated follow-up is not an answer, so the loop waits on
+  it and opens nothing further until it is ruled; every follow-up after the bound is escalated the
+  same way. `followUp`'s result carries `escalatedTo`.
+- **`obsolete`**. Once a criterion still `inferred` or `open` has been through the bound with
+  nothing resolving it, `execute` marks it `state: obsolete` itself, with the note `unresolved
+  after <n> rulings` (`<n>` the bound, in words), before minting anything else in that pass. The
+  journal lists a swept criterion under "Obsolete" the same way any other obsoleted criterion is
+  listed. Once it is `obsolete` it is no longer an open question, so the next `followUp` call does
+  not list it and, once every criterion in the domain has resolved this way or another, opens no
+  further proposal.
+
+The sweep only ever considers a `D-` id — an `R-` criterion was already minted, which only happens
+once it was already `confirmed`, so it can never legitimately be looked at here; the guard exists in
+case a condition line names an already-minted `R-` id (a stray `spike` re-run, say) and leaves it
+with a stale `inferred`/`open` confidence that must never cost it its permanent-id status.
 
 ## Failure modes
 
@@ -293,6 +310,8 @@ terminates, whether or not the persona ever rules a criterion out of `inferred`/
   line and its gate file, before anything is read from the domain file or written back to it.
   Unlike an unknown ID, this is a ruling that was never fully read, so the run does not proceed at
   all — the domain file, the index and the spec page are all left exactly as they were.
+- The domain has reached the follow-up bound, the policy escalates at the bound, and G1 names no
+  `escalate_to`: the `ratify-escalation` pre-check fails, naming the key, and nothing is written.
 - A criterion is sent back with `recovery-wrong` and nobody runs `archaeology` for the domain: the
   entry stays outstanding, every later `ratify` run names it in its journal under "Out for
   re-recovery", and the criterion never mints — which is the intended outcome, since a row whose

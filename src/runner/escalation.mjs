@@ -18,8 +18,12 @@
 // role is untouched, and so is a person in the seat: a human `--by <role>` never carries
 // the `agent:` prefix, which is what makes a person ruling an escalation an agent of the
 // same role raised the ordinary way out of a stall rather than another instance of it.
-import { parse as parseYaml } from "yaml";
-import { git, gitOk } from "../lib/git.mjs";
+import { join, relative } from "node:path";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { git, gitOk, enterBranch, leaveBranch, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
+import { writeText } from "../lib/fsx.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
+import { appendRun } from "../lib/runrecord.mjs";
 
 // Why this escalation advances nothing, in the words written to the gate file, the run
 // record and whatever tells an operator the stage cannot run. `null` for every escalation
@@ -40,4 +44,27 @@ export function stalledOn(projectDir, branch, name) {
   try { doc = parseYaml(git(["show", `${branch}:${rel}`], projectDir)); } catch { return null; }
   const stalled = doc?.stalled;
   return typeof stalled === "string" && stalled.trim() ? stalled.trim() : null;
+}
+
+// An escalation the runner raises itself, on a proposal it has just opened: the question
+// goes to the gate's escalation target without a persona or a person in the holder's seat
+// being asked first. Written in the shape every other escalation has — the gate file on the
+// proposal's branch with `verdict: escalated`, `by`, `held_by` and `escalate_to`, a run
+// record line, and a commit of its own — so the proposal reads as escalated wherever an
+// escalation is read, and is ruled by `escalate_to` the way any escalation is. `by` names
+// the runner step that raised it (`runner:<stage>`), which is what tells it apart from an
+// escalation a seat chose. HEAD goes back to where it was.
+export function escalateOnBranch(projectDir, { name, gate, by, escalateTo, rationale }) {
+  const branch = `proposal/${name}`;
+  const start = enterBranch(projectDir, branch, `escalate ${name}`);
+  const gateRel = join(".sdlc", "gates", `${name}.yaml`);
+  writeText(join(projectDir, gateRel), redactLocalPaths(stringifyYaml({
+    gate, verdict: "escalated", by, held_by: "runner", escalate_to: escalateTo, rationale,
+    at: new Date().toISOString(),
+  }), projectDir));
+  const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo} by ${by}`);
+  stagePaths(projectDir, [gateRel, relative(projectDir, runPath)]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} escalated to ${escalateTo}`], projectDir);
+  const dirty = leaveBranch(projectDir, start);
+  if (dirty) throw new Error(`escalate ${name}: the working tree was left dirty on ${branch}:\n${dirty}`);
 }
