@@ -13,7 +13,9 @@ const HELP = `sdlc <command> [args] [--flags]
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."] [--tier HIGH]
   rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>
   rule --pending                   rule every open proposal an agent holds the gate for
-  run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--skip-suite] [--dry-run]   run one pipeline stage
+  run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--skip-suite] [--dry-run] [--reason "..."]
+                                   run one pipeline stage; --reason is required to run something other than what next names
+  next [dir] [--json]              name the next stage to run and why, read from main (exit 0 run, 3 waiting on a person, 4 nothing left)
   resume [--again]                 continue an interrupted run
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails
@@ -33,7 +35,7 @@ const HELP = `sdlc <command> [args] [--flags]
 // its own top level, so `COMMANDS` is already the real object by the time they assign to it.
 let commandsLoaded = null;
 function loadCommands() {
-  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs")]);
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs")]);
   return commandsLoaded;
 }
 

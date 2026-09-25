@@ -962,7 +962,7 @@ export function buildVerified(projectDir, name, config = null) {
 // Same check, read off a not-yet-checked-out proposal branch: `rulePending` uses this to
 // leave an unverified build proposal out of a batch silently, rather than letting it reach
 // `ruleByAgent` and fail loudly there.
-function buildVerifiedOnBranch(projectDir, branch, name, config) {
+export function buildVerifiedOnBranch(projectDir, branch, name, config) {
   const m = /^build-slice-(\d+)(?:-\d+)?$/.exec(name);
   if (!m) return { ok: true, reason: "" };
   const next = `run sdlc run verify --slice ${m[1]} first`;

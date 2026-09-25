@@ -306,6 +306,25 @@
               "minimum": 0
             }
           }
+        },
+        "next": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "order": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "proposals",
+                  "owed",
+                  "sequence"
+                ]
+              }
+            }
+          }
         }
       }
     },

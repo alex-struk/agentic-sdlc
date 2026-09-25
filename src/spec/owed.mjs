@@ -174,6 +174,9 @@ export function owedPath(kind) {
 // The kinds with a file of their own.
 export const OWED_KINDS = Object.freeze(Object.keys(KINDS));
 
+// Every file this module keeps owed work in: each kind's own, and the one the rest share.
+export const OWED_FILES = Object.freeze([...Object.values(KINDS).map((d) => d.path), OWED_PATH]);
+
 function rawList(text, d) {
   let parsed;
   try { parsed = parseYaml(text ?? ""); } catch { return []; }
@@ -366,6 +369,12 @@ function across(projectDir, { kinds, rev, familyOf } = {}) {
 // order each kind's file holds them. `rev` reads a commit's lists instead of the working tree.
 export function openFor(projectDir, stage, opts = {}) {
   return across(projectDir, opts).filter((e) => isOpen(e) && e.stage === stage);
+}
+
+// Every open entry of every kind, in the order each kind's file holds them. `rev` reads a
+// commit's lists instead of the working tree.
+export function openAcross(projectDir, opts = {}) {
+  return across(projectDir, opts).filter(isOpen);
 }
 
 // What a line of work owes: every open entry opened by a ruling on one of its proposals.

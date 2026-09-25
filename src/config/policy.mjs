@@ -56,3 +56,13 @@ export function blockUnverifiedTiers(config) {
 export function approvesUnasserted(config) {
   return config?.policy?.gates?.G3?.approve_unasserted ?? true;
 }
+
+// The kinds of ready work `sdlc next` weighs against each other, and the order it takes them
+// in when more than one kind is ready (`src/runner/next.mjs`). The record orders the work
+// inside a kind; which kind goes first is not something the record can settle.
+export const NEXT_KINDS = Object.freeze(["proposals", "owed", "sequence"]);
+
+export function nextOrder(config) {
+  const order = config?.policy?.next?.order;
+  return Array.isArray(order) && order.length ? [...order] : [...NEXT_KINDS];
+}

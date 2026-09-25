@@ -31,7 +31,9 @@ export function gitRaw(args, cwd) {
 // a pipeline that cannot record a ruling on a developer's own laptop because of a
 // setting that has nothing to do with the pipeline. The overrides are scoped to these
 // commands alone and change nothing a person's own `git commit` does.
-export const SDLC_AUTHOR = ["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost",
+export const SDLC_AUTHOR_NAME = "sdlc";
+export const SDLC_AUTHOR_EMAIL = "sdlc@localhost";
+export const SDLC_AUTHOR = ["-c", `user.name=${SDLC_AUTHOR_NAME}`, "-c", `user.email=${SDLC_AUTHOR_EMAIL}`,
   "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"];
 
 export function git(args, cwd) {
