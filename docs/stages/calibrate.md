@@ -187,7 +187,8 @@ the runner's own process, never through a tool call.
    ran it, and a row carried over from an earlier run keeps its own.
    Then the missing tests (`docs/operating-model.md` §7): an open item whose test these rows show
    ran at the criterion's current version — `pass` or `fail`, from the spec file as it now stands,
-   not ruled `test-wrong` or `spec-wrong` — is closed as met, the row cited as its evidence
+   not ruled `test-wrong` or `spec-wrong`, and not a failure whose test never reached the target
+   (step 4's environment fault, kept when the run is within the threshold) — is closed as met, the row cited as its evidence
    (`tests/results/<t>/latest.json: <id> v<n> <result>`) and the file's id recorded, and one whose
    test exists and has not run is owed by `calibrate` for this target. `.sdlc/owed.yaml` is committed
    with the result set.

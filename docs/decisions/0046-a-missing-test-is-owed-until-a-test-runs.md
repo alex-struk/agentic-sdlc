@@ -54,9 +54,11 @@ is not evidence that the test now on `main` runs. So a run records on each row g
 the spec file it ran (`file_sha`), and a row counts only where that matches the file as it stands.
 A row written without one counts where the file is what the first-parent line held when its results
 file was written (`at`). A row ruled `test-wrong` or `spec-wrong` counts in no case: the ruling says
-the test that produced it does not test the criterion as it stands. A closure records the
-fingerprint of the test whose row closed it. A closure made without one is judged by the same rule
-at the commit that recorded it, and where the rule rejects it the next pipeline commit that touches
+the test that produced it does not test the criterion as it stands. Nor does a `fail` row whose test
+never reached the application because the target could not be reset or reached, the environment
+fault a calibration halts on (`0058`). A closure records the
+fingerprint of the test whose row closed it. Every closure the runner made is judged by the rule as it
+stands at the commit that recorded it, and where the rule rejects it the next pipeline commit that touches
 the list reopens the item, keeping the closure and the reason under `reopened`, and the item goes
 where an open item goes: to `calibrate` or `verify` where its test exists and has not run.
 `sdlc rule <name> --settle` is that commit for an approval already on `main`. A failing row closes the item too: the question was

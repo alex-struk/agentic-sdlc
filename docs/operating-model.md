@@ -259,9 +259,12 @@ stateDiagram-v2
   `file_sha` is the file's git object id), closes it as met with the row cited as evidence — written
   by the calibration that ran it, or by the G3 approval of a slice whose verify ran it. A row ruled
   `test-wrong` or `spec-wrong` is a result of a test ruled not to test the criterion and closes
-  nothing. A written assurance never closes it: `condition-met` on a missing test is refused, and an
-  `attested` row closes nothing. An item the runner closed on a row this rule rejects is reopened by
-  the next pipeline commit that touches the list (`docs/decisions/0046`).
+  nothing, and neither does a `fail` row whose test never reached the application because the
+  target could not be reset or reached — the same environment fault a calibration halts on. A
+  written assurance never closes it: `condition-met` on a missing test is refused, and an
+  `attested` row closes nothing. An item the runner closed on a row this rule rejects, judged at the
+  commit that recorded the closure, is reopened by the next pipeline commit that touches the list
+  (`docs/decisions/0046`, `docs/decisions/0058-a-row-the-machine-failed-is-no-test-run.md`).
 - **A ruler withdraws one** with the reason written down, `condition-withdrawn missing-test/<id>:
   <why>`, on any ruling and from either seat. The withdrawal holds for the criterion's version; a
   record at a later version is owed again. A criterion superseded by another, or made obsolete, is
