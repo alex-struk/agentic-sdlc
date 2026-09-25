@@ -76,14 +76,20 @@ const KINDS = {
     // The line of work asking, so a stage asked again and again by one line of work is one
     // item sent several times. Entries filed before `family` was recorded name only the
     // proposal, and a caller that can resolve its family passes `familyOf`.
+    // `taken_by` names the proposal the run that took it up opened, which is what a ruling
+    // that asked for it waits to see approved (`docs/stages/next.md`).
     view: (s, { familyOf }) => ({
       ...s,
       item: `${s.stage} <- ${s.family ?? familyOf?.(s.from) ?? s.from}`,
-      closed: s.taken ? { outcome: "met", why: "taken up by a revision of this stage", at: s.taken } : null,
+      closed: s.taken
+        ? { outcome: "met", why: "taken up by a revision of this stage", at: s.taken, ...(s.taken_by ? { proposal: s.taken_by } : {}) }
+        : null,
     }),
     store: (v) => {
-      const rest = without(v, ["kind", "item", "closed", "taken"]);
-      return v.closed ? { ...rest, taken: v.closed.at } : rest;
+      const rest = without(v, ["kind", "item", "closed", "taken", "taken_by"]);
+      if (!v.closed) return rest;
+      const by = v.closed.proposal ?? v.taken_by;
+      return { ...rest, taken: v.closed.at, ...(by ? { taken_by: by } : {}) };
     },
     identity: (e) => `${e.stage}\u0000${e.from}\u0000${e.why}`,
     dedupe: "all",
@@ -320,14 +326,15 @@ export function close(projectDir, kind, match, { outcome, why, by, at = new Date
 }
 
 // Several entries settled in one write: each of `close` closed as met at `when`, and each of
-// `defer` left open with the account of why the run that had it could not answer it.
+// `defer` left open with the account of why the run that had it could not answer it. `proposal`
+// is the proposal the settling run opened, recorded on each closure.
 //
 // All of it moves or none of it does. A set settled one entry at a time can be interrupted
 // half way and leave a file saying one half of a round was answered and the other never
 // asked, so the entries are matched whole before anything is written, each against an open
 // entry not already matched, and one that no longer matches anything (a round settled twice,
 // a file edited underneath) writes nothing and returns `null`.
-export function settle(projectDir, kind, { close: closing = [], defer = [] } = {}, when = new Date().toISOString()) {
+export function settle(projectDir, kind, { close: closing = [], defer = [], proposal = null } = {}, when = new Date().toISOString()) {
   if (!closing.length && !defer.length) return null;
   const d = def(kind);
   const list = read(projectDir, kind);
@@ -340,7 +347,7 @@ export function settle(projectDir, kind, { close: closing = [], defer = [] } = {
   const closeAt = closing.map(index);
   const deferAt = defer.map((x) => index(x?.entry));
   if ([...closeAt, ...deferAt].some((i) => i === -1)) return null;
-  const closure = { outcome: "met", why: "taken up", at: when };
+  const closure = { outcome: "met", why: "taken up", at: when, ...(proposal ? { proposal } : {}) };
   checkClosure(kind, d, closure);
   closeAt.forEach((i) => { list[i] = { ...list[i], closed: closure }; });
   deferAt.forEach((i, n) => {

@@ -15,8 +15,8 @@ import { git } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { propose } from "../src/commands/propose.mjs";
-import { rule, ruleByAgent } from "../src/commands/rule.mjs";
-import { stageFor, revisableStages } from "../src/stages/registry.mjs";
+import { rule, ruleByAgent, settleRuling } from "../src/commands/rule.mjs";
+import { stageFor, revisableStages, addressableStages, requestTakenBy } from "../src/stages/registry.mjs";
 import { loadConfig } from "../src/config/load.mjs";
 import { addressedConditions, malformedAddressedConditions, splitConditionsByAddressee } from "../src/spec/criteria.mjs";
 import { open as openOwed, openFor, settle } from "../src/spec/owed.mjs";
@@ -211,6 +211,21 @@ test("the stages a condition may be addressed to are the ones with a revision mo
   assert.ok(!stages.includes("ratify"));
 });
 
+// Addressable is wider than revisable: a stage that revises without an overlay, and one whose
+// every run starts from `main`, both take a request up. What neither set may hold is a stage
+// that has no run to take one up with.
+test("the stages a condition may be addressed to are the ones that take a request up, and each says how", () => {
+  const stages = addressableStages();
+  for (const s of revisableStages()) assert.ok(stages.includes(s), `${s} revises, so it is addressable`);
+  assert.ok(stages.includes("archaeology"), JSON.stringify(stages));
+  assert.ok(stages.includes("contract"), JSON.stringify(stages));
+  for (const s of ["verify", "ratify", "calibrate", "intent"]) assert.ok(!stages.includes(s), `${s} takes no request`);
+  assert.equal(requestTakenBy("plan"), "revise");
+  assert.equal(requestTakenBy("archaeology"), "revise");
+  assert.equal(requestTakenBy("contract"), "run");
+  assert.equal(requestTakenBy("verify"), null);
+});
+
 // --- filing, from either seat ---
 
 // Everything about a request except the moment it was filed, which is the one field a
@@ -258,20 +273,120 @@ test("an agent in the same seat files the same request", async (t) => {
   ]);
 });
 
-test("a condition naming a stage that cannot be asked to revise files nothing and says which", async (t) => {
-  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-unknown-"));
+// A ruling on a test proposal that finds the seed the tests stand on wanting. The seed is the
+// contract's, so one line is addressed to `contract` and the other is left for the writer, to
+// act on once the contract has supplied the record. Each half has to reach the stage it names.
+const SEED_WHY = "seed a second accepted application for D-applications-2 alone; tests/seed/manifest.yaml holds one such record and two tests change it";
+const SEED_ASK = `addressed-to contract: ${SEED_WHY}`;
+const AFTER_SEED = "D-applications-2: once the contract stage has supplied a record of its own, move both tests onto it";
+const TESTS_PROPOSAL = "derive-tests-applications-stale-1";
+
+const conditionsOnMain = (dir) => {
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], dir);
+  if (branch !== "main") git(["checkout", "-q", "main"], dir);
+  const p = join(dir, ".sdlc", "conditions.yaml");
+  const list = existsSync(p) ? parseYaml(readFileSync(p, "utf8"))?.conditions ?? [] : [];
+  if (branch !== "main") git(["checkout", "-q", branch], dir);
+  return list;
+};
+
+test("a return on a test proposal files its request to the contract and owes the writer its own line, from the agent's seat", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-contract-agent-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  openProposal(dir, TESTS_PROPOSAL);
+  agentReply("return", [SEED_ASK, AFTER_SEED]);
+  const r = await ruleByAgent(dir, TESTS_PROPOSAL, { persona: "reviewer" });
+  assert.equal(r.verdict, "return");
+  assert.deepEqual(r.addressed, ["contract"]);
+  assert.deepEqual(requestsOnMain(dir).map(withoutTime), [
+    { stage: "contract", why: SEED_WHY, from: TESTS_PROPOSAL, gate: "G3", by: "agent:reviewer" },
+  ]);
+  assert.deepEqual(conditionsOnMain(dir).map((c) => c.ref), [`${TESTS_PROPOSAL}#2`]);
+});
+
+test("the same return from a person's seat files the same request", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-contract-human-"));
   const { dir, prevEgress } = await ready(tmp);
   t.after(() => restoreEgress(prevEgress));
 
+  openProposal(dir, TESTS_PROPOSAL);
+  const r = rule(dir, TESTS_PROPOSAL, "return", { by: "tech-lead", note: "two tests change one seeded record", conditions: [SEED_ASK, AFTER_SEED] });
+  assert.deepEqual(r.addressed, ["contract"]);
+  assert.deepEqual(requestsOnMain(dir).map(withoutTime), [
+    { stage: "contract", why: SEED_WHY, from: TESTS_PROPOSAL, gate: "G3", by: "tech-lead" },
+  ]);
+  assert.deepEqual(conditionsOnMain(dir).map((c) => c.ref), [`${TESTS_PROPOSAL}#2`]);
+});
+
+// A request no run can take up would be recorded on the ruling and filed nowhere, which reads
+// exactly like one that was filed. The ruler is the only one who can put it right, so it is
+// refused while the ruler is still there, before anything is written.
+const UNADDRESSABLE = "addressed-to verify: the suite should have been run twice";
+
+test("a condition naming a stage that takes no request is refused before anything is written, from either seat", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-unknown-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
   openProposal(dir, "build-slice-2");
-  const r = rule(dir, "build-slice-2", "return", {
-    by: "tech-lead",
-    note: "returned",
-    conditions: ["addressed-to verify: the suite should have been run twice"],
-  });
-  assert.deepEqual(r.addressed, []);
-  assert.deepEqual(r.unroutable, ["verify"]);
+  assert.throws(() => rule(dir, "build-slice-2", "return", { by: "tech-lead", note: "returned", conditions: [UNADDRESSABLE] }),
+    (e) => /verify takes no request/.test(e.message) && /contract/.test(e.message) && /plan/.test(e.message));
+  assert.ok(!existsSync(join(dir, ".sdlc/gates/build-slice-2.yaml")), "nothing was ruled");
+  assert.deepEqual(requestsOnMain(dir), [], "and nothing was filed");
+
+  git(["checkout", "-q", "main"], dir);
+  openProposal(dir, "slice-2-review");
+  agentReplySequence([[UNADDRESSABLE], [UNADDRESSABLE]]);
+  await assert.rejects(() => ruleByAgent(dir, "slice-2-review", { persona: "reviewer" }), /verify takes no request/);
+  assert.ok(!existsSync(join(dir, ".sdlc/gates/slice-2-review.yaml")));
   assert.deepEqual(requestsOnMain(dir), []);
+});
+
+test("a condition naming a stage that takes no request is re-prompted once, and the corrected reply is what lands", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-unknown-reprompt-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  openProposal(dir, "slice-2-review");
+  agentReplySequence([[MINE, UNADDRESSABLE], [MINE, CONDITION]]);
+  const r = await ruleByAgent(dir, "slice-2-review", { persona: "reviewer" });
+  assert.equal(r.reprompted, true);
+  assert.deepEqual(r.addressed, ["plan"]);
+  const gate = parseYaml(readFileSync(join(dir, ".sdlc/gates/slice-2-review.yaml"), "utf8"));
+  assert.match(gate.reprompt, /verify takes no request/);
+});
+
+// The ruling's terminal account names what it filed for another stage, so a request is never
+// something an operator has to go and look for.
+test("sdlc rule says which stage a ruling asked, from either seat", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-said-"));
+  const { dir, prevEgress } = await ready(tmp);
+  const cwd = process.cwd();
+  t.after(() => { process.chdir(cwd); mock(false); restoreEgress(prevEgress); });
+  const { COMMANDS } = await import("../src/cli.mjs");
+  await import("../src/commands/rule.mjs");
+  const said = async (args) => {
+    const logs = [];
+    const orig = console.log;
+    console.log = (...a) => logs.push(a.join(" "));
+    try { await COMMANDS.rule(args); } finally { console.log = orig; }
+    return logs.join("\n");
+  };
+
+  process.chdir(dir);
+  openProposal(dir, TESTS_PROPOSAL);
+  agentReply("return", [SEED_ASK, AFTER_SEED]);
+  const agent = await said({ pos: [TESTS_PROPOSAL], flags: { by: "agent:reviewer" } });
+  assert.match(agent, /^ {2}requested of contract: .*sdlc run contract/m, agent);
+  assert.equal(agent.split("\n").filter((l) => l.includes(SEED_WHY)).length, 1, "each condition is printed once");
+
+  mock(false);
+  git(["checkout", "-q", "main"], dir);
+  openProposal(dir, "build-slice-2");
+  const person = await said({ pos: ["build-slice-2", "return"], flags: { by: "tech-lead", condition: [MINE, CONDITION] } });
+  assert.match(person, /^ {2}requested of plan: .*sdlc run plan --revise/m, person);
 });
 
 // --- the guard: this condition asks for a revision, and nothing else ---
@@ -670,6 +785,33 @@ test("a request reaches any stage that can be asked to revise", (t) => {
   assert.ok(!testsPrompt.includes("proposed and returned"), "a reopening is not a return");
 });
 
+// A stage whose every run starts from `main` has no `--revise` to be reopened with: its
+// ordinary run is the one that takes a request up, and spends it the way a revision does.
+test("contract takes a request addressed to it on its ordinary run, handed the reason verbatim", (t) => {
+  const { d, run } = repo(t);
+  requestsOnFile(d, run, [{ stage: "contract", why: SEED_WHY, from: TESTS_PROPOSAL }]);
+  const stage = stageFor("contract");
+  const ctx = { dryRun: true, config: {} };
+  stage.preChecks(d, ctx);
+  assert.equal(ctx.revision?.requests?.length, 1);
+  const prompt = stage.prompt(ctx);
+  assert.ok(prompt.includes(SEED_WHY), "the reason reaches the stage that has to do the work");
+  assert.match(prompt, new RegExp(`${TESTS_PROPOSAL} — ruled at G3 by agent:reviewer`));
+  assert.match(prompt, /deferred-request <n>: <why it cannot be answered here>/);
+  assert.equal(openRevisionRequestsFor(d, "contract").length, 1, "reading it takes nothing");
+
+  settleRequestedRevision(d, "contract", ctx, "## Journal\n\nThe seed holds a second record.", "contract-v2");
+  const [taken] = readRevisionRequests(d);
+  assert.match(taken.taken, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(taken.taken_by, "contract-v2", "with the proposal that answered it, whose approval is what the asking ruling waits for");
+
+  // With nothing addressed to it, the run is the ordinary one.
+  const plain = { dryRun: true, config: {} };
+  stage.preChecks(d, plain);
+  assert.equal(plain.revision, undefined);
+  assert.doesNotMatch(stage.prompt(plain), /deferred-request/);
+});
+
 test("a dry run reads the request and does not take it", (t) => {
   const { d, run } = repo(t);
   requestOnMain(d, run, "plan", WHY);
@@ -838,4 +980,38 @@ test("a round nothing can match whole is not marked at all", (t) => {
   const list = readRevisionRequests(d);
   assert.ok(!list[0].taken, "the request nothing answered is still open");
   assert.ok(list[1].taken);
+});
+
+// --- a ruling whose request never reached the list ---
+//
+// The ruling is recorded and is not ruled again; what it asked of another stage is filed by the
+// pipeline from the gate file, in a commit of its own on `main`, and a second settle files
+// nothing.
+test("rule --settle files what a recorded return asked of another stage, once", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-settle-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => restoreEgress(prevEgress));
+
+  openProposal(dir, TESTS_PROPOSAL);
+  rule(dir, TESTS_PROPOSAL, "return", { by: "tech-lead", note: "two tests change one seeded record", conditions: [SEED_ASK, AFTER_SEED] });
+  git(["checkout", "-q", "main"], dir);
+  const filing = git(["log", "--format=%H", "--grep", `${TESTS_PROPOSAL} asks contract`, "main"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "revert", "--no-edit", filing], dir);
+  assert.deepEqual(requestsOnMain(dir), [], "the request is lost");
+  git(["checkout", "-q", `proposal/${TESTS_PROPOSAL}`], dir);
+
+  const r = settleRuling(dir, TESTS_PROPOSAL);
+  assert.deepEqual(r.addressed, ["contract"]);
+  assert.deepEqual(requestsOnMain(dir).map(withoutTime), [
+    { stage: "contract", why: SEED_WHY, from: TESTS_PROPOSAL, gate: "G3", by: "tech-lead" },
+  ]);
+  assert.equal(git(["log", "-1", "--format=%an %s", "main"], dir), `sdlc record(G3): ${TESTS_PROPOSAL} asks contract to revise`);
+  assert.deepEqual(git(["show", "--name-only", "--format=", "main"], dir).split("\n").filter(Boolean), [".sdlc/revision-requests.yaml"]);
+  assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), `proposal/${TESTS_PROPOSAL}`, "the caller is left where it was");
+
+  const head = git(["rev-parse", "main"], dir);
+  assert.deepEqual(settleRuling(dir, TESTS_PROPOSAL).addressed, [], "a second settle files nothing");
+  assert.equal(git(["rev-parse", "main"], dir), head, "and commits nothing");
+
+  assert.throws(() => settleRuling(dir, "derive-tests-applications-stale-9"), /no ruling/);
 });

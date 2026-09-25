@@ -511,6 +511,9 @@ const archaeology = {
   gate: "G1",
   collect: [],
   implemented: true,
+  // Its `--revise` run reads the requests addressed to it (`checkRevisionSource`) and works
+  // from `sources/old` rather than from a returned branch, so it has no overlay to declare.
+  takesRequests: "revise",
   // The re-recovery requests this run is told about, which is what `policy.loops.recovery`
   // counts (`src/runner/owed-limits.mjs`).
   owedHanded: (projectDir, ctx) => outstandingFor(projectDir, ctx.domain),
@@ -776,6 +779,15 @@ function checkContractScope(projectDir) {
   return { id, ok: false, messages: [`contract may only change spec/contract/, tests/seed/ and .sdlc/oracle/, but also touched: ${outside.join(", ")}`] };
 }
 
+// The requests addressed to `contract` that nothing has taken up, as the round this run
+// answers. Reading them takes nothing: the round is spent where the run delivers
+// (`settleRequestedRevision`), so a run that never opens a proposal leaves every one open.
+function checkContractRequests(projectDir, ctx) {
+  if (!ctx || ctx.revision) return;
+  const requested = requestedRevision(projectDir, "contract");
+  if (requested) ctx.revision = requested;
+}
+
 // `contract` completes `spec/contract/` — the pages, personas, API description and
 // observables the acceptance tests and the oracle will act through — from what the
 // ratified criteria say the system does, reading `sources/old` when this project has
@@ -793,6 +805,9 @@ const contract = {
   gate: "G1",
   collect: [],
   implemented: true,
+  // Every run completes the whole contract from `main`, so there is no `--revise` to reopen
+  // it with: the ordinary run takes up the requests addressed to it (`checkContractRequests`).
+  takesRequests: "run",
   prompt(ctx) {
     const config = ctx.config;
     const fromSources = !!config?.sources?.old;
@@ -822,6 +837,7 @@ const contract = {
         : "",
       "Finish with your journal entry: say which pages exist, which sign-in method each persona uses, what the seed contains, what could not be recovered, and — when this project has an oracle — whether the application started and what you had to change to get it there.",
     ].filter(Boolean);
+    if (isReopening(ctx)) lines.push(revisionRulingBlock(ctx));
     return lines.join("\n\n");
   },
   // A shell, narrowed to the oracle's lifecycle and to reading back what it did. This stage
@@ -850,7 +866,8 @@ const contract = {
   // Nothing beyond what the workspace itself needs — unlike archaeology, `contract`
   // takes no `--domain`: a rebuild covers every domain's pages and personas at once, not
   // one domain per run.
-  preChecks() {
+  preChecks(projectDir, ctx) {
+    checkContractRequests(projectDir, ctx);
     return [];
   },
   postChecks(projectDir, ctx) {
@@ -2932,6 +2949,22 @@ STAGES_BY_NAME.verify = verify;
 // work it has no way to do.
 export function revisableStages() {
   return Object.entries(STAGES_BY_NAME).filter(([, stage]) => stage?.revisionOverlayPaths).map(([name]) => name).sort();
+}
+
+// How a stage takes up a request addressed to it (`addressed-to <stage>: <why>`): `"revise"`
+// when its `--revise` run reads the request, `"run"` when its ordinary run does, `null` when no
+// run of it can. A stage with a revision mode takes one by `--revise`; a stage that revises
+// without an overlay, or one whose every run starts from `main`, says so with `takesRequests`.
+export function requestTakenBy(name) {
+  const stage = STAGES_BY_NAME[name];
+  if (!stage) return null;
+  if (stage.takesRequests) return stage.takesRequests;
+  return stage.revisionOverlayPaths ? "revise" : null;
+}
+
+// The stages a condition may be addressed to: every stage some run of which takes a request up.
+export function addressableStages() {
+  return Object.keys(STAGES_BY_NAME).filter((name) => requestTakenBy(name)).sort();
 }
 
 // What a stage delivers, for a full run of it. `collect` may be narrowed per run, and the

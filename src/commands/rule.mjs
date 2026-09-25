@@ -17,7 +17,7 @@ import { close as closeOwed, conditionRef, open as openOwed, openOn, owedPath } 
 import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
 import { readSlice } from "../stages/slices.mjs";
 import { loadIndex } from "../checks/tests.mjs";
-import { STAGES_BY_NAME, proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
+import { STAGES_BY_NAME, addressableStages, proposalFamily, requestTakenBy, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { printNextBlock } from "./next.mjs";
 import { routeOf } from "../runner/next.mjs";
@@ -167,6 +167,18 @@ function addressedGuidance(line) {
   return `${JSON.stringify(line)} carries no reason. Write it as \`${ADDRESSED_CONDITION_FORM}\`:`
     + " the stage it is addressed to sees none of the evidence this ruling was made on, so the reason is the whole of what reaches it.";
 }
+// A request is taken up by a run of the stage it names, and a stage with no such run would
+// hold it for ever. The stages that can are listed, since which one the work belongs to is the
+// ruler's to say.
+function unaddressableGuidance(line, stage) {
+  return `${JSON.stringify(line)} is addressed to ${stage}, but ${stage} takes no request: no run of it reads one, so nothing would ever answer it.`
+    + ` The stages a condition can be addressed to are ${addressableStages().join(", ")}. Address it to the stage whose artifact has to change,`
+    + " or say what this proposal must do instead.";
+}
+const unaddressable = (conditions) => {
+  const can = new Set(addressableStages());
+  return addressedConditions(conditions ?? []).find((a) => !can.has(a.stage)) ?? null;
+};
 function deliverableGuidance(found) {
   const delivers = found.delivers.length ? found.delivers.join(", ") : "nothing";
   const remedy = found.deliverableBy.length
@@ -299,6 +311,9 @@ export function assertOverreachRulable(name, verdict, conditions) {
 // building on is wrong. A verdict that accepts the proposal while asking another stage to
 // redo what this one was built against would put both claims on the record at once, and
 // merge the work on the strength of the first.
+//
+// A line naming a stage that takes no request is refused because it would be recorded on the
+// ruling and filed nowhere, which reads exactly like a request that was filed.
 export function assertAddressedRulable(name, verdict, conditions) {
   const bad = malformedAddressedConditions(conditions);
   if (bad.length)
@@ -306,6 +321,9 @@ export function assertAddressedRulable(name, verdict, conditions) {
   const carried = (conditions ?? []).find((l) => addressedConditions([l]).length);
   if (verdict === "approve" && carried)
     throw new Error(withRulingPreserved(`rule ${name}: ${approvalFormGuidance(ADDRESSED_VERB, carried.line)}`, verdict, conditions));
+  const nowhere = (conditions ?? []).find((l) => unaddressable([l]));
+  if (nowhere)
+    throw new Error(withRulingPreserved(`rule ${name}: ${unaddressableGuidance(nowhere, unaddressable([nowhere]).stage)}`, verdict, conditions));
 }
 
 // The one thing a plain condition may never be: an instruction to change a path the stage
@@ -381,6 +399,8 @@ function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
   if (addressed) return { kind: "addressed", line: addressed };
   const carriedAddressed = verdict === "approve" && (conditions ?? []).find((l) => addressedConditions([l]).length);
   if (carriedAddressed) return { kind: "approval-form", verb: ADDRESSED_VERB, line: carriedAddressed };
+  const nowhere = (conditions ?? []).find((l) => unaddressable([l]));
+  if (nowhere) return { kind: "unaddressable", line: nowhere, stage: unaddressable([nowhere]).stage };
   const accounted = malformedAccountedConditions(conditions)[0];
   if (accounted) return { kind: "accounted", line: accounted };
   // A reference to a condition nothing has open is the same kind of slip: the persona was
@@ -436,6 +456,7 @@ function firstRepromptableDefect(projectDir, name, verdict, conditions, { execut
 function defectGuidance(defect) {
   if (defect.kind === "overreach") return overreachGuidance(defect.line);
   if (defect.kind === "addressed") return addressedGuidance(defect.line);
+  if (defect.kind === "unaddressable") return unaddressableGuidance(defect.line, defect.stage);
   if (defect.kind === "accounted") return accountedGuidance(defect.line);
   if (defect.kind === "unknown-ref") return unknownRefGuidance(defect.ref, defect.open);
   if (defect.kind === "approval-form") return approvalFormGuidance(defect.verb, defect.line);
@@ -518,39 +539,46 @@ function defectReprompt(prompt, verdict, defect) {
 }
 
 // Files the revisions a ruling's `addressed-to` conditions ask for onto
-// `.sdlc/revision-requests.yaml`, where the addressed stage's own `--revise` run reads them.
+// `.sdlc/revision-requests.yaml`, where a run of the addressed stage reads them
+// (`requestTakenBy`: its `--revise` run, or its ordinary run for a stage whose every run
+// starts from `main`).
 //
 // On `main`, and in its own commit, for the reason `fileOverreachRequests` below gives: the
 // ruling belongs to the proposal branch and the request does not, and a copy of it on a
 // branch nobody merges would never be read by the stage it is addressed to.
 //
-// A stage with no revision mode is not filed for and comes back in `unroutable`: a request
-// nothing can take up would sit on the list for ever, and the ruler is told which name
-// could not be placed rather than left to assume it was.
-function fileAddressedRequests(projectDir, { name, gate, by, conditions }) {
+// A request already on file, open or taken, is not filed again, so filing is idempotent and
+// `addressed` names only what this call added. A stage that takes no request is refused
+// before a ruling is recorded (`assertAddressedRulable`); a recorded ruling naming one files
+// nothing for it and names it in `unroutable`.
+function fileAddressedRequests(projectDir, { name, gate, by, conditions, at = new Date().toISOString(), subject = "rule" }) {
   const asked = addressedConditions(conditions ?? []);
   if (!asked.length) return { addressed: [], unroutable: [] };
-  const revisable = new Set(revisableStages());
+  const can = new Set(addressableStages());
   const branch = currentBranch(projectDir);
   if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
   try {
-    const at = new Date().toISOString();
     const entries = [];
     const unroutable = [];
     for (const a of asked) {
-      if (!revisable.has(a.stage)) { unroutable.push(a.stage); continue; }
+      if (!can.has(a.stage)) { unroutable.push(a.stage); continue; }
       entries.push({ stage: a.stage, why: a.text, from: name, gate, by, at });
     }
     const { path, added } = openOwed(projectDir, "request", entries);
     const addressed = added.map((e) => e.stage);
     if (path) {
       stagePaths(projectDir, [path]);
-      git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} asks ${addressed.join(", ")} to revise`], projectDir);
+      git([...SDLC_AUTHOR, "commit", "-q", "-m", `${subject}(${gate}): ${name} asks ${[...new Set(addressed)].join(", ")} to revise`], projectDir);
     }
     return { addressed, unroutable };
   } finally {
     if (branch !== "main") git(["checkout", "-q", branch], projectDir);
   }
+}
+
+// The command that takes up a request addressed to `stage`, as the ruler is told it.
+function requestCommand(stage) {
+  return requestTakenBy(stage) === "revise" ? `sdlc run ${stage} --revise` : `sdlc run ${stage}`;
 }
 
 // The redo entries a ruling's `test-overreaches` conditions ask for, built against the
@@ -785,6 +813,36 @@ function settledMessage(name, gate, stage, r) {
 // pipeline commit of its own, `record(<gate>): <name> settles …`. A proposal with no approval
 // on `main` is refused, and one with nothing left to settle commits nothing. Not a ruling, so
 // it asks for no seat: the ruling it applies was made by whoever the gate file names.
+// Applies to `main` what a recorded ruling on `name` files there, where `main` does not already
+// hold it: for an approval, what `settleApproved` settles; for a return, the requests its
+// `addressed-to` conditions ask of other stages. The ruling is read from its gate file — on
+// `main`, else on the proposal's branch, else on the branch a revision renamed it to — and
+// nothing about it changes. What is filed is committed as the pipeline, in a commit of its own,
+// `record(<gate>): <name> asks <stage> to revise`, stamped with the ruling's own seat and time,
+// and a request already on file is not filed again. Not a ruling, so it asks for no seat.
+export function settleRuling(projectDir, name) {
+  projectDir = resolve(projectDir);
+  if (!name) throw new Error("rule --settle needs the name of a ruled proposal");
+  const gatePath = `.sdlc/gates/${name}.yaml`;
+  const doc = ["main", `proposal/${name}`, `returned/${name}`].map((ref) => {
+    try { return parseYaml(git(["show", `${ref}:${gatePath}`], projectDir)); } catch { return null; }
+  }).find((d) => d?.verdict) ?? null;
+  if (!doc) throw new Error(`${name} has no ruling to settle`);
+  if (doc.verdict === "approve") return { ...settleApproved(projectDir, name), verdict: "approve", addressed: [], unroutable: [] };
+  const none = { verdict: doc.verdict, path: null, readdressed: [], kept: [], closed: [], withdrawn: [], addressed: [], unroutable: [] };
+  if (doc.verdict !== "return" || conditionsAreExecutable(doc.gate, name)) return none;
+  const start = enterBranch(projectDir, "main", "rule --settle");
+  try {
+    const filed = fileAddressedRequests(projectDir, {
+      name, gate: doc.gate ?? null, by: doc.by ?? null, conditions: doc.conditions ?? [],
+      at: doc.at ?? new Date().toISOString(), subject: "record",
+    });
+    return { ...none, ...filed };
+  } finally {
+    leaveBranch(projectDir, start);
+  }
+}
+
 export function settleApproved(projectDir, name) {
   projectDir = resolve(projectDir);
   if (!name) throw new Error("rule --settle needs the name of an approved proposal");
@@ -1502,7 +1560,7 @@ function pointedAt(text, gatePath) {
 // Redacted the same way the gate file itself is (`redactLocalPaths`) — an agent's own
 // prose can carry a path off the machine it ran on, and a terminal is not exempt from the
 // rule the committed file is held to.
-function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, opened, closed, missingTests }) {
+function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, opened, closed, missingTests, addressed }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   const recordedOn = verdict === "approve" ? "main (merged)" : `proposal/${name}`;
   const lines = [`${name}: ${verdict} at ${gate}`];
@@ -1524,6 +1582,8 @@ function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, 
   // reference is what a later ruling needs in order to close it.
   if (opened?.length) lines.push(`  now owed: ${opened.join(", ")} (close with \`${CONDITION_MET_FORM}\`)`);
   for (const c of closed ?? []) lines.push(`  closed: ${c.ref} ${c.outcome}`);
+  // And what it asked of another stage, with the run that takes the request up.
+  for (const stage of new Set(addressed ?? [])) lines.push(`  requested of ${stage}: filed on main; ${requestCommand(stage)} takes it up`);
   // The same for the tests this approval left owed, moved or saw run.
   if (missingTests?.opened?.length) lines.push(`  tests now owed: ${missingTests.opened.map(missingTestRef).join(", ")}`);
   for (const m of missingTests?.readdressed ?? []) lines.push(`  test re-addressed: ${missingTestRef(m.id)} from ${m.from} to ${m.to}`);
@@ -1622,7 +1682,7 @@ export async function rulePending(projectDir) {
       console.log(formatRuling(projectDir, name, {
         gate: r.gate ?? gateMatch[1], verdict: r.escalated ? "escalate" : r.verdict,
         conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, stalled: r.stalled,
-        reprompted: r.reprompted, opened: r.opened, closed: r.closed, missingTests: r.missingTests,
+        reprompted: r.reprompted, opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed,
       }));
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
@@ -1678,8 +1738,10 @@ async function ruleCli({ pos, flags }) {
   // has not ruled the proposals behind it, which a zero exit reports as a finished batch.
   if (flags.pending) { const r = await rulePending(process.cwd()); return r.stopped ? 1 : 0; }
   if (flags.settle) {
-    const r = settleApproved(process.cwd(), pos[0]);
-    if (!r.path) { console.log(`${pos[0]}: nothing left to settle`); return 0; }
+    const r = settleRuling(process.cwd(), pos[0]);
+    for (const stage of new Set(r.addressed)) console.log(`${pos[0]}: requested of ${stage}: filed on main; ${requestCommand(stage)} takes it up`);
+    for (const stage of r.unroutable) console.warn(`warning: ${pos[0]}: ${stage} takes no request; nothing was filed for it`);
+    if (!r.path && !r.addressed.length) { console.log(`${pos[0]}: nothing left to settle`); return 0; }
     for (const [to, ids] of settledByTarget(r)) console.log(`${pos[0]}: re-addressed to ${to}: ${ids.map(missingTestRef).join(", ")}`);
     if (r.kept.length) console.log(`${pos[0]}: kept by the stage that could not supply them: ${r.kept.map(missingTestRef).join(", ")}`);
     if (r.closed.length) console.log(`${pos[0]}: closed, a test ran: ${r.closed.map(missingTestRef).join(", ")}`);
@@ -1695,7 +1757,7 @@ async function ruleCli({ pos, flags }) {
     console.log(formatRuling(process.cwd(), pos[0], {
       gate: r.gate, verdict: r.escalated ? "escalate" : r.verdict,
       conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
-      opened: r.opened, closed: r.closed, missingTests: r.missingTests,
+      opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed,
     }));
     return 0;
   }
@@ -1705,7 +1767,7 @@ async function ruleCli({ pos, flags }) {
   const conditions = flags.condition === undefined ? undefined
     : [flags.condition].flat().filter((c) => typeof c === "string");
   const r = rule(process.cwd(), pos[0], pos[1], { by: flags.by, note: flags.note ?? "", conditions });
-  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note, opened: r.opened, closed: r.closed, missingTests: r.missingTests }));
+  console.log(formatRuling(process.cwd(), pos[0], { gate: r.gate, verdict: r.verdict, conditions: r.conditions, note: r.note, opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed }));
   if (r.filed?.length) console.log(`${pos[0]}: ${r.filed.join(", ")} filed for re-derivation — run sdlc run derive-tests --domain <domain> --stale`);
   for (const id of r.unfiled ?? []) console.warn(`warning: ${pos[0]}: ${id} is not an accepted criterion; nothing was filed for it`);
   return 0;

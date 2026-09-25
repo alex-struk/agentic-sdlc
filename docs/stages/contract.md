@@ -61,6 +61,18 @@ names a criterion id from whichever domain it belongs to; `ratify --domain <d>` 
 ratify.md`, "Inputs") applies every condition whose id belongs to `<d>`, on the next run for that
 domain, the same way it applies its own archaeology and follow-up rulings.
 
+## Requests addressed to it
+
+A ruling at any gate may ask for the contract, or the seed records the tests act on, to change:
+`addressed-to contract: <what has to change, and what showed it>` (`docs/stages/rule.md`). The
+contract has no `--revise`, because every run completes it from `main`, so its ordinary run takes
+the requests up: `sdlc run contract` is handed every open request addressed to `contract`, each
+numbered with the ruler's words and the proposal, gate and seat it came from, and told to change
+only what they name. A request it cannot answer is named back in the journal as
+`deferred-request <n>: <why>` and stays open. The rest are marked taken, with the proposal the run
+opened, once that proposal exists. A proposal whose ruling filed the request is not revised until
+that contract proposal is approved (`docs/stages/next.md`).
+
 ## Missing tests it owes
 
 A criterion `derive-tests` records as untestable is an owed item of kind `missing-test`

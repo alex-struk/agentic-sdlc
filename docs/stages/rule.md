@@ -302,9 +302,14 @@ The same reading, at the same gates, for the general case:
 addressed-to <stage>: <what that stage has to change, and what showed it>
 ```
 
-The stage is one the registry knows to have a revision mode — it is read off the stages themselves
-rather than listed here, so a stage that gains `--revise` becomes addressable with it, and a name
-that has none is not filed for and is reported back to the ruler.
+The stage is one some run of which takes a request up (`addressableStages`, `registry.mjs`): a
+stage with a revision mode takes it with `--revise`, `archaeology` with its `--revise` too, and
+`contract`, whose every run completes the contract from `main`, with its ordinary run. The set is
+read off the stages themselves rather than listed here. A line naming any other stage is refused
+before anything is written, from either seat, with the stages that can be named; the agent seat is
+asked once to rewrite it first, as for the other fixable defects. A request no run can take up would
+be recorded on the ruling and filed nowhere
+(`docs/decisions/0050-a-request-reaches-a-stage-that-takes-it-up.md`).
 
 Two things follow from a ruling carrying one. The condition is left out of the list the stage being
 returned is given, along with any `test-overreaches` line, so no stage is handed work it has no way
@@ -313,14 +318,19 @@ stage, and in whose words, so its list is never silently shorter than the ruling
 a request is appended to `.sdlc/revision-requests.yaml`, on `main`, in a commit of its own, for the
 same reason the redo entry above lands there.
 
+The terminal account of the ruling names each stage it asked and the run that takes the request
+up (`requested of <stage>: filed on main; sdlc run <stage> [--revise] takes it up`).
+
 That request is what makes an artifact its own gate has already approved revisable again. `sdlc run
-<stage> --revise` with no returned ruling of its own is handed **every** open request addressed to
-it — each one numbered, with the ruler's words verbatim and the proposal, gate and seat they came
+<stage> --revise` with no returned ruling of its own (or `sdlc run contract`) is handed **every**
+open request addressed to it — each one numbered, with the ruler's words verbatim and the proposal, gate and seat they came
 from — and opens one fresh proposal at its own gate answering all of them. Requests filed by the
 same ruling are kept together and the older ruling's come first.
 
 The round is spent where the run delivers, not where it reads: every request the run answered is
-marked `taken` in one write, in a commit of its own on `main`, after the proposal is opened. A run
+marked `taken` in one write, in a commit of its own on `main`, after the proposal is opened, with
+the proposal that answered it (`taken_by`). The proposal the ruling returned is not revised until
+then, and until that proposal is approved (`docs/stages/next.md`, "Held"). A run
 refused by a later check, or one that lost its agent turn, leaves every request open for the next
 one. A request the run could not answer is named back in its journal entry on a line of its own —
 `deferred-request <n>: <why it cannot be answered here>` — and stays open with that reason recorded
@@ -422,7 +432,13 @@ which reads the ruling from the gate file on `main` and the handed list from the
 merge, brings the list into line with `main` the way every pipeline commit that touches it does,
 and commits what it changed as the pipeline author: `record(<gate>): <name> settles <n> missing
 tests: …`, each item named in the body. It is not a ruling and asks for no seat. A proposal with
-no approval on `main` is refused, and one with nothing left to settle commits nothing.
+no ruling is refused, and one with nothing left to settle commits nothing.
+
+**A return whose request is not on `main`** is settled by the same command. It reads the ruling
+from its gate file (on `main`, else on `proposal/<name>`, else on `returned/<name>`) and files each
+`addressed-to` request it carries that is not already on file, open or taken, stamped with the
+ruling's own seat, gate and time, in a commit of its own as the pipeline author:
+`record(<gate>): <name> asks <stage> to revise`. A second settle files nothing.
 
 **A ruler withdraws one** with the line a condition is withdrawn with, on any verdict and from
 either seat:

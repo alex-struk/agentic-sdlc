@@ -121,8 +121,8 @@ what the results *mean*.
   by `sdlc rule` for a `test-overreaches` one and closed by the `derive-tests` run that answers it;
   a revision request on `.sdlc/revision-requests.yaml`, written by `sdlc rule` for an
   `addressed-to <stage>` condition and read whole — every open request addressed to a stage, as one
-  round — by that stage's own `--revise` run, which is what makes an artifact its own gate has
-  already approved revisable again.
+  round — by the run of that stage that takes requests up (`--revise`, or `contract`'s ordinary
+  run), which is what makes an artifact its own gate has already approved revisable again.
 
 `src/stages/shared.mjs` holds what more than one of these stages needs — the skill-path helper, the
 follow-up-proposal bookkeeping (`followUpState`, shared by `ratify`'s and `calibrate`'s follow-up

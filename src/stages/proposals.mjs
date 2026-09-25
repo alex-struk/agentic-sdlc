@@ -372,7 +372,7 @@ export function settleRequestedRevision(projectDir, stage, ctx, agentText, propo
     if (why) deferred.push({ request, why, proposal: proposalName ?? "" });
     else taken.push(request);
   });
-  if (!settle(projectDir, "request", { close: taken, defer: deferred.map((d) => ({ entry: d.request, why: d.why, proposal: d.proposal })) })) {
+  if (!settle(projectDir, "request", { close: taken, defer: deferred.map((d) => ({ entry: d.request, why: d.why, proposal: d.proposal })), proposal: proposalName })) {
     return { taken: [], deferred: [], unknown, written: false };
   }
   const noun = (n) => `${n} revision request${n === 1 ? "" : "s"}`;
