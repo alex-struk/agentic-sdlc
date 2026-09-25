@@ -172,3 +172,54 @@ test("the ruler of a slice is shown the missing tests its criteria are owed, and
   assert.match(prompt, /condition-withdrawn <ref>: <why it is no longer asked for>/);
   assert.match(prompt, /block_on_missing_tests/);
 });
+
+// Two domains' items owed by the test writer, and one domain's derivation open at G3: it writes
+// the test for its own item and leaves the other domain alone. A kept item and an item owed by
+// `ratify` sit beside them.
+const TWO_DOMAINS = HUMAN_HELD.replace("domains: [a]", "domains: [a, b]");
+const HANDED = (id, domain, why) => ({
+  kind: "missing-test", item: id, id, version: 1, domain, stage: "derive-tests", why: "blocked", by: "runner", at: "2026-09-19T00:00:00.000Z",
+  readdressed: [{ from: "contract", to: "derive-tests", why, by: "contract-v2", gate: "G1", approved_by: "tech-lead", at: "2026-09-19T01:00:00.000Z" }],
+});
+
+function derivation(t) {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-rule-missing-derive-"));
+  t.after(() => rmSync(d, { recursive: true, force: true }));
+  git(["init", "-q", "-b", "main"], d);
+  put(d, ".sdlc/config.yaml", TWO_DOMAINS);
+  put(d, ".gitattributes", ".sdlc/runs/*.md merge=union\n");
+  put(d, "spec/criteria-index.json", JSON.stringify({ criteria: [
+    { id: "R-1.1", domain: "a", version: 1, state: "accepted" },
+    { id: "R-2.1", domain: "b", version: 1, state: "accepted" },
+    { id: "R-2.2", domain: "b", version: 1, state: "accepted" },
+    { id: "R-2.3", domain: "b", version: 1, state: "accepted" },
+  ] }));
+  const rec = (id) => ({ id, version: 1, reason: "blocked", missing: `what ${id} needs`, owner: "contract" });
+  put(d, "tests/acceptance/not-testable.yaml", stringifyYaml({ criteria: ["R-1.1", "R-2.1", "R-2.2", "R-2.3"].map(rec) }));
+  put(d, ".sdlc/owed.yaml", stringifyYaml({ owed: [
+    HANDED("R-1.1", "a", "seed.a.one"),
+    HANDED("R-2.1", "b", "seed.b.one"),
+    { ...HANDED("R-2.2", "b", "x"), stage: "contract", readdressed: undefined, kept: { by: "contract-v2", gate: "G1", approved_by: "tech-lead", at: "2026-09-19T01:00:00.000Z" } },
+    { ...HANDED("R-2.3", "b", "x"), stage: "contract", readdressed: [{ from: "contract", to: "ratify", why: "two states", by: "contract-v2", at: "2026-09-19T01:00:00.000Z" }] },
+  ].map((e) => (e.item === "R-2.3" ? { ...e, stage: "ratify" } : e)) }));
+  commit(d, "init");
+  git(["checkout", "-q", "-b", "proposal/derive-tests-a"], d);
+  put(d, "tests/acceptance/not-testable.yaml", stringifyYaml({ criteria: ["R-2.1", "R-2.2", "R-2.3"].map(rec) }));
+  put(d, "tests/acceptance/a/R-1.1.spec.ts", "// criterion: @R-1.1 v1\n// provenance: blind, spec@abc123, derived 2026-09-19\n");
+  put(d, ".sdlc/proposals/derive-tests-a.md",
+    "---\ngate: G3\nquestion: \"Are these the tests?\"\nrecommendation: \"Yes.\"\nopened: 2026-09-19T00:00:00.000Z\n---\n\n# Are these the tests?\n");
+  commit(d, "open derive-tests-a");
+  git(["checkout", "-q", "main"], d);
+  return d;
+}
+
+const byItem = (d) => new Map(owedOnMain(d).map((e) => [e.item, e]));
+
+test("approving one domain's derivation hands its own item on and leaves every other domain's item where it was", (t) => {
+  const d = derivation(t);
+  const was = byItem(d);
+  rule(d, "derive-tests-a", "approve", { by: "tech-lead", note: "fine" });
+  const now = byItem(d);
+  assert.equal(now.get("R-1.1").stage, "verify", "its test exists and has not run");
+  for (const id of ["R-2.1", "R-2.2", "R-2.3"]) assert.deepEqual(now.get(id), was.get(id), `${id} is untouched`);
+});

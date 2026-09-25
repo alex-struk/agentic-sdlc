@@ -260,12 +260,12 @@ export function finishDeterministicNoOp(projectDir, stage, ctx, text) {
 // re-read rather than threaded through, and rewritten at each phase change.
 // Moves the missing tests a run's journal hands to another stage, attributed to the proposal the
 // run opened, and commits the move. A line the run was not entitled to write — an item it does
-// not owe, a stage that does not exist — moves nothing and is named in the commit. A run that
+// not owe, another domain's item, a stage that does not exist — moves nothing and is named in the commit. A run that
 // opened a proposal holds its hand-ons to the test writer for the approval, which applies them
 // (`settleApprovedMissingTests`, `src/commands/rule.mjs`).
-function recordReaddressed(projectDir, stageName, journal, proposalName) {
+function recordReaddressed(projectDir, stageName, journal, proposalName, domain) {
   const r = readdressMissingTests(projectDir, stageName, journal, {
-    by: proposalName ?? stageName, hold: proposalName ? [WRITER] : [],
+    by: proposalName ?? stageName, hold: proposalName ? [WRITER] : [], domain,
   });
   if (!r.path) return r;
   const by = proposalName ? ` by ${proposalName}` : "";
@@ -460,7 +460,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
   // And the missing tests the run handed on (`re-address missing-test/<id> to <stage>: <why>`),
   // in a commit of their own on `main` for the same reason: the owed list lives there, and
   // a run that never got this far hands nothing on.
-  recordReaddressed(projectDir, stage.name, said, proposal?.name ?? null);
+  recordReaddressed(projectDir, stage.name, said, proposal?.name ?? null, ctx?.domain ?? null);
 
   clearRunState(projectDir);
   return { ok: true, proposal, journal, cost: result.cost, turns: result.turns };

@@ -750,8 +750,9 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
 function recordMissingTests(projectDir, { name, gate, by }) {
   const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   const before = git(["rev-parse", "HEAD^1"], projectDir);
+  const base = git(["merge-base", "HEAD^1", "HEAD^2"], projectDir);
   const { stage, domain } = proposalSubject(name, config);
-  const r = syncMissingTests(projectDir, { before, from: name, stage, gate, by, config });
+  const r = syncMissingTests(projectDir, { before, from: name, stage, domain, base, gate, by, config });
   const s = settleHandedOn(projectDir, { name, gate, by, merge: "HEAD", stage, domain });
   if (!r.path && !s.path) return null;
   stagePaths(projectDir, [owedPath(MISSING_TEST)]);
@@ -807,12 +808,6 @@ function settledMessage(name, gate, stage, r) {
   return { subject, body };
 }
 
-// Applies to `main` what the recorded approval of `name` settles about the missing tests its
-// run was handed, where `main` does not already hold it. The ruling is
-// read from its gate file on `main` and nothing about it changes; what changes is written in a
-// pipeline commit of its own, `record(<gate>): <name> settles …`. A proposal with no approval
-// on `main` is refused, and one with nothing left to settle commits nothing. Not a ruling, so
-// it asks for no seat: the ruling it applies was made by whoever the gate file names.
 // Applies to `main` what a recorded ruling on `name` files there, where `main` does not already
 // hold it: for an approval, what `settleApproved` settles; for a return, the requests its
 // `addressed-to` conditions ask of other stages. The ruling is read from its gate file — on
@@ -843,6 +838,12 @@ export function settleRuling(projectDir, name) {
   }
 }
 
+// Applies to `main` what the recorded approval of `name` settles about the missing tests its
+// run was handed, where `main` does not already hold it. The ruling is read from its gate file on
+// `main` and nothing about it changes; what changes is written in a pipeline commit of its own,
+// `record(<gate>): <name> settles …`. A proposal with no approval on `main` is refused, and one
+// with nothing left to settle commits nothing. Not a ruling, so it asks for no seat: the ruling
+// it applies was made by whoever the gate file names.
 export function settleApproved(projectDir, name) {
   projectDir = resolve(projectDir);
   if (!name) throw new Error("rule --settle needs the name of an approved proposal");

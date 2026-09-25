@@ -33,7 +33,8 @@
 // record `derive-tests` rewrites with a different owner moves the item when it is approved. A
 // hand-on to `derive-tests` from a gated stage rests on what that stage supplied, so it is
 // applied by the approval that brings the supply onto `main`, stamped with the ruling; any
-// other move is applied when the run finishes. What the approved run was handed and did not
+// other move is applied when the run finishes. An approval, and a run's finish, act only on what the
+// run was handed: the items its stage owed in its domain when its branch was cut. What the approved run was handed and did not
 // hand on it kept (`kept`), and no run of that stage is offered for it again.
 //
 // **Retired criteria.** A criterion another supersedes, or one made obsolete, is derived no
@@ -195,6 +196,18 @@ function specVersion(projectDir, domain, id) {
   return m ? Number(m[1]) : null;
 }
 
+const inDomain = (e, domain) => !domain || !e.domain || e.domain === domain;
+
+// Whether a run of `stage` was handed an item: it was owed by the stage in the run's domain, on
+// the commit the run's branch was cut from (`base`), which is what `main` held while the run ran
+// (`handedNote`). Without a base, every item in the domain.
+function handedAt(projectDir, stage, { base = null, domain = null } = {}) {
+  const at = base
+    ? new Set(openMissingTestsAt(projectDir, base).filter((e) => e.stage === stage && inDomain(e, domain)).map((e) => e.item))
+    : null;
+  return (e) => inDomain(e, domain) && (!at || at.has(e.item));
+}
+
 // Who runs a test that exists and has not run: the calibration, where the project calibrates
 // against a target, and verify otherwise.
 function runner(config) {
@@ -222,19 +235,21 @@ function moved(entry, to, why, by, at, more = {}, stamp = {}) {
 // `main` was at before the merge being recorded, so a record the merge brought in is stamped
 // with the ruling (`from`, `gate`, `by`) and one that was already there is stamped by the
 // runner; a record the merge removed is still accounted for. `stage` is the stage whose proposal
-// the merge approved.
+// the merge approved, `domain` the domain it ran on, and `base` the commit its branch was cut
+// from: an item is the approval's to hand back only if that run was handed it (`handedAt`).
 //
 // It opens an item for every record nothing accounts for, moves an item whose record the merge
 // rewrote with a different owner, closes an item whose test ran at the current version, and
 // hands an item whose test exists and has not run to the stage that runs it. Returns the path
 // written (`null` when nothing changed) and what it did, by criterion.
-export function syncMissingTests(projectDir, { before = null, from = null, stage = null, gate = null, by = null, config = null, at = new Date().toISOString() } = {}) {
+export function syncMissingTests(projectDir, { before = null, from = null, stage = null, domain = null, base = null, gate = null, by = null, config = null, at = new Date().toISOString() } = {}) {
   const now = recordsIn(workingText(projectDir, NOT_TESTABLE_PATH));
   const was = before ? recordsIn(showAt(projectDir, before, NOT_TESTABLE_PATH)) : now;
   const nowById = new Map(now.map((r) => [r.id, r]));
   const wasById = new Map(was.map((r) => [r.id, r]));
   const index = indexIn(workingText(projectDir, "spec/criteria-index.json"));
   const result = { path: null, opened: [], readdressed: [], closed: [], withdrawn: [] };
+  const handed = stage === WRITER ? handedAt(projectDir, stage, { base, domain }) : null;
 
   const stored = read(projectDir, MISSING_TEST);
   const fresh = [];
@@ -263,8 +278,10 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
       const owner = text(record.owner);
       const changed = JSON.stringify(record) !== JSON.stringify(wasById.get(e.id));
       // The writer was handed this item and its approved derivation kept the record: the
-      // record says who owes what is still missing, and that is never the writer.
-      if (stage === "derive-tests" && e.stage === "derive-tests") {
+      // record says who owes what is still missing, and that is never the writer. An item the
+      // approved run was not handed — another domain's, or one handed on after its branch was
+      // cut — is not the approval's to move.
+      if (stage === WRITER && e.stage === WRITER && handed(e)) {
         result.readdressed.push({ id: e.id, from: e.stage, to: recordOwner(record) });
         return moved(e, recordOwner(record), recordMissing(record), by ?? "runner", at, { version: record.version });
       }
@@ -332,20 +349,24 @@ export function readdressLines(journal) {
 // does not owe, a stage that does not exist, or the stage that already owes it moves nothing
 // and is reported. `by` is what the move is attributed to: the proposal the run opened.
 //
+// A run on one domain was handed only that domain's items (`handedNote`), and a line naming
+// another domain's item moves nothing either.
+//
 // A line to a stage in `hold` moves nothing here and is returned in `held`: a gated run holds
 // its hand-ons to the test writer, because what the writer needs is the run's own work, which
 // reaches `main` only when the proposal is approved (`settleApprovedMissingTests`).
-export function readdressMissingTests(projectDir, stage, journal, { by, at = new Date().toISOString(), hold = [] } = {}) {
+export function readdressMissingTests(projectDir, stage, journal, { by, at = new Date().toISOString(), hold = [], domain = null } = {}) {
   const lines = readdressLines(journal);
   const result = { path: null, readdressed: [], refused: [], held: [] };
   if (!lines.length) return result;
   const moves = new Map();
   const seen = new Set();
-  const owned = new Set(openInTree(projectDir).filter((e) => e.stage === stage).map((e) => e.item));
+  const owned = new Set(openInTree(projectDir).filter((e) => e.stage === stage && inDomain(e, domain)).map((e) => e.item));
+  const owes = domain ? `${stage} in ${domain}` : stage;
   for (const l of lines) {
     const ref = missingTestRef(l.id);
     if (!STAGES.includes(l.to)) result.refused.push(`${ref}: ${l.to} is not a stage`);
-    else if (!owned.has(l.id)) result.refused.push(`${ref}: ${l.id} is not an open item owed by ${stage}`);
+    else if (!owned.has(l.id)) result.refused.push(`${ref}: ${l.id} is not an open item owed by ${owes}`);
     else if (l.to === stage) result.refused.push(`${ref}: already owed by ${stage}`);
     else if (!seen.has(l.id)) {
       seen.add(l.id);
@@ -363,8 +384,6 @@ export function readdressMissingTests(projectDir, stage, journal, { by, at = new
   }));
   return result;
 }
-
-const inDomain = (e, domain) => !domain || !e.domain || e.domain === domain;
 
 // A run's own account as its proposal page carries it: everything above the ruling appended to
 // the page, so a ruler quoting a line is never read as the run saying it.
@@ -397,7 +416,8 @@ export function settleApprovedMissingTests(projectDir, { stage, proposal, gate =
   for (const l of readdressLines(runAccount(page))) {
     if (STAGES.includes(l.to) && l.to !== stage && !lines.has(l.id)) lines.set(l.id, l);
   }
-  const owed = openInTree(projectDir).filter((e) => e.stage === stage);
+  // A line moves only what the run was handed: an item in its domain, owed when its branch was cut.
+  const owed = openInTree(projectDir).filter((e) => e.stage === stage && inDomain(e, domain) && (!base || handed.has(e.item)));
   if (!owed.some((e) => lines.has(e.item) || (handed.has(e.item) && e.kept?.by !== proposal))) return result;
   const live = new Set(owed.map((e) => e.item));
   const opened = materialise(projectDir, at);

@@ -109,6 +109,81 @@ test("an item handed to derive-tests goes back to its record's owner when the ap
   assert.deepEqual(r.readdressed, [{ id: "R-1.2", from: "derive-tests", to: "contract" }]);
 });
 
+// Two domains' items handed to the test writer, each derived by a run of its own. The approval of
+// one domain's derivation acts on what that run was handed and on nothing else.
+function twoDomains(t) {
+  const d = project(t);
+  put(d, "spec/criteria-index.json", JSON.stringify({ criteria: [
+    { id: "R-1.1", domain: "orders", version: 1, state: "accepted" },
+    { id: "R-1.2", domain: "orders", version: 2, state: "accepted" },
+    { id: "R-2.1", domain: "billing", version: 1, state: "accepted" },
+  ] }));
+  const BILLING = { id: "R-2.1", version: 1, reason: "blocked: no invoice", missing: "a seeded invoice", owner: "contract" };
+  records(d, [NAMED, BILLING]);
+  commit(d, "records");
+  syncMissingTests(d, {});
+  readdressMissingTests(d, "contract", [
+    `re-address ${missingTestRef("R-1.2")} to derive-tests: the body is now observable`,
+    `re-address ${missingTestRef("R-2.1")} to derive-tests: the seeded invoice`,
+  ].join("\n"), { by: "contract-v2" });
+  commit(d, "handed on");
+  return { d, BILLING };
+}
+
+const CALIBRATES = { profile: "rebuild", oracle: { target: "old" } };
+
+test("an approved derivation hands back only its own domain's items; another domain's stay with the writer", (t) => {
+  const { d, BILLING } = twoDomains(t);
+  const before = git(["rev-parse", "HEAD"], d);
+  // The orders derivation keeps one record and writes a test for nothing; billing is untouched.
+  git(["commit", "-q", "--allow-empty", "-m", "merge: derive-tests-orders approved"], d);
+  const r = syncMissingTests(d, { before, from: "derive-tests-orders", stage: "derive-tests", domain: "orders", base: before, gate: "G3", by: "agent:reviewer", config: CALIBRATES });
+  assert.deepEqual(r.readdressed, [{ id: "R-1.2", from: "derive-tests", to: "contract" }]);
+  const billing = read(d, MISSING_TEST).find((e) => e.item === BILLING.id);
+  assert.equal(billing.stage, "derive-tests");
+  assert.equal(billing.readdressed.length, 1, "nothing about it changed");
+});
+
+test("an approved derivation that writes its domain's test hands it to calibrate and leaves another domain's item alone", (t) => {
+  const { d, BILLING } = twoDomains(t);
+  const before = git(["rev-parse", "HEAD"], d);
+  records(d, [BILLING]);
+  spec(d, "R-1.2", 2);
+  commit(d, "merge: derive-tests-orders approved");
+  const r = syncMissingTests(d, { before, from: "derive-tests-orders", stage: "derive-tests", domain: "orders", base: before, gate: "G3", by: "agent:reviewer", config: CALIBRATES });
+  assert.deepEqual(r.readdressed, [{ id: "R-1.2", from: "derive-tests", to: "calibrate" }]);
+  assert.equal(read(d, MISSING_TEST).find((e) => e.item === BILLING.id).stage, "derive-tests");
+});
+
+test("an approved derivation does not hand back an item the writer was handed after its branch was cut", (t) => {
+  const d = project(t);
+  records(d, [NAMED]);
+  commit(d, "record");
+  syncMissingTests(d, {});
+  commit(d, "materialised");
+  const base = git(["rev-parse", "HEAD"], d);
+  readdressMissingTests(d, "contract", `re-address ${missingTestRef("R-1.2")} to derive-tests: the body is now observable`, { by: "contract-v2" });
+  commit(d, "handed on after the derivation started");
+  const before = git(["rev-parse", "HEAD"], d);
+  git(["commit", "-q", "--allow-empty", "-m", "merge: derive-tests-orders approved"], d);
+  const r = syncMissingTests(d, { before, from: "derive-tests-orders", stage: "derive-tests", domain: "orders", base, gate: "G3", by: "agent:reviewer" });
+  assert.deepEqual(r.readdressed, []);
+  assert.equal(read(d, MISSING_TEST)[0].stage, "derive-tests");
+});
+
+test("a run that derives one domain hands on only that domain's items, at its finish and at its approval", (t) => {
+  const { d } = twoDomains(t);
+  const base = git(["rev-parse", "HEAD"], d);
+  const line = `re-address ${missingTestRef("R-2.1")} to ratify: the criterion asks for two states`;
+  const r = readdressMissingTests(d, "derive-tests", line, { by: "derive-tests-orders", domain: "orders" });
+  assert.deepEqual(r.readdressed, []);
+  assert.match(r.refused.join("\n"), /R-2\.1 is not an open item owed by derive-tests in orders/);
+  const s = settleApprovedMissingTests(d, { stage: "derive-tests", proposal: "derive-tests-orders", gate: "G3", by: "agent:reviewer", page: line, base, domain: "orders" });
+  assert.deepEqual(s.readdressed, []);
+  assert.deepEqual(s.kept, ["R-1.2"]);
+  assert.equal(read(d, MISSING_TEST).find((e) => e.item === "R-2.1").stage, "derive-tests");
+});
+
 test("an item closes only on a result row that ran its test at the current version", (t) => {
   const d = project(t);
   records(d, [NAMED]);
