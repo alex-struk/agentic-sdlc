@@ -3,6 +3,31 @@ import { join } from "node:path";
 import { loadConfig } from "../config/load.mjs";
 import { stagesFor } from "../profiles.mjs";
 import { TOKEN_BUDGET_FLOOR, MAX_TURNS_CEILING } from "../runner/executor.mjs";
+import { STAGES_BY_NAME } from "../stages/registry.mjs";
+
+// Entries in `policy.agents` that name nothing a turn runs as. The schema holds their shape;
+// this holds their names to the pipeline and to the project's own gates, because an entry
+// for a stage that has no agent turn, or a ruling nobody makes, is a choice that silently
+// applies to nothing — and it reads as though the work it names had been moved.
+function agentEntryMessages(config) {
+  const messages = [];
+  const agents = config?.policy?.agents ?? {};
+  for (const name of Object.keys(agents.stages ?? {})) {
+    const stage = STAGES_BY_NAME[name];
+    if (!stage) messages.push(`policy.agents.stages.${name} names no stage`);
+    else if (!stage.implemented || stage.agent === false) messages.push(`policy.agents.stages.${name}: ${name} has no agent turn, so no backend runs it`);
+  }
+  const gates = config?.policy?.gates ?? {};
+  // A persona rules only where some gate gives it an `agent:` holder; an escalation target
+  // that no gate seats as an agent is a person, and a person's ruling runs on no backend.
+  const personas = new Set(Object.values(gates).map((g) => String(g?.holder ?? ""))
+    .filter((h) => h.startsWith("agent:")).map((h) => h.slice("agent:".length)));
+  for (const key of Object.keys(agents.rulings ?? {})) {
+    if (gates[key] || personas.has(key)) continue;
+    messages.push(`policy.agents.rulings.${key} names neither a gate in policy.gates nor a persona that rules one`);
+  }
+  return messages;
+}
 
 export function checkConfig(projectDir, ctx = {}) {
   const id = "config";
@@ -11,6 +36,7 @@ export function checkConfig(projectDir, ctx = {}) {
   const { config, errors } = loadConfig(p);
   const messages = [...errors];
   try { stagesFor(config?.profile); } catch (e) { messages.push(e.message); }
+  if (config) messages.push(...agentEntryMessages(config));
   // A turn budget that the runner would ignore or silently reduce is worse than no budget
   // at all: it reads as a cap that a gate approved and a run honoured, and it is neither.
   // Refusing it here puts the failure in front of whoever proposes the number, rather than

@@ -115,3 +115,22 @@ test("a batch leaves a policy change at the wrong gate open and says why", async
   assert.match(lines.join("\n"), /sneak: left open — [\s\S]*G-POL/);
   assert.equal(gitOk(["cat-file", "-e", "proposal/sneak:.sdlc/gates/sneak.yaml"], d), false);
 });
+
+// Which agent backend does the work is policy: `policy.agents` sits in the block, so moving
+// work onto another backend is a change a proposal at any other gate cannot carry, and one
+// the persona seat at that gate cannot rule, whichever backend it would itself run on.
+const moveWorkToCodex = (text) => text.replace("  default_tier: STANDARD\n", "  default_tier: STANDARD\n  agents: { backend: codex }\n");
+
+test("a proposal that moves the work to another agent backend is a policy change", (t) => {
+  const d = project(t);
+  openProposal(d, "engine", "G2", moveWorkToCodex);
+  assert.equal(proposedPolicyChange(d, "proposal/engine").changed, true);
+});
+
+test("a proposal at G2 that moves the work to another agent backend is not ruled at G2", async (t) => {
+  const d = project(t);
+  openProposal(d, "engine-g2", "G2", moveWorkToCodex);
+  mockApproval(t);
+  await assert.rejects(() => ruleByAgent(d, "engine-g2", { persona: "architect" }), /G-POL/);
+  assert.equal(gitOk(["cat-file", "-e", "main:.sdlc/gates/engine-g2.yaml"], d), false);
+});

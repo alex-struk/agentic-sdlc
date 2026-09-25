@@ -248,6 +248,36 @@
             "maximum": 999
           }
         },
+        "agents": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "backend": {
+              "$ref": "#/definitions/agentBackend"
+            },
+            "model": {
+              "$ref": "#/definitions/agentModel"
+            },
+            "stages": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "additionalProperties": {
+                "$ref": "#/definitions/agentStage"
+              }
+            },
+            "rulings": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^(G[0-9]+|G-[A-Z]+|[a-z][a-z0-9-]*)$"
+              },
+              "additionalProperties": {
+                "$ref": "#/definitions/agentChoice"
+              }
+            }
+          }
+        },
         "budgets": {
           "type": "object",
           "additionalProperties": {
@@ -393,6 +423,44 @@
     }
   },
   "definitions": {
+    "agentBackend": {
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    },
+    "agentModel": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@\\[\\]-]*$",
+      "maxLength": 100
+    },
+    "agentChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "$ref": "#/definitions/agentBackend"
+        },
+        "model": {
+          "$ref": "#/definitions/agentModel"
+        }
+      }
+    },
+    "agentStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "$ref": "#/definitions/agentBackend"
+        },
+        "model": {
+          "$ref": "#/definitions/agentModel"
+        },
+        "accept_weaker": {
+          "type": "boolean"
+        }
+      }
+    },
     "source": {
       "type": "object",
       "additionalProperties": false,
