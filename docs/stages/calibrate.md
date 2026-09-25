@@ -147,7 +147,8 @@ the runner's own process, never through a tool call.
 1. **Point at the target.** For `old`, `sdlc oracle up` runs first (`oracleUp`, exported from
    `src/commands/oracle.mjs`) — it is idempotent, so this is a no-op against an oracle already up and
    the way it gets started when it is not — and the base URL and mail API come from the local file it
-   writes (`.sdlc/oracle-old.local.yaml`). Under `SDLC_ORACLE=mock` nothing is started; the local
+   writes (`.sdlc/oracle-old.local.yaml`). Its run-record line is written with this stage's own, not
+   committed on its own mid-stage (`docs/stages/oracle.md`). Under `SDLC_ORACLE=mock` nothing is started; the local
    file is read if it exists and `http://mock` stands in when it does not. Any other target's base
    URL is whatever its own `config.targets` entry names, with no mail catcher of its own.
 2. **Apply the rulings that came back.** Every approved `calibrate-<t>-<n>` gate file not already in

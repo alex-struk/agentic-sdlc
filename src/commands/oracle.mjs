@@ -10,7 +10,7 @@ import { join, relative, resolve } from "node:path";
 import { loadConfig } from "../config/load.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { git, SDLC_AUTHOR, stagePaths } from "../lib/git.mjs";
-import { appendRun } from "../lib/runrecord.mjs";
+import { appendRun, deferRun } from "../lib/runrecord.mjs";
 import { freePort, readLocal, removeLocal, writeLocal } from "../oracle/ports.mjs";
 import { compose, composeVersion, loadSeed, seedDirFor, seedFiles, waitForDb, waitForHttp } from "../oracle/compose.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
@@ -71,7 +71,13 @@ function composeEnv(config, ports) {
 // call: an `oracle up`/`down` run in the middle of other uncommitted work must not sweep
 // that work into a commit it did not ask for, so it just prints in that case and leaves
 // the run record itself uncommitted for whatever commits the rest of the tree next.
-function recordRun(projectDir, line) {
+//
+// Inside a stage (`stage` set) neither happens. The line waits for the stage's own
+// run-record line (`deferRun`), so it reaches `main` in the stage's own commit or proposal
+// rather than in a commit landing mid-stage, and the stage's scope checks never see the
+// pipeline's own record as a change the agent made.
+function recordRun(projectDir, line, stage) {
+  if (stage) { deferRun(projectDir, line); return; }
   const wasClean = !git(["status", "--porcelain"], projectDir);
   const runPath = appendRun(projectDir, line);
   if (!wasClean) return;
@@ -137,7 +143,7 @@ function instanceNameArgs(config, project, wanted, opts) {
   return ["-f", file];
 }
 
-async function startOracle(projectDir, config, target) {
+async function startOracle(projectDir, config, target, stage) {
   // Checked before anything that touches the network or the filesystem for real:
   // cloning the old application's sources is wasted work if Docker Compose is not even
   // on this machine, so the probe for it runs first and every later check builds on a
@@ -249,7 +255,7 @@ async function startOracle(projectDir, config, target) {
   // The run record is committed history, so it names the target's configured URL and the
   // port only as a local fact: the port `pickPorts` landed on is whatever was free on
   // this machine and means nothing on anybody else's.
-  recordRun(projectDir, `oracle up ${target}: ${config.oracle.base_url} (local port ${ports.app})`);
+  recordRun(projectDir, `oracle up ${target}: ${config.oracle.base_url} (local port ${ports.app})`, stage);
   return 0;
 }
 
@@ -322,13 +328,13 @@ function oracleReseed(projectDir, config, target, instance) {
   return 0;
 }
 
-function oracleDown(projectDir, config, target) {
+function oracleDown(projectDir, config, target, stage) {
   const local = readLocal(projectDir, target);
   const projects = local ? instancesOf(local).map((i) => i.compose_project) : [`sdlc-${config.project.name}-${target}`];
   for (const project of projects) compose([...baseArgs(config, project), "down", "-v"], { cwd: projectDir });
   removeLocal(projectDir, target);
   console.log(`oracle down: ${target}`);
-  recordRun(projectDir, `oracle down ${target}`);
+  recordRun(projectDir, `oracle down ${target}`, stage);
   return 0;
 }
 
@@ -351,7 +357,11 @@ function oracleStatus(projectDir, config, target) {
 // The shared entry point behind `COMMANDS.oracle` below, exported so tests can drive it
 // with an explicit `projectDir` rather than having to `process.chdir()` into a fixture
 // the way the real CLI's `process.cwd()` would require.
-export async function runOracle(projectDir, sub, { target: wantedTarget, instance } = {}) {
+//
+// `stage` names the stage this call is part of. The executor sets `SDLC_STAGE` on every
+// session it spawns (`src/runner/executor.mjs`), so a command a stage's agent runs carries
+// it, and one a person runs does not.
+export async function runOracle(projectDir, sub, { target: wantedTarget, instance, stage = process.env.SDLC_STAGE || undefined } = {}) {
   if (!["up", "down", "status", "reseed"].includes(sub)) {
     console.error(`unknown oracle subcommand: ${sub ?? "(none)"}\nusage: sdlc oracle up|down|status|reseed [--target <t>] [--instance <n>]`);
     return 2;
@@ -364,9 +374,9 @@ export async function runOracle(projectDir, sub, { target: wantedTarget, instanc
     console.error(`oracle: "${target}" is not config.oracle.target ("${config.oracle.target}") — this project has only one oracle target`);
     return 1;
   }
-  if (sub === "up") return startOracle(projectDir, config, target);
+  if (sub === "up") return startOracle(projectDir, config, target, stage);
   if (sub === "reseed") return oracleReseed(projectDir, config, target, instance);
-  if (sub === "down") return oracleDown(projectDir, config, target);
+  if (sub === "down") return oracleDown(projectDir, config, target, stage);
   return oracleStatus(projectDir, config, target);
 }
 
@@ -376,9 +386,10 @@ export async function runOracle(projectDir, sub, { target: wantedTarget, instanc
 // its own local file rather than started a second time — and returns what that run
 // recorded (`base_url`, `mail_api`, the ports, the compose project) instead of an exit
 // code, so the caller does not have to read the local file itself to find out where the
-// target ended up.
-export async function oracleUp(projectDir, { target } = {}) {
-  const code = await runOracle(projectDir, "up", { target });
+// target ended up. It is only ever called from inside a stage, so its line is recorded as a
+// stage's is: waiting for the stage's own.
+export async function oracleUp(projectDir, { target, stage = "stage" } = {}) {
+  const code = await runOracle(projectDir, "up", { target, stage });
   if (code !== 0) throw new Error(`oracle up failed for target "${target ?? "(the configured one)"}"`);
   const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   return readLocal(projectDir, target ?? config?.oracle?.target);

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, gitOk, assertCleanTree, stageAll, enterBranch, leaveBranch, mergeInto } from "../src/lib/git.mjs";
 import { copyTree, copyTreeOverwrite, readText } from "../src/lib/fsx.mjs";
-import { appendRun } from "../src/lib/runrecord.mjs";
+import { appendRun, deferRun } from "../src/lib/runrecord.mjs";
 
 test("git wrapper runs and reports", () => {
   const d = mkdtempSync(join(tmpdir(), "sdlc-git-"));
@@ -90,6 +90,22 @@ test("run record appends dated lines", () => {
   const p = appendRun(d, "init: installed 2 packs");
   assert.match(readText(p), /^- \d\d:\d\d:\d\d init: installed 2 packs$/m);
   assert.match(p, /\.sdlc\/runs\/\d{4}-\d\d-\d\d\.md$/);
+});
+
+// A line recorded inside a stage waits for the stage's own, which can land on a later day
+// than the one it happened on; it then says which day it belongs to.
+test("a waiting run-record line keeps its own time, and names its day when it is carried into a later one", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-run-deferred-"));
+  const then = new Date(2020, 0, 1, 23, 59, 58);
+  deferRun(d, `oracle up old: in ${d}/app`, then);
+  deferRun(d, "oracle down old");
+  const text = readText(appendRun(d, "run contract: ok"));
+  const lines = text.split("\n").filter((l) => l.startsWith("- "));
+  assert.equal(lines.length, 3, text);
+  // The day is the record file's own (`toISOString`) and the time the line's own, as for any line.
+  assert.equal(lines[0], `- ${then.toISOString().slice(0, 10)} ${then.toTimeString().slice(0, 8)} oracle up old: in ./app`);
+  assert.match(lines[1], /^- \d\d:\d\d:\d\d oracle down old$/);
+  assert.match(lines[2], /^- \d\d:\d\d:\d\d run contract: ok$/);
 });
 
 // The record is one line per run outcome, committed and published as `site/runs.*`. The

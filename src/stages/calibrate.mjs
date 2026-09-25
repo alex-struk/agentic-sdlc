@@ -88,7 +88,7 @@ async function calibrateEndpoint(projectDir, ctx, target) {
     const configured = ctx.config?.targets?.[target]?.base_url ?? "";
     return { baseUrl: configured, mailApi: "", configured };
   }
-  if (process.env.SDLC_ORACLE !== "mock") await oracleUp(projectDir, { target });
+  if (process.env.SDLC_ORACLE !== "mock") await oracleUp(projectDir, { target, stage: "calibrate" });
   const local = readLocal(projectDir, target);
   return {
     baseUrl: local?.base_url ?? "http://mock",

@@ -4,10 +4,11 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, chmodS
 import { createServer, Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git } from "../src/lib/git.mjs";
+import { changedPaths, git } from "../src/lib/git.mjs";
+import { appendRun } from "../src/lib/runrecord.mjs";
 import { freePort, readLocal } from "../src/oracle/ports.mjs";
 import { compose, composeOptions } from "../src/oracle/compose.mjs";
-import { runOracle } from "../src/commands/oracle.mjs";
+import { oracleUp, runOracle } from "../src/commands/oracle.mjs";
 
 // A minimal config.yaml carrying just enough for the schema plus a fully-specified
 // `oracle` block: target `old`, a base compose file, a db to seed, and an app service to
@@ -65,7 +66,9 @@ function makeMicroProject(tmp, config = CONFIG) {
   // an untracked change of its own, and `recordRun`'s "was the tree clean before this
   // call" check would see it and skip committing the run record — exactly the ignore
   // rule templates/project/.gitignore carries in the real pipeline.
-  writeFileSync(join(dir, ".gitignore"), ".sdlc/oracle-*.local.yaml\n");
+  // `.sdlc/*.local.txt` is the pipeline's own required ignore line too (`src/lib/git.mjs`),
+  // and it is where a line recorded inside a stage waits for the stage's own record.
+  writeFileSync(join(dir, ".gitignore"), ".sdlc/oracle-*.local.yaml\n.sdlc/*.local.txt\n");
   git(["init", "-q", "-b", "main"], dir);
   git(["add", "-A"], dir);
   git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "micro oracle project"], dir);
@@ -220,7 +223,9 @@ test("oracle up: migrate_service without oracle.db still migrates, skips db wait
   writeFileSync(join(dir, "sources", "old", "docker-compose.yml"), "");
   writeFileSync(join(dir, ".sdlc", "oracle", "compose.yml"), "");
   writeFileSync(join(dir, "tests", "seed", "001-users.sql"), "-- seed users\n");
-  writeFileSync(join(dir, ".gitignore"), ".sdlc/oracle-*.local.yaml\n");
+  // `.sdlc/*.local.txt` is the pipeline's own required ignore line too (`src/lib/git.mjs`),
+  // and it is where a line recorded inside a stage waits for the stage's own record.
+  writeFileSync(join(dir, ".gitignore"), ".sdlc/oracle-*.local.yaml\n.sdlc/*.local.txt\n");
   git(["init", "-q", "-b", "main"], dir);
   git(["add", "-A"], dir);
   git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "micro oracle project without db"], dir);
@@ -421,7 +426,9 @@ test("oracle up: oracle.seed points the loader at the directory it names, and de
   writeFileSync(join(dir, "sources", "old", "docker-compose.yml"), "");
   writeFileSync(join(dir, ".sdlc", "oracle", "compose.yml"), "");
   writeFileSync(join(dir, "db", "fixtures", "010-widgets.sql"), "-- widgets\n");
-  writeFileSync(join(dir, ".gitignore"), ".sdlc/oracle-*.local.yaml\n");
+  // `.sdlc/*.local.txt` is the pipeline's own required ignore line too (`src/lib/git.mjs`),
+  // and it is where a line recorded inside a stage waits for the stage's own record.
+  writeFileSync(join(dir, ".gitignore"), ".sdlc/oracle-*.local.yaml\n.sdlc/*.local.txt\n");
   git(["init", "-q", "-b", "main"], dir);
   git(["add", "-A"], dir);
   git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "seed elsewhere"], dir);
@@ -466,4 +473,69 @@ test("the copies of a target are read from the list, or from the single copy an 
   assert.deepEqual(instancesOf(old), [{ base_url: "http://localhost:3100", mail_api: "http://localhost:8025", ports: { app: 3100 }, compose_project: "p" }]);
   const many = { ...old, instances: [{ compose_project: "p" }, { compose_project: "p-1" }] };
   assert.deepEqual(instancesOf(many).map((i) => i.compose_project), ["p", "p-1"]);
+});
+
+// --- inside a stage ---
+
+// A stage session that brings the oracle up and down (`contract` proves its override that
+// way) is judged afterwards on what it changed. The pipeline's own lines about those calls
+// wait for the stage's own run-record line, the way the journal waits for the runner, so
+// nothing lands on `main` mid-stage and nothing is left for a scope check to count.
+test("oracle up and down run from inside a stage session commit nothing and change no tracked path", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-instage-"));
+  const dir = makeMicroProject(tmp);
+  const head = git(["rev-parse", "HEAD"], dir);
+  const day = new Date().toISOString().slice(0, 10);
+  await withMock(null, async () => {
+    process.env.SDLC_STAGE = "contract";
+    try {
+      assert.equal(await runOracle(dir, "up", {}), 0);
+      assert.equal(await runOracle(dir, "down", {}), 0);
+    } finally { delete process.env.SDLC_STAGE; }
+  });
+  assert.equal(git(["rev-parse", "HEAD"], dir), head, "no commit lands on main while a stage runs");
+  assert.deepEqual(changedPaths(dir), []);
+  assert.equal(existsSync(join(dir, `.sdlc/runs/${day}.md`)), false);
+
+  // The stage's own record carries them, in the order they happened, ahead of its own line.
+  const runs = readFileSync(appendRun(dir, "run contract: ok"), "utf8").split("\n").filter((l) => l.startsWith("- "));
+  assert.equal(runs.length, 3, runs.join("\n"));
+  assert.match(runs[0], /oracle up old: http:\/\/localhost:3100/);
+  assert.match(runs[1], /oracle down old$/);
+  assert.match(runs[2], /run contract: ok$/);
+  // Carried once: the next line recorded does not repeat them.
+  const again = readFileSync(appendRun(dir, "run contract: ok"), "utf8");
+  assert.equal(again.match(/oracle up old/g).length, 1);
+});
+
+// `oracleUp` is the form a stage calls in-process (`calibrate`), where no session sets
+// `SDLC_STAGE`: it is a stage's call by construction, and is recorded as one.
+test("oracleUp, the form a stage calls in-process, commits nothing and changes no tracked path", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-inproc-"));
+  const dir = makeMicroProject(tmp);
+  const head = git(["rev-parse", "HEAD"], dir);
+  await withMock(null, async () => {
+    const local = await oracleUp(dir, { target: "old" });
+    assert.equal(local.target, "old");
+  });
+  assert.equal(git(["rev-parse", "HEAD"], dir), head);
+  assert.deepEqual(changedPaths(dir), []);
+  assert.match(readFileSync(appendRun(dir, "run calibrate: ok"), "utf8"), /oracle up old[^\n]*\n- [^\n]*run calibrate: ok/);
+});
+
+// A stage that died before recording anything leaves its lines waiting. The next line the
+// pipeline records carries them, so a person's own `oracle up` commits them with its own.
+test("a line left waiting by a stage that never recorded is committed with the next oracle command run outside one", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-leftover-"));
+  const dir = makeMicroProject(tmp);
+  await withMock(null, async () => {
+    process.env.SDLC_STAGE = "contract";
+    try { assert.equal(await runOracle(dir, "up", {}), 0); } finally { delete process.env.SDLC_STAGE; }
+    assert.equal(await runOracle(dir, "down", {}), 0);
+  });
+  assert.deepEqual(changedPaths(dir), []);
+  assert.match(git(["log", "-1", "--pretty=%s"], dir), /oracle down/);
+  const day = new Date().toISOString().slice(0, 10);
+  const runs = git(["show", `HEAD:.sdlc/runs/${day}.md`], dir);
+  assert.match(runs, /oracle up old[^\n]*\n- [^\n]*oracle down old/);
 });

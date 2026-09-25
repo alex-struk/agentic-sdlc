@@ -180,7 +180,9 @@ Either way, the guard row for `contract` allows only `spec/contract/`, `tests/se
   - The oracle's compose override exists and parses as YAML — only when `config.oracle` is
     configured. Nothing here brings Docker up; that is `sdlc oracle`'s job.
   - Nothing changed outside `spec/contract/`, `tests/seed/` and `.sdlc/oracle/`, checked against
-    `git status --porcelain`.
+    `git status --porcelain`. The run-record lines for the agent's own `oracle up` and `oracle
+    down` are not among those changes: they wait for the stage's own run-record line
+    (`docs/stages/oracle.md`).
 
 ## Exit criterion
 

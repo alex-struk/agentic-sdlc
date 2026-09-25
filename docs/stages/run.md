@@ -69,7 +69,9 @@ is the only place a re-run decision is made.
 - One journal entry, `.sdlc/journal/<NNN>-<stage>.md`, carrying the agent's own text and the
   turn's cost, turn count and session id.
 - An appended `.sdlc/runs/<date>.md` line: `run <stage>: ok, cost <usd>, turns <n>` on success, or
-  one of the failure lines under "Failure modes".
+  one of the failure lines under "Failure modes". Lines a pipeline command recorded while the stage
+  ran (`sdlc oracle up` from the agent's session, say) are written just ahead of it, so they are in
+  the same commit or proposal rather than a change the stage's post-checks judge.
 - **If the stage has no gate** (`probe`, `ratify`, `calibrate`): everything the agent (or, for a
   stage with no agent turn, `execute`) changed, plus the journal, the run record and the regenerated state site
   (`docs/stages/status.md`), staged by name and committed on `main` as `stage(<stage>): <title>`.

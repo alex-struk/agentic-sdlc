@@ -54,7 +54,11 @@ file.
   the pipeline's own git identity when the working tree was already clean before the command ran
   (the same convention every stage follows) — printed but left uncommitted otherwise, so an
   `oracle up` run in the middle of other uncommitted work never sweeps that work into a commit it
-  did not ask for.
+  did not ask for. Run as part of a stage — by a stage's agent session, which carries
+  `SDLC_STAGE`, or in-process through `oracleUp` — the line is neither written into the record
+  nor committed: it waits in `.sdlc/runs.local.txt` (ignored) and is written ahead of the next
+  line the pipeline records, which is the stage's own outcome, so it reaches `main` in the stage's
+  commit or proposal (`docs/decisions/0047-a-stage-is-not-charged-with-the-pipeline-s-own-record.md`).
 - To stdout: `up` and `down` print the base URL and the mail API URL (or `oracle down: <target>`);
   `status` prints the local file's contents, or `<target> is not up`, followed by `docker compose
   ps` for whatever is actually running.

@@ -5,7 +5,7 @@
 // has to reckon with what another file's helpers happen to assume.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -1043,4 +1043,66 @@ test("sdlc run contract: a seed row carrying a local home path fails the stage's
     assert.ok(r.messages.some((m) => m.startsWith("tests/seed/001-users.sql:1:") && m.includes("local home path")), r.messages.join(" | "));
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(contract\): post-checks failed/);
   } finally { restoreEgress(prevEgress); }
+});
+
+// `contract` proves its override by bringing the oracle up and down from inside its own
+// session, as its prompt tells it to. A real session is stood in for by a binary that does
+// exactly that through the CLI, so the commands see the environment a session gives them.
+// The pipeline's own lines about those calls are not the agent's change: the stage passes
+// its scope check, nothing is committed to `main` while it runs, and the lines reach the
+// run record the proposal carries.
+test("sdlc run contract: the oracle brought up and down inside the session is not counted against the stage's scope", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-oracle-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  const cfgPath = join(dir, ".sdlc", "config.yaml");
+  writeFileSync(cfgPath, `${readFileSync(cfgPath, "utf8")}
+oracle:
+  target: old
+  compose: sources/old/docker-compose.yml
+  base_url: http://localhost:3100
+  identity: sandbox-idp
+`);
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "the old target is the oracle (test)"], dir);
+  mkdirSync(join(dir, "sources", "old"), { recursive: true });
+  writeFileSync(join(dir, "sources", "old", "docker-compose.yml"), "");
+  const head = git(["rev-parse", "HEAD"], dir);
+
+  const root = mkdtempSync(join(tmpdir(), "sdlc-contract-oracle-claude-"));
+  const bin = join(root, "fake-claude");
+  writeFileSync(bin, [
+    "#!/usr/bin/env node",
+    'import { execFileSync } from "node:child_process";',
+    'import { mkdirSync, readFileSync, writeFileSync } from "node:fs";',
+    'import { dirname } from "node:path";',
+    'const reply = (text) => process.stdout.write(JSON.stringify({ is_error: false, result: text, num_turns: 1, session_id: "s1" }));',
+    'if (process.env.SDLC_STAGE !== "contract") { reply("ok"); process.exit(0); }',
+    `const mock = JSON.parse(readFileSync(${JSON.stringify(join(MOCK_DIR, "contract.json"))}, "utf8"));`,
+    'const files = { ...mock.files, ".sdlc/oracle/compose.yml": "services: {}\\n" };',
+    "for (const [rel, content] of Object.entries(files)) { mkdirSync(dirname(rel), { recursive: true }); writeFileSync(rel, content); }",
+    'for (const sub of ["up", "down"]) execFileSync(process.execPath, [process.env.SDLC_BIN, "oracle", sub], { stdio: "ignore" });',
+    "reply(mock.text);",
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  process.env.SDLC_CLAUDE_BIN = bin;
+  process.env.SDLC_CLAUDE_HOME = join(root, "claude-home");
+  process.env.SDLC_CREDENTIALS = join(root, "no-such-credentials.json");
+  process.env.SDLC_ORACLE = "mock";
+  process.env.SDLC_MOCK_DIR = mkdtempSync(join(tmpdir(), "sdlc-contract-oracle-calls-"));
+  try {
+    const r = await runStage(dir, "contract");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(r.proposal.branch, "proposal/contract-v1");
+    // The oracle really was driven: the mock recorded its compose calls.
+    assert.ok(existsSync(join(process.env.SDLC_MOCK_DIR, "oracle-calls.json")));
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.equal(git(["log", "--format=%s", `${head}..main`], dir).split("\n").filter((l) => /oracle/.test(l)).length, 0,
+      "no oracle commit landed on main while the stage ran");
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = onBranch(dir, r.proposal.branch, `.sdlc/runs/${day}.md`);
+    assert.match(runs, /oracle up old[^\n]*\n- [^\n]*oracle down old\n- [^\n]*run contract: ok/);
+  } finally {
+    for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "SDLC_ORACLE", "SDLC_MOCK_DIR"]) delete process.env[k];
+    restoreEgress(prevEgress);
+  }
 });
