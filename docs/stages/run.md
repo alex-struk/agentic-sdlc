@@ -180,11 +180,20 @@ domain, for a stage run on one — each with what is missing, and the line that 
 stage. A stage owing none gets no such section. `derive-tests` is handed its own in its `--stale`
 prompt instead (`docs/stages/derive-tests.md`).
 
-Inside the workspace, the agent session is isolated from the operator's own Claude Code
-configuration — see `docs/decisions/0004-isolated-stage-sessions.md` for what that means and why.
-The project's own `.claude/settings.json` deny list and the `implement-guard` `PreToolUse` hook
-(`docs/stages/init.md`) still apply, scoped by the `SDLC_STAGE` environment variable the executor
-sets.
+Inside the workspace, the agent session runs on the backend and model `policy.agents` resolves for
+the stage, or `SDLC_AGENT_BACKEND`/`SDLC_AGENT_MODEL` for this run (`docs/config.md`); a dry run
+prints it as `agent: <backend> <model>, from <setting>`. A stage that declares a tool allowlist is
+refused on `codex`, with the pre-checks and recorded as they are, unless the project set
+`policy.agents.stages.<stage>.accept_weaker: true`
+(`docs/decisions/0060-a-second-agent-backend.md`).
+
+The session is isolated from the operator's own CLI configuration — see
+`docs/decisions/0004-isolated-stage-sessions.md` for what that means and why, and `0060` for a Codex
+session. The `implement-guard` `PreToolUse` hook (`docs/stages/init.md`) still applies on either
+backend, scoped by the `SDLC_STAGE` environment variable the executor sets, and a Claude session
+also reads the project's own `.claude/settings.json` deny list. What ran the turn — backend, model,
+CLI version — is written to the run-record line and the journal entry, and to the proposal page the
+stage opens.
 
 ## The `prepare` hook
 
@@ -221,15 +230,16 @@ against the running application, is the first stage to use this. The mock execut
 A stage may also declare `stage.allowedTools` (an array) and `stage.env(ctx, config)` (an object of
 environment variables), both passed straight through to the agent turn. `allowedTools` narrows
 `--allowedTools` the same way any caller of `runAgent` can; `env` is merged into the child
-process's environment alongside `CLAUDE_CONFIG_DIR` and `SDLC_STAGE`. Neither is printed by a dry
+process's environment alongside the backend's home (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`) and
+`SDLC_STAGE`. Neither is printed by a dry
 run except by name — `env`'s keys, via the `env: <names>` line described above, and never a value.
 
 ## The authentication check
 
 A stage session signs in with the operator's own CLI login, read from the config directory the
-runner points `CLAUDE_CONFIG_DIR` at. Before a stage with an agent turn starts — after the dry-run
-return, so a dry run still spends nothing — `runStage` runs a one-turn session against that same
-directory, the same binary and the same flags, and refuses to start the stage when it cannot
+runner points `CLAUDE_CONFIG_DIR` (or, on Codex, `CODEX_HOME`) at. Before a stage with an agent turn starts — after the dry-run
+return, so a dry run still spends nothing — `runStage` runs a one-turn session on the stage's own backend,
+against that same directory, the same binary and the same flags, and refuses to start the stage when it cannot
 authenticate. A stage can run for the better part of an hour, and a credential already too old to
 refresh fails the same way at the end of that as at the start. The check costs one turn.
 

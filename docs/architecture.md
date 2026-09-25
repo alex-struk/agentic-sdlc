@@ -27,7 +27,9 @@ repository are the primitives that shape composes into:
   action, so calling it twice around a stage's work is exactly as sound as calling it once.
 - **Agent** — `sdlc run <stage>` (`docs/stages/run.md`) is the dispatcher: it materialises the
   stage's workspace (`src/runner/workspace.mjs`), runs the stage's pre-checks, and calls
-  `runAgent` (`src/runner/executor.mjs`), which spawns `claude -p` with the prompt written to the
+  `runAgent` (`src/runner/executor.mjs`), which spawns the turn's agent backend — `claude -p`, or
+  `codex exec` where the project's `policy.agents` says so (`src/runner/agents.mjs`,
+  `docs/decisions/0060-a-second-agent-backend.md`) — with the prompt written to the
   child's stdin rather than passed as a command-line argument — a G3 persona ruling's diff can run
   to 120,000 characters, well past what an argument list can carry — or, in CI, whichever cloud
   executor the configuration names, and in tests a mock executor selected by
@@ -37,7 +39,10 @@ repository are the primitives that shape composes into:
   `docs/decisions/0035-a-credential-refreshed-where-the-next-run-deletes-it.md`), `.claude/settings.json`'s deny list, which
   blocks destructive commands and reading secrets outright, and
   `templates/hooks/implement-guard.sh`, which reads `SDLC_STAGE` and blocks edits outside the paths
-  that stage owns (see `docs/stages/init.md` for both tables). `probe` proves this whole loop end to
+  that stage owns (see `docs/stages/init.md` for both tables). A Codex session gets an isolated
+  `CODEX_HOME` holding the operator's ChatGPT sign-in and the same guard registered as its hook,
+  and no deny list, which is why a stage that declares a tool allowlist runs there only when the
+  project accepts it (`0060`). `probe` proves this whole loop end to
   end without being one of the pipeline's own stages; `intent`, `archaeology`, `ratify`, `contract`,
   `bind-adapter`, `derive-tests`, `calibrate`, `design` and `plan` are implemented, and every stage
   after them (`build`, `verify`, …) is a named stub that throws until its own task lands. A stage may also

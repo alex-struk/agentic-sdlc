@@ -109,7 +109,50 @@ Required. Container of governance gates, tiers, limits and turn ceilings.
   - `direct_max_files` (integer, optional, min 1): Maximum files changed to bypass triage.
   - `direct_allowed_paths` (array, optional): Paths that can bypass triage.
 - `turns` (object, optional): The most agent turns a session may take, by stage. Keys are stage names, values are integers from 1 to 999. A stage with no entry runs with its own default: 40 for most stages, 250 for `design`, 150 for `plan`, 400 for `build`. The key `rule` caps a persona's ruling turn the same way: without it a ruling runs with 12 turns, except at G1 and on a calibration triage proposal, where the persona rules on every criterion in a page and gets the stage default of 40. A stage that genuinely needs more than 999 turns needs splitting, not a larger number.
+- `agents` (object, optional): Which agent backend and model run the project's agent turns (`docs/decisions/0060-a-second-agent-backend.md`). Absent, every turn runs on `claude` with the CLI's own default model. Being under `policy`, a change to it is ruled at G-POL (`docs/decisions/0043`).
+  - `backend` (enum `claude` | `codex`, optional): The default backend for every stage and ruling.
+  - `model` (string, optional): The default model, passed to the CLI as `--model`. Absent, the CLI chooses, and records say so.
+  - `stages` (object, optional): Per-stage choices, keyed by a stage with an agent turn. Each value may set `backend` and `model`, and `accept_weaker` (boolean): whether the stage may run on `codex` although it declares a tool allowlist Codex cannot enforce (see "Switching to Codex" below). A stage's repair turns run on the same choice as its first turn.
+  - `rulings` (object, optional): Per-ruling choices, keyed by a gate (`G3`) or by a persona that holds one as an agent (`reviewer`). Each value may set `backend` and `model`. A gate's entry wins over a persona's.
+
+  A model belongs to the backend it is written beside: an entry that changes the backend and names no model does not inherit the model above it. `checks` refuses an entry for a stage with no agent turn, or for a ruling nobody makes.
+
+  The environment overrides all of it for one run: `SDLC_AGENT_BACKEND` (`claude` or `codex`) and `SDLC_AGENT_MODEL`. A backend override drops any configured model unless `SDLC_AGENT_MODEL` names one. Neither lifts a refusal.
 - `budgets` (object, optional, deprecated): The same setting as `turns`, under the name projects written before `turns` carry. A stage `turns` names ignores it. A value under 1000 is read as a turn count; a value of 1000 or more would be a token budget the runner has no conversion for, and `checks` refuses it rather than letting a run quietly fall back to its default. `checks` warns wherever this key is set; move its entries to `turns` in the project's next policy change.
+
+### Switching to Codex
+
+Every agent turn runs on the Claude Code CLI unless `policy.agents` says otherwise. To run a project's work on the OpenAI Codex CLI:
+
+1. Install the CLI (`npm install -g @openai/codex`) and sign in with `codex login`, choosing ChatGPT. The pipeline signs in with that subscription only, never an API key, and keeps its own copy of the sign-in in `$XDG_CONFIG_HOME/agentic-sdlc/codex-home` (`SDLC_CODEX_HOME`), linked to `~/.codex/auth.json`.
+2. Propose the policy change, and have it ruled at G-POL:
+
+   ```yaml
+   policy:
+     agents:
+       backend: codex
+       model: <a model your plan offers>   # optional; recorded on every turn when set
+   ```
+
+   Every ruling and every stage with no tool allowlist (`intent`, `archaeology`) then runs on Codex.
+3. The stages that declare a tool allowlist — `contract`, `bind-adapter`, `derive-tests`, `design`, `plan`, `build` — are refused on Codex until the project accepts, stage by stage, that Codex cannot hold them to it: it has no tool allowlist, its sandbox limits what a session writes rather than what it reads or runs, and it does not read the deny list in `.claude/settings.json`. `docs/decisions/0060-a-second-agent-backend.md` says what each stage loses. To run one there anyway:
+
+   ```yaml
+   policy:
+     agents:
+       backend: codex
+       stages:
+         build: { accept_weaker: true }
+         design: { backend: claude }      # or keep a stage on claude
+       rulings:
+         G3: { backend: claude, model: <model> }
+   ```
+
+4. Run `sdlc doctor`. It names which backend runs which stages and gates, whether each CLI is installed and signed in, and each stage Codex will refuse.
+
+To try one run on Codex without changing the policy, set `SDLC_AGENT_BACKEND=codex` (and optionally `SDLC_AGENT_MODEL`) for that command. What ran each turn is on its run-record line, its journal entry, the proposal it opened, an agent ruling's gate file, and the state site (`docs/operating-model.md`, "Agent backends").
+
+A Codex session has no turn cap; the runner stops it at thirty seconds per turn `policy.turns` allows the stage, never less than two minutes. It reports tokens rather than cost, so its turns are recorded at a cost of 0.
 
 ### Risk tiers
 

@@ -160,9 +160,15 @@ generator.
 ## The implement-guard table
 
 `templates/hooks/implement-guard.sh` is installed by `init` as `.sdlc/hooks/implement-guard.sh`
-and registered as a Claude Code `PreToolUse` hook by `.claude/settings.json`. It reads the
+and registered as a Claude Code `PreToolUse` hook by `.claude/settings.json`; for a Codex session
+the pipeline registers the same file in its own Codex home (`docs/decisions/0060`). It reads the
 `SDLC_STAGE` environment variable and blocks edits to paths outside the current stage's territory.
 An unset `SDLC_STAGE` defaults to `build`, the most restrictive default.
+
+It checks every path a tool call would write: the one a Claude edit tool names, and each path a
+Codex patch names in its `*** Add File`, `Update File`, `Delete File` and `Move to` headers,
+whether the patch is the tool's input or sits inside a shell command. One path outside the
+territory refuses the whole call.
 
 The path an edit names is resolved and made relative to the project directory before it is
 matched, so `./spec/spec.md`, `spec/../spec/spec.md` and an absolute path inside the project are

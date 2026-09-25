@@ -20,6 +20,7 @@ between stages. This is the reference for the concepts; the reasoning behind eac
 | **Condition** | An instruction attached to a return. It stays owed until a later ruling records it met or withdrawn, with a reason. |
 | **Contract** | The menu a blind test may use: the pages and actions it can drive, the seeded data it starts from, and what it can observe afterwards (sent mail, files, notifications). Written by the `contract` stage from the old application, ratified at G1, and shared by both targets so one test runs against either. The seed is SQL loaded into a target's database; the old application's code is never changed. |
 | **Operator** | Whoever types the next `sdlc` command. |
+| **Agent backend** | The CLI an agent turn runs on: `claude` (Claude Code) or `codex` (OpenAI Codex), with a model. Every stage's turn and every persona's ruling runs on one, as the project's policy says. |
 
 ## 2. Work and judgement
 
@@ -59,6 +60,34 @@ flowchart LR
   T -- approve --> M
   T -- return --> A
 ```
+
+### Agent backends
+
+Every agent turn — a stage's work, its repair turns, a persona's ruling — runs on an agent backend:
+the Claude Code CLI or the OpenAI Codex CLI, each signed in with the operator's own subscription
+and isolated in a config home the pipeline owns. Which one, and which model, is policy:
+`policy.agents` names a default and per-stage and per-ruling choices, and changing it is a G-POL
+ruling, since it changes who does the work (`docs/config.md`, "Switching to Codex"). An operator can
+override it for one run with `SDLC_AGENT_BACKEND` and `SDLC_AGENT_MODEL`.
+
+The two are not interchangeable everywhere. Codex cannot hold a session to a tool allowlist, so a
+stage that declares one runs on Codex only when the project accepts that stage by stage; rulings,
+and stages with no allowlist, run on either
+(`docs/decisions/0060-a-second-agent-backend.md`).
+
+**What ran the work is on the record.** Every agent turn records its backend, its model (as the CLI
+reports it, else as configured, else "the CLI's default model") and the CLI's version:
+
+| Where | What it shows |
+|---|---|
+| Run record (`.sdlc/runs/<day>.md`) | `run build: ok, cost …, turns …, on codex <model> (codex-cli <version>)`; a ruling's line ends `on <engine>` |
+| Journal entry front matter | `backend`, `model`, `cli` |
+| Proposal page a stage opened | the same front matter, and a **Worked by** line |
+| An agent ruling's gate file | `backend`, `model`, `cli`, and a **Ruled on** line in the ruling it appends to the proposal |
+| State site | the gate log's *Made by* column, e.g. "persona agent · codex *model*"; the journal and proposal pages |
+
+A person's ruling and the runner's own verdict ran on no agent and show no engine. `sdlc doctor`
+says which backend runs which stages and gates, and whether each CLI is installed and signed in.
 
 ## 3. Live operation and simulation
 

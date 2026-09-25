@@ -16,6 +16,11 @@ npm ci
 Developed and tested on Node 24 (the version CI runs, and the one in `.nvmrc`); `engines`
 allows 22 or later.
 
+Agent turns run on the Claude Code CLI (`claude`) by default, or on the OpenAI Codex CLI (`codex`)
+where the project's policy says so, each signed in with the operator's own subscription. `sdlc
+doctor` says which a project needs and whether it is signed in; `docs/config.md`, "Switching to
+Codex", says how to move work there.
+
 ## Commands
 
 - `sdlc new <dir> --from <config.yaml> | --interactive | --answers <brief.md>` — create a project
