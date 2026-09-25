@@ -23,8 +23,9 @@ export function writeJournal(projectDir, { stage, title, body, metrics = {} }) {
   const num = String(existing.length + 1).padStart(3, "0");
   const path = join(dir, `${num}-${stage}.md`);
   const { cost = 0, turns = 0, session = "", engine = null } = metrics;
-  // `backend`, `model` and `cli` say what ran the turn, and are written only where an agent
-  // turn did: a deterministic stage's entry has no engine to name.
+  // `backend`, `model` and `cli` say what ran the turn, and `isolation` and `egress` where it
+  // ran, written only where an agent turn did: a deterministic stage's entry has no engine to
+  // name.
   const front = [
     `stage: ${JSON.stringify(stage)}`,
     `title: ${JSON.stringify(title)}`,
@@ -45,7 +46,7 @@ export function readJournal(projectDir) {
   return files.map((file) => {
     const text = readText(join(dir, file));
     const m = text.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
-    if (!m) return { file, stage: "", title: "", at: "", cost: 0, turns: 0, session: "", backend: "", model: "", cli: "", body: text };
+    if (!m) return { file, stage: "", title: "", at: "", cost: 0, turns: 0, session: "", backend: "", model: "", cli: "", isolation: "", egress: "", body: text };
     const front = parse(m[1]) ?? {};
     return {
       file,
@@ -58,6 +59,8 @@ export function readJournal(projectDir) {
       backend: front.backend ?? "",
       model: front.model ?? "",
       cli: front.cli ?? "",
+      isolation: front.isolation ?? "",
+      egress: front.egress ?? "",
       body: m[2],
     };
   });

@@ -204,3 +204,61 @@ test("a person's ruling records no engine and is shown as a person's alone", asy
     assert.doesNotMatch(row, /codex|claude/);
   } finally { cleanup(prevEgress); }
 });
+
+// ---- isolation -------------------------------------------------------------------------------
+
+test("engineLabel and the front matter name the container and the allowlist an isolated turn ran with", async () => {
+  const { engineFrontMatter, engineOf, seatWithEngine } = await import("../src/lib/engine.mjs");
+  const engine = { backend: "codex", model: "gpt-test", version: "codex-cli 1.2.3", isolation: "container", image: "0123456789ab", egress: "registry" };
+  assert.equal(engineLabel(engine), "codex gpt-test (codex-cli 1.2.3), in container 0123456789ab with egress registry");
+  const front = engineFrontMatter(engine);
+  assert.ok(front.includes('isolation: "container 0123456789ab"'));
+  assert.ok(front.includes('egress: "registry"'));
+  assert.deepEqual(engineOf({ backend: "codex", model: "gpt-test", cli: "codex-cli 1.2.3", isolation: "container 0123456789ab", egress: "registry" }), engine);
+  assert.equal(seatWithEngine("agent", engine), "persona agent · codex gpt-test · container");
+  // A turn on the host says so in its front matter, and its label is unchanged.
+  assert.ok(engineFrontMatter({ backend: "codex", model: "", version: "v" }).includes('isolation: "none"'));
+  assert.equal(engineLabel({ backend: "codex", model: "", version: "v", isolation: "none" }), "codex, the CLI's default model (v)");
+});
+
+test("a stage with no shell runs on codex in a container by default, and every record says so", async () => {
+  const { dir, prevEgress } = await makeProject(mkdtempSync(join(tmpdir(), "sdlc-prov-iso-")));
+  registerBlind("blind-isolated");
+  registerBlind("blind-isolated-gated", "G0");
+  setPolicy(dir, "agents:", "  backend: codex", "  model: gpt-test");
+  mock({ "blind-isolated": PROBE, "blind-isolated-gated": { text: "wrote it", files: { "app/GATED.md": "gated\n" } } });
+  const label = "codex gpt-test (mock), in container mock with egress model";
+  try {
+    const r = await runStage(dir, "blind-isolated");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(runRecord(dir).includes(`run blind-isolated: ok, cost 0, turns 1, on ${label}`), runRecord(dir));
+    const [entry] = readJournal(dir).filter((e) => e.stage === "blind-isolated");
+    assert.equal(entry.isolation, "container mock");
+    assert.equal(entry.egress, "model");
+    buildSite(dir);
+    const journalPage = readFileSync(join(dir, "site", "journal.md"), "utf8");
+    assert.ok(journalPage.includes(label), journalPage);
+    const gated = await runStage(dir, "blind-isolated-gated");
+    assert.equal(gated.ok, true, JSON.stringify(gated.messages));
+    const page = git(["show", "proposal/blind-isolated-gated-1:.sdlc/proposals/blind-isolated-gated-1.md"], dir);
+    assert.match(page, /^isolation: "container mock"$/m);
+    assert.match(page, /^egress: "model"$/m);
+    assert.ok(page.includes(`**Worked by:** ${label}`), page);
+  } finally { cleanup(prevEgress); }
+});
+
+test("a ruling the project isolates records its container in the gate file, the ruling and the gate log", async () => {
+  const { dir, prevEgress } = await makeProject(mkdtempSync(join(tmpdir(), "sdlc-prov-iso-rule-")));
+  setPolicy(dir, "agents:", "  rulings:", "    G0: { backend: codex, model: gpt-rule, isolation: container }");
+  propose(dir, "p2", { gate: "G0", question: "Right problem?", recommendation: "Yes." });
+  mock({ rule: { text: 'Fine.\n\n```json\n{"verdict":"approve","rationale":"scope matches","conditions":[]}\n```' } });
+  try {
+    assert.equal((await ruleByAgent(dir, "p2", { persona: "product-owner" })).verdict, "approve");
+    const gateText = readFileSync(join(dir, ".sdlc/gates/p2.yaml"), "utf8");
+    assert.match(gateText, /^isolation: "container mock"$/m);
+    assert.match(gateText, /^egress: "model"$/m);
+    assert.match(readFileSync(join(dir, ".sdlc/proposals/p2.md"), "utf8"), /\*\*Ruled on:\*\* codex gpt-rule \(mock\), in container mock with egress model/);
+    assert.match(runRecord(dir), /on codex gpt-rule \(mock\), in container mock with egress model/);
+    assert.match(readFileSync(join(dir, "site", "gates.md"), "utf8"), /\| persona agent · codex gpt-rule · container \|/);
+  } finally { cleanup(prevEgress); }
+});
