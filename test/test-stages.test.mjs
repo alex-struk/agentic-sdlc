@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
@@ -368,7 +369,7 @@ test("sdlc run derive-tests --domain applications: a mock file that touches loca
         + "import { test, expect, persona } from \"../../fixtures\";\n\n"
         + "test(\"acceptance status\", async ({ surface }) => {\n  await surface.signIn(persona.applicant);\n"
         + "  await surface.applicationsNew.submit({ age: 25 });\n  expect(await surface.applicationsNew.status()).toBe(\"accepted\");\n});\n",
-      "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\" }\n",
+      "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\", missing: \"an observation of the recalculated fee amount\", owner: contract }\n",
     },
   }));
   process.env.SDLC_EXECUTOR = "mock";
@@ -378,6 +379,30 @@ test("sdlc run derive-tests --domain applications: a mock file that touches loca
     assert.equal(r.ok, false);
     assert.ok(r.messages.some((m) => m.includes("locator(")), r.messages.join(" | "));
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(derive-tests\): post-checks failed/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// A record is an owed item the moment it is approved, so it has to say what is owed and by
+// whom. The writer is told the form in its skill; the post-check is what holds it to it.
+test("sdlc run derive-tests --domain applications: a record that names nothing missing and no owner fails the post-check", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-record-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-record-mock-"));
+  const mock = JSON.parse(readFileSync(join(DERIVE_TESTS_MOCK_DIR, "derive-tests.json"), "utf8"));
+  mock.files["tests/acceptance/not-testable.yaml"] = "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\", owner: derive-tests }\n";
+  writeFileSync(join(mockDir, "derive-tests.json"), JSON.stringify(mock));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "derive-tests", { domain: "applications" });
+    assert.equal(r.ok, false);
+    const said = r.messages.join(" | ");
+    assert.match(said, /not-testable\.yaml: R-1\.3 names nothing as missing/);
+    assert.match(said, /R-1\.3 names derive-tests as its owner/);
     assert.match(git(["log", "-1", "--pretty=%s"], dir), /stage\(derive-tests\): post-checks failed/);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
@@ -397,7 +422,7 @@ test("sdlc run derive-tests --domain applications: a mock omitting a criterion f
         + "import { test, expect, persona } from \"../../fixtures\";\n\n"
         + "test(\"age check\", async ({ surface }) => {\n  await surface.signIn(persona.applicant);\n"
         + "  await surface.applicationsNew.submit({ age: 17 });\n  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
-      "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\" }\n",
+      "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\", missing: \"an observation of the recalculated fee amount\", owner: contract }\n",
     },
   }));
   process.env.SDLC_EXECUTOR = "mock";
@@ -455,6 +480,44 @@ test("sdlc run derive-tests --domain applications --stale: after bumping one cri
   }
 });
 
+// A missing test re-addressed to derive-tests is what a --stale run of its domain derives, with
+// what the stage that supplied the missing thing said about it.
+test("sdlc run derive-tests --domain applications --stale: a missing test owed by derive-tests is derived, with what was supplied", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-missing-"));
+  const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = DERIVE_TESTS_MOCK_DIR;
+  const logs = [];
+  const origLog = console.log;
+  try {
+    const first = await runStage(dir, "derive-tests", { domain: "applications" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    rule(dir, "derive-tests-applications", "approve", { by: "tech-lead" });
+    const owed = parseYaml(readFileSync(join(dir, ".sdlc/owed.yaml"), "utf8"));
+    const item = owed.owed.find((e) => e.kind === "missing-test" && e.item === "R-1.3");
+    assert.equal(item.stage, "contract", "the approval opened the record's item for its owner");
+    item.stage = "derive-tests";
+    item.readdressed = [{ from: "contract", to: "derive-tests", why: "applications-new now observes the fee amount", by: "contract-v2", at: "2026-01-01T00:00:00.000Z" }];
+    writeFileSync(join(dir, ".sdlc/owed.yaml"), stringifyYaml(owed));
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "re-address R-1.3 (test)"], dir);
+
+    console.log = (...a) => logs.push(a.join(" "));
+    const dry = await runStage(dir, "derive-tests", { domain: "applications", stale: true, dryRun: true });
+    console.log = origLog;
+    assert.equal(dry.ok, true, JSON.stringify(dry.messages));
+    const printed = logs.join("\n");
+    assert.match(printed, /R-1\.3/);
+    assert.match(printed, /applications-new now observes the fee amount/);
+    assert.ok(!printed.includes("R-1.1 ("), printed);
+  } finally {
+    console.log = origLog;
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("sdlc run derive-tests --domain applications: a criterion carrying superseded-by is excluded from derivation, so coverage needs no test or not-testable entry for it", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-derive-tests-superseded-"));
   const { dir, prevEgress } = await makeReadyForDeriveTests(tmp);
@@ -479,7 +542,7 @@ test("sdlc run derive-tests --domain applications: a criterion carrying supersed
           + "import { test, expect, persona } from \"../../fixtures\";\n\n"
           + "test(\"age check\", async ({ surface }) => {\n  await surface.signIn(persona.applicant);\n"
           + "  await surface.applicationsNew.submit({ age: 17 });\n  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
-        "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\" }\n",
+        "tests/acceptance/not-testable.yaml": "criteria:\n  - { id: R-1.3, version: 1, reason: \"no observation exposes the recalculated fee amount\", missing: \"an observation of the recalculated fee amount\", owner: contract }\n",
       },
     }));
     process.env.SDLC_EXECUTOR = "mock";

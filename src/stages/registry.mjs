@@ -19,6 +19,7 @@ import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, ch
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { close as closeOwed, identityOf, isOpen, open as openOwed, read as readOwed, readAt, rewrite, sends, unexpectedChange } from "../spec/owed.mjs";
+import { NOT_TESTABLE_PATH, missingTestRef, openMissingTestsAt, recordProblems } from "../spec/missing-tests.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
 import { checkTests, coverage, readNotTestable } from "../checks/tests.mjs";
@@ -915,7 +916,25 @@ function resolveCriteriaToDerive(projectDir, ctx) {
   const ids = new Set(stale.filter((id) => byId.has(id)));
   const redo = readRedoFor(projectDir, ctx.domain, byId);
   for (const r of redo) ids.add(r.id);
-  return { criteria: criteria.filter((c) => ids.has(c.id)), generatedFrom, redo };
+  // The missing tests owed by this stage in this domain: a stage that owed what the test
+  // writer lacked has supplied it and handed the item on (`src/spec/missing-tests.mjs`).
+  const missing = openMissingTestsAt(projectDir, "main").filter((e) => e.stage === "derive-tests" && byId.has(e.item));
+  for (const e of missing) ids.add(e.item);
+  return { criteria: criteria.filter((c) => ids.has(c.id)), generatedFrom, redo, missing };
+}
+
+// What the writer is told about a criterion it recorded as untestable and is now handed back:
+// what was missing, and what the stage that owed it says it supplied, in that stage's words.
+// Empty when nothing being derived is a missing test.
+function missingPromptBlock(ctx) {
+  const entries = ctx.deriveTestsMissing ?? [];
+  if (!entries.length) return [];
+  const said = (e) => e.readdressed?.at(-1)?.why ?? e.why;
+  const lines = entries.map((e) => `- ${e.item}: recorded as untestable because ${JSON.stringify(e.why)}. ${e.readdressed?.length ? `${e.readdressed.at(-1).from} handed it on: ${JSON.stringify(said(e))}` : ""}`.trim());
+  return [
+    `${entries.length} of the criteria below ${entries.length === 1 ? "is" : "are"} owed a test (${entries.map((e) => missingTestRef(e.item)).join(", ")}): each was recorded as untestable, and the stage that owed what was missing has handed it back to you.\n\n${lines.join("\n")}`,
+    "Read the surface again for each and write its test. Once it has a test, remove its entry from tests/acceptance/not-testable.yaml — a criterion is one or the other. If a criterion still cannot be reached, keep the entry and rewrite it for what is missing now and the stage that owns it, in the form your skill gives.",
+  ];
 }
 
 // What the writer is told about a test it is replacing rather than writing for the first
@@ -1205,6 +1224,20 @@ function checkDeriveTestsBudget(ctx) {
   };
 }
 
+// A record is an owed item once it is approved (`src/spec/missing-tests.mjs`), so every record
+// this run wrote or changed, and every record for a criterion it was handed as a missing test,
+// names what is missing and the stage that owns supplying it. A record already on file that
+// this run did not touch is read as it stands, owed by `contract` where it names nobody.
+function checkDeriveTestsRecords(projectDir, ctx) {
+  const id = "derive-tests-records";
+  const before = new Map(criteriaAt(projectDir, "HEAD", NOT_TESTABLE_PATH).map((e) => [e?.id, JSON.stringify(e)]));
+  const handed = new Set((ctx.deriveTestsMissing ?? []).map((e) => e.item));
+  const messages = readNotTestable(projectDir)
+    .filter((e) => e?.id && (before.get(e.id) !== JSON.stringify(e) || handed.has(e.id)))
+    .flatMap((e) => recordProblems(e).map((p) => `${NOT_TESTABLE_PATH}: ${p}`));
+  return { id, ok: messages.length === 0, messages };
+}
+
 function checkDeriveTestsCoverage(projectDir, domain) {
   const id = "derive-tests-coverage";
   const { missing } = coverage(projectDir, domain);
@@ -1370,7 +1403,7 @@ const deriveTests = {
         reopened ? null : `And each condition it attached, verbatim:\n\n${condLines}`,
         owedConditionsNote(ctx),
         `Change only what these conditions name — a spec file, a not-testable entry, or one assertion inside a file. Every other file already in tests/acceptance/${d}/ and every other entry in tests/acceptance/not-testable.yaml stays byte-for-byte as you found it: re-derive nothing, and never rewrite a header's "derived" date on a file whose content you did not actually change.`,
-        `A criterion nothing in surface reaches — no page, action or observation gets you there — still gets an entry in tests/acceptance/not-testable.yaml instead of a file, exactly as a first derivation would.`,
+        `A criterion nothing in surface reaches — no page, action or observation gets you there — still gets an entry in tests/acceptance/not-testable.yaml instead of a file, in the form your skill gives, exactly as a first derivation would.`,
         elsewhere,
         `Finish with your journal entry: say what you changed for each condition, in order, and name any condition you could not act on and why.`,
       ].filter(Boolean).join("\n\n");
@@ -1382,9 +1415,10 @@ const deriveTests = {
     return [
       `Write one Playwright acceptance test per criterion below, for the "${d}" domain, and nothing else. You see only the contract (tests/generated/*, generated from spec/contract) and the seed; there is no app/ in this workspace and nothing here lets you read one.`,
       ...redoPromptBlock(ctx),
+      ...missingPromptBlock(ctx),
       `The criteria to derive tests for:\n\n${list}\n\nThis list already excludes any criterion carrying superseded-by: it has been replaced by another, and a test for it could only ever contradict the replacement, so it gets none of its own.`,
       `For each one, write tests/acceptance/${d}/<ID>.spec.ts, starting with exactly these two header lines:\n\n// criterion: @<ID> v<version>\n// provenance: blind, spec@${specSha}, derived ${today}\n\nImport only from "../../fixtures" and "../../generated/*". Sign in through persona.<id> when the criterion needs a signed-in actor, act through surface.<page>.<action>(), read through surface.<page>.<observation>(), refer to a record through seed.<group>.<handle> rather than an id or a value you invented, and observe email through mail rather than a database row or a log line. Write one test() per given/when/then the criterion states, titled with the criterion's own statement. Never read or guess at how the system is built, and never write a selector, a test id, a locator call, or a hardcoded route — the surface is the whole world.`,
-      `A criterion nothing in surface reaches — no page, action or observation gets you there — gets an entry in tests/acceptance/not-testable.yaml instead of a file: { id: <ID>, version: <version>, reason: "<why>" }.`,
+      `A criterion nothing in surface reaches — no page, action or observation gets you there — gets an entry in tests/acceptance/not-testable.yaml instead of a file, in the form your skill gives.`,
       `Finish with your journal entry: how many criteria got a test, which were not testable and why, and which surface actions or observations you needed but did not find — name them, so the contract can be extended to reach them.`,
     ].join("\n\n");
   },
@@ -1439,6 +1473,7 @@ const deriveTests = {
       // nothing but `ctx`, and a request's reason is the one thing about it the prompt
       // cannot reconstruct from the contract.
       ctx.deriveTestsRedo = resolved.redo ?? [];
+      ctx.deriveTestsMissing = resolved.missing ?? [];
     }
     return [
       domainCheck,
@@ -1462,6 +1497,7 @@ const deriveTests = {
       checkTestsBlind(projectDir, ctx),
       checkSeparation(projectDir),
       checkDeriveTestsCoverage(projectDir, ctx.domain),
+      checkDeriveTestsRecords(projectDir, ctx),
       checkDeriveTestsScope(projectDir, ctx.domain),
       checkDeriveTestsBlindHeader(projectDir, ctx.domain),
       checkDeriveTestsRevisionDrift(projectDir, ctx),

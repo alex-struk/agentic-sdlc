@@ -185,7 +185,7 @@ function standardReviseMockDir() {
         + "  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: 17 });\n"
         + "  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
       "tests/acceptance/not-testable.yaml":
-        "criteria:\n  - { id: R-1.3, version: 1, reason: \"no page on the surface observes the recalculated fee amount\" }\n",
+        "criteria:\n  - { id: R-1.3, version: 1, reason: \"no page on the surface observes the recalculated fee amount\", missing: \"an observation of the recalculated fee amount\", owner: contract }\n",
     },
   }));
   return mockDir;
@@ -384,7 +384,7 @@ test("derive-tests --revise: a mock that also changes the unnamed R-1.2 file fai
           + "  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: 17 });\n"
           + "  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n",
         "tests/acceptance/not-testable.yaml":
-          "criteria:\n  - { id: R-1.3, version: 1, reason: \"no page on the surface observes the recalculated fee amount\" }\n",
+          "criteria:\n  - { id: R-1.3, version: 1, reason: \"no page on the surface observes the recalculated fee amount\", missing: \"an observation of the recalculated fee amount\", owner: contract }\n",
         // Not named by either condition — this drifts and must be caught.
         "tests/acceptance/applications/R-1.2.spec.ts":
           "// criterion: @R-1.2 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-07\n"

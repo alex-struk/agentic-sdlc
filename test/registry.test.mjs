@@ -253,8 +253,12 @@ test("the contract stage's judgement is in its skill, and its prompt carries the
 test("derive-tests leaves how to judge a not-testable reason to its skill", () => {
   const prompt = stageFor("derive-tests").prompt({ domain: "alpha", deriveTestsCriteria: [{ id: "R-1.1", version: 1, statement: "s" }] });
   assert.ok(!prompt.includes("not that the criterion is hard"));
-  assert.match(prompt, /tests\/acceptance\/not-testable\.yaml instead of a file: \{ id: <ID>, version: <version>, reason: "<why>" \}/);
-  assert.match(readFileSync(skillPath("derive-tests"), "utf8"), /A reason has to be real: name what is\s+missing, not that the criterion is "hard" or "out of scope"\./);
+  assert.match(prompt, /tests\/acceptance\/not-testable\.yaml instead of a file, in the form your skill gives/);
+  assert.ok(!/owner|missing:/.test(prompt), "the record's form is the skill's to state");
+  const skill = readFileSync(skillPath("derive-tests"), "utf8");
+  assert.match(skill, /A reason has to be real: name what is\s+missing, not that the criterion is "hard" or "out of scope"\./);
+  assert.match(skill, /missing: "<what would have to exist for a test to reach it>"/);
+  assert.match(skill, /owner: <the stage that supplies it>/);
 });
 
 test("recommendationFrom extracts the first sentence, handling dots in filenames", () => {

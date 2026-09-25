@@ -37,21 +37,43 @@ what the separation check refuses, on your behalf, not looking over your shoulde
 
 If nothing in `surface` reaches what a criterion describes — no page, action or observation gets
 you there — do not write a file for it. Add an entry to `tests/acceptance/not-testable.yaml`
-instead: `{ id: <ID>, version: <n>, reason: "<why>" }`. A reason has to be real: name what is
+instead:
+
+```yaml
+- id: <ID>
+  version: <n>
+  reason: "<why no test can be written today>"
+  missing: "<what would have to exist for a test to reach it>"
+  owner: <the stage that supplies it>
+```
+
+A reason has to be real: name what is
 missing, not that the criterion is "hard" or "out of scope".
+
+The entry is not a place to leave the criterion. Once it is approved, the test is owed: an open
+item that stays open until a test for the criterion runs, handed to the stage you name as
+`owner` the next time it runs. So `missing` is written for that stage, in terms it can act on —
+the observation, the page, the seeded record, the sign-in — and `owner` is the stage that
+produces that kind of thing. Most often it is `contract`, which writes the surface, the
+observations and the seed. Where the criterion itself is the problem — it contradicts another,
+or asks for two states at once — it is `ratify`. It is never `derive-tests`: a record owed back
+to the writer is a test the writer declined to write. The run is refused if an entry you write
+or change leaves either field out.
 
 Then say which of two things it is, because they are not the same and the difference is what
 someone does about it next.
 
 **Blocked**: the contract could reach this and does not. An observation nobody wrote, a page the
 surface never declared, a starting state the seed could create. Begin the reason with
-`blocked:` and name what would unblock it. These are work for the contract stage, and a run of
-them in one area usually means one missing thing rather than many.
+`blocked:` and name what would unblock it. These are usually owed by `contract`, and a run of
+them in one area usually means one missing thing rather than many — name it the same way in each.
 
 **Unobservable**: nothing this system does could show it, whatever the contract said. A claim
 about what happens inside a scheduled job nobody can trigger, or about a fact the service never
-puts on a page. Begin the reason with `unobservable:` and say why no addition would help. These
-are permanent, and somebody has to accept the risk rather than plan to fix it.
+puts on a page. Begin the reason with `unobservable:` and say why no addition would help. Name as
+`owner` the stage that could still change that — `ratify`, where the criterion could be stated
+in terms something observes. If nothing can, a ruler withdraws the item with the reason written
+down, and that is how the risk is accepted.
 
 If you cannot tell which, it is `blocked:` — say what you would need to decide.
 
