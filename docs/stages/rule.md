@@ -400,7 +400,7 @@ one list (`docs/decisions/0041-an-instruction-owed-by-a-stage-nobody-told.md`).
 ### A test a criterion is owed
 
 A criterion `derive-tests` recorded as untestable is an owed item of kind `missing-test`
-(`docs/operating-model.md` §7), named `missing-test/<id>`. A ruling touches these three ways.
+(`docs/operating-model.md` §7), named `missing-test/<id>`. A ruling touches these four ways.
 
 **An approval writes them down.** Once the merge is on `main`, every untestable record it brought
 there gets its item, stamped with this ruling (`from`, `gate`, `by`), and so does any record
@@ -476,11 +476,44 @@ a missing test is closed by a test that runs, and by nothing a ruler writes — 
 reference to an item nothing has open, with the open list in the message. On the agent seat each
 gets the one re-prompt a fixable line always gets.
 
+**A ruler keeps a clause owed** that no test asserts, on any verdict and from either seat:
+
+```
+missing-test <ID>: <clause> — owed by <stage>: <what is missing>
+```
+
+The criterion's open item carries the clause and moves to the stage named, stamped with the ruling
+(`proposal`, `gate`, and the ruler as `by`), or an item is opened for it, stamped the same way. It
+is applied in an approval's merge commit, after everything else the merge settles, and for a return
+on `main` in a commit of its own, `rule(<gate>): <name> owes missing-test/<id>'s clause to
+<stage>`. Two hyphens stand in for the dash. No run of the criterion's test closes the item while
+it carries the clause; it is answered by an approved derivation it was handed that records nothing
+for the criterion (`docs/decisions/0054`). The line is refused before anything is written where the
+criterion is not accepted or is superseded or obsolete, where the owner is not a stage, and where
+the owner is `derive-tests` — a clause the test writer could assert and did not is a return. On the
+agent seat each gets the one re-prompt. This is the way an approval keeps something owed: a
+free-text condition on an approval is kept on the gate file and read by no stage, and the ruling
+prompt says so.
+
+A recorded ruling that said the same thing in words of its own is settled with the form:
+
+```
+sdlc rule <name> --settle --condition "missing-test <ID>: <clause> — owed by <stage>: <what is missing>"
+```
+
+Each line must name a criterion one of the ruling's own plain conditions names; it is recorded
+under the ruling's seat, with those conditions' references and text beside it (`restates`), in a
+pipeline commit `record(<gate>): <name> owes missing-test/<id>'s clause to <stage>`. A line naming a
+criterion the ruling did not mention is refused, since that is a new ruling. `--settle` also applies
+the `missing-test` lines a recorded ruling carries where `main` does not hold them. Settling again
+commits nothing.
+
 **G3 does not pass over one.** While `policy.gates.G3.block_on_missing_tests` is true (the
 default), approving a `build-slice-<n>` proposal is refused while an item open on `main` names a
 criterion the slice claims (the plan's list for it and every row of its verify result), unless the
 same ruling withdraws it, or the slice's verify result shows that criterion's test ran — the
-approval then closes it. Either seat is refused in the same words and the refusal is recorded like
+approval then closes it. A test that asserts part of its criterion lifts nothing: not while a record
+names a clause of the criterion or the item carries one. Either seat is refused in the same words and the refusal is recorded like
 every other; on the agent seat the open items are quoted back for one more turn first. A standing
 escalation does not lift it: whoever rules withdraws the item on the record, with the reason, or
 does not approve. `false` lets G3 approve past open items, which stay open.

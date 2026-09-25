@@ -180,7 +180,7 @@ stateDiagram-v2
 | `redo` | `test-wrong` at calibration, `test-overreaches` on a return | `derive-tests --stale`, or the `--revise` of the derive-tests line of work whose ruling filed it | the run that derives the test again, reaching `main` with the approval of its line of work |
 | `rebind` | `adapter-wrong` in a calibration's triage | `bind-adapter` for that target | `calibrate`, once the adapter has changed |
 | `recovery` | `recovery-wrong` at ratification | `archaeology` for that domain | the run that recovers the criterion again |
-| `missing-test` | an untestable record on `main` (section 7) | the stage the record names, `contract` where it names none | a result row showing its test ran; or a ruler's `condition-withdrawn` |
+| `missing-test` | an untestable record on `main`, whole or for one clause; or a ruling's `missing-test` line (section 7) | the stage the record or the line names, `contract` where a record names none | a result row showing its test ran, once no clause is owed; or a ruler's `condition-withdrawn` |
 
 Each kind is stored in its own file (`.sdlc/conditions.yaml`, `.sdlc/revision-requests.yaml`,
 `tests/acceptance/redo.yaml`, `tests/adapters/rebind.yaml`, `spec/recovery.yaml`), and a kind with no
@@ -243,6 +243,17 @@ stateDiagram-v2
   `calibrate`, or by `verify` in a project that does not calibrate. Rulers are shown the items the
   proposal's stage owes and, for a build slice, the items its criteria are owed; `sdlc next` lists
   them and routes each to the run that answers it.
+- **A clause no test asserts is owed the same way.** A criterion's test can assert part of what
+  it states. A record may name the clause no test asserts (`clause`), beside the test that asserts
+  the rest; the writer is told in its skill to record every such clause, and a reviewer returns a
+  test that asserts part of its criterion with no such record. A ruler names one on any ruling,
+  approval included, with `missing-test <ID>: <clause> — owed by <stage>: <what is missing>`, which
+  puts the clause on the item and moves it to the stage named; a free-text condition on an approval
+  is read by no stage and keeps nothing owed. While a record names a clause, or the item carries
+  one, no run of the partial test closes the item or lets a slice past the G3 guard. The record is
+  removed, and the item's clause answered, by an approved derivation whose test asserts the clause;
+  the whole test is then owed a run like any other
+  (`docs/decisions/0054-a-clause-no-test-asserts-is-owed.md`).
 - **It closes only when a test runs.** A result row for the criterion, at its current version,
   from a spec file, `pass` or `fail`, and a result of that spec file as it now stands (the row's
   `file_sha` is the file's git object id), closes it as met with the row cited as evidence — written
