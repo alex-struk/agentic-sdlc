@@ -18,7 +18,6 @@ element has a test ID named in `surface.yaml`.
 
 ## Escalates to the human bound to `escalate_to` when
 - The item's tier is HIGH or CRITICAL.
-- The producing stage reports confidence below its threshold.
 
 ## A condition whose work belongs to another stage
 

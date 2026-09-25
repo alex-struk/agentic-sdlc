@@ -154,3 +154,14 @@ test("the reviewer's brief does not promise a passing suite, and says what each 
   }
   assert.match(section, /return or an escalation/, "and that both are open whatever the result says");
 });
+
+// A brief tells a persona when to escalate, and every trigger it names has to be one the
+// persona can act on. No stage reports a confidence, and sampling is done by the engine after
+// the ruling across every ruling in a week, which no single ruling turn can see.
+test("the shipped briefs name no escalation trigger the persona has no way to act on", () => {
+  for (const name of templateBriefs()) {
+    const text = readFileSync(join(TEMPLATE_BRIEF_DIR, name), "utf8");
+    assert.doesNotMatch(text, /confidence below its threshold/, name);
+    assert.doesNotMatch(text, /Every Nth decision|human_sample_per_week/, name);
+  }
+});

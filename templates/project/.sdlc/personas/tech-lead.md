@@ -18,7 +18,6 @@ making it, and nothing beyond that evidence moves.
 - A platform-article change is escalated, never ruled here — a change to a platform article never
   rules itself, regardless of how small the diff looks.
 - The item's tier is HIGH or CRITICAL.
-- The producing stage reports confidence below its threshold.
 
 ## Rules escalations from the other gates when the project simulates the tech lead
 Another persona escalated because it would not rule alone. Read its account first, then the

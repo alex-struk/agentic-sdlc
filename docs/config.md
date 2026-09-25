@@ -83,7 +83,7 @@ Required. Container of governance gates, tiers, limits and turn ceilings.
 - `gates` (object): A map of required gate definitions. Must include: `G0`, `G1`, `G-DESIGN`, `G2`, `G3`, `G-POL`. Each gate is an object:
   - `holder` (string, pattern `^(agent:)?[a-z][a-z0-9-]*$`): A role name or `agent:<persona>`. Role names are lowercase words joined by hyphens. Rejects person-like identifiers (e.g., `jane.doe` fails because of the dot).
   - `escalate_to` (string, optional, pattern `^[a-z][a-z0-9-]*$`): A role to escalate to if the holder cannot decide. Lowercase, no agent: prefix.
-  - `human_sample_per_week` (integer, optional, min 0): If set, the human reviewing this gate samples 1 in N decisions.
+  - `human_sample_per_week` (integer, optional, min 0, default 0): How many of this gate's agent-held rulings in each ISO week are marked as a sample for a person to read back: the first N, in the order they were ruled. The engine marks them after the ruling, on the state site; the persona ruling the gate is not told and does nothing differently.
   - `approve_unasserted` (boolean, optional, G3 only, default `true`): Whether a build whose verify verdict is `pass-unasserted` — nothing failed, and some claimed criterion was never asserted against the application — may be approved. `false` refuses that approval from either seat, a persona or a person typing `--by`, and leaves return and escalate open.
 - `default_tier` (enum): One of `LOW`, `STANDARD`, `HIGH`, `CRITICAL`. The default risk tier for decisions.
 - `escalate_tiers` (array of tiers, optional, default `[HIGH, CRITICAL]`): The proposal tiers at which an agent-held gate escalates to its `escalate_to` before the persona is asked anything. Must include `CRITICAL`, and names each tier at most once.

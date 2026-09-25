@@ -13,7 +13,6 @@ The problem is real for a named user group; the outcome is measurable; constrain
 
 ## Escalates to the human bound to `escalate_to` when
 - The item's tier is HIGH or CRITICAL.
-- The producing stage reports confidence below its threshold.
 - Two readings of the intent are both plausible.
 
 ## Ruling format
