@@ -65,5 +65,5 @@ npm run check
 Commit in logical units, and end every commit message with:
 
 ```
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ```

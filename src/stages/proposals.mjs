@@ -10,6 +10,7 @@ import { git, gitOk, stagePaths, SDLC_AUTHOR } from "../lib/git.mjs";
 import { escapeRe } from "./shared.mjs";
 import { conditionsAreExecutable, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { REVISION_REQUESTS_PATH, openRevisionRequestsFor, revisionRound, settleRevisionRound } from "../spec/revisions.mjs";
+import { openConditionsOnMain } from "../spec/conditions.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 
 // One sentence off the front of `text`, plus whatever is left after it. The terminator
@@ -237,6 +238,47 @@ export function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", 
 export function withOpenRequests(projectDir, stage, revision) {
   const openRequests = openRevisionRequestsFor(projectDir, stage);
   return openRequests.length ? { ...revision, openRequests } : revision;
+}
+
+// A revision read off a returned ruling, plus every condition an earlier ruling in the same
+// line of work attached and nobody has since closed. The ruler of this revision is shown
+// that list as owed (`accountingNote` in `src/runner/persona.mjs`) and judges the proposal
+// against it; a stage handed only the ruling that returned it is asked for less than its
+// ruler will expect, and is returned again for something nobody asked it to do.
+//
+// Read from `main` through the same `openConditionsOnMain` the ruler's prompt and the
+// ruling guard read, so the stage and its ruler are shown one list. The family is the
+// caller's, because naming it takes the stage registry (`proposalFamily`), which a stage
+// module cannot import; every ledger row carries the family its ruling computed. The
+// returning ruling's own rows are left out: they are the conditions the prompt already
+// lists as what the revision must now do.
+//
+// A revision with no name (one opened by requests rather than by a return) or no family
+// belongs to no line of work in the ledger's sense and is returned as it came.
+export function withOwedConditions(projectDir, revision, family) {
+  if (!revision?.name || !family) return revision;
+  const owed = openConditionsOnMain(projectDir).filter((c) => c.family === family && c.from !== revision.name);
+  return owed.length ? { ...revision, owedConditions: owed } : revision;
+}
+
+// The paragraph a revise prompt carries for `owedConditions`, each condition by the
+// reference a ruler closes it with and in its ruler's own words. Nothing where there are
+// none, so a revision with nothing else owed reads exactly as it would without this.
+export function owedConditionsNote(ctx) {
+  const owed = ctx.revision?.owedConditions ?? [];
+  if (!owed.length) return null;
+  const one = owed.length === 1;
+  const indent = (text) => String(text ?? "").trim().split("\n").map((l) => `  ${l}`).join("\n");
+  return [
+    `${one ? "A condition" : `${owed.length} conditions`} an earlier ruling on this same line of work attached ${one ? "is" : "are"} still open: `
+      + `no ruling since has said ${one ? "it was" : "they were"} met or withdrawn, so ${one ? "it is" : "they are"} owed by this revision as much as anything the ruling above asks for.`,
+    owed.map((c) => `- \`${c.ref}\`, attached by ${c.by ?? "?"} when it ruled ${c.from ?? "?"} at ${c.gate ?? "?"}:\n\n${indent(c.text)}`).join("\n\n"),
+    one
+      ? "The ruling that reads this revision will be shown it as owed, by its reference, and will expect it met or accounted for. "
+        + "Meet it here. If it cannot be met in this run, say why in your journal entry, by its reference."
+      : "The ruling that reads this revision will be shown each of these as owed, by its reference, and will expect each one met or accounted for. "
+        + "Meet each one here. Where one cannot be met in this run, say which and why in your journal entry, by its reference.",
+  ].join("\n\n");
 }
 
 // The other thing a `--revise` run can start from: the requests filed by rulings elsewhere

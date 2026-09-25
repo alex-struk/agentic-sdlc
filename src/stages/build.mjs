@@ -10,7 +10,7 @@ import { readText } from "../lib/fsx.mjs";
 import { changedPaths, git } from "../lib/git.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { readSlice, buildProposalBase, buildProposals } from "./slices.mjs";
-import { addressedElsewhereNote, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, withOpenRequests } from "./proposals.mjs";
+import { addressedElsewhereNote, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, owedConditionsNote, revisionConditionList, revisionRulingBlock, withOpenRequests, withOwedConditions } from "./proposals.mjs";
 import { skillPath } from "./shared.mjs";
 import { targetSettings } from "../sandbox/local.mjs";
 
@@ -65,7 +65,10 @@ function checkBuildRevisionSource(projectDir, ctx) {
   for (const name of candidates) {
     const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
     if (!found) continue;
-    ctx.revision = withOpenRequests(projectDir, "build", { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) });
+    const revision = withOpenRequests(projectDir, "build", { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) });
+    // A slice's proposals are one line of work, and `buildProposalBase` is its name: the
+    // stem every revision of the slice is numbered from.
+    ctx.revision = withOwedConditions(projectDir, revision, buildProposalBase(ctx.slice));
     if (!ctx.dryRun) recordReturnOnMain(projectDir, ctx.revision, { gate: "G3", keepBranch: true });
     return { id, ok: true, messages: [] };
   }
@@ -87,6 +90,7 @@ function revisionInstructions(ctx) {
     "This is a revision. The application you are correcting is already under app/; change what the ruling below names and leave the rest.",
     revisionRulingBlock(ctx),
     conditions ? `What it must now do:\n\n${conditions}` : "",
+    owedConditionsNote(ctx),
     addressedElsewhereNote(ctx),
     "A failing criterion is described by what the running application did, never by the test's code, which you will not see. Read the criterion again and find where the application departs from it.",
   ].filter(Boolean).join("\n\n");

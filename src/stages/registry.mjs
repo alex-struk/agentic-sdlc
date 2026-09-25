@@ -37,7 +37,7 @@ import { calibrate } from "./calibrate.mjs";
 // them without importing the registry itself, which imports every stage and would make
 // that a cycle. Re-exported below so every existing caller of these four names from
 // `registry.mjs` keeps working unchanged.
-import { addressedElsewhereNote, isReopening, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, revisionConditionList, revisionRulingBlock, splitRulingConditions, withOpenRequests, highestRulingNumber } from "./proposals.mjs";
+import { addressedElsewhereNote, isReopening, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, owedConditionsNote, revisionConditionList, revisionRulingBlock, splitRulingConditions, withOpenRequests, withOwedConditions, highestRulingNumber } from "./proposals.mjs";
 import { build } from "./build.mjs";
 import { verify } from "./verify.mjs";
 
@@ -481,6 +481,7 @@ const archaeology = {
         `This run changes spec/domains/${d}.md only. Unlike a first recovery, do not touch spec/contract/surface.yaml or spec/contract/personas.yaml, and do not touch any other domain's file — a return names one criterion's evidence as wrong, never a reason to add to the contract surface.`,
         `Leave every R-<n> criterion in the file byte-for-byte unchanged. Leave every other D-<n> criterion unchanged too, unless this rationale's evidence contradicts it. Never renumber any criterion, minted or provisional.`,
         ...recoveryPromptBlock(ctx),
+        owedConditionsNote(ctx),
         addressedElsewhereNote(ctx),
         `Finish with your journal entry: say which criteria you changed and why, and what the evidence now shows.`,
       ].filter(Boolean).join("\n\n");
@@ -1045,7 +1046,7 @@ function checkDeriveTestsRevisionSource(projectDir, ctx) {
     return { id, ok: false, messages: [`derive-tests --revise: no returned ruling for ${ctx.domain} to revise from`] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
-  ctx.revision = withOpenRequests(projectDir, "derive-tests", { ...found, branchCommit });
+  ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "derive-tests", { ...found, branchCommit }), proposalFamily(found.name));
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
   return { id, ok: true, messages: [] };
 }
@@ -1323,6 +1324,7 @@ const deriveTests = {
         reopened ? revisionRulingBlock(ctx)
           : `These tests for the "${d}" domain were proposed and returned, not approved. Here is the reviewer's rationale, verbatim:\n\n\`\`\`\n${rationale}\n\`\`\``,
         reopened ? null : `And each condition it attached, verbatim:\n\n${condLines}`,
+        owedConditionsNote(ctx),
         `Change only what these conditions name — a spec file, a not-testable entry, or one assertion inside a file. Every other file already in tests/acceptance/${d}/ and every other entry in tests/acceptance/not-testable.yaml stays byte-for-byte as you found it: re-derive nothing, and never rewrite a header's "derived" date on a file whose content you did not actually change.`,
         `A criterion nothing in surface reaches — no page, action or observation gets you there — still gets an entry in tests/acceptance/not-testable.yaml instead of a file, exactly as a first derivation would.`,
         elsewhere,
@@ -1619,7 +1621,7 @@ function checkBindAdapterRevisionSource(projectDir, ctx) {
     return { id, ok: true, messages: [] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
-  ctx.revision = withOpenRequests(projectDir, "bind-adapter", { ...found, branchCommit });
+  ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "bind-adapter", { ...found, branchCommit }), proposalFamily(found.name));
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
   return { id, ok: true, messages: [] };
 }
@@ -1643,6 +1645,7 @@ function bindAdapterRevisionInstructions(ctx) {
     `This is a revision. The binding you are correcting is already at tests/adapters/${ctx.target}/ — open it and change only what the conditions below name. Do not rebind what was accepted, and do not start the target's walk over.`,
     revisionRulingBlock(ctx),
     conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
+    owedConditionsNote(ctx),
     addressedElsewhereNote(ctx),
   ].filter(Boolean).join("\n\n");
 }
@@ -1993,7 +1996,7 @@ function checkRevisionSource(projectDir, ctx) {
     }
     return { id, ok: false, messages: [`archaeology --revise: no returned ruling for ${ctx.domain} to revise from`] };
   }
-  ctx.revision = withOpenRequests(projectDir, "archaeology", found);
+  ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "archaeology", found), proposalFamily(found.name));
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G1" });
   return { id, ok: true, messages: [] };
 }
@@ -2440,7 +2443,7 @@ function checkDesignRevisionSource(projectDir, ctx, maySpend = true) {
     return { id, ok: true, messages: [] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
-  ctx.revision = withOpenRequests(projectDir, "design", { ...found, branchCommit });
+  ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "design", { ...found, branchCommit }), proposalFamily(found.name));
   if (spend) recordReturnOnMain(projectDir, found, { gate: "G-DESIGN", keepBranch: true });
   return { id, ok: true, messages: [] };
 }
@@ -2454,6 +2457,7 @@ function designRevisionInstructions(ctx) {
     `This is a revision. The screens you are correcting are already under design/ — open them and change only what the conditions below name. Do not redraw a screen nobody asked about.`,
     revisionRulingBlock(ctx),
     conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
+    owedConditionsNote(ctx),
     addressedElsewhereNote(ctx),
     `A condition addressed to a person rather than a stage — the runner, the tech lead — is not yours to carry out either. Say in your journal which ones you left, and to whom.`,
   ].filter(Boolean).join("\n\n");
@@ -2684,7 +2688,7 @@ function checkPlanRevisionSource(projectDir, ctx, maySpend = true) {
   for (const name of open) {
     const found = returnedRulingOn(projectDir, name, `proposal/${name}`);
     if (!found) continue;
-    ctx.revision = withOpenRequests(projectDir, "plan", { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) });
+    ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "plan", { name, branch: `proposal/${name}`, ...found, branchCommit: git(["rev-parse", `proposal/${name}`], projectDir) }), proposalFamily(name));
     if (spend) recordReturnOnMain(projectDir, ctx.revision, { gate: "G2", keepBranch: true });
     return { id, ok: true, messages: [] };
   }
@@ -2701,10 +2705,10 @@ function checkPlanRevisionSource(projectDir, ctx, maySpend = true) {
       if (!gitOk(["cat-file", "-e", `returned/${name}:${gatePath}`], projectDir)) continue;
       const gate = parseYaml(git(["show", `returned/${name}:${gatePath}`], projectDir)) ?? {};
       if (gate.verdict !== "return") continue;
-      ctx.revision = withOpenRequests(projectDir, "plan", {
+      ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "plan", {
         name, branch: `returned/${name}`, rationale: gate.rationale ?? gate.note ?? "",
         ...splitRulingConditions(gate, name), branchCommit: git(["rev-parse", `returned/${name}`], projectDir),
-      });
+      }), proposalFamily(name));
       return { id, ok: true, messages: [] };
     }
   }
@@ -2719,6 +2723,7 @@ function planRevisionInstructions(ctx) {
     "This is a revision. The plan you are correcting is already under plan/ and docs/decisions/ — change what the conditions below name and keep every slice the ruling did not question.",
     revisionRulingBlock(ctx),
     conditions ? `The conditions it must now meet:\n\n${conditions}` : "",
+    owedConditionsNote(ctx),
     addressedElsewhereNote(ctx),
     "A condition addressed to a person rather than a stage — the runner, the tech lead — is not yours to carry out either. Say in your journal which ones you left, and to whom.",
   ].filter(Boolean).join("\n\n");

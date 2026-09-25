@@ -15,8 +15,10 @@
 // an append-only ledger a ruling writes to, marked rather than emptied when it is answered.
 // It is a second file rather than a second kind of row in that one because the two are read
 // by different things — a `--revise` run reads revision requests as work to start from, and
-// must never be handed one of these, which is not work at all but a question about work
-// already asked for.
+// must never start from one of these, which is not work at all but a question about work
+// already asked for. A revision that did start from a return is shown the ones its own line
+// of work still owes (`withOwedConditions` in `src/stages/proposals.mjs`), because its next
+// ruler will be.
 //
 // Whether a condition was met is a ruling and is never computed here. What is computed is
 // whether anybody has said so.

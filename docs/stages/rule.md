@@ -372,6 +372,13 @@ is read back by `sdlc checks` on every run — and so, since the ruling prompt c
 to whoever rules next — and it fails that check once the same line of work has had a proposal
 approved past it (`docs/stages/checks.md`).
 
+The stage that owes it is told the same way. A `--revise` run of any stage that starts from a
+returned ruling is handed, beside that ruling's own conditions, every condition still open on
+`main` for the same line of work, each by its reference, in its ruler's words, with who attached
+it and on which ruling, and with the statement that the next ruler will be shown it as owed. It
+is read through the same function the ruling prompt reads, so the stage and its ruler are shown
+one list (`docs/decisions/0041-an-instruction-owed-by-a-stage-nobody-told.md`).
+
 ### A condition asking for a path the stage cannot deliver
 
 A stage's workspace is writable only where it is collected
