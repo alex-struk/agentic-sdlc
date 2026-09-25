@@ -117,7 +117,7 @@ and start again from nothing.
   database and any services already started are left running, and the failing file's own error is
   in the message — no later seed file is attempted.
 
-## `sdlc oracle reseed [--target <t>]`
+## `sdlc oracle reseed [--target <t>] [--instance <n>]`
 
 Puts the database back to what `tests/seed/*.sql` describes, without restarting anything: every
 table but the migration tool's own bookkeeping is emptied, then the same seed files `oracle up`
@@ -133,6 +133,26 @@ way. A target with no configured database has nothing to reset and is given no c
 suite run by hand against a developer's own sandbox behaves as it always did.
 
 A reset that fails stops the test rather than letting it run against whatever was left behind.
+
+A reset is one `psql` session per copy, fed one script: `SET lock_timeout = '10s'`, the truncate,
+then every seed file in name order. One session rather than one per file, because each `compose
+exec` costs about a second before any SQL runs and a reset happens before every test.
+
+Before the truncate, every other client session on the copy's database is ended
+(`pg_terminate_backend`), and the application's connection pool opens fresh ones on its next
+request. The application keeps connections of its own, and one can be inside a transaction when a
+reset arrives. A truncate queued behind it makes every later query on those tables queue behind the
+truncate, and when the open transaction is waiting on one of those queries from another of the
+application's connections, the three wait on each other with no end the database can see
+(`docs/decisions/0055-a-reset-that-waited-on-the-application-it-was-resetting.md`). A session the
+database role may not end is left alone. If a session reconnects in the moment before the truncate
+and holds a lock past the timeout, its sessions are ended again and the truncate retried, three
+times in all.
+
+The lock timeout is set inside the session, so it holds whatever becomes of the caller: a reset
+whose caller gave up on it ends in the database within the timeout instead of keeping its
+connection for ever. A statement that fails is reported against the seed file and line it came
+from (`<file>, line <n>`), and the command exits 1.
 
 ## Running several copies
 

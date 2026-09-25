@@ -4,7 +4,7 @@
 // host's other traffic can collide with it. Every actual `docker compose` invocation
 // goes through `compose()` in `src/oracle/compose.mjs`, the one place `SDLC_ORACLE=mock`
 // stands in for a real Docker daemon.
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { loadConfig } from "../config/load.mjs";
@@ -270,35 +270,98 @@ const MIGRATION_TABLES = ["knex_migrations", "knex_migrations_lock", "schema_mig
 // one place validating it is one place that can be changed without the other noticing.
 const TABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+// How long any one statement in a reset waits for a lock before giving up. A reset runs
+// between tests, when nothing should be holding one for long, so a wait past this is
+// something stuck rather than something busy — and a bound set in the session holds
+// whatever becomes of the caller. A reset whose caller has given up on it and gone still
+// ends inside the database, instead of waiting there for ever with a connection it holds.
+const RESET_LOCK_TIMEOUT = "10s";
+
+// How many times the truncate is tried. Each try first ends the database's other sessions;
+// one that reconnects in the moment before the truncate takes its locks is waited on for
+// `RESET_LOCK_TIMEOUT`, then ended in turn.
+const RESET_ATTEMPTS = 3;
+
 // Empties every other table in one statement, worked out in the database rather than
 // listed here, so a schema that gains a table is covered without anybody remembering to
 // add it. `CASCADE` because the tables reference each other and no order would satisfy
 // them all; `RESTART IDENTITY` so a sequence does not carry numbers over from the run
 // before and make a generated id depend on how many tests ran first.
+//
+// Every other client session on this database is ended first. The application under test
+// keeps connections of its own, and one can be inside a transaction when a reset arrives —
+// a background job, a request still finishing. A truncate queued behind that transaction
+// makes every later query on those tables queue behind the truncate, and when the open
+// transaction is itself waiting on one of those queries, from another of the application's
+// connections, the three wait on each other with no end. The database cannot see the loop,
+// because one link of it is inside the application. Ending the sessions breaks it before it
+// forms, and the application's pool opens fresh connections on its next request. A session
+// this role may not end is left alone: it is somebody else's, and the lock timeout is what
+// bounds waiting on it.
 export function truncateAllSql(keep = MIGRATION_TABLES) {
   const bad = keep.filter((t) => !TABLE_NAME.test(t));
   if (bad.length) throw new Error(`oracle.db.keep: not a table name: ${bad.join(", ")}`);
   const list = keep.map((t) => `'${t}'`).join(", ");
   return `DO $$
-DECLARE stmt text;
+DECLARE stmt text; attempt int := 0; s record;
 BEGIN
   SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
     INTO stmt
     FROM pg_tables
    WHERE schemaname = 'public' AND tablename NOT IN (${list});
-  IF stmt IS NOT NULL THEN
-    EXECUTE 'TRUNCATE TABLE ' || stmt || ' RESTART IDENTITY CASCADE';
-  END IF;
+  IF stmt IS NULL THEN RETURN; END IF;
+  LOOP
+    attempt := attempt + 1;
+    FOR s IN SELECT pid FROM pg_stat_activity
+              WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend' LOOP
+      BEGIN
+        PERFORM pg_terminate_backend(s.pid);
+      EXCEPTION WHEN insufficient_privilege THEN NULL;
+      END;
+    END LOOP;
+    BEGIN
+      EXECUTE 'TRUNCATE TABLE ' || stmt || ' RESTART IDENTITY CASCADE';
+      RETURN;
+    EXCEPTION WHEN lock_not_available THEN
+      IF attempt >= ${RESET_ATTEMPTS} THEN RAISE; END IF;
+    END;
+  END LOOP;
 END $$;`;
+}
+
+// The whole reset as one script for one `psql` session: the lock bound, the truncate, then
+// every seed file in order. One session rather than one per file because each `compose
+// exec` costs about a second of its own before any SQL runs, and a reset happens before
+// every test; and because a single session is a single thing to bound and to end. `parts`
+// records where each seed file starts in the script, so an error `psql` reports by line
+// can be put back against the file a person would open to fix it.
+export function reseedScript(seeds, keep = MIGRATION_TABLES) {
+  const lines = [`SET lock_timeout = '${RESET_LOCK_TIMEOUT}';`, ...truncateAllSql(keep).split("\n")];
+  const parts = [];
+  for (const { name, text } of seeds) {
+    const body = String(text).replace(/\n$/, "").split("\n");
+    parts.push({ name, start: lines.length + 1, lines: body.length });
+    lines.push(...body);
+  }
+  return { text: `${lines.join("\n")}\n`, parts };
+}
+
+// Where in a reset script `psql` says it failed, in the seed file's own terms — `<file>, line
+// <n>` — or `null` when the message names no line. A line before the first seed file is the
+// reset's own statement.
+export function locateScriptError(script, message) {
+  const m = /psql:<stdin>:(\d+):/.exec(String(message ?? ""));
+  if (!m) return null;
+  const line = Number(m[1]);
+  const part = script.parts.find((p) => line >= p.start && line < p.start + p.lines);
+  return part ? `${part.name}, line ${line - part.start + 1}` : `the reset's own statement, script line ${line}`;
 }
 
 // `sdlc oracle reseed` — put the database back to what the seed describes, without
 // restarting anything. The acceptance suite runs it between tests: a test that deactivates
 // an account or grants somebody administrator rights leaves that account changed for every
 // test after it, and those tests then fail for a reason that has nothing to do with what
-// they are checking. One calibration lost seven criteria to exactly that, and the product
-// owner's answer was to make each test check its own accounts first, which is the symptom
-// rather than the cause.
+// they are checking.
 //
 // It reuses the seed the oracle was started with, so there is one description of the
 // starting state rather than a second one that could drift from it.
@@ -315,14 +378,19 @@ function oracleReseed(projectDir, config, target, instance) {
     console.error(`oracle reseed: ${target} has no copy ${instance} (${all.length} running)`);
     return 1;
   }
-  const chosen = instance === undefined ? all : [all[instance]];
-  let files = [];
-  for (const inst of chosen) {
-    const opts = { cwd: projectDir, env: composeEnv(config, inst.ports) };
-    const base = baseArgs(config, inst.compose_project);
-    compose([...base, "exec", "-T", db.service, "psql", "-v", "ON_ERROR_STOP=1", "-U", db.user, "-d", db.database,
-      "-c", truncateAllSql(db.keep ?? MIGRATION_TABLES)], opts);
-    files = loadSeed(projectDir, config, base, opts);
+  const chosen = instance === undefined ? all.map((inst, i) => [inst, i]) : [[all[instance], instance]];
+  const dir = join(projectDir, seedDirFor(config));
+  const files = seedFiles(projectDir, config);
+  const script = reseedScript(files.map((name) => ({ name, text: readFileSync(join(dir, name), "utf8") })), db.keep ?? MIGRATION_TABLES);
+  for (const [inst, i] of chosen) {
+    const opts = { cwd: projectDir, env: composeEnv(config, inst.ports), stdin: script.text };
+    try {
+      compose([...baseArgs(config, inst.compose_project), "exec", "-T", db.service, "psql", "-v", "ON_ERROR_STOP=1", "-U", db.user, "-d", db.database], opts);
+    } catch (e) {
+      const where = locateScriptError(script, e.message);
+      console.error(`oracle reseed: copy ${i} of ${target} was not reset${where ? ` (${where})` : ""}:\n${e.message}`);
+      return 1;
+    }
   }
   console.log(`oracle reseed: ${target} (${files.length} seed file(s)${chosen.length > 1 ? `, ${chosen.length} copies` : ""})`);
   return 0;

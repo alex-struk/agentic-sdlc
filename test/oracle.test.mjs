@@ -464,6 +464,49 @@ test("oracle reseed keeps the tables a project names instead of the defaults, an
   assert.throws(() => truncateAllSql(["users; DROP TABLE users"]), /not a table name/);
 });
 
+// A reset is one database session per copy. The application under test keeps connections of
+// its own, and one of them can be inside a transaction when the reset arrives; a truncate
+// queued behind it holds up every query the application makes next, including the one that
+// transaction is waiting on, and nothing in the database can see that loop to break it. So the
+// other sessions are ended first, every wait for a lock is bounded, and the whole reset is one
+// session rather than one per file — a caller that gives up on it leaves nothing waiting.
+test("oracle reseed resets a copy in one session: other sessions ended, tables emptied, seed loaded, every lock wait bounded", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-reseed-"));
+  const dir = makeMicroProject(tmp);
+  await withMock(null, async (mockDir) => {
+    assert.equal(await runOracle(dir, "up", {}), 0);
+    rmSync(join(mockDir, "oracle-calls.json"));
+    assert.equal(await runOracle(dir, "reseed", { instance: 0 }), 0);
+
+    const calls = readCalls(mockDir);
+    assert.equal(calls.length, 1, `one compose call per copy, got ${calls.map((c) => c.args.slice(6).join(" ")).join(" | ")}`);
+    assert.equal(calls[0].args.slice(6).join(" "), "exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d appdb");
+    const script = calls[0].stdin;
+    assert.equal(typeof script, "string", "the script is piped to the one session");
+    const order = ["lock_timeout", "pg_terminate_backend", "TRUNCATE TABLE", "-- seed users", "-- seed fees"].map((s) => script.indexOf(s));
+    assert.ok(order.every((i) => i >= 0), `every part is present: ${order}`);
+    assert.deepEqual([...order].sort((a, b) => a - b), order, "in that order");
+    // Only this database's sessions, and never its own.
+    assert.match(script, /datname = current_database\(\)/);
+    assert.match(script, /pid <> pg_backend_pid\(\)/);
+    // A session that reconnected between the ending and the truncate is waited on for a
+    // bounded time and then ended again, rather than failing the reset outright.
+    assert.match(script, /WHEN lock_not_available/);
+  });
+});
+
+test("a failing statement in a reset is reported against the seed file and line it came from", async () => {
+  const { reseedScript, locateScriptError } = await import("../src/commands/oracle.mjs");
+  const script = reseedScript([
+    { name: "001-users.sql", text: "insert into users values (1);\n" },
+    { name: "002-fees.sql", text: "-- fees\ninsert into fees values (1);\ninsert into fees values (x);\n" },
+  ]);
+  const seedStart = script.text.split("\n").findIndex((l) => l === "-- fees") + 1;
+  const message = `psql:<stdin>:${seedStart + 2}: ERROR:  column "x" does not exist`;
+  assert.match(locateScriptError(script, message), /002-fees\.sql, line 3/);
+  assert.equal(locateScriptError(script, "no line number here"), null);
+});
+
 // A file written before copies existed carries its one copy at the top level and no list, and
 // every caller still has to find it there.
 test("the copies of a target are read from the list, or from the single copy an older file records", async () => {

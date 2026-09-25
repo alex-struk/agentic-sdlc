@@ -14,9 +14,9 @@ function mockDir() {
 // Appends one call to `SDLC_MOCK_DIR/oracle-calls.json`, creating the file the first
 // time it is needed, so a test can assert on the exact sequence of compose calls a run
 // made without a real Docker daemon anywhere in reach. `input` (the path of a file piped
-// to stdin, when there is one) is recorded as its own field rather than folded into
-// `args`, since it was never part of the compose command line.
-function recordMockCall(args, env, input) {
+// to stdin) and `stdin` (text piped to it) are recorded as fields of their own rather than
+// folded into `args`, since neither was ever part of the compose command line.
+function recordMockCall(args, env, input, stdin) {
   const p = join(mockDir(), "oracle-calls.json");
   const calls = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : [];
   // Only `SDLC_*` keys are recorded: everything else in a caller's `env` is either
@@ -26,6 +26,7 @@ function recordMockCall(args, env, input) {
   const sdlcEnv = Object.fromEntries(Object.entries(env ?? {}).filter(([k]) => k.startsWith("SDLC_")));
   const call = { args, env: sdlcEnv };
   if (input) call.input = input;
+  if (stdin !== undefined) call.stdin = stdin;
   calls.push(call);
   writeFileSync(p, JSON.stringify(calls, null, 2));
 }
@@ -69,31 +70,32 @@ function composeSubcommand(args) {
 
 // The child-process options one `docker compose` call runs with. Exported so a test can
 // assert on the buffer and the stream wiring without a Docker daemon anywhere in reach.
-export function composeOptions(args, { cwd, env = {}, input } = {}) {
+export function composeOptions(args, { cwd, env = {}, input, stdin } = {}) {
   const streaming = STREAMING.has(composeSubcommand(args));
   return {
     cwd,
     env: { ...process.env, ...env },
     encoding: "utf8",
     maxBuffer: MAX_BUFFER,
-    stdio: [input ? "pipe" : "ignore", streaming ? "inherit" : "pipe", streaming ? "inherit" : "pipe"],
+    stdio: [input || stdin !== undefined ? "pipe" : "ignore", streaming ? "inherit" : "pipe", streaming ? "inherit" : "pipe"],
   };
 }
 
 // Runs `docker compose <args>` synchronously, in `cwd`, with `env` merged over the
 // ambient environment. `input` is a path to a file whose contents are piped to the
 // process's stdin (`loadSeed` below uses this to feed a `.sql` file to `psql` without
-// shelling out through a redirect the way a person would at a terminal).
+// shelling out through a redirect the way a person would at a terminal); `stdin` is text
+// piped the same way, for a script assembled in memory (`oracle reseed`).
 //
 // Under `SDLC_ORACLE=mock` nothing is spawned: the call is appended to
-// `oracle-calls.json` as `{ args, env, input }` (`input` present only for calls that
-// pipe a file) and the answer is `""`, except `ps --format json`, which answers with
+// `oracle-calls.json` as `{ args, env, input, stdin }` (`input` and `stdin` present only
+// for calls that pipe something) and the answer is `""`, except `ps --format json`, which answers with
 // whatever `SDLC_MOCK_DIR/oracle-ps.json` holds — a test's way of saying a container is
 // already running — and `config --services`, which answers with
 // `SDLC_MOCK_DIR/oracle-services.txt`; either is `""` when its file is not present.
-export function compose(args, { cwd, env = {}, input } = {}) {
+export function compose(args, { cwd, env = {}, input, stdin } = {}) {
   if (process.env.SDLC_ORACLE === "mock") {
-    recordMockCall(args, env, input);
+    recordMockCall(args, env, input, stdin);
     // `args[0]` is never "ps" here — every real call carries the `-p <project> -f ...`
     // prefix first — so this looks for the subcommand anywhere in the array rather than
     // assuming a position.
@@ -111,8 +113,9 @@ export function compose(args, { cwd, env = {}, input } = {}) {
     return "";
   }
   try {
-    const opts = composeOptions(args, { cwd, env, input });
+    const opts = composeOptions(args, { cwd, env, input, stdin });
     if (input) opts.input = readFileSync(input, "utf8");
+    else if (stdin !== undefined) opts.input = stdin;
     return execFileSync("docker", ["compose", ...args], opts);
   } catch (e) {
     // A streaming call's stderr went straight to the terminal, so there is nothing on
