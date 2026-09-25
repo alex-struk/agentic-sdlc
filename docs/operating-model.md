@@ -120,29 +120,28 @@ The test for a new rule: if two projects could reasonably want it different, it 
 it is a matter of judgement, it is an instruction; only what must hold for every project is
 engine.
 
-**Decided, not yet built.** An audit of the engine against this split found these out of place:
+**Where each kind of rule lives.** The limits and permissions a project could want different are
+config keys with defaults the engine applies when they are absent (`docs/config.md`, `policy`):
+how many times verify returns a slice before escalating, how many follow-up rulings ratify gives a
+domain and whether it then escalates (the default) or drops what is unresolved, how many repair
+turns a stage gets after a failed post-check, which tiers force an escalation and which block an
+unverified test (both always including CRITICAL), whether G3 may approve a build on criteria
+nobody asserted, each stage's turn ceiling (`policy.turns`), and which egress rules the egress
+check applies. Keys the schema accepts and nothing reads (`policy.triage`, `policy.rungs`) are
+marked reserved, and `sdlc checks` says so when they are set. Verify refuses to run when G3
+names no escalation target, and ratify refuses to run past its follow-up limit when G1 names
+none. A proposal that changes the config's `policy` block is ruled at G-POL only, and its seat
+is checked against the policy on `main`. A project can supply its own copy of a stage skill
+(`.sdlc/skills/<stage>.md`), and the judgement a stage works by is in its skill rather than its
+prompt. A persona brief names only escalation triggers the persona can act on.
 
-- Loop and retry limits written as constants move to config with today's values as defaults:
-  the verify return limit, the repair turn after a failed post-check, the tiers that force
-  escalation, what unverified test provenance costs by tier, and whether an approval may stand
-  on criteria nobody asserted.
-- Send-back loops with no limit get one, set in config: rebinding an adapter, re-deriving a
-  test, re-recovering a requirement, and cross-stage requests.
-- When ratify cannot confirm a recovered requirement after its follow-up limit, it escalates
-  rather than marking the requirement obsolete. The limit and its outcome are config.
-- Verify refuses to run when G3 names no escalation target, rather than assuming one.
-- A proposal that changes the config's `policy` block is ruled at G-POL, and its seat is
-  checked against the policy on `main`, not the policy the proposal itself introduces.
-- A project can supply its own copy of a stage skill (`.sdlc/skills/<stage>.md`), and judgement
-  currently written into stage prompts moves into the skills.
-- `policy.budgets` counts agent turns and is named for it.
-- Config keys the schema accepts and nothing reads are marked reserved.
-- Brief text that refers to mechanisms that do not exist (a stage-reported confidence
-  threshold) or that the engine already performs (sampling) is removed.
+**Decided, not yet built.** Send-back loops with no limit get one, set in config: rebinding an
+adapter, re-deriving a test, re-recovering a requirement, and cross-stage requests.
 
 Risk tiers exist in the schema and in the criteria format, but nothing passes a criterion's
 tier to the proposals that touch it, so tier-based escalation does not fire. They stay dormant
-and documented as inactive, and are removed if they remain unused.
+and documented as inactive (`docs/config.md`, "Risk tiers"), and are removed if they remain
+unused.
 
 ## 6. What is owed
 

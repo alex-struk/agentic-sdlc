@@ -85,7 +85,7 @@ Required. Container of governance gates, tiers, limits and turn ceilings.
   - `escalate_to` (string, optional, pattern `^[a-z][a-z0-9-]*$`): A role to escalate to if the holder cannot decide. Lowercase, no agent: prefix.
   - `human_sample_per_week` (integer, optional, min 0, default 0): How many of this gate's agent-held rulings in each ISO week are marked as a sample for a person to read back: the first N, in the order they were ruled. The engine marks them after the ruling, on the state site; the persona ruling the gate is not told and does nothing differently.
   - `approve_unasserted` (boolean, optional, G3 only, default `true`): Whether a build whose verify verdict is `pass-unasserted` — nothing failed, and some claimed criterion was never asserted against the application — may be approved. `false` refuses that approval from either seat, a persona or a person typing `--by`, and leaves return and escalate open.
-- `default_tier` (enum): One of `LOW`, `STANDARD`, `HIGH`, `CRITICAL`. The default risk tier for decisions.
+- `default_tier` (enum): One of `LOW`, `STANDARD`, `HIGH`, `CRITICAL`. The risk tier assumed for a proposal or a criterion that names none. Risk tiers are inactive for proposals; see "Risk tiers" below.
 - `escalate_tiers` (array of tiers, optional, default `[HIGH, CRITICAL]`): The proposal tiers at which an agent-held gate escalates to its `escalate_to` before the persona is asked anything. Must include `CRITICAL`, and names each tier at most once.
 - `provenance` (object, optional):
   - `block_unverified` (array of tiers, default `[HIGH, CRITICAL]`): The criterion tiers at which an acceptance test of unverified provenance (edited outside the blind workspace) fails the tests check outright. At every other tier it passes only with an entry in `tests/acceptance/attestations.yaml`. Must include `CRITICAL`, and names each tier at most once.
@@ -102,6 +102,10 @@ Required. Container of governance gates, tiers, limits and turn ceilings.
   - `direct_allowed_paths` (array, optional): Paths that can bypass triage.
 - `turns` (object, optional): The most agent turns a session may take, by stage. Keys are stage names, values are integers from 1 to 999. A stage with no entry runs with its own default: 40 for most stages, 250 for `design`, 150 for `plan`, 400 for `build`. The key `rule` caps a persona's ruling turn the same way: without it a ruling runs with 12 turns, except at G1 and on a calibration triage proposal, where the persona rules on every criterion in a page and gets the stage default of 40. A stage that genuinely needs more than 999 turns needs splitting, not a larger number.
 - `budgets` (object, optional, deprecated): The same setting as `turns`, under the name projects written before `turns` carry. A stage `turns` names ignores it. A value under 1000 is read as a turn count; a value of 1000 or more would be a token budget the runner has no conversion for, and `checks` refuses it rather than letting a run quietly fall back to its default. `checks` warns wherever this key is set; move its entries to `turns` in the project's next policy change.
+
+### Risk tiers
+
+Risk tiers are inactive. A criterion may carry a `tier`, and a proposal opened by `sdlc propose --tier` carries one, but no stage passes a criterion's tier to the proposals it opens, so every stage-opened proposal is ruled at `default_tier`. `escalate_tiers` therefore fires only on a proposal a person opened with `--tier`. The one place a tier acts is `provenance.block_unverified`, which reads the criterion's own tier, or `default_tier` where it names none. The tier keys stay in the schema so a project's configuration is valid either way, and are removed if they remain unused.
 
 ## skills
 
