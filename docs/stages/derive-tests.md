@@ -123,7 +123,9 @@ the item to `derive-tests` (`docs/stages/contract.md`), and the next `--stale` r
 derives the criterion, with that stage's account of what it supplied quoted in the prompt. The test
 it writes replaces the record. If the criterion still cannot be reached, the run keeps the record,
 rewritten for what is missing now and who owns it, and approving that derivation hands the item to
-the record's owner.
+the record's owner. The approval acts only on what that run was handed: the items in its domain
+that `derive-tests` owed when its branch was cut. Another domain's items stay with `derive-tests`
+for that domain's own run.
 
 ## Superseded criteria
 

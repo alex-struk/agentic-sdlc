@@ -404,7 +404,8 @@ A criterion `derive-tests` recorded as untestable is an owed item of kind `missi
 there gets its item, stamped with this ruling (`from`, `gate`, `by`), and so does any record
 already on `main` that nothing had written an entry for, stamped by the runner. An item whose
 record the merge rewrote with a different owner moves to that owner; an item handed to
-`derive-tests` whose approved derivation kept the record goes back to the record's owner; an item
+`derive-tests` whose approved derivation kept the record goes back to the record's owner, where
+that derivation was handed it (in its domain, and owed when its branch was cut); an item
 whose test now exists and has not run is handed to `calibrate` (a project that calibrates) or
 `verify`. An item whose test the merge shows ran — a result row for the criterion, at its current
 version, from a spec file, `pass` or `fail` — is closed as met with that row as the evidence. An
@@ -431,7 +432,10 @@ sdlc rule <name> --settle
 which reads the ruling from the gate file on `main` and the handed list from the approval's
 merge, brings the list into line with `main` the way every pipeline commit that touches it does,
 and commits what it changed as the pipeline author: `record(<gate>): <name> settles <n> missing
-tests: …`, each item named in the body. It is not a ruling and asks for no seat. A proposal with
+tests: …`, each item named in the body. A move the approval's merge made to an item its run was
+not handed is reversed first, where it still stands and nothing has kept the item since: the item
+goes back to the approved stage with the reason it had there, stamped `by: runner` and
+`reverts: <name>`, and the body lists it as restored. It is not a ruling and asks for no seat. A proposal with
 no ruling is refused, and one with nothing left to settle commits nothing.
 
 **A return whose request is not on `main`** is settled by the same command. It reads the ruling

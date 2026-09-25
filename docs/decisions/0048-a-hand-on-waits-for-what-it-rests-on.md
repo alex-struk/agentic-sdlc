@@ -45,7 +45,10 @@ something has changed. Any later move clears `kept`.
 owes on `main`, in its domain for a stage that runs per domain, and nothing commits to `main` while
 a stage runs (`0047`), so the commit the proposal branch was cut from — the merge-base of the
 approval's two parents — holds exactly that list. An item owed after the run started was never
-handed to it and is not kept by it. The lines are read from the run's account on the proposal page,
+handed to it and is not kept by it. An approval acts on nothing else: an approved derivation hands
+back to its record's owner only an item it was handed, and a line in the run's account moves only
+an item in the run's domain that it was handed, at the run's finish as at its approval. Another
+domain's items wait for that domain's own run. The lines are read from the run's account on the proposal page,
 above the `## Ruling` section, so a ruler quoting one is never read as the run saying it. The same
 reading applies any move the run's finish did not, so an approval leaves the list as the run's
 account says, however its finish went.
@@ -66,7 +69,10 @@ reads the ruling from the gate file on `main` and the handed list from the appro
 the list into line with `main` as every pipeline commit that touches it does, and commits what
 changed as the pipeline author, so the hand-edit check reads it as the pipeline's. It is idempotent,
 refuses a proposal with no approval on `main`, and asks for no seat, since the ruling it applies is
-already recorded.
+already recorded. A move the approval's merge made to an item the run was not handed is reversed
+by the same command, where it still stands and nothing has kept the item since: the item goes back
+to the approved stage, stamped by the runner and naming the approval it reverts (`reverts`), with
+the reason it had there, since that is what the stage needs to act on it.
 
 ## Alternatives
 
