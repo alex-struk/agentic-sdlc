@@ -4,6 +4,7 @@ import { loadConfig } from "../config/load.mjs";
 import { stagesFor } from "../profiles.mjs";
 import { TOKEN_BUDGET_FLOOR, MAX_TURNS_CEILING } from "../runner/executor.mjs";
 import { STAGES_BY_NAME } from "../stages/registry.mjs";
+import { allowlistsFor } from "../runner/agents.mjs";
 
 // Entries in `policy.agents` that name nothing a turn runs as. The schema holds their shape;
 // this holds their names to the pipeline and to the project's own gates, because an entry
@@ -25,6 +26,16 @@ function agentEntryMessages(config) {
   for (const key of Object.keys(agents.rulings ?? {})) {
     if (gates[key] || personas.has(key)) continue;
     messages.push(`policy.agents.rulings.${key} names neither a gate in policy.gates nor a persona that rules one`);
+  }
+  // An egress that names no list would fail the turn it applies to, after the pre-checks; it
+  // is refused here, where the list and the entry are read side by side.
+  const lists = allowlistsFor(config);
+  for (const [kind, entries] of [["stages", agents.stages], ["rulings", agents.rulings]]) {
+    for (const [key, entry] of Object.entries(entries ?? {})) {
+      if (entry?.egress && !lists[entry.egress]) {
+        messages.push(`policy.agents.${kind}.${key}.egress is ${entry.egress}, which no allowlist defines: name one of ${Object.keys(lists).join(", ")}, or define it under policy.agents.allowlists`);
+      }
+    }
   }
   return messages;
 }

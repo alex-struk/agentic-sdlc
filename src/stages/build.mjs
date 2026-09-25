@@ -113,6 +113,9 @@ export const build = {
   revisionOverlayPaths: () => ["app", "docs/decisions"],
   implemented: true,
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash(npm *)", "Bash(npx *)", "Bash(node *)", "Bash(ls *)", "Bash(mkdir *)"],
+  // Its shell installs packages, so an isolated build reaches the package registry as well as
+  // the model (`docs/decisions/0061`); a project that uses a mirror redefines the list.
+  egress: "registry",
   prompt(ctx) {
     const s = ctx.buildSlice;
     // The build skill tells the builder its compose file must answer on the port in

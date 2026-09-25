@@ -840,6 +840,12 @@ const contract = {
     if (isReopening(ctx)) lines.push(revisionRulingBlock(ctx));
     return lines.join("\n\n");
   },
+  // With an oracle, this stage proves the override it wrote by bringing the application up
+  // through the host's Docker, and an isolated session is given no Docker socket
+  // (`docs/decisions/0061`). Without one there is nothing to bring up, and it runs isolated.
+  isolationBlocker: (config) => (config?.oracle
+    ? "with an oracle configured it proves its override by bringing the application up with `sdlc oracle up`, which drives the host's Docker, and an isolated session is given no Docker socket."
+    : null),
   // A shell, narrowed to the oracle's lifecycle and to reading back what it did. This stage
   // writes the file that says how the target runs, and the only way to know whether that
   // file works is to run it, so it is the one authoring stage with any shell at all. The
@@ -1922,6 +1928,9 @@ const bindAdapter = {
   // No Bash: an adapter session drives the browser and edits files, and has no
   // business reaching a shell.
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "mcp__playwright__*"],
+  // It binds against the target running on the host, through a browser the session drives,
+  // and an isolated session has neither (`docs/decisions/0061`).
+  isolationBlocker: () => "it binds against the target running on the host through a browser, and the agent image carries no browser and an isolated session's network reaches no service on the host.",
   env(ctx) {
     return {
       SDLC_TARGET_URL: ctx.bindAdapterBaseUrl ?? "",

@@ -63,6 +63,110 @@ export function rulingAgentFor(config, { gate, persona }, env = process.env) {
   return fromEnv(choice, env);
 }
 
+// ---- isolation ------------------------------------------------------------------------------
+//
+// Whether a turn runs in a throwaway container, and which hosts it may reach from there
+// (`docs/decisions/0061-an-agent-session-in-a-container.md`). Resolved beside the backend and
+// in the same layers, each overriding the one before:
+//
+//   1. the default: `container` for a stage on codex that declares a tool allowlist and can
+//      be isolated — exactly the stages 0060 refuses on codex — and `none` for everything
+//      else, every ruling included;
+//   2. `policy.agents.isolation` — the project's setting for every turn;
+//   3. the turn's own entry — `policy.agents.stages.<stage>.isolation`, or for a ruling
+//      `policy.agents.rulings.<persona>` and then `.<gate>`;
+//   4. `SDLC_AGENT_ISOLATION=container` — an operator isolating one run. It turns isolation
+//      on and never off: a value that would run a turn with less than the policy requires is
+//      refused, not applied.
+//
+// It is under `policy` for the reason the backend is: it changes what a session can reach,
+// so changing it is ruled at G-POL.
+
+export const ISOLATIONS = ["container", "none"];
+
+// The allowlists every project has without writing them. `model` adds nothing to the
+// backend's own endpoints; `registry` adds the public npm registry, for a stage whose shell
+// installs packages. A project redefines either, or adds its own, under
+// `policy.agents.allowlists`.
+export const BUILT_IN_ALLOWLISTS = { model: [], registry: ["registry.npmjs.org"] };
+
+export function allowlistsFor(config) {
+  return { ...BUILT_IN_ALLOWLISTS, ...(config?.policy?.agents?.allowlists ?? {}) };
+}
+
+// The hosts a session may reach: its backend's endpoints, then the named list's hosts.
+function allowFor(config, backend, egress) {
+  const list = allowlistsFor(config)[egress];
+  if (!list) throw new Error(`egress allowlist ${egress} is not defined: name one of ${Object.keys(allowlistsFor(config)).join(", ")}, or define it under policy.agents.allowlists`);
+  const hosts = [...(backendFor(backend).endpoints ?? [])];
+  for (const h of list) if (!hosts.includes(h)) hosts.push(h);
+  return hosts;
+}
+
+function isolationFromEnv(choice, env) {
+  const v = env.SDLC_AGENT_ISOLATION;
+  if (!v) return choice;
+  if (v !== "container") {
+    throw new Error(`SDLC_AGENT_ISOLATION is ${v}: it can only turn isolation on (SDLC_AGENT_ISOLATION=container). Turning it off is a policy change: policy.agents.isolation or policy.agents.stages.<stage>.isolation`);
+  }
+  return { isolation: "container", from: "SDLC_AGENT_ISOLATION" };
+}
+
+function layer(choice, entry, from) {
+  return entry?.isolation ? { isolation: entry.isolation, from } : choice;
+}
+
+function withIsolation(config, agent, choice, egress) {
+  if (choice.isolation !== "container") return { ...agent, isolation: "none", isolationFrom: choice.from, egress: null, allow: [] };
+  return { ...agent, isolation: "container", isolationFrom: choice.from, egress, allow: allowFor(config, agent.backend, egress) };
+}
+
+// Why a stage cannot run in a container on this project, or null. A stage declares it as
+// `isolationBlocker(config)` when its work needs something on the host that an isolated
+// session is denied by construction — the host's Docker, a browser the image does not carry.
+function blockerOf(stage, config) {
+  return typeof stage?.isolationBlocker === "function" ? stage.isolationBlocker(config) : null;
+}
+
+// The backend, model and isolation a stage's turns run on: its first turn and every repair
+// turn. `stage` is the stage's declaration, since the default depends on its allowlist.
+export function stageAgent(config, stage, env = process.env) {
+  const agent = agentFor(config, stage.name, env);
+  const agents = config?.policy?.agents ?? {};
+  const entry = agents.stages?.[stage.name];
+  const isolates = agent.backend === "codex" && (stage.allowedTools ?? []).length > 0 && !blockerOf(stage, config);
+  let choice = { isolation: isolates ? "container" : "none", from: "default" };
+  choice = layer(choice, agents, "policy.agents");
+  choice = layer(choice, entry, `policy.agents.stages.${stage.name}`);
+  choice = isolationFromEnv(choice, env);
+  return withIsolation(config, agent, choice, entry?.egress ?? stage.egress ?? "model");
+}
+
+// The backend, model and isolation a persona's ruling turn runs on.
+export function rulingAgent(config, { gate, persona }, env = process.env) {
+  const agent = rulingAgentFor(config, { gate, persona }, env);
+  const agents = config?.policy?.agents ?? {};
+  const rulings = agents.rulings ?? {};
+  let choice = layer({ isolation: "none", from: "default" }, agents, "policy.agents");
+  if (persona) choice = layer(choice, rulings[persona], `policy.agents.rulings.${persona}`);
+  if (gate) choice = layer(choice, rulings[gate], `policy.agents.rulings.${gate}`);
+  choice = isolationFromEnv(choice, env);
+  const egress = (gate && rulings[gate]?.egress) || (persona && rulings[persona]?.egress) || "model";
+  return withIsolation(config, agent, choice, egress);
+}
+
+// Why a stage set to run in a container cannot, or null. Refused rather than run on the host:
+// a turn the policy says is isolated never runs without it.
+export function isolationRefusal(stage, config, agent) {
+  if (agent?.isolation !== "container") return null;
+  const blocker = blockerOf(stage, config);
+  if (!blocker) return null;
+  return [
+    `${stage.name} is set to run in a container (${agent.isolationFrom}), and it cannot: ${blocker}`,
+    `Set policy.agents.stages.${stage.name}.isolation: none to run it on the host${agent.backend === "codex" ? `, which on codex also needs policy.agents.stages.${stage.name}.accept_weaker: true` : ""}, or run it on claude.`,
+  ].join(" ");
+}
+
 // Why a stage may not run on Codex as the project has it configured, or null.
 //
 // A stage that declares a tool allowlist depends on it. Where the list gives no shell, the
@@ -70,12 +174,14 @@ export function rulingAgentFor(config, { gate, persona }, env = process.env) {
 // keeps a blind stage blind — the test writer never reads the application, the designer never
 // reads the acceptance suite. Where it gives a narrowed shell, the patterns are the whole
 // grant: the commands the stage exists to run and nothing else. Codex has no tool allowlist.
-// Every Codex session has a full shell, and its sandbox limits what the session writes, not
-// what it reads or runs; the project's deny list is a Claude setting Codex never reads. The
-// runner still seals the workspace and checks everything that comes back out of it, but it
-// cannot see what a session read or ran. That is a weaker stage, and a project gets one only
-// by saying so, stage by stage, in a policy change
-// (`docs/decisions/0060-a-second-agent-backend.md`).
+// Every Codex session has a full shell, and on the host its sandbox limits what the session
+// writes, not what it reads or runs; the project's deny list is a Claude setting Codex never
+// reads (`docs/decisions/0060-a-second-agent-backend.md`).
+//
+// A container restores the guarantee by construction: the session can read only what is
+// mounted, which is its workspace, and reach only the hosts its allowlist names
+// (`docs/decisions/0061`). So an isolated stage is not refused. On the host, the stage is
+// weaker, and a project gets it only by saying so, stage by stage, in a policy change.
 //
 // A stage with no allowlist is confined on Claude by the project's guard and deny list and
 // runs on Codex: the guard reaches a Codex session through its hook. A ruling is never
@@ -83,6 +189,7 @@ export function rulingAgentFor(config, { gate, persona }, env = process.env) {
 // sandbox, which holds that at the operating system rather than in the session.
 export function codexRefusal(stage, config, agent) {
   if (agent?.backend !== "codex") return null;
+  if (agent.isolation === "container") return null;
   const tools = stage.allowedTools ?? [];
   if (!tools.length) return null;
   if (config?.policy?.agents?.stages?.[stage.name]?.accept_weaker === true) return null;
@@ -90,11 +197,17 @@ export function codexRefusal(stage, config, agent) {
   const held = grantsShell(tools)
     ? `On claude its session runs only the tools its allowlist names (${tools.join(", ")}), so its shell runs only those commands; on codex it could run any command the sandbox allows, with the network access its commands need.`
     : `On claude its session has no shell and opens files only through the file tools, inside its workspace; on codex it has a shell and could read outside its workspace, and nothing would record that it had.`;
+  const blocker = blockerOf(stage, config);
+  const isolate = blocker
+    ? `It cannot run in a container on this project, which is what would hold it to its workspace on codex: ${blocker}`
+    : `Run it in a container (policy.agents.stages.${stage.name}.isolation: container), which holds it to its workspace and its egress allowlist,`;
   return [
     `${stage.name} is set to run on codex${chose}, and it cannot run there as configured.`,
-    `Codex has no tool allowlist: every Codex session has a full shell, and its sandbox limits what it writes, not what it reads or runs.`,
+    `Codex has no tool allowlist: every Codex session has a full shell, and on the host its sandbox limits what it writes, not what it reads or runs.`,
     held,
-    `Run it on claude (policy.agents.stages.${stage.name}.backend: claude), or accept the weaker stage with policy.agents.stages.${stage.name}.accept_weaker: true, a policy change ruled at G-POL.`,
+    blocker
+      ? `${isolate} Run it on claude (policy.agents.stages.${stage.name}.backend: claude), or accept the weaker stage with policy.agents.stages.${stage.name}.accept_weaker: true, a policy change ruled at G-POL.`
+      : `${isolate} run it on claude (policy.agents.stages.${stage.name}.backend: claude), or accept the weaker stage with policy.agents.stages.${stage.name}.accept_weaker: true, a policy change ruled at G-POL.`,
   ].join(" ");
 }
 

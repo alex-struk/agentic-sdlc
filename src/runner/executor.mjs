@@ -288,6 +288,13 @@ function codexSignIn() {
 //
 // `stopAfterMs` is the ceiling the runner enforces for a CLI with no turn cap of its own;
 // Claude has one (`--max-turns`) and gets none.
+//
+// `endpoints` are the hosts the CLI reaches its model and its sign-in at, which an isolated
+// session is always allowed (`docs/decisions/0061`): without them there is no session at all.
+// Codex's were observed through the egress proxy from a signed-in session (the model at
+// `chatgpt.com`, its feature flags at `ab.chatgpt.com`) plus the host its sign-in refreshes
+// at; Claude's are the API, the two hosts its sign-in is issued and refreshed at, and the
+// feature-flag host the CLI reads at start.
 export const BACKENDS = {
   claude: {
     name: "claude",
@@ -301,6 +308,7 @@ export const BACKENDS = {
     maxBuffer: 64 * 1024 * 1024,
     stopAfterMs: () => undefined,
     signIn: claudeSignIn,
+    endpoints: ["api.anthropic.com", "console.anthropic.com", "platform.claude.com", "statsig.anthropic.com"],
   },
   codex: {
     name: "codex",
@@ -314,6 +322,7 @@ export const BACKENDS = {
     maxBuffer: 256 * 1024 * 1024,
     stopAfterMs: (opts) => opts.wallClockMs ?? codexWallClockMs(opts.maxTurns ?? DEFAULT_MAX_TURNS),
     signIn: codexSignIn,
+    endpoints: ["chatgpt.com", "ab.chatgpt.com", "auth.openai.com"],
   },
 };
 

@@ -275,6 +275,22 @@
               "additionalProperties": {
                 "$ref": "#/definitions/agentChoice"
               }
+            },
+            "isolation": {
+              "$ref": "#/definitions/agentIsolation"
+            },
+            "allowlists": {
+              "type": "object",
+              "propertyNames": {
+                "$ref": "#/definitions/allowlistName"
+              },
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/egressHost"
+                },
+                "uniqueItems": true
+              }
             }
           }
         },
@@ -443,6 +459,12 @@
         },
         "model": {
           "$ref": "#/definitions/agentModel"
+        },
+        "isolation": {
+          "$ref": "#/definitions/agentIsolation"
+        },
+        "egress": {
+          "$ref": "#/definitions/allowlistName"
         }
       }
     },
@@ -458,6 +480,12 @@
         },
         "accept_weaker": {
           "type": "boolean"
+        },
+        "isolation": {
+          "$ref": "#/definitions/agentIsolation"
+        },
+        "egress": {
+          "$ref": "#/definitions/allowlistName"
         }
       }
     },
@@ -617,6 +645,22 @@
           "type": "boolean"
         }
       }
+    },
+    "agentIsolation": {
+      "enum": [
+        "container",
+        "none"
+      ]
+    },
+    "allowlistName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "maxLength": 40
+    },
+    "egressHost": {
+      "type": "string",
+      "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[0-9]{1,5})?$",
+      "maxLength": 253
     }
   }
 }
