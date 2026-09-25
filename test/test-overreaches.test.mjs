@@ -423,3 +423,125 @@ test("rule --settle closes the redo entries an approved line of work answered, o
   assert.deepEqual(again.redo, []);
   assert.equal(git(["rev-parse", "main"], dir), head, "settling twice commits nothing");
 });
+
+// --- a revision of a line of work takes up the re-derivations its own rulings asked for ---
+
+const WHY_R11 = "the test also opens the applicant's inbox for a rejection notice; the criterion says only that the application is rejected and no record is created, and names no notice at all";
+const OVERREACH_R11 = `test-overreaches R-1.1: ${WHY_R11}`;
+
+// R-1.1 written again from its criterion, as a revision that re-derives it writes it.
+const rederivedR11 = (age) => "// criterion: @R-1.1 v1\n// provenance: blind, spec@0000000000000000000000000000000000000a, derived 2026-09-06\n"
+  + "import { test, expect, persona } from \"../../fixtures\";\n\n"
+  + "test(\"When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old.\", async ({ surface }) => {\n"
+  + `  await surface.signIn(persona.applicant);\n  await surface.applicationsNew.submit({ age: ${age} });\n`
+  + "  expect(await surface.applicationsNew.status()).toBe(\"rejected\");\n});\n";
+
+function writerFiles(files, text = "Answered each condition and wrote each test sent back again from its criterion alone.") {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-redo-revise-mock-"));
+  writeFileSync(join(d, "derive-tests.json"), JSON.stringify({ text, files }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = d;
+}
+
+// What a dry run prints: the prompt the run would hand its writer.
+async function dryRunPrompt(dir, opts) {
+  const lines = [];
+  const log = console.log;
+  console.log = (...a) => { lines.push(a.join(" ")); };
+  try {
+    const r = await runStage(dir, "derive-tests", { ...opts, dryRun: true });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+  } finally {
+    console.log = log;
+  }
+  return lines.join("\n");
+}
+
+// A `--stale` run of the applications tests, returned with a `test-overreaches` line for a
+// criterion it did not derive and a plain condition on one it did: the shape a reviewer
+// returns a re-derivation in when it finds a second test reaching past its criterion.
+async function staleReturnedWithOverreach(dir) {
+  openProposal(dir, "build-slice-1");
+  rule(dir, "build-slice-1", "return", { by: "tech-lead", note: "returned", conditions: [CONDITION] });
+  git(["checkout", "-q", "main"], dir);
+  writerReply(30);
+  const stale = await runStage(dir, "derive-tests", { domain: "applications", stale: true });
+  mock(false);
+  assert.equal(stale.ok, true, JSON.stringify(stale.messages));
+  rule(dir, stale.proposal.name, "return", { by: "tech-lead", note: "two tests to change", conditions: [OVERREACH_R11, REVISE_CONDITION] });
+  git(["checkout", "-q", "main"], dir);
+  assert.equal(redoOnMain(dir).find((e) => e.id === "R-1.1")?.why, WHY_R11, "the ruling filed R-1.1 on the redo list");
+  return stale.proposal.name;
+}
+
+test("a revision re-derives, with the ruler's reason, the tests its own line's ruling sent back, and its approval closes them", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-redo-revise-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  const stale = await staleReturnedWithOverreach(dir);
+
+  const { whatNext, formatNext } = await import("../src/runner/next.mjs");
+  const offered = whatNext(dir).ready.map((c) => c.command).filter((c) => c.includes("derive-tests"));
+  assert.deepEqual(offered, ["sdlc run derive-tests --domain applications --revise"], "the line of work is revised, once");
+
+  const prompt = await dryRunPrompt(dir, { domain: "applications", revise: true });
+  assert.ok(prompt.includes(WHY_R11), `the revision is handed the ruler's reason for R-1.1:\n${prompt}`);
+  assert.match(prompt, /- R-1\.1 \(v1\): [^\n]+\n\s+Ruled: the criterion stands and the test reached past it/, "worded as a test that reached past its criterion");
+  assert.ok(prompt.includes("When an applicant submits a permit application, the system shall reject it unless the applicant is at least 19 years old."),
+    "with the criterion it is written again from");
+  assert.ok(!/to derive-tests: /.test(prompt), `and not told to leave it alone as another stage's work:\n${prompt}`);
+  assert.ok(prompt.includes(REVISE_CONDITION), "the plain condition is still the revision's own");
+
+  writerFiles({
+    "tests/acceptance/applications/R-1.1.spec.ts": rederivedR11(17),
+    "tests/acceptance/applications/R-1.2.spec.ts": rederived(40),
+  });
+  const revised = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+  mock(false);
+  assert.equal(revised.ok, true, JSON.stringify(revised.messages));
+  assert.equal(redoOnMain(dir).find((e) => e.id === "R-1.1")?.closed, undefined, "nothing closes on main before the approval");
+
+  rule(dir, revised.proposal.name, "approve", {
+    by: "tech-lead", conditions: [`condition-met ${stale}#2: R-1.2 now submits as an applicant aged 40`],
+  });
+  git(["checkout", "-q", "main"], dir);
+  const entry = redoOnMain(dir).find((e) => e.id === "R-1.1");
+  assert.equal(entry?.closed?.outcome, "met", "the approval of the line answers R-1.1's redo entry");
+  assert.match(entry.closed.why, /derived again/, "on the evidence of the run that derived it again");
+  assert.equal(redoOnMain(dir).find((e) => e.id === "R-1.2")?.closed?.outcome, "met");
+  const next = formatNext(whatNext(dir));
+  assert.ok(!next.includes("derive-tests --domain applications"), next);
+});
+
+test("a later revision is handed a re-derivation again only when the ruling it answers sends that test back again", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-redo-revise-again-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => { mock(false); restoreEgress(prevEgress); });
+
+  await staleReturnedWithOverreach(dir);
+  writerFiles({
+    "tests/acceptance/applications/R-1.1.spec.ts": rederivedR11(17),
+    "tests/acceptance/applications/R-1.2.spec.ts": rederived(40),
+  });
+  const first = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+  mock(false);
+  assert.equal(first.ok, true, JSON.stringify(first.messages));
+  const ONLY_R12 = "R-1.2: submit as an applicant aged 60, so the status read is far from any boundary";
+  rule(dir, first.proposal.name, "return", { by: "tech-lead", note: "one more", conditions: [ONLY_R12] });
+  git(["checkout", "-q", "main"], dir);
+
+  const settled = await dryRunPrompt(dir, { domain: "applications", revise: true });
+  assert.ok(!settled.includes(WHY_R11), `R-1.1 was derived again in this line and the ruling did not send it back:\n${settled}`);
+
+  writerFiles({ "tests/acceptance/applications/R-1.2.spec.ts": rederived(60) });
+  const second = await runStage(dir, "derive-tests", { domain: "applications", revise: true });
+  mock(false);
+  assert.equal(second.ok, true, JSON.stringify(second.messages));
+  rule(dir, second.proposal.name, "return", { by: "tech-lead", note: "R-1.1 again", conditions: [OVERREACH_R11] });
+  git(["checkout", "-q", "main"], dir);
+
+  const again = await dryRunPrompt(dir, { domain: "applications", revise: true });
+  assert.match(again, /- R-1\.1 \(v1\): [^\n]+\n\s+Ruled: the criterion stands and the test reached past it/, `the ruling sent R-1.1 back again, so the revision takes it up:\n${again}`);
+  assert.ok(again.includes(WHY_R11));
+});

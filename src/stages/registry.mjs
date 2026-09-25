@@ -17,8 +17,8 @@ import { runCatalogueScan } from "../runner/catalogue.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
-import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { close as closeOwed, identityOf, isOpen, open as openOwed, read as readOwed, readAt, rewrite, sends, unexpectedChange } from "../spec/owed.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee, overreachConditions, OVERREACH_STAGE } from "../spec/criteria.mjs";
+import { close as closeOwed, identityOf, isOpen, open as openOwed, openOn, read as readOwed, readAt, rewrite, sameFiling, sends, unexpectedChange } from "../spec/owed.mjs";
 import { NOT_TESTABLE_PATH, missingTestRef, openMissingTestsAt, recordProblems } from "../spec/missing-tests.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
@@ -38,7 +38,7 @@ import { calibrate, dropTestWrongRulings } from "./calibrate.mjs";
 // them without importing the registry itself, which imports every stage and would make
 // that a cycle. Re-exported below so every existing caller of these four names from
 // `registry.mjs` keeps working unchanged.
-import { addressedElsewhereNote, isReopening, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, owedConditionsNote, revisionConditionList, revisionRulingBlock, splitRulingConditions, withOpenRequests, withOwedConditions, highestRulingNumber } from "./proposals.mjs";
+import { addressedElsewhereNote, isReopening, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, owedConditionsNote, revisionConditionList, revisionLine, revisionRulingBlock, splitRulingConditions, withOpenRequests, withOwedConditions, highestRulingNumber } from "./proposals.mjs";
 import { build } from "./build.mjs";
 import { verify } from "./verify.mjs";
 
@@ -965,15 +965,41 @@ function missingPromptBlock(ctx) {
 // the two reasons a request is filed for are put as the different instructions they are:
 // one says the test asserted the wrong thing, the other that it asked for more than the
 // criterion does.
+const redoRuled = (r) => (r.verb === OVERREACH_VERB
+  ? `the criterion stands and the test reached past it — ${r.why}`
+  : `the test asserted the wrong thing — ${r.why}`);
+
+const REDO_INSTRUCTION = "Write each of those from its criterion and nothing else, and make sure the new test does not do what the ruling names. A test that asserts more than its criterion states — a capability, a screen or a step the criterion never asks for — cannot be bound at all against an application that is only answerable for the criterion, and the failure it produces names the application rather than the test. Assert what the criterion states, and stop there.";
+
 function redoPromptBlock(ctx) {
   const entries = (ctx.deriveTestsRedo ?? []).filter((r) => r?.id && r?.why);
   if (!entries.length) return [];
-  const lines = entries.map((r) => (r.verb === OVERREACH_VERB
-    ? `- ${r.id} (as derived at v${r.version}): the criterion stands and the test reached past it — ${r.why}`
-    : `- ${r.id} (as derived at v${r.version}): the test asserted the wrong thing — ${r.why}`));
+  const lines = entries.map((r) => `- ${r.id} (as derived at v${r.version}): ${redoRuled(r)}`);
   return [
     `${entries.length} of the criteria below already had a test, and a ruling asked for it to be written again. The criterion has not changed; the test is what was wrong. Each is listed with the ruler's own account of it, verbatim:\n\n${lines.join("\n")}`,
-    "Write each of those from its criterion and nothing else, and make sure the new test does not do what the ruling names. A test that asserts more than its criterion states — a capability, a screen or a step the criterion never asks for — cannot be bound at all against an application that is only answerable for the criterion, and the failure it produces names the application rather than the test. Assert what the criterion states, and stop there.",
+    REDO_INSTRUCTION,
+  ];
+}
+
+// The same request as `redoPromptBlock`, put to a revision. A revision has no list of criteria
+// to derive, so each test to write again comes with its criterion's statement and the header a
+// derivation writes, and the writer is told to write it from the criterion rather than edit the
+// file the returned branch holds: that file is the over-reach the ruling named, and a writer
+// who starts from it keeps what it was asked to take out.
+function revisionRedoBlock(ctx) {
+  const entries = (ctx.deriveTestsRedo ?? []).filter((r) => r?.id && r?.why);
+  if (!entries.length) return [];
+  const byId = new Map((ctx.deriveTestsCriteria ?? []).map((c) => [c.id, c]));
+  const specSha = ctx.deriveTestsGeneratedFrom || "0000000000000000000000000000000000000000";
+  const today = new Date().toISOString().slice(0, 10);
+  const lines = entries.map((r) => {
+    const c = byId.get(r.id);
+    return `- ${r.id} (v${c?.version ?? r.version}): ${c?.statement ?? ""}\n  Ruled: ${redoRuled(r)}`;
+  });
+  const one = entries.length === 1;
+  return [
+    `A ruling on this line of work also sent ${one ? "a test" : `${entries.length} tests`} back to be written again, and ${one ? "it is" : "they are"} this revision's to write. The criterion has not changed; the test is what was wrong. Each is listed with its criterion and the ruler's own account of the test, verbatim:\n\n${lines.join("\n")}`,
+    `Write each of those as tests/acceptance/${ctx.domain}/<ID>.spec.ts from its criterion, replacing the file there rather than editing it, starting with exactly these two header lines:\n\n// criterion: @<ID> v<version>\n// provenance: blind, spec@${specSha}, derived ${today}\n\n${REDO_INSTRUCTION}`,
   ];
 }
 
@@ -1089,6 +1115,39 @@ function findReturnedDeriveTestsRuling(projectDir, domain) {
   return null;
 }
 
+// The redo entries a revision takes up: the ones a ruling on its own line of work filed
+// (`test-overreaches`), open on `main`, that no run in the line has derived again since that
+// ruling asked. A ruling sends a test back to be written again; a `--stale` run is what
+// ordinarily writes it, but while the line is in flight its revision is the run `next` names,
+// so a revision that did not take them up would be returned on them for ever.
+//
+// The line is read the way an approval reads it (`revisionLine`), oldest first. A run answered
+// an entry when its branch closes one that was open where the branch was cut; its ruling asked
+// for one when it carries a `test-overreaches` line for that criterion. Whichever came last
+// decides, so a test derived again and not named by the ruling after it is left as it was, and
+// one named again is written again. Entries filed by rulings outside the line are a `--stale`
+// run's, once the line is no longer in flight.
+function lineRedoFor(projectDir, domain, found, branchCommit) {
+  const byId = new Map(acceptedCriteria(projectDir, domain).criteria.map((c) => [c.id, c]));
+  const open = readRedoFor(projectDir, domain, byId);
+  if (!open.length) return [];
+  const sameLine = (p) => new RegExp(`^derive-tests-${escapeRe(domain)}(?:-\\d+|-stale-\\d+)?$`).test(p);
+  let base;
+  try { base = git(["merge-base", branchCommit, "main"], projectDir); } catch { return []; }
+  const line = revisionLine(projectDir, { name: found.name, tip: branchCommit, base, sameLine }).reverse();
+  const asked = new Set();
+  for (const { name, tip, base: cut } of line) {
+    const handed = openOn(projectDir, "redo", cut);
+    for (const e of readAt(projectDir, "redo", tip)) {
+      if (!isOpen(e) && handed.some((h) => sameFiling(h, e))) asked.delete(e.id);
+    }
+    let gate = null;
+    try { gate = parseYaml(git(["show", `${tip}:.sdlc/gates/${name}.yaml`], projectDir)); } catch { gate = null; }
+    for (const { id } of overreachConditions(gate?.conditions ?? [])) asked.add(id);
+  }
+  return open.filter((r) => asked.has(r.id));
+}
+
 // `derive-tests --revise`'s own pre-check, mirroring `checkRevisionSource` above: is there
 // a returned test proposal to revise from at all? Finding it and stashing its rationale,
 // conditions and the returned branch's own commit on `ctx.revision` happens in every mode
@@ -1120,9 +1179,20 @@ function checkDeriveTestsRevisionSource(projectDir, ctx) {
     return { id, ok: false, messages: [`derive-tests --revise: no returned ruling for ${ctx.domain} to revise from`] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
-  ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "derive-tests", { ...found, branchCommit }), proposalFamily(found.name));
+  // The tests the line's rulings sent back are this revision's to write, so the lines that
+  // asked for them are not reported to it as another stage's work.
+  const redo = lineRedoFor(projectDir, ctx.domain, found, branchCommit);
+  const taking = new Set(redo.map((r) => r.id));
+  const ownOverreach = new Set(overreachConditions(returnedConditionLines(projectDir, found)).filter((o) => taking.has(o.id)).map((o) => o.text));
+  const addressedElsewhere = (found.addressedElsewhere ?? []).filter((a) => !(a.stage === OVERREACH_STAGE && ownOverreach.has(a.text)));
+  ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "derive-tests", { ...found, addressedElsewhere, branchCommit, redo }), proposalFamily(found.name));
   if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
   return { id, ok: true, messages: [] };
+}
+
+// Every condition line on a returned ruling, as its gate file on the returned branch holds them.
+function returnedConditionLines(projectDir, found) {
+  try { return parseYaml(git(["show", `${found.branch}:.sdlc/gates/${found.name}.yaml`], projectDir))?.conditions ?? []; } catch { return []; }
 }
 
 // A criterion id mentioned anywhere in a condition's own text — the closest thing G3's
@@ -1181,6 +1251,7 @@ function checkDeriveTestsRevisionDrift(projectDir, ctx) {
     ? git(["ls-tree", "-r", "--name-only", commit, "--", dirRel], projectDir).split("\n").filter(Boolean)
     : [];
   const named = conditionNamedFiles(domain, ctx.revision.conditions);
+  for (const r of ctx.revision.redo ?? []) named.add(`tests/acceptance/${domain}/${r.id}.spec.ts`);
   const messages = [];
   for (const rel of before) {
     if (!rel.endsWith(".spec.ts") || named.has(rel)) continue;
@@ -1416,15 +1487,17 @@ const deriveTests = {
         : "(the ruling recorded no separate conditions; act on the rationale alone.)";
       const elsewhere = addressedElsewhereNote(ctx);
       const reopened = isReopening(ctx);
+      const redoing = (ctx.deriveTestsRedo ?? []).length > 0;
       return [
         reopened ? revisionRulingBlock(ctx)
           : `These tests for the "${d}" domain were proposed and returned, not approved. Here is the reviewer's rationale, verbatim:\n\n\`\`\`\n${rationale}\n\`\`\``,
         reopened ? null : `And each condition it attached, verbatim:\n\n${condLines}`,
         owedConditionsNote(ctx),
-        `Change only what these conditions name — a spec file, a not-testable entry, or one assertion inside a file. Every other file already in tests/acceptance/${d}/ and every other entry in tests/acceptance/not-testable.yaml stays byte-for-byte as you found it: re-derive nothing, and never rewrite a header's "derived" date on a file whose content you did not actually change.`,
+        ...revisionRedoBlock(ctx),
+        `Change only what ${redoing ? "these conditions and the tests to write again" : "these conditions"} name — a spec file, a not-testable entry, or one assertion inside a file. Every other file already in tests/acceptance/${d}/ and every other entry in tests/acceptance/not-testable.yaml stays byte-for-byte as you found it: re-derive nothing${redoing ? " else" : ""}, and never rewrite a header's "derived" date on a file whose content you did not actually change.`,
         `A criterion nothing in surface reaches — no page, action or observation gets you there — still gets an entry in tests/acceptance/not-testable.yaml instead of a file, in the form your skill gives, exactly as a first derivation would.`,
         elsewhere,
-        `Finish with your journal entry: say what you changed for each condition, in order, and name any condition you could not act on and why.`,
+        `Finish with your journal entry: say what you changed for each condition, in order,${redoing ? " what each test you wrote again now asserts," : ""} and name any condition you could not act on and why.`,
       ].filter(Boolean).join("\n\n");
     }
     const criteria = ctx.deriveTestsCriteria ?? [];
@@ -1493,6 +1566,16 @@ const deriveTests = {
       // cannot reconstruct from the contract.
       ctx.deriveTestsRedo = resolved.redo ?? [];
       ctx.deriveTestsMissing = resolved.missing ?? [];
+    }
+    // A revision derives again the tests its line's rulings sent back (`lineRedoFor`), and
+    // only those: they are what `clearDeriveTestsRedo` closes on its branch, what the loop
+    // limit counts, and what the prompt lists with their criteria.
+    if (ctx.domain && ctx.revise && ctx.revision?.redo?.length) {
+      const { criteria, generatedFrom } = acceptedCriteria(projectDir, ctx.domain);
+      const ids = new Set(ctx.revision.redo.map((r) => r.id));
+      ctx.deriveTestsCriteria = criteria.filter((c) => ids.has(c.id));
+      ctx.deriveTestsGeneratedFrom = generatedFrom;
+      ctx.deriveTestsRedo = ctx.revision.redo;
     }
     return [
       domainCheck,
