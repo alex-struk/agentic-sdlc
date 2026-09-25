@@ -48,7 +48,8 @@ needs no code in the module.
 only a request opens a `--revise` run with no returned ruling behind it. A request is marked taken
 and cannot be withdrawn. A redo entry carries the criterion's version and the ruler's words
 verbatim. Closing anything needs evidence or a reason, and each kind accepts only the outcomes it
-had: conditions may be met or withdrawn, the others only met.
+had: conditions may be met or withdrawn, the others only met — except that any kind bound to a
+criterion is also withdrawn, by the runner, once that criterion is retired (`0052`).
 
 **Nothing is removed.** A redo entry is closed by the `derive-tests` run that answers it and a rebind
 entry by the `calibrate` run that finds its adapter changed, and both stay on file. An item sent
