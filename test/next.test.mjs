@@ -221,6 +221,37 @@ test("owed work is taken before the sequence moves on, grouped by the run that a
   assert.deepEqual(r.owed.map((o) => [o.kind, o.stage, o.count]), [["condition", "contract", 1], ["redo", "derive-tests", 1]]);
 });
 
+// A criterion recorded untestable is owed a test from the moment its record is on main, by
+// the stage the record names or by contract, and is routed to the run that answers it.
+test("missing tests are owed work, routed by the stage that owes each one", (t) => {
+  const d = project(t);
+  specDone(d);
+  approved(d, ["contract-v1"]);
+  const item = (id, domain, stage, more = {}) => ({ kind: "missing-test", item: id, id, version: 1, domain, stage, why: "x", by: "runner", at: "2026-01-01T00:00:00.000Z", ...more });
+  commit(d, {
+    "spec/criteria-index.json": index([["R-1.1", "alpha"], ["R-1.2", "alpha"], ["R-2.1", "beta"], ["R-2.2", "beta"], ["R-2.3", "beta"]]),
+    "tests/acceptance/not-testable.yaml": stringifyYaml({ criteria: [{ id: "R-1.1", version: 1, reason: "blocked: no observation" }] }),
+    ".sdlc/owed.yaml": stringifyYaml({ owed: [
+      item("R-2.1", "beta", "derive-tests"),
+      item("R-2.2", "beta", "calibrate", { target: "old" }),
+      item("R-2.3", "beta", "verify"),
+      item("R-1.2", "alpha", "contract", { closed: { outcome: "withdrawn", why: "no test is owed", by: "lead", at: "2026-01-02T00:00:00.000Z" } }),
+    ] }),
+  });
+  const r = whatNext(d);
+  const owed = r.ready.filter((c) => c.kind === "owed");
+  assert.deepEqual(owed.map((c) => c.command), [
+    "sdlc run contract",
+    "sdlc run derive-tests --domain beta --stale",
+    "sdlc run calibrate --target old",
+  ]);
+  assert.match(owed[0].why, /1 missing test owed by contract/);
+  assert.match(owed[2].why, /1 missing test owed a run for target old/);
+  assert.deepEqual(r.owed.filter((o) => o.kind === "missing-test").map((o) => [o.stage, o.count]),
+    [["derive-tests", 1], ["calibrate", 1], ["verify", 1], ["contract", 1]]);
+  assert.match(formatNext(r), /owed: .*1 missing-test \(contract\)/);
+});
+
 test("a test written against an older version of its criterion is stale and owed", (t) => {
   const d = project(t);
   specDone(d);

@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { git } from "../src/lib/git.mjs";
 import { read } from "../src/spec/owed.mjs";
+import { checkConditions } from "../src/checks/conditions.mjs";
 import {
   MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, readdressLines,
   readdressMissingTests, recordProblems, syncMissingTests, withdrawMissingTest,
@@ -220,4 +221,16 @@ test("an open item naming a slice's criterion blocks it unless withdrawn in the 
   const rows = [{ id: "R-1.2", version: 2, file: "tests/acceptance/orders/R-1.2.spec.ts", result: "pass" }];
   assert.deepEqual(blockingMissingTests(d, { claimed, withdrawn: ["R-1.1"], rows }).map((e) => e.item), []);
   assert.deepEqual(blockingMissingTests(d, { claimed: ["R-1.3"] }), []);
+});
+
+// A person in a seat is handed no prompt, and reads what is owed from `sdlc checks`.
+test("sdlc checks lists every open missing test with its owner and the line that withdraws it", (t) => {
+  const d = project(t);
+  records(d, [LEGACY, NAMED]);
+  commit(d, "records");
+  const r = checkConditions(d);
+  assert.equal(r.ok, true, "an owed test is a warning, not a failure");
+  const lines = r.warnings.filter((w) => w.startsWith("missing-test/"));
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /^missing-test\/R-1\.2: owed by contract — "a mail observation exposing the body"\. .*condition-withdrawn <ref>: <why it is no longer asked for>/);
 });

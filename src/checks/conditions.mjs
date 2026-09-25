@@ -15,6 +15,7 @@ import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM } from "../spec/criteria.mjs";
 import { isOpen, read } from "../spec/owed.mjs";
+import { missingTestRef, openMissingTests } from "../spec/missing-tests.mjs";
 import { proposalFamily, stageForProposal } from "../stages/registry.mjs";
 
 // Every approval recorded in this project, as `{ name, family, at }`. Only an approval's
@@ -103,6 +104,15 @@ export function checkConditions(projectDir) {
     warnings.push(overtaken
       ? `${line}. ${overtaken.name} was approved afterwards without it. Take it up with \`sdlc run ${r.stage} --revise\`.`
       : `${line}. Take it up with \`sdlc run ${r.stage} --revise\`.`);
+  }
+
+  // And the tests the project is owed. Each is closed by a test that runs and by nothing a
+  // ruling writes, so the only line offered is the withdrawal — which is how a person in a
+  // seat, handed no prompt, finds the reference to write it against.
+  for (const e of openMissingTests(projectDir)) {
+    const why = quote(e.readdressed?.at(-1)?.why ?? e.why);
+    warnings.push(`${missingTestRef(e.item)}: owed by ${e.stage} — "${why.length > 200 ? `${why.slice(0, 200)}…` : why}". `
+      + `Open until a test for it runs; where none is owed, withdraw it on a ruling with \`${CONDITION_WITHDRAWN_FORM}\`.`);
   }
 
   return { id, ok: messages.length === 0, messages, warnings };

@@ -25,6 +25,7 @@ import { parseConfig } from "../config/load.mjs";
 import { nextOrder } from "../config/policy.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
 import { openAcross } from "../spec/owed.mjs";
+import { MISSING_TEST, openMissingTestsAt } from "../spec/missing-tests.mjs";
 import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, revisableStages } from "../stages/registry.mjs";
 import { stallReason } from "./escalation.mjs";
@@ -209,7 +210,12 @@ export function readRecord(projectDir, rev = "main") {
     applied: yamlOf(objects.get(at(`tests/results/${t}/applied.yaml`))),
     adapter: gitOk(["rev-parse", "-q", "--verify", at(`tests/adapters/${t}`)], projectDir) ? git(["rev-parse", at(`tests/adapters/${t}`)], projectDir) : "",
   }]));
-  const owed = openAcross(projectDir, { rev, familyOf: proposalFamily });
+  // Missing tests are read with the records nothing has written an entry for yet, which are
+  // owed all the same (`src/spec/missing-tests.mjs`).
+  const owed = [
+    ...openAcross(projectDir, { rev, familyOf: proposalFamily }).filter((e) => e.kind !== MISSING_TEST),
+    ...openMissingTestsAt(projectDir, rev),
+  ];
   const names = [
     ...gates.keys(),
     ...proposalBranches.map((b) => b.slice("proposal/".length)),
@@ -415,6 +421,16 @@ function owedWork(record, inFlight) {
       const found = (r?.applied?.rulings ?? []).filter((x) => x?.verb === "adapter-wrong" && x.id === e.id).at(-1);
       if (found?.adapter && r.adapter && found.adapter !== r.adapter) group("calibrate", { target: e.target }, "binding to check again now that its adapter has changed (rebind)", "bindings to check again now that their adapter has changed (rebind)");
       else group("bind-adapter", { target: e.target }, "binding to fix (rebind)", "bindings to fix (rebind)");
+    } else if (e.kind === MISSING_TEST) {
+      // A test owed by the writer is derived again in its domain; one owed a run is run by the
+      // calibration of its target; one owed a run by verify is run when its slice is verified,
+      // which the build sequence already brings about, so it is counted and not offered.
+      if (e.stage === "derive-tests") group("derive-tests", { domain: e.domain ?? byId.get(e.id)?.domain ?? undefined, stale: true }, "missing test", "missing tests");
+      else if (e.stage === "calibrate") group("calibrate", { target: e.target ?? record.config?.oracle?.target ?? undefined }, "missing test owed a run", "missing tests owed a run");
+      else if (e.stage !== "verify") {
+        const s = SUBJECT_OF[e.stage];
+        group(e.stage, s === "domain" && e.domain ? { domain: e.domain } : {}, "missing test", "missing tests");
+      }
     } else {
       const s = SUBJECT_OF[e.stage];
       group(e.stage, s && e[s] !== undefined ? { [s]: e[s] } : {}, `${e.kind} item`, `${e.kind} items`);
