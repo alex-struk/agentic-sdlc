@@ -255,6 +255,16 @@
             "minimum": 1
           }
         },
+        "calibrate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "environment_faults": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
         "loops": {
           "type": "object",
           "additionalProperties": false,

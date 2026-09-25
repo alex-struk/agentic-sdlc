@@ -166,6 +166,20 @@ the runner's own process, never through a tool call.
    browser are installed if missing, Playwright runs with `SDLC_TARGET`, `SDLC_TARGET_URL` and
    `SDLC_MAIL_API` set, and its JSON report is mapped onto rows. `SDLC_TEST_RUNNER=mock` reads canned
    rows from `<SDLC_MOCK_DIR>/calibrate.json` instead, for a caller with no browser in reach.
+
+   **A target that was not usable halts the run here.** A row whose failing test reports that the
+   harness could not reset the target to its seed, or that the browser could not connect to it
+   (`ENVIRONMENT_FAULT_RE`, `src/testrun/results.mjs`), says what the machine did, not the
+   application. When more such rows come back than `policy.calibrate.environment_faults` allows
+   (none by default), the run writes no result set, opens no proposal and closes no owed work. It
+   commits one run-record line, `calibrate <t>: halted, environment fault — …`, and exits 1 with
+   the evidence: how many of the rows that ran were affected, what their tests said grouped by
+   message with a count of tests each, and which criteria. This is the design spec's `env-defect`
+   route (§7.1): the runner halts and reports, and a person decides what to fix
+   (`docs/decisions/0056-a-calibration-that-measured-the-machine.md`). Under `--skip-suite` the
+   same check runs over the rows on file, so results a broken run left behind are never asked
+   about either.
+
 5. **Write the result set** — this run's own dated file (`<date>.json`, or `<date>-<n>.json` when the
    day already has one) and `latest.json` — marking each row `ruled` where an applied ruling covers
    that id at its current version.
@@ -321,6 +335,11 @@ not one.
   land.
 - **A ruling carries `unparsed_conditions`**: those lines are reported the same way, since the
   persona was already asked to restate them once and the ruling's verdict still stands.
+- **The target could not be reset or reached** for more rows than
+  `policy.calibrate.environment_faults` allows: the run halts after the suite, as described in step
+  4 of "What `execute` does". Nothing is recorded against a criterion and nothing is asked. Rulings
+  applied in step 2 are already committed. The halt's run-record line is committed with the
+  pipeline's identity, so the tree is clean for the run that follows the fix.
 - **A criterion fails and nothing rules on it**: the run succeeds, the proposal opens, and the same
   failure is reported again on every run until it is answered. Nothing in the pipeline treats an
   unanswered failure as a pass.

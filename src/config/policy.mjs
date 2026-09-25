@@ -11,6 +11,7 @@ export const DEFAULT_RATIFY_ON_LIMIT = "escalate";
 export const DEFAULT_OWED_LOOP = 2;
 export const OWED_LOOP_KINDS = Object.freeze(["rebind", "redo", "recovery", "request"]);
 export const DEFAULT_POST_CHECK_REPAIRS = 1;
+export const DEFAULT_CALIBRATE_ENVIRONMENT_FAULTS = 0;
 export const DEFAULT_ESCALATE_TIERS = Object.freeze(["HIGH", "CRITICAL"]);
 export const DEFAULT_BLOCK_UNVERIFIED = Object.freeze(["HIGH", "CRITICAL"]);
 
@@ -34,6 +35,15 @@ export function ratifyFollowUps(config) {
 export function owedLoopLimit(config, kind) {
   if (!OWED_LOOP_KINDS.includes(kind)) return null;
   return config?.policy?.loops?.[kind] ?? DEFAULT_OWED_LOOP;
+}
+
+// How many rows of a calibration may fail for a reason that is the machine's — the target
+// could not be reset, or could not be reached — before the run halts as an environment
+// fault rather than recording its rows (spec §7.1, `env-defect`). None by default: each such
+// row says nothing about the application, and recording it puts a question nobody can
+// answer in front of the reviewer.
+export function calibrateEnvironmentFaults(config) {
+  return config?.policy?.calibrate?.environment_faults ?? DEFAULT_CALIBRATE_ENVIRONMENT_FAULTS;
 }
 
 // How many repair turns a stage whose output failed its post-checks is given.

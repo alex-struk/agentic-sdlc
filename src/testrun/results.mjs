@@ -51,3 +51,42 @@ export function testFingerprint(content) {
   const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content));
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
+
+// A failure that is the machine's rather than the application's: the harness could not put
+// the target back to its seed before the test, or the browser could not reach the target at
+// all. Neither says anything about how the application behaves — the test never got as far
+// as asking it — so a row failed this way is evidence about the environment (spec §7.1,
+// `env-defect`), and is never a question for the reviewer or the product owner.
+//
+// The first phrase is the harness's own (`templates/project/tests/fixtures/index.ts`); the
+// rest are the browser's and the runtime's words for a connection that did not happen.
+export const ENVIRONMENT_FAULT_RE = /could not reset the target|net::ERR_(?:CONNECTION_REFUSED|CONNECTION_RESET|CONNECTION_CLOSED|EMPTY_RESPONSE|NAME_NOT_RESOLVED|ADDRESS_UNREACHABLE)|\bECONNREFUSED\b/;
+
+const FAILED_STATUSES = new Set(["failed", "timedOut", "interrupted"]);
+
+// The first of a row's failing tests whose error is the machine's, or `null`.
+export function environmentFault(row) {
+  if (row?.result !== "fail") return null;
+  const hit = (row.tests ?? []).find((t) => FAILED_STATUSES.has(t?.status) && ENVIRONMENT_FAULT_RE.test(String(t?.error ?? "")));
+  return hit ? String(hit.error) : null;
+}
+
+// The rows the machine failed, and what their tests said, grouped by each message's first
+// line and counted per test, most frequent first. `ran` counts the rows that put a test to
+// the application at all, which is what the affected count is a share of.
+export function environmentFaults(rows) {
+  const affected = [];
+  const said = new Map();
+  for (const row of rows ?? []) {
+    if (!environmentFault(row)) continue;
+    affected.push(row);
+    for (const t of row.tests ?? []) {
+      const error = String(t?.error ?? "");
+      if (!FAILED_STATUSES.has(t?.status) || !ENVIRONMENT_FAULT_RE.test(error)) continue;
+      const line = error.split("\n").map((l) => l.trim()).find(Boolean) ?? error;
+      said.set(line, (said.get(line) ?? 0) + 1);
+    }
+  }
+  const ran = (rows ?? []).filter((r) => r?.file && !isNotAsserted(r)).length;
+  return { affected, ran, said: [...said.entries()].sort((a, b) => b[1] - a[1]) };
+}

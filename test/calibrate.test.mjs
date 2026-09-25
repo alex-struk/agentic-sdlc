@@ -1181,3 +1181,97 @@ test("calibrate --skip-suite refuses to run before there are results to rule ove
     restoreEgress(prevEgress);
   }
 });
+
+// --- a target that was not usable (spec §7.1, env-defect) ---
+
+const ELSEWHERE = `/${"home"}/someone`;
+
+// What a test's own reset reports when the target could not be put back to its seed, the way
+// the harness's fixture words it — carrying a local path, as the real message does.
+function resetFailedRow(base) {
+  return {
+    ...base,
+    result: "fail",
+    tests: [{
+      title: base.tests[0].title,
+      status: "failed",
+      error: `Error: could not reset the target to its seed before this test: Command failed: node ${ELSEWHERE}/agentic-sdlc/bin/sdlc.mjs oracle reseed --target old --instance 1\npsql: error: FATAL:  sorry, too many clients already`,
+    }],
+  };
+}
+
+function runBranches(dir, prefix) {
+  return git(["for-each-ref", "--format=%(refname:short)", `refs/heads/proposal/${prefix}*`], dir).split("\n").filter(Boolean);
+}
+
+test("a calibration whose target could not be reset halts as an environment fault: no results, no question, the evidence reported", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-env-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(mockRunnerDir("env", [resetFailedRow(PASSING_ROW), resetFailedRow(FAILING_ROW)]));
+  try {
+    await assert.rejects(() => runStage(dir, "calibrate", { target: "old" }), (e) => {
+      assert.match(e.message, /environment/);
+      assert.match(e.message, /2 of 2/);
+      assert.match(e.message, /could not reset the target to its seed/);
+      assert.match(e.message, /R-1\.1/);
+      assert.ok(!e.message.includes(ELSEWHERE), "a local path is not quoted");
+      return true;
+    });
+    // Nothing is recorded against a criterion: the rows say what the machine did, not the
+    // application, and a result file carrying them would be read as the application's.
+    assert.ok(!existsSync(join(dir, "tests/results/old/latest.json")));
+    assert.deepEqual(runBranches(dir, "calibrate"), [], "no one is asked to sort failures that are the machine's");
+    // The halt is on the record, committed, and the tree is left clean for the next run.
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.match(git(["log", "-1", "--pretty=%s"], dir), /^run\(calibrate\): halted/);
+    const day = new Date().toISOString().slice(0, 10);
+    const runs = readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8");
+    assert.match(runs, /calibrate old: halted, environment fault/);
+    assert.ok(!runs.includes(ELSEWHERE));
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("calibrate --skip-suite over results from a run whose target was not usable halts rather than asking about them", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-env-skip-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(mockRunnerDir("env-skip", [PASSING_ROW, FAILING_ROW]));
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    // Rows on file of the kind a run made before this check existed would have written.
+    const results = latest(dir);
+    results.rows = results.rows.map((r) => (r.id === "R-1.1" || r.id === "R-1.2" ? resetFailedRow(r) : r));
+    writeFileSync(join(dir, "tests/results/old/latest.json"), `${JSON.stringify(results, null, 2)}\n`);
+    git(["add", "-A"], dir);
+    git([...COMMIT, "results from an unusable target (test)"], dir);
+    const before = runBranches(dir, "calibrate");
+
+    await assert.rejects(() => runStage(dir, "calibrate", { target: "old", skipSuite: true }), /environment[\s\S]*without --skip-suite/);
+    assert.deepEqual(runBranches(dir, "calibrate"), before, "no further question is opened over them");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("policy.calibrate.environment_faults lets a project tolerate that many rows the machine failed", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-env-policy-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  const cfgPath = join(dir, ".sdlc", "config.yaml");
+  writeFileSync(cfgPath, readFileSync(cfgPath, "utf8").replace(/^policy:\n/m, "policy:\n  calibrate: { environment_faults: 1 }\n"));
+  git(["add", "-A"], dir);
+  git([...COMMIT, "tolerate one environment fault (test)"], dir);
+  calibrateEnv(mockRunnerDir("env-policy", [resetFailedRow(PASSING_ROW), FAILING_ROW]));
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(rowFor(latest(dir), "R-1.2").result, "fail");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});

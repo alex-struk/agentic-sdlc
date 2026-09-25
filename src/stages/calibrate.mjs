@@ -5,7 +5,7 @@
 // can answer it. So the stage writes the rows, opens one G1 proposal over every failure
 // nobody has ruled on yet, and applies the answers on its next run.
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { fileURLToPath } from "node:url";
 import { resolve as resolvePath } from "node:path";
@@ -19,6 +19,10 @@ import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp, instancesOf } from "../commands/oracle.mjs";
 import { runSuite, sortRows } from "../testrun/playwright.mjs";
+import { environmentFaults } from "../testrun/results.mjs";
+import { calibrateEnvironmentFaults } from "../config/policy.mjs";
+import { appendRun } from "../lib/runrecord.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
 import { propose } from "../commands/propose.mjs";
 
 // How the suite puts the target's data back between tests. Only the oracle has one: it is
@@ -576,6 +580,42 @@ function calibratePage(target, baseUrl, rows, byId) {
 // what a failure means — is asked of two personas in turn, through the proposals `followUp`
 // opens: the reviewer first sorts out the failures the project's own adapter caused, at G3,
 // and only what it passes on goes to the product owner at G1.
+// A run whose target was not usable is not a calibration. A row failed because the harness
+// could not put the target back to its seed, or because nothing answered, says what the
+// machine did, not the application — and written into the result set it reads as the
+// application failing that criterion, and is put to the reviewer to sort as one. So past what
+// `policy.calibrate.environment_faults` allows, the run records nothing against any
+// criterion, opens no proposal, and halts with what the failing tests said (spec §7.1,
+// `env-defect`: the runner halts and reports; a person decides). The halt itself is on the
+// record, committed, so the tree is clean for the run that follows the fix.
+//
+// The rows checked are the ones this run produced, or under `--skip-suite` the ones on file
+// that it would otherwise ask about.
+function haltOnEnvironmentFault(projectDir, ctx, target, rows) {
+  const fault = environmentFaults(rows);
+  const limit = calibrateEnvironmentFaults(ctx.config);
+  if (fault.affected.length <= limit) return;
+  const scrub = (t) => redactLocalPaths(t, projectDir);
+  const clip = (t) => (t.length > 300 ? `${t.slice(0, 300)}…` : t);
+  const ids = fault.affected.map((r) => r.id ?? r.file).filter(Boolean);
+  const head = `calibrate ${target}: halted, environment fault — the target could not be reset or reached for ${fault.affected.length} of ${fault.ran} row(s)${ctx.skipSuite ? " on file" : ""}`;
+  const lines = [
+    `${head}, past the ${limit} that policy.calibrate.environment_faults allows.`,
+    "Those rows say nothing about the application, so none is recorded against its criterion and no proposal is opened.",
+    "What the failing tests said, most frequent first:",
+    ...fault.said.slice(0, 5).map(([line, n]) => `- ${n} × ${clip(scrub(line))}`),
+    ...(fault.said.length > 5 ? [`- and ${fault.said.length - 5} other message(s)`] : []),
+    `Criteria affected: ${ids.slice(0, 20).join(", ")}${ids.length > 20 ? `, and ${ids.length - 20} more` : ""}`,
+    ctx.skipSuite
+      ? "The results on file come from a run whose target was not usable. Put the target right, then run calibrate without --skip-suite."
+      : "Put the target right — sdlc oracle status shows what is running, and sdlc oracle reseed resets it by hand — then run calibrate again.",
+  ];
+  const runRel = relative(projectDir, appendRun(projectDir, scrub(head)));
+  stagePaths(projectDir, [runRel]);
+  git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(calibrate): halted, environment fault against ${target}`], projectDir);
+  throw new Error(lines.join("\n"));
+}
+
 export const calibrate = {
   name: "calibrate",
   title: (ctx) => (ctx?.target ? `calibrate against ${ctx.target}` : "calibrate"),
@@ -632,11 +672,13 @@ export const calibrate = {
     let rows;
     if (ctx.skipSuite) {
       rows = previous?.rows ?? [];
+      haltOnEnvironmentFault(projectDir, ctx, target, rows);
     } else {
       const { rows: fresh } = runSuite({
         projectDir, target, baseUrl, mailApi, domain: ctx.domain,
         instances: calibrateInstances(projectDir, ctx.config, target),
       });
+      haltOnEnvironmentFault(projectDir, ctx, target, fresh);
       rows = ctx.domain === undefined ? fresh : mergeRows(projectDir, target, fresh);
     }
 
