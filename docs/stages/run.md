@@ -380,22 +380,25 @@ the second, post-run check exists to catch.
   successful one costs.
 - **A post-check fails, and the stage is `project` or `with-sources` and spawns an agent
   (`agent` is not `false`)**: its agent worked directly in the project directory, so whatever it
-  wrote is still there and nothing about a second turn is blind. `finishStage` runs the agent once
-  more, in the same directory, with the same skill file and MCP servers as the first turn, and a
+  wrote is still there and nothing about a second turn is blind. `finishStage` runs the agent
+  again, in the same directory, with the same skill file and MCP servers as the first turn, and a
   prompt carrying the stage's own task prompt above exactly what failed ("The task you were given:
   … Your output failed these checks: … Fix exactly what they name — change nothing else, and do not
   start the task over."), capped at 40 turns or the stage's own ceiling, whichever is lower.
-  `.sdlc/run-state.json` records `fixTurnUsed: true` before the turn runs, so a run only ever gets
-  one, however it is resumed.
-  - **The fix turn's own post-checks pass**: the run finishes exactly as a first-try pass does —
-    the same proposal or commit — except the journal entry's body is the original turn's text plus
-    a `## Fix turn` section holding the second turn's, cost and turn count are the sum of both
-    turns, and the run-record line reads `run <stage>: ok after a fix turn, cost …` rather than the
-    plain `run <stage>: ok, cost …` a first-try pass writes.
-  - **The fix turn's own post-checks fail too**: recorded the same way a single failed turn is —
-    `stage(<stage>): post-checks failed`, only the journal and run record staged — except the
-    journal's body and the returned `messages` carry both attempts', not just the second's, so
-    nothing about the first failure is lost.
+  A run gets as many of these repair turns as `policy.retries.post_check_repair` allows (one by
+  default; zero means none), each naming what the previous attempt's post-checks said.
+  `.sdlc/run-state.json` counts them in `fixTurns` before each turn runs, so a run never gets more
+  than the policy allows, however it is resumed.
+  - **A repair turn's post-checks pass**: the run finishes exactly as a first-try pass does — the
+    same proposal or commit — except the journal entry's body is the original turn's text plus a
+    `## Fix turn` section for each repair turn (`## Fix turn 2` and so on after the first), cost
+    and turn count are the sum of every turn, and the run-record line reads
+    `run <stage>: ok after a fix turn, cost …` (or `ok after <n> fix turns`) rather than the plain
+    `run <stage>: ok, cost …` a first-try pass writes.
+  - **The last allowed repair turn's post-checks fail too**: recorded the same way a single failed
+    turn is — `stage(<stage>): post-checks failed`, only the journal and run record staged — except
+    the journal's body and the returned `messages` carry every attempt's, not just the last's, so
+    nothing about an earlier failure is lost.
   - **A dry run** never reaches this at all: it prints what it would do and changes nothing, so
     there is no post-check failure for a fix turn to repair.
 - **A temporary workspace ends up containing `app/`**: throws `blindness violated: app/ present in

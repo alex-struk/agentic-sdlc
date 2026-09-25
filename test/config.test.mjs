@@ -141,3 +141,9 @@ test("policy.loops.ratify_follow_ups takes a positive max and one of two outcome
   assert.ok(parseConfig(withPolicy(["loops: { ratify_follow_ups: { max: 0 } }"])).errors.length > 0);
   assert.ok(parseConfig(withPolicy(["loops: { ratify_follow_ups: { on_limit: ignore } }"])).errors.length > 0);
 });
+
+test("policy.retries.post_check_repair is a whole number, and zero is allowed", () => {
+  assert.deepEqual(parseConfig(withPolicy(["retries: { post_check_repair: 0 }"])).errors, []);
+  assert.deepEqual(parseConfig(withPolicy(["retries: { post_check_repair: 2 }"])).errors, []);
+  assert.ok(parseConfig(withPolicy(["retries: { post_check_repair: -1 }"])).errors.length > 0);
+});

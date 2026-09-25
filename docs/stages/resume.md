@@ -25,9 +25,9 @@ but the fixed string `(resumed; agent output unavailable)`, and its `cost`, `tur
 front-matter fields are all zero or empty. Whatever files the interrupted agent managed to write
 before dying are on disk already (this command does not delete or repair them) and are judged by
 the stage's post-checks exactly as they would judge a fresh agent turn's output. If those checks
-fail and the run has not yet spent its fix turn, the journal instead carries that fixed string plus
-a `## Fix turn` section holding the repair turn's own words, with `cost` and `turns` reflecting that
-one real turn (see "Checks that block" and `docs/stages/run.md`).
+fail and the run has repair turns left, the journal instead carries that fixed string plus a
+`## Fix turn` section for each repair turn that ran, with `cost` and `turns` reflecting those real
+turns (see "Checks that block" and `docs/stages/run.md`).
 
 ## Workspace the agent sees
 
@@ -85,11 +85,12 @@ run it again`, exiting 1 without running a post-check or touching the working tr
   thrown away by a blocked proposal a moment later.
 - The stage's own `postChecks(projectDir, ctx)` must pass, exactly as in `sdlc run`. A first failure
   here is not necessarily final: `finishStage` is the one place both `run` and `resume` reach this
-  check from, so the same one-shot fix turn `docs/stages/run.md` describes applies here too — a
-  `project` or `with-sources` stage (the only two `resume` ever continues) gets one more agent turn,
-  in the project directory, with a prompt naming exactly what failed, before the check is judged
-  final. `--again` still governs whether `resume` runs at all when the interrupted phase was
-  `"agent"`; it does not gate the fix turn, which is decided by `state.fixTurnUsed` alone.
+  check from, so the same repair turns `docs/stages/run.md` describes apply here too — a `project`
+  or `with-sources` stage (the only two `resume` ever continues) gets the repair turns the policy
+  allows that the run has not already spent, in the project directory, each with a prompt naming
+  exactly what failed, before the check is judged final. `--again` still governs whether `resume`
+  runs at all when the interrupted phase was `"agent"`; it does not gate the repair turns, which are
+  decided by `state.fixTurns` against `policy.retries.post_check_repair` alone.
 
 ## Exit criterion
 
@@ -107,11 +108,12 @@ post-check that still does not pass) finds the same run-state file `finishStage`
 repeat as many times as it takes for the interrupted stage's leftover output to pass, or for a
 person to fix it by hand and let `resume` pick the result up.
 
-The one thing that does not repeat is the fix turn. `finishStage` writes `fixTurnUsed: true` onto
-`.sdlc/run-state.json` before running it, and that file survives a post-checks failure exactly the
-way `phase` does — so a first `resume --again` on a failing run spends the run's one fix turn, and
-every `resume --again` after that re-judges the same files without asking the agent for anything
-further, however many times it is called.
+The one thing that does not repeat is a repair turn. `finishStage` counts each one in `fixTurns`
+on `.sdlc/run-state.json` before running it, and that file survives a post-checks failure exactly
+the way `phase` does — so `resume --again` on a failing run spends only the repair turns the policy
+allows that the run has not yet spent, and every `resume --again` after those are spent re-judges
+the same files without asking the agent for anything further, however many times it is called. A
+run state recording only `fixTurnUsed: true` counts as one spent.
 
 ## Failure modes
 
@@ -130,13 +132,14 @@ further, however many times it is called.
   `proposal <name> is still open; rule it (or delete the branch) before running <stage> again`,
   exiting 1 without ever calling `finishStage` or judging the stage's post-checks.
   `.sdlc/run-state.json` is left exactly as it was, at whatever `phase` it was already recorded at.
-- A post-check still fails, and the run has already spent its fix turn (or the stage is a
+- A post-check still fails, and the run has already spent its repair turns (or the stage is a
   temporary-workspace one resume would have refused above): the same failure path as `sdlc run` — a
   journal entry records the stand-in agent text plus the check messages, `stage(<stage>):
   post-checks failed` is committed with only the journal and run record staged, and `resume` returns
   exit 1. `.sdlc/run-state.json` is left in place (at `phase: "post-checks"`, now carrying
-  `fixTurnUsed: true`) so a later `resume` can try again without spending another fix turn.
-- A post-check fails on a run that has not yet spent its fix turn: `finishStage` runs the agent once
-  more in the project directory before judging the check final (`docs/stages/run.md`). If that turn's
-  own post-checks pass, `resume` finishes exactly as a successful run does; if they fail too, the
-  failure above is recorded with both attempts' messages.
+  the count of repair turns spent in `fixTurns`) so a later `resume` can try again without spending
+  another.
+- A post-check fails on a run that has repair turns left: `finishStage` runs the agent again in the
+  project directory before judging the check final (`docs/stages/run.md`). If a repair turn's own
+  post-checks pass, `resume` finishes exactly as a successful run does; if the last allowed one
+  fails too, the failure above is recorded with every attempt's messages.

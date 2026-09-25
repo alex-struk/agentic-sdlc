@@ -265,6 +265,16 @@
               }
             }
           }
+        },
+        "retries": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "post_check_repair": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         }
       }
     },

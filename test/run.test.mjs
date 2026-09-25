@@ -34,6 +34,15 @@ async function makeProject(tmp) {
   return { dir, prevEgress };
 }
 
+// Adds lines under `policy:` in a project's committed config, so a test can run the same
+// project under a policy other than the defaults.
+function setPolicy(dir, ...lines) {
+  const p = join(dir, ".sdlc/config.yaml");
+  writeFileSync(p, readFileSync(p, "utf8").replace(/^  default_tier: (\S+)$/m, (m) => `${m}\n${lines.map((l) => `  ${l}`).join("\n")}`));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "policy"], dir);
+}
+
 function restoreEgress(prev) {
   if (prev === undefined) delete process.env.SDLC_EGRESS_NAMES;
   else process.env.SDLC_EGRESS_NAMES = prev;
@@ -270,6 +279,64 @@ test("a project-mode stage whose first turn and fix turn both fail a post-check 
   }
 });
 
+// How many repair turns a stage gets is policy: a project running larger domains may want
+// a second attempt at what its first repair missed, and one may want none at all.
+test("policy.retries.post_check_repair sets how many repair turns a failing stage gets", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-fixturn-two-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  setPolicy(dir, "retries: { post_check_repair: 2 }");
+  registerFixableStage("fixable-two");
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-fixturn-two-mock-"));
+  writeFileSync(join(mockDir, "fixable-two.json"), JSON.stringify({
+    sequence: [
+      { text: "wrote the file without the word", files: { "app/FIXABLE.md": "nope\n" } },
+      { text: "first repair, still without it", files: { "app/FIXABLE.md": "still nope\n" } },
+      { text: "second repair adds the word", files: { "app/FIXABLE.md": "fixed\n" } },
+    ],
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "fixable-two");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-fixable-two.md"), "utf8");
+    assert.match(journal, /first repair, still without it/);
+    assert.match(journal, /second repair adds the word/);
+    assert.match(journal, /^turns: 3$/m);
+    const day = new Date().toISOString().slice(0, 10);
+    assert.match(readFileSync(join(dir, `.sdlc/runs/${day}.md`), "utf8"), /run fixable-two: ok after 2 fix turns, cost/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("policy.retries.post_check_repair of 0 gives a failing stage no repair turn", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-fixturn-none-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  setPolicy(dir, "retries: { post_check_repair: 0 }");
+  registerFixableStage("fixable-none");
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-fixturn-none-mock-"));
+  writeFileSync(join(mockDir, "fixable-none.json"), JSON.stringify({
+    sequence: [
+      { text: "wrote the file without the word", files: { "app/FIXABLE.md": "nope\n" } },
+      { text: "a repair nobody asked for", files: { "app/FIXABLE.md": "fixed\n" } },
+    ],
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "fixable-none");
+    assert.equal(r.ok, false);
+    const journal = readFileSync(join(dir, ".sdlc/journal/001-fixable-none.md"), "utf8");
+    assert.ok(!/## Fix turn/.test(journal), journal);
+    assert.match(journal, /^turns: 1$/m);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 // A stage that writes TypeScript against a generated declaration file cannot compile it —
 // it has no shell — so a wrong parameter name survives a whole domain's derivation. The
 // repair has to happen in the workspace: the project directory holds the application
@@ -348,10 +415,10 @@ test("resume --again on a failed run takes the fix turn once and not twice", asy
     assert.match(journal1, /attempted a fix/);
     assert.match(journal1, /^turns: 1$/m);
     const state = JSON.parse(readFileSync(join(dir, ".sdlc/run-state.json"), "utf8"));
-    assert.equal(state.fixTurnUsed, true);
+    assert.equal(state.fixTurns, 1);
 
-    // A second resume of the same still-failing run finds `fixTurnUsed` already set and
-    // takes no further fix turn: one turn's worth of cost, and no "## Fix turn" section.
+    // A second resume of the same still-failing run finds its one repair turn already spent
+    // and takes no further fix turn: one turn's worth of cost, and no "## Fix turn" section.
     const second = await resume(dir, { again: true });
     assert.equal(second, 1);
     const journal2 = readFileSync(join(dir, ".sdlc/journal/002-resume-fixturn-stage.md"), "utf8");
@@ -1535,7 +1602,7 @@ test("resume rebuilds ctx and gives the proposal the interrupted run's own accou
   git(["add", "-A"], dir);
   git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "interrupted run's journal"], dir);
   writeFileSync(join(dir, ".sdlc", "run-state.json"),
-    JSON.stringify({ stage: "resume-account-stage", ctx: {}, phase: "post-checks", fixTurnUsed: true }) + "\n");
+    JSON.stringify({ stage: "resume-account-stage", ctx: {}, phase: "post-checks", fixTurns: 1 }) + "\n");
   try {
     const code = await resume(dir, { again: true });
     assert.equal(code, 0);

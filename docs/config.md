@@ -90,6 +90,8 @@ Required. Container of governance gates, tiers, and budgets.
   - `ratify_follow_ups` (object): The closing loop `ratify` runs over provisional criteria still `inferred` or `open` (`docs/stages/ratify.md`, "The closing loop").
     - `max` (integer, min 1, default 2): How many approved follow-up rulings a domain gets before the bound applies.
     - `on_limit` (enum `escalate` | `obsolete`, default `escalate`): What happens at the bound. `escalate` opens the next follow-up and escalates it to G1's `escalate_to`, recorded as any escalation is, so nothing leaves the contract without somebody deciding it; `ratify` refuses to run once the bound is reached if G1 names no `escalate_to`. `obsolete` marks every provisional criterion still unresolved `obsolete`, noted `unresolved after <n> rulings`.
+- `retries` (object, optional): How many times the runner retries a stage's own work.
+  - `post_check_repair` (integer, min 0, default 1): How many repair turns a stage whose output failed its post-checks is given before the run fails. Each repair turn is told exactly what the previous attempt's post-checks said, and is capped at 40 turns or the stage's own turn ceiling, whichever is lower. `0` gives none. Stages with no agent (`ratify`, `calibrate`, `verify`) get none whatever this says.
 - `rungs` (object, optional): A map of risk tier escalation rules. Keys are tier names, values are strings.
 - `triage` (object, optional): Thresholds for automatic triage.
   - `direct_max_files` (integer, optional, min 1): Maximum files changed to bypass triage.

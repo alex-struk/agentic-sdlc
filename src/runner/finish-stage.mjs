@@ -12,6 +12,7 @@ import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
 import { endedBecause, runAgent, turnsFor, writeMcpConfig } from "./executor.mjs";
 import { skillText } from "../stages/registry.mjs";
+import { postCheckRepairs } from "../config/policy.mjs";
 import { settleRequestedRevision } from "../stages/proposals.mjs";
 import { IN_PLACE_MODES } from "./workspace.mjs";
 
@@ -151,7 +152,7 @@ function commitPostCheckFailure(projectDir, stage, agentResult, messages) {
 // into `projectDir`, so there is nothing full enough there to hand a second turn.
 // Those stages are simply re-run.
 
-// The one-shot repair prompt: the original task, exactly what failed, and an explicit
+// The repair prompt: the original task, exactly what failed, and an explicit
 // instruction to fix only that rather than start over — a second turn that quietly
 // redoes the whole task could just as easily introduce a new failure as clear the old
 // one. Carrying the task alongside the failures gives the repair the same context the
@@ -262,24 +263,24 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
   let postFail = post.filter((r) => !r.ok);
 
   // `result` is what actually gets journalled and committed: `agentResult` unchanged
-  // when post-checks passed first try, or `agentResult` folded together with a second
-  // turn's once a fix turn ran. `usedFixTurn` only records which happened, for the
-  // run-record line below.
+  // when post-checks passed first try, or `agentResult` folded together with every repair
+  // turn's once any ran. `fixTurnsRun` only records how many ran, for the run-record line.
   let result = agentResult;
-  let usedFixTurn = false;
+  let fixTurnsRun = 0;
 
   if (postFail.length) {
     const wsMode = typeof stage.workspace === "function" ? stage.workspace(ctx.config) : stage.workspace;
-    // One fix turn per run: a stage in an in-place workspace, on a run that has not
-    // already spent its fix turn (`state.fixTurnUsed`, which survives a post-checks
-    // failure on disk so a later `sdlc resume --again` sees it and does not loop), never
-    // on a dry run (which reports what it would do and changes nothing, so there is no
-    // failure here for it to repair), and only when the stage actually spawns an agent.
-    // `ratify` and `calibrate` (`agent: false`) resolve to workspace `"project"` too, but
-    // there is no session here to run a repair with: `ratify` declares no `skill` at all
-    // (`skillText` would throw trying to read one), and `calibrate` drives a deterministic
-    // test suite rather than free-form work, so handing either one an unrestricted agent
-    // turn is never right, whatever the workspace mode says.
+    // As many repair turns per run as the policy allows (`policy.retries.post_check_repair`,
+    // one by default), counted in `state.fixTurns`, which survives a post-checks failure on
+    // disk so a later `sdlc resume --again` sees what is already spent and does not loop. A
+    // run state recording only `fixTurnUsed` counts as one. Never on a dry run (which reports
+    // what it would do and changes nothing, so there is no failure here for it to repair), and
+    // only when the stage actually spawns an agent. `ratify` and `calibrate`
+    // (`agent: false`) resolve to workspace `"project"` too, but there is no session here to
+    // run a repair with: `ratify` declares no `skill` at all (`skillText` would throw trying
+    // to read one), and `calibrate` drives a deterministic test suite rather than free-form
+    // work, so handing either one an unrestricted agent turn is never right, whatever the
+    // workspace mode says.
     // A stage that worked in the project directory is repaired there. One that worked in
     // its own workspace is repaired in that workspace, which is still on disk at this
     // point (`runStage`'s `finally` removes it only once this function returns) and is
@@ -287,36 +288,42 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     // collected back into the project the same way the first turn's output was, so the
     // post-checks below judge the same tree they judged the first time.
     const repairDir = IN_PLACE_MODES.has(wsMode) ? projectDir : workspaceDir;
-    const eligible = Boolean(repairDir) && stage.agent !== false && !ctx.dryRun && !state.fixTurnUsed;
-    if (!eligible) {
-      // Only the journal and the run record are staged: the agent's other files stay in
-      // the working tree, untracked, so a person can see exactly what it produced.
-      return commitPostCheckFailure(projectDir, stage, agentResult, postFail.flatMap((r) => r.messages));
-    }
+    const allowed = postCheckRepairs(ctx.config);
+    let spent = state.fixTurns ?? (state.fixTurnUsed ? 1 : 0);
+    // Every attempt's failures, in order: what a run that still fails after its repairs
+    // records, so a reader sees what each turn left wrong rather than only the last.
+    const allMessages = postFail.flatMap((r) => r.messages);
+    let lastMessages = allMessages;
 
-    const firstMessages = postFail.flatMap((r) => r.messages);
-    // Marked used, and persisted, before the turn runs: a fix turn that itself crashes
-    // mid-session still leaves `fixTurnUsed: true` on disk, so a resume of that crash
-    // does not spend a second one.
-    state.fixTurnUsed = true;
-    writeRunState(projectDir, state);
+    while (postFail.length) {
+      const eligible = Boolean(repairDir) && stage.agent !== false && !ctx.dryRun && spent < allowed;
+      if (!eligible) {
+        // Only the journal and the run record are staged: the agent's other files stay in
+        // the working tree, untracked, so a person can see exactly what it produced.
+        return commitPostCheckFailure(projectDir, stage, result, allMessages);
+      }
 
-    const fix = await runFixTurn(repairDir, stage, ctx, firstMessages);
-    if (repairDir !== projectDir) recollect?.();
-    result = {
-      text: `${agentResult.text}\n\n## Fix turn\n\n${fix.text}`,
-      cost: (agentResult.cost ?? 0) + (fix.cost ?? 0),
-      turns: (agentResult.turns ?? 0) + (fix.turns ?? 0),
-      sessionId: agentResult.sessionId,
-      raw: agentResult.raw,
-    };
-    usedFixTurn = true;
+      // Counted, and persisted, before the turn runs: a repair turn that itself crashes
+      // mid-session is still spent on disk, so a resume of that crash does not spend it again.
+      spent += 1;
+      state.fixTurns = spent;
+      writeRunState(projectDir, state);
 
-    post = stage.postChecks(projectDir, ctx);
-    postFail = post.filter((r) => !r.ok);
-    if (postFail.length) {
-      const secondMessages = postFail.flatMap((r) => r.messages);
-      return commitPostCheckFailure(projectDir, stage, result, [...firstMessages, ...secondMessages]);
+      const fix = await runFixTurn(repairDir, stage, ctx, lastMessages);
+      if (repairDir !== projectDir) recollect?.();
+      fixTurnsRun += 1;
+      result = {
+        text: `${result.text}\n\n## Fix turn${fixTurnsRun > 1 ? ` ${fixTurnsRun}` : ""}\n\n${fix.text}`,
+        cost: (result.cost ?? 0) + (fix.cost ?? 0),
+        turns: (result.turns ?? 0) + (fix.turns ?? 0),
+        sessionId: agentResult.sessionId,
+        raw: agentResult.raw,
+      };
+
+      post = stage.postChecks(projectDir, ctx);
+      postFail = post.filter((r) => !r.ok);
+      lastMessages = postFail.flatMap((r) => r.messages);
+      allMessages.push(...lastMessages);
     }
     // Post-checks pass now: fall through into the same success path a first-try pass
     // takes, using `result` (the folded-together text and metrics) in place of the
@@ -344,8 +351,8 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     body: result.text,
     metrics: { cost: result.cost, turns: result.turns, session: result.sessionId },
   });
-  appendRun(projectDir, usedFixTurn
-    ? `run ${stage.name}: ok after a fix turn, cost ${result.cost}, turns ${result.turns}`
+  appendRun(projectDir, fixTurnsRun
+    ? `run ${stage.name}: ok after ${fixTurnsRun === 1 ? "a fix turn" : `${fixTurnsRun} fix turns`}, cost ${result.cost}, turns ${result.turns}`
     : `run ${stage.name}: ok, cost ${result.cost}, turns ${result.turns}`);
 
   // The state site is a tracked artifact of `main` and of nothing else. A gated stage's
