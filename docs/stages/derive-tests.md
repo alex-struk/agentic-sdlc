@@ -25,7 +25,8 @@ test (or a `not-testable` entry). With `--stale`, only the criteria `checkTests`
 `tests/acceptance/redo.yaml`, and any criterion of this domain whose missing test is owed by
 `derive-tests` (below) — a `--stale` run against a domain with none of these fails its own
 pre-check rather than opening an empty proposal. With `--revise`, this run
-acts on a G3 ruling that returned a test proposal instead of approving it — see "Revising after a
+acts on a G3 ruling that returned a test proposal instead of approving it, and derives again the
+tests its line of work's own rulings sent back to be written again — see "Revising after a
 return" below; `--stale` and `--revise` are not meant to be combined.
 
 `tests/acceptance/redo.yaml` (`{ redo: [{ id, version, why, verb? }] }`) lists criteria whose tests
@@ -275,14 +276,27 @@ copy) regenerates `tests/generated/*` from that current contract, so a contract 
 since the return is what this run's own `tests/generated/*` is built from, never a stale snapshot the
 returned branch happened to carry.
 
+The redo entries a revision takes up are the ones a ruling on its own line of work filed with
+`test-overreaches` — the returned proposal, and each returned proposal it revised in turn, read back
+the way an approval reads its line (`revisionLine`, `docs/decisions/0051`) — that are open on `main`
+and that no run in the line has derived again since the ruling that asked. A test derived again
+earlier in the line and not named by the ruling after it is left as the returned branch has it; one
+named again is written again. Each is listed in the prompt with its criterion's statement, the header
+a derivation writes and the ruler's reason verbatim, under the instruction to write it from the
+criterion rather than edit the file the returned branch holds; the `test-overreaches` lines it
+answers are not reported to it as another stage's work. It is closed on the revision's branch as a
+`--stale` run closes it, counted against `policy.loops.redo`, and exempt from
+`derive-tests-revise-drift`. Entries filed by rulings outside the line are a `--stale` run's
+(`docs/decisions/0053-a-revision-writes-the-tests-its-line-sent-back.md`).
+
 The prompt quotes the ruling's rationale and every condition verbatim, and asks for a revision, not
 a fresh derivation: change only what the conditions name — a spec file, a `not-testable` entry, or
 one assertion inside a file — leave every other spec file byte-for-byte as found, every other domain's
 own entries in `not-testable.yaml` untouched, re-derive nothing, and never rewrite a header's `derived`
 date on a file whose content did not actually change. `derive-tests-revise-drift` is what enforces the
 "leave everything else alone" half of that: it reads the returned branch's own `tests/acceptance/<d>/`
-tree, and for every spec file there whose criterion id appears in none of the ruling's conditions,
-requires the working tree's version to match byte-for-byte — naming whichever file drifted (changed, or
+tree, and for every spec file there whose criterion id appears in none of the ruling's conditions and
+is not one of the tests the revision writes again, requires the working tree's version to match byte-for-byte — naming whichever file drifted (changed, or
 removed) when it does not — and it reads `HEAD`'s own `not-testable.yaml`, requiring every entry
 belonging to another domain to still match it exactly, naming whichever id changed when one does not.
 

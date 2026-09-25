@@ -277,7 +277,9 @@ The ruling files the criterion and the ruler's own words onto `tests/acceptance/
 `main`, in a commit of its own — the request is the pipeline's bookkeeping rather than part of the
 proposal, and a copy of it on a branch nobody merges would never reach the stage it is addressed to.
 `sdlc run derive-tests --domain <d> --stale` then writes that one test again and is given the reason
-as an instruction about what the replacement must not do.
+as an instruction about what the replacement must not do. Where the ruling returned a test proposal
+of that domain, the request is the returned line of work's own, and its `--revise` run is the one
+that writes the test again (`docs/stages/derive-tests.md`, "Revising after a return").
 
 Two things it is not. It is not a verdict on the criterion: nothing about the row, the index or the
 suite is touched, and the criterion stays unverified until a regenerated test binds and passes — so
@@ -312,8 +314,8 @@ be recorded on the ruling and filed nowhere
 (`docs/decisions/0050-a-request-reaches-a-stage-that-takes-it-up.md`).
 
 Two things follow from a ruling carrying one. The condition is left out of the list the stage being
-returned is given, along with any `test-overreaches` line, so no stage is handed work it has no way
-to do; that stage is told in its prompt how many conditions were addressed elsewhere, to which
+returned is given, along with any `test-overreaches` line the revision does not take up itself, so
+no stage is handed work it has no way to do; that stage is told in its prompt how many conditions were addressed elsewhere, to which
 stage, and in whose words, so its list is never silently shorter than the ruling on the branch. And
 a request is appended to `.sdlc/revision-requests.yaml`, on `main`, in a commit of its own, for the
 same reason the redo entry above lands there.
