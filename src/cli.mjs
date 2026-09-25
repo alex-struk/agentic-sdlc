@@ -11,6 +11,8 @@ const HELP = `sdlc <command> [args] [--flags]
                                    --adopt-briefs replaces a locally edited persona brief with the template
   checks [dir] [--self] [--json]   run the structural checks
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."] [--tier HIGH]
+  policy set <key>=<value> [--set <key>=<value> ...] [--unset <key> ...] --question "..." --recommendation "..." [--name <n>] [--dry-run]
+                                   propose a change to main's policy block at G-POL; keys are under policy (agents.backend=codex)
   rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>
   rule --pending                   rule every open proposal an agent holds the gate for
   rule <name> --settle             apply to main what an approved proposal settles about the missing tests its run was handed
@@ -40,7 +42,7 @@ const HELP = `sdlc <command> [args] [--flags]
 // its own top level, so `COMMANDS` is already the real object by the time they assign to it.
 let commandsLoaded = null;
 function loadCommands() {
-  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs"), import("./commands/withdraw.mjs"), import("./commands/scrub.mjs"), import("./commands/isolation.mjs")]);
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs"), import("./commands/withdraw.mjs"), import("./commands/scrub.mjs"), import("./commands/isolation.mjs"), import("./commands/policy.mjs")]);
   return commandsLoaded;
 }
 
