@@ -24,14 +24,17 @@
 // of that spec file as it now stands. A run writes the file's fingerprint on the row
 // (`file_sha`); a row written before runs did is a result of the file as it stood on the
 // first-parent line when the results file was written (`at`). A row ruled `test-wrong` or
-// `spec-wrong` is a result of a test ruled not to test the criterion, and an `attested` row is
-// somebody's word: neither closes anything. A test that exists and has not run yet is owed a
+// `spec-wrong` is a result of a test ruled not to test the criterion, a `fail` row the machine
+// failed — the target could not be reset or reached, so no assertion ran (`environmentFault`,
+// the definition calibrate halts on) — is a result of no test at all, and an `attested` row is
+// somebody's word: none of them closes anything. A test that exists and has not run yet is owed a
 // run, by `calibrate` where the project calibrates and by `verify` where it does not.
 //
-// **Reopening.** A closure written before rows carried a fingerprint is checked against the
-// commit that recorded it, and an item closed on a row that was not a result of its test as it
-// stood there is reopened by the next pipeline commit that touches this list, with the closure
-// kept beside it (`reopened`), and goes where an open item goes.
+// **Reopening.** Every closure the runner made is checked against the commit that recorded it,
+// by the rule above as it now stands, and an item closed on a row the rule rejects there — one
+// that was not a result of its test as it stood, or one whose test never reached the target —
+// is reopened by the next pipeline commit that touches this list, with the closure kept beside
+// it (`reopened`), and goes where an open item goes.
 //
 // **Withdrawing.** A ruler, with a written reason, through the same accounting line a condition
 // is withdrawn with (`condition-withdrawn missing-test/<id>: <why>`). A withdrawal holds for the
@@ -63,7 +66,7 @@ import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git } from "../lib/git.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
-import { isDisowned, testFingerprint } from "../testrun/results.mjs";
+import { environmentFault, isDisowned, testFingerprint } from "../testrun/results.mjs";
 import { isOpen, open, owedPath, read, readAt, rewrite } from "./owed.mjs";
 
 export const MISSING_TEST = "missing-test";
@@ -211,16 +214,26 @@ function workingTree(projectDir) {
   };
 }
 
+// Each answer is read once: a commit does not change, and closures recorded together are judged
+// against the same one.
 function commitTree(projectDir, rev) {
+  const once = (fn) => {
+    const seen = new Map();
+    return (...args) => {
+      const key = args.join("\u0000");
+      if (!seen.has(key)) seen.set(key, fn(...args));
+      return seen.get(key);
+    };
+  };
   return {
-    results: () => {
+    results: once(() => {
       let listed;
       try { listed = git(["ls-tree", "-r", "--name-only", rev, "--", "tests/results"], projectDir); } catch { return []; }
       return listed.split("\n").filter((f) => /^tests\/results\/[^/]+\/(latest|slice-\d+)\.json$/.test(f)).sort();
-    },
-    text: (rel) => showAt(projectDir, rev, rel),
-    blob: (rel) => blobAt(projectDir, rev, rel),
-    blobAsOf: (at, rel) => blobAsOf(projectDir, rev, at, rel),
+    }),
+    text: once((rel) => showAt(projectDir, rev, rel)),
+    blob: once((rel) => blobAt(projectDir, rev, rel)),
+    blobAsOf: once((at, rel) => blobAsOf(projectDir, rev, at, rel)),
   };
 }
 
@@ -262,9 +275,10 @@ function ofTestAsItStands(tree, row, at) {
 }
 
 // The row that shows a criterion's test ran at its current version. `current` says whether a row
-// is a result of the test as it now stands.
+// is a result of the test as it now stands. A failing row whose test never reached the target is
+// the environment's result, not the test's.
 function ranIn(rows, id, version, current = () => true) {
-  return (rows ?? []).find((r) => r?.id === id && r.file && RAN.has(r.result) && !isDisowned(r)
+  return (rows ?? []).find((r) => r?.id === id && r.file && RAN.has(r.result) && !isDisowned(r) && !environmentFault(r)
     && Number(r.version) === Number(version) && current(r)) ?? null;
 }
 
@@ -292,10 +306,10 @@ function listHistory(projectDir) {
 
 // The commit that recorded a closure: the first on the list's history holding the entry closed
 // as it is now. Looked for from the closure's own time first, since the commit that records a
-// closure is made just after it.
-function recordingCommit(projectDir, history, entry) {
+// closure is made just after it. `listAt` reads the list as a commit holds it.
+function recordingCommit(listAt, history, entry) {
   const closedAt = Date.parse(entry.closed?.at ?? "");
-  const holds = ({ sha }) => readAt(projectDir, MISSING_TEST, sha)
+  const holds = ({ sha }) => listAt(sha)
     .some((e) => e.item === entry.item && e.closed?.outcome === "met" && e.closed?.at === entry.closed.at);
   const from = Number.isNaN(closedAt) ? -1 : history.findIndex((c) => c.when >= Math.floor(closedAt / 1000) * 1000);
   const hit = (from === -1 ? undefined : history.slice(from).find(holds)) ?? history.find(holds);
@@ -304,37 +318,57 @@ function recordingCommit(projectDir, history, entry) {
 
 const closureKey = (e) => `${e.item}\u0000${e.closed?.at ?? ""}`;
 
-// The runner's closures that the rule above rejects, as closure key → why it is reopened. A
-// closure that records the fingerprint of the test that ran was made by that rule. One that does
-// not is judged at the commit that recorded it, by the same rule against what that commit held:
-// the results on file, the criterion's version and the test file as it then stood. An item whose
-// record is back, that is open again under another entry, or whose criterion is retired, is
-// already accounted for and is left alone.
+// The runner's closures that the rule above rejects, as closure key → why it is reopened. Each is
+// judged at the commit that recorded it, by the rule as it now stands, against what that commit
+// held: the results on file, the criterion's version and the test file as it then stood. A
+// closure that records a fingerprint was made by the rule as it stood then, and is judged again
+// all the same, since what the rule rejects can grow: a row whose test never reached the target
+// is rejected wherever it closed an item. An item whose record is back, that is open again under
+// another entry, or whose criterion is retired, is already accounted for and is left alone.
 function staleClosures(projectDir, stored, { records, index }) {
   const out = new Map();
-  const candidates = stored.filter((e) => e.closed?.outcome === "met" && e.closed.by === "runner" && !e.closed.file_sha
+  const candidates = stored.filter((e) => e.closed?.outcome === "met" && e.closed.by === "runner"
     && !records.has(e.item) && !retired(index.get(e.item)) && !stored.some((o) => o.item === e.item && isOpen(o)));
   if (!candidates.length) return out;
   const history = listHistory(projectDir);
+  const lists = new Map();
+  const listAt = (sha) => {
+    if (!lists.has(sha)) lists.set(sha, readAt(projectDir, MISSING_TEST, sha));
+    return lists.get(sha);
+  };
+  const trees = new Map();
+  const treeAt = (sha) => {
+    if (!trees.has(sha)) trees.set(sha, commitTree(projectDir, sha));
+    return trees.get(sha);
+  };
   for (const e of candidates) {
-    const commit = recordingCommit(projectDir, history, e);
+    const commit = recordingCommit(listAt, history, e);
     if (!commit) continue;
-    const version = indexIn(showAt(projectDir, commit, "spec/criteria-index.json")).get(e.id)?.version ?? e.version;
-    if (evidenceIn(commitTree(projectDir, commit), e.id, version)) continue;
-    out.set(closureKey(e), `${e.closed.why} is not a result of the test for ${e.id} as it stood when the item was closed at ${commit.slice(0, 8)}`
-      + disownedNote(projectDir, commit, e.closed.why, e.id));
+    const tree = treeAt(commit);
+    const version = indexIn(tree.text("spec/criteria-index.json")).get(e.id)?.version ?? e.version;
+    if (evidenceIn(tree, e.id, version)) continue;
+    out.set(closureKey(e), rejectedWhy(tree, commit, e));
   }
   return out;
 }
 
-// Says so where the row a closure named carries a ruling that disowns its test.
-function disownedNote(projectDir, commit, why, id) {
+// Why the row a closure named does not show its test ran, as the commit that recorded it held
+// the row: a test that never reached the target, a ruling that disowns the test, or a test other
+// than the one that stood.
+function rejectedWhy(tree, commit, e) {
+  const { why } = e.closed;
   const rel = /^(\S+\.json): /.exec(String(why ?? ""))?.[1];
-  if (!rel) return "";
-  let doc;
-  try { doc = JSON.parse(showAt(projectDir, commit, rel)); } catch { return ""; }
-  const row = (doc?.rows ?? []).find((r) => r?.id === id && isDisowned(r));
-  return row ? `; the row is ruled ${row.ruled}` : "";
+  let rows = [];
+  try { rows = (rel && JSON.parse(tree.text(rel))?.rows) || []; } catch { rows = []; }
+  const named = rows.filter((r) => r?.id === e.id);
+  // The fault is named and not quoted: a harness's message carries the machine's own paths.
+  if (named.some(environmentFault)) {
+    return `${why} is not a result of the test for ${e.id}: when the item was closed at ${commit.slice(0, 8)}, its test never reached the target,`
+      + " which could not be reset to its seed or could not be reached";
+  }
+  const disowned = named.find(isDisowned);
+  return `${why} is not a result of the test for ${e.id} as it stood when the item was closed at ${commit.slice(0, 8)}`
+    + (disowned ? `; the row is ruled ${disowned.ruled}` : "");
 }
 
 function specVersion(projectDir, domain, id) {

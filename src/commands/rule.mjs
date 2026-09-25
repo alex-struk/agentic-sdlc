@@ -967,7 +967,7 @@ function settledMessage(name, gate, stage, r) {
   const body = [
     ...(redo.length ? [`redo closed, derived again in the line of work ${name} approved: ${redo.join(", ")}`] : []),
     ...(redoWithdrawn.length ? [`redo withdrawn, the criterion is superseded or obsolete: ${redoWithdrawn.join(", ")}`] : []),
-    ...(reopened.length ? [`reopened, closed on a result that is not of its test as it stood: ${reopened.map(missingTestRef).join(", ")}`] : []),
+    ...(reopened.length ? [`reopened, closed on a row that does not show its test ran as it stood: ${reopened.map(missingTestRef).join(", ")}`] : []),
     ...(restored.length ? [`restored to ${stage}, moved outside what ${name} was handed: ${restored.map(missingTestRef).join(", ")}`] : []),
     ...[...to].map(([t, ids]) => `re-addressed to ${t}: ${ids.map(missingTestRef).join(", ")}`),
     ...(r.kept.length ? [`kept by ${stage}: ${r.kept.map(missingTestRef).join(", ")}`] : []),
@@ -1830,7 +1830,7 @@ function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, 
   for (const m of missingTests?.readdressed ?? []) lines.push(`  test re-addressed: ${missingTestRef(m.id)} from ${m.from} to ${m.to}`);
   if (missingTests?.kept?.length) lines.push(`  tests kept by the stage that could not supply them: ${missingTests.kept.map(missingTestRef).join(", ")}`);
   if (missingTests?.closed?.length) lines.push(`  test ran, closed: ${missingTests.closed.map(missingTestRef).join(", ")}`);
-  if (missingTests?.reopened?.length) lines.push(`  reopened, closed on a result that is not of its test as it stood: ${missingTests.reopened.map(missingTestRef).join(", ")}`);
+  if (missingTests?.reopened?.length) lines.push(`  reopened, closed on a row that does not show its test ran as it stood: ${missingTests.reopened.map(missingTestRef).join(", ")}`);
   for (const c of clauses ?? []) lines.push(`  clause owed: ${missingTestRef(c.id)} by ${c.stage}; a run of its test does not close it`);
   lines.push(`  recorded: ${gatePath} on ${recordedOn}`);
   return redactLocalPaths(lines.join("\n"), projectDir);
@@ -1989,7 +1989,7 @@ async function ruleCli({ pos, flags }) {
     for (const stage of r.unroutable) console.warn(`warning: ${pos[0]}: ${stage} takes no request; nothing was filed for it`);
     for (const c of r.clauses ?? []) console.log(`${pos[0]}: clause owed: ${missingTestRef(c.id)} by ${c.stage}; a run of its test does not close it`);
     if (!r.path && !r.addressed.length && !r.clauses?.length) { console.log(`${pos[0]}: nothing left to settle`); return 0; }
-    if (r.reopened?.length) console.log(`${pos[0]}: reopened, closed on a result that is not of its test as it stood: ${r.reopened.map(missingTestRef).join(", ")}`);
+    if (r.reopened?.length) console.log(`${pos[0]}: reopened, closed on a row that does not show its test ran as it stood: ${r.reopened.map(missingTestRef).join(", ")}`);
     if (r.restored?.length) console.log(`${pos[0]}: restored, moved outside what its run was handed: ${r.restored.map(missingTestRef).join(", ")}`);
     for (const [to, ids] of settledByTarget(r)) console.log(`${pos[0]}: re-addressed to ${to}: ${ids.map(missingTestRef).join(", ")}`);
     if (r.kept.length) console.log(`${pos[0]}: kept by the stage that could not supply them: ${r.kept.map(missingTestRef).join(", ")}`);

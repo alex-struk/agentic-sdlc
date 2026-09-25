@@ -220,6 +220,75 @@ test("an item closes only on a result row that ran its test at the current versi
   assert.match(e.closed.why, /tests\/results\/old\/latest\.json: R-1\.2 v2 fail/);
 });
 
+// A failing row whose tests never reached the application: the harness could not put the target
+// back to its seed, so no assertion ran (`docs/decisions/0056`, `0058`).
+const RESET_FAILED = "Error: could not reset the target to its seed before this test: the reset did not finish in time";
+const ASSERTED = "Error: expect(received).toBe(expected)\n\nExpected: \"shipped\"\nReceived: \"pending\"";
+const failing = (row, errors) => ({ ...row, result: "fail", tests: errors.map((error, i) => ({ title: `case ${i + 1}`, status: "failed", error })) });
+
+test("a failing row whose tests could not reach the target closes nothing; one whose assertion failed closes its item", (t) => {
+  const d = project(t);
+  records(d, [NAMED]);
+  commit(d, "record");
+  syncMissingTests(d, {});
+  records(d, []);
+  spec(d, "R-1.2", 2);
+  commit(d, "test derived");
+  syncMissingTests(d, { config: CALIBRATES });
+  const file = "tests/acceptance/orders/R-1.2.spec.ts";
+  const row = { id: "R-1.2", version: 2, file, file_sha: fingerprint(d, file) };
+
+  put(d, "tests/results/old/latest.json", JSON.stringify({ rows: [failing(row, [RESET_FAILED, RESET_FAILED])] }));
+  const r = syncMissingTests(d, { config: CALIBRATES });
+  assert.deepEqual(r.closed, [], "the test never asked the application anything");
+  const [e] = read(d, MISSING_TEST);
+  assert.equal(e.closed ?? null, null);
+  assert.equal(e.stage, "calibrate", "its test is still owed a run");
+
+  put(d, "tests/results/old/latest.json", JSON.stringify({ rows: [failing(row, [ASSERTED])] }));
+  assert.deepEqual(syncMissingTests(d, { config: CALIBRATES }).closed, ["R-1.2"], "a test that ran and failed ran");
+});
+
+// A calibration whose target could not be reset closed items on its rows before this rule held.
+// Each such closure is judged again at the commit that recorded it, fingerprint or not, and is
+// reopened where the rule rejects it; a closure on a row whose test ran stays.
+test("an item closed on a row whose tests could not reach the target is reopened and owed a run, once", (t) => {
+  const d = project(t);
+  records(d, [NAMED, { ...LEGACY, missing: "an order in the shipped state", owner: "contract" }]);
+  commitAt(d, "records", "2030-01-01T00:00:00Z");
+  syncMissingTests(d, {});
+  records(d, []);
+  spec(d, "R-1.1", 1);
+  spec(d, "R-1.2", 2);
+  commitAt(d, "tests derived", "2030-01-02T00:00:00Z");
+  syncMissingTests(d, { config: CALIBRATES });
+  commitAt(d, "owed a run", "2030-01-02T00:00:01Z");
+  const at = "2030-01-03T00:00:00.000Z";
+  const row = (id, version) => ({ id, version, file: `tests/acceptance/orders/${id}.spec.ts`, file_sha: fingerprint(d, `tests/acceptance/orders/${id}.spec.ts`) });
+  put(d, "tests/results/old/latest.json", JSON.stringify({ target: "old", at, rows: [failing(row("R-1.1", 1), [ASSERTED]), failing(row("R-1.2", 2), [RESET_FAILED])] }));
+  const doc = parseYaml(git(["show", "HEAD:.sdlc/owed.yaml"], d));
+  for (const e of doc.owed) {
+    e.closed = { outcome: "met", why: `tests/results/old/latest.json: ${e.id} v${e.version} fail`, file_sha: row(e.id, e.version).file_sha, by: "runner", at };
+  }
+  put(d, ".sdlc/owed.yaml", stringifyYaml(doc));
+  commitAt(d, "stage(calibrate): calibrate against old", "2030-01-03T00:00:01Z");
+
+  const r = syncMissingTests(d, { config: CALIBRATES });
+  assert.deepEqual(r.reopened, ["R-1.2"], "only the closure on a row that never reached the target");
+  assert.deepEqual(r.closed, []);
+  const byId = new Map(read(d, MISSING_TEST).map((e) => [e.item, e]));
+  assert.equal(byId.get("R-1.1").closed.outcome, "met");
+  const e = byId.get("R-1.2");
+  assert.equal(e.closed ?? null, null);
+  assert.equal(e.stage, "calibrate");
+  assert.equal(e.target, "old");
+  assert.equal(e.reopened.at(-1).closed.why, "tests/results/old/latest.json: R-1.2 v2 fail");
+  assert.match(e.reopened.at(-1).why, /R-1\.2: .*its test never reached the target/);
+  commitAt(d, "record: reopened", "2030-01-03T00:00:02Z");
+  const again = syncMissingTests(d, { config: CALIBRATES });
+  assert.deepEqual([again.path, again.reopened], [null, []], "a second pass changes nothing");
+});
+
 test("without a calibration target, a test owed a run is owed by verify", (t) => {
   const d = project(t);
   records(d, [NAMED]);
@@ -504,6 +573,9 @@ test("an open item naming a slice's criterion blocks it unless withdrawn in the 
   const earlier = [{ ...rows[0], file_sha: "0".repeat(40) }];
   assert.deepEqual(blockingMissingTests(d, { claimed, withdrawn: ["R-1.1"], rows: earlier }).map((e) => e.item), ["R-1.2"],
     "a row from a different test file does not show this one ran");
+  const unreached = [failing(rows[0], [RESET_FAILED])];
+  assert.deepEqual(blockingMissingTests(d, { claimed, withdrawn: ["R-1.1"], rows: unreached }).map((e) => e.item), ["R-1.2"],
+    "a row whose test could not reach the target does not show it ran");
   assert.deepEqual(blockingMissingTests(d, { claimed: ["R-1.3"] }), []);
 });
 

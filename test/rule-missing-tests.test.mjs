@@ -298,7 +298,7 @@ test("rule --settle reopens an item its approval closed on a result of an earlie
   assert.equal(item.stage, "verify");
   assert.deepEqual(item.reopened.map((x) => x.closed), [closed]);
   assert.match(git(["log", "-1", "--format=%an|%s", "main"], d), /^sdlc\|record\(G3\): derive-tests-a settles 1 missing test: 1 reopened/);
-  assert.match(git(["log", "-1", "--format=%b", "main"], d), /reopened, closed on a result that is not of its test as it stood: missing-test\/R-1\.1/);
+  assert.match(git(["log", "-1", "--format=%b", "main"], d), /reopened, closed on a row that does not show its test ran as it stood: missing-test\/R-1\.1/);
   const head = git(["rev-parse", "HEAD"], d);
   assert.deepEqual(settleRuling(d, "derive-tests-a").reopened, []);
   assert.equal(git(["rev-parse", "HEAD"], d), head, "settling again commits nothing");
