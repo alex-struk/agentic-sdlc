@@ -95,7 +95,11 @@ run in a mode that refuses a shell outright, which is why the first version of t
 nothing at all — the agent was refused on every attempt and correctly reported that it had made
 none. The CLI is on nobody's PATH, so the runner passes its own entry point as `$SDLC_BIN`.
 
-Three things bound that loop, and each exists for a reason.
+Three things bound that loop, and each exists for a reason. They are judgement, so they are
+written in the contract skill (`src/stages/skills/contract.md`, "Proving the oracle starts")
+rather than in the stage's prompt, which only asks for the oracle to be brought up and taken down
+again. A project with its own copy of the skill (`.sdlc/skills/contract.md`) may set them
+differently. The route-parameter rule above and the seed guidance live in the skill the same way.
 
 **Done is not "a page was served".** An application that starts against a broken database serves
 a page too. The bar is that the migration ran, the seed loaded, and a record named in

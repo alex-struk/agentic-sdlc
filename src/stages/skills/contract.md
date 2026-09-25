@@ -28,6 +28,15 @@ real markup). Archaeology may already have appended pages here for the domains i
 and normalise what is there, and add what is still missing. Never delete a page — a later
 criterion might still need it even if this run cannot see why.
 
+A route parameter a test has no way to obtain makes every criterion on that page untestable, so
+check each one you write. If a page's route carries ":something", a test must be able to get a
+value for it: either it is a handle in tests/seed/manifest.yaml, or some observation somewhere
+returns it. A test that creates a record and then cannot address it is the common case — if an
+action creates something the criteria later refer to, the page it lands on needs an observation
+returning that record's identifier. And if a page is also reachable as the signed-in person's own —
+their profile, their settings, their dashboard — declare that as its own entry with no parameter,
+because a test acting as themselves has no id to pass and should not have to invent one.
+
 **`spec/contract/personas.yaml`.** Every role the criteria name, with a `can` list, and a
 `sign_in` entry for every identity this project's configuration actually uses (`oracle.identity`
 and each `targets.<t>.identity` — read `.sdlc/config.yaml`, never guess). `session-route` needs
@@ -66,6 +75,20 @@ names that read as placeholders rather than real people — never anything that 
 for a real record. Write `tests/seed/manifest.yaml` alongside it, naming every inserted record by
 a handle a test will refer to (`users.applicantOne`, not a raw UUID with no explanation).
 
+Reach for the seed before you call a state unreachable. An interface will not create the past: a
+form that takes a deadline refuses one that has already gone by, a trial cannot be started six
+months ago, a retention period cannot be waited out. The seed can put a record straight into the
+database in whatever state the schema allows, and that is what it is for. A whole area of the
+criteria going untestable because no screen can set up its starting point is almost always this,
+and it is a row in a seed file rather than a limitation.
+
+Seed the conditions, never the outcome. A record the application will act on is legitimate: an
+opportunity that is published with a deadline that has passed, an account whose trial ended
+yesterday. A record already in the state the criterion is about is not, because the application
+then did nothing and the test is checking your fixture rather than the system. Set up the before
+and let the application produce the after — if nothing in the application will produce it, say so
+instead of writing it in.
+
 **`.sdlc/oracle/compose.yml` (or wherever `oracle.compose_override` names).** Only when this
 project configures `oracle` at all. A Docker Compose override layered on top of
 `oracle.compose` that: publishes the application on `${SDLC_APP_PORT}`, the database on
@@ -76,6 +99,32 @@ service the base compose file loads an `env_file` for, uses Compose's `!override
 override's own `environment` block actually wins over it rather than merging underneath it. Define
 the migration one-off service `oracle.migrate_service` names, if the config names one. Without
 `oracle` configured at all, there is nothing to write here.
+
+## Proving the oracle starts
+
+When this project configures `oracle`, your prompt asks you to bring it up with the override you
+wrote, and to take it down again before you finish. Nothing you can read tells you whether the
+application will start, so this is how you find out.
+
+Done is not "a page was served": done is that the migration ran, the seed loaded, and a record from
+tests/seed/manifest.yaml is visible through the application itself. An application that starts with
+a broken database connection also serves a page.
+
+If it does not come up, read the container logs, change this override, and try again. Three
+attempts, not more. Each attempt rebuilds the image and takes minutes, and a failure you cannot fix
+in three is a failure a person needs to see.
+
+You may change this override's environment, paths, ports and service definitions. You may not make
+the application easier to start by weakening it: do not skip or disable the migration, do not relax
+authentication or authorisation, do not stub out a service the application really uses, and do not
+set a flag that changes what the application does rather than where it runs. This target is the
+definition of correct behaviour for everything built against it, and an oracle that starts because
+it was weakened is worse than one that does not start at all.
+
+If it still will not start, that is a result and not a failure. Leave the override as your best
+honest attempt, and say in your journal exactly what happens, what you tried, and what you think is
+needed. A contract whose surface is complete and whose oracle does not start is a reasonable thing
+to put in front of a gate.
 
 ## The journal
 

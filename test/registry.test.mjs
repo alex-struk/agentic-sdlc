@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STAGES } from "../src/profiles.mjs";
@@ -221,6 +221,40 @@ test("a project's own .sdlc/skills/<stage>.md replaces the pipeline's skill for 
   assert.match(text, /the project's own probe file/);
   assert.doesNotMatch(text, /app\/PROBE\.md/);
   assert.match(skillText("probe"), /app\/PROBE\.md/, "with no project named, the pipeline's");
+});
+
+// How to judge belongs in the skill a project can replace; the prompt keeps what the checks
+// enforce and what is substituted from configuration. Line by line, the sentences below are
+// judgement.
+test("the contract stage's judgement is in its skill, and its prompt carries the mechanics", () => {
+  const config = {
+    sources: { old: { repo: "https://example.org/old.git", commit: "0123456789abcdef0123456789abcdef01234567" } },
+    oracle: { target: "old", compose: "sources/old/docker-compose.yml", base_url: "http://localhost:3000", identity: "session-route", migrate_service: "migrate" },
+  };
+  const prompt = stageFor("contract").prompt({ config });
+  const skill = readFileSync(skillPath("contract"), "utf8").replace(/\s+/g, " ");
+  for (const judgement of [
+    "A route parameter a test has no way to obtain makes every criterion on that page untestable",
+    "Reach for the seed before you call a state unreachable.",
+    "Seed the conditions, never the outcome.",
+    "Done is not \"a page was served\"",
+    "Three attempts, not more.",
+    "You may not make the application easier to start by weakening it",
+    "If it still will not start, that is a result and not a failure.",
+  ]) {
+    assert.ok(!prompt.includes(judgement), `the prompt no longer carries: ${judgement}`);
+    assert.ok(skill.includes(judgement), `the skill carries: ${judgement}`);
+  }
+  assert.match(prompt, /node \$SDLC_BIN oracle up/);
+  assert.match(prompt, /node \$SDLC_BIN oracle down/);
+  assert.match(prompt, /\$\{SDLC_APP_PORT\}/);
+});
+
+test("derive-tests leaves how to judge a not-testable reason to its skill", () => {
+  const prompt = stageFor("derive-tests").prompt({ domain: "alpha", deriveTestsCriteria: [{ id: "R-1.1", version: 1, statement: "s" }] });
+  assert.ok(!prompt.includes("not that the criterion is hard"));
+  assert.match(prompt, /tests\/acceptance\/not-testable\.yaml instead of a file: \{ id: <ID>, version: <version>, reason: "<why>" \}/);
+  assert.match(readFileSync(skillPath("derive-tests"), "utf8"), /A reason has to be real: name what is\s+missing, not that the criterion is "hard" or "out of scope"\./);
 });
 
 test("recommendationFrom extracts the first sentence, handling dots in filenames", () => {
