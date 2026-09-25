@@ -28,6 +28,16 @@ since. A binding sent back more often than `policy.loops.rebind` allows (two by 
 `docs/config.md`) is still rebound, and the proposal the run opens is escalated by the runner to
 G3's escalation target instead of being put to G3's holder (`docs/stages/run.md`, "Outputs").
 
+The run also compares the target's `tests/adapters/<t>/bindings.yaml`, where one exists, with
+`spec/contract/surface.yaml`, using the same comparison as the bindings post-check below
+(`bindingGaps`, `src/spec/surface.mjs`). Where the contract declares members the file does not
+name, or the file names members the contract no longer declares, the prompt lists each of them
+by page and says that the existing bindings stand and are added to. This is how an adapter
+catches up with a revised contract: the run is asked for what its post-check will demand,
+together with any open rebind entries
+(`docs/decisions/0049-an-adapter-the-contract-has-outgrown.md`). A target with no bindings file
+is being bound for the first time and is asked for the whole surface already.
+
 ### Binding a target whose application is still in an unmerged proposal
 
 A `build` slice writes the application under `app/` on `proposal/build-slice-<n>` and opens it at
@@ -146,6 +156,13 @@ A first run's proposal name (`bind-adapter-<t>`) is fixed, so a second run again
 still-unruled proposal is refused, the same as `archaeology`'s per-domain proposal. Once that
 proposal is ruled, a later run against the same target opens a fresh, separately numbered proposal
 (`bind-adapter-<t>-2`, and so on) rather than colliding with the first.
+
+A run after a contract revision starts from the adapter on `main` and is asked for the members
+that adapter does not name, not for a new binding of the whole surface. A run that fails its
+post-checks leaves its adapter changes in the working tree, and `sdlc run` refuses a tree with
+uncommitted changes, so the next run starts once they are committed elsewhere or discarded.
+`sdlc resume` re-judges those files without an agent turn (`docs/stages/resume.md`), so it
+finishes a run only when the files already pass.
 
 ## Failure modes
 

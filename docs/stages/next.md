@@ -23,6 +23,7 @@ whichever branch is checked out and whatever is uncommitted.
 | `spec/criteria-index.json`, `spec/domains/<d>.md` | whether a domain is ratified, and each criterion's current version |
 | `tests/acceptance/<d>/*.spec.ts` headers | stale tests: a header version below the index's |
 | `tests/results/<t>/latest.json`, `applied.yaml`, `tests/adapters/<t>` | whether calibration is clean, and whether an adapter has changed since a rebind was filed |
+| `spec/contract/surface.yaml`, `tests/adapters/<t>/bindings.yaml` | stale adapters: members the contract declares that a target's bindings do not name, or names they carry that it no longer declares |
 | `plan/tasks.md` | the slices, in build order |
 
 ## What it decides
@@ -34,7 +35,7 @@ first when more than one is ready is `policy.next.order` (`docs/config.md`), `pr
 | Kind | What is ready | Order within the kind |
 |---|---|---|
 | `proposals` | an open proposal whose holder is an agent (`sdlc rule <name> --by agent:<persona>`); an escalation to a role an agent plays, raised by someone else (`--by agent:<target>`); a build proposal with no verify result for the application it carries (`sdlc run verify --slice <n>`) | oldest proposal branch first |
-| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again); open requests (`--revise`); redo entries and stale tests (`derive-tests --domain <d> --stale`); rebind entries (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target, then slice |
+| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again); open requests (`--revise`); redo entries and stale tests (`derive-tests --domain <d> --stale`); rebind entries (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed); stale adapters (`bind-adapter --target <t>`, one run with that target's rebinds); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target (the oracle's first), then slice |
 | `sequence` | the next stage the phases call for | the first phase whose exit criterion is not met; within it, the sequence's order |
 
 A condition is owed and listed, and is never a reason to start a run
@@ -49,6 +50,15 @@ deviation that runs the owner again.
 written for it yet (`docs/operating-model.md` §7): `next` reads the entries in `.sdlc/owed.yaml`
 and, beside them, an item for each record nothing accounts for, owed by the stage the record names
 or by `contract`. The `owed:` line counts them by owing stage (`69 missing-test (contract)`).
+
+**Stale adapters.** A target's adapter is stale when its `bindings.yaml` on `main` disagrees with
+the surface on `main` by name, the comparison the bind-adapter post-check makes. The oracle's is
+offered as owed work at once; any other target's is offered once the phases before Build are
+closed, because its application exists only on a build proposal until then, and until that point
+it is listed on the `stale adapters` line with the phase it waits for. A target that already has
+a run for its rebinds is offered one run for both. Nothing is stored: the approval that brings
+the adapter up to date clears it
+(`docs/decisions/0049-an-adapter-the-contract-has-outgrown.md`).
 
 **Proposals.** A proposal is open when nobody has ruled it, on its branch or on `main` — the same
 test `rule --pending` and the revise pre-checks use. A proposal is left out when a later proposal
@@ -101,12 +111,16 @@ waiting on a person:
   <role>: <proposal> — <why> — sdlc rule <proposal> approve|return --by <role>
 owed: 1 condition (contract), 2 redo (derive-tests)
 stale tests: none
+stale adapters: 12 members in old, 12 members in new (bound in phase 4 Build)
 ```
+
+The `stale adapters` line appears only when an adapter is stale.
 
 `--json` prints the same as one object: `state` (`run`, `waiting` or `idle`), `next` (the chosen
 item, with `kind`, `stage`, `args`, `command`, `why` and `rule`), `ready` (every ready item in
 order, `next` first), `waiting`, `owed` (open entries counted by kind and stage), `stale` (by
-domain), `phase`, `complete`, `blocked` and `order`.
+domain), `staleAdapters` (by target: the `missing` and `extra` names, whether it is `offered`,
+and what it `waits` for when it is not), `phase`, `complete`, `blocked` and `order`.
 
 Every `sdlc run` and every `sdlc rule` ends with the short form: the `next:` and `why:` lines, and
 a count of what else is ready and waiting.

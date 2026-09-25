@@ -95,7 +95,10 @@ flowchart LR
 
 Every stage reads its inputs from `main` and can be run again at any time. Going backwards is
 safe: a changed criterion bumps its version, tests written against the older version are
-marked stale, and a slice that claims a stale criterion cannot pass verify.
+marked stale, and a slice that claims a stale criterion cannot pass verify. A changed contract
+leaves every adapter that does not name what it now declares stale in the same way, and that
+adapter is owed a binding run
+(`docs/decisions/0049-an-adapter-the-contract-has-outgrown.md`).
 
 ## 5. Three layers
 
@@ -269,7 +272,7 @@ longer relied on to notice which omissions matter.
 The design defines the phases, their order and their exit criteria, and the recorded state says
 how far a project has got through them. `sdlc next` reads that state on `main` and names the next
 command and the rule that chose it (`docs/stages/next.md`): phase exit criteria, what each stage
-owes, stale tests, open and escalated proposals, and the plan's slice order.
+owes, stale tests, stale adapters, open and escalated proposals, and the plan's slice order.
 
 - It only reads. Records change only through stage runs and rulings, which are commits.
 - Where more than one kind of work is ready (an open proposal, owed work, the next step of the
