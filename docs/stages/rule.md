@@ -420,8 +420,20 @@ with this ruling (`by: <proposal>`, `gate`, `approved_by`): the hand-ons to `der
 held back, and any other its finish did not apply. An item the run was handed and did not hand on
 is recorded as kept by its stage (`kept`, stamped the same way); it stays open, and `sdlc next`
 lists it as waiting on a ruler rather than offering the stage again. A stage with no agent turn is
-handed nothing, so its approvals settle nothing. All of it is staged into the merge commit, and
-the terminal says which items were opened, moved, kept or closed.
+handed nothing, so its approvals settle nothing.
+
+An approval also closes the redo entries its line of work answered. A run that derives a
+criterion again closes its entry on its own proposal branch; when that proposal is returned and
+revised, the revision that is approved was cut from `main` after the return, where the entry is
+still open. The line is read back from the approved proposal: its branch was cut from the commit
+that recorded the return it answers, which names the proposal it revised, and so on back to a
+proposal no return led to. Each entry a run in that line closed on its branch, out of those open
+where its branch was cut, is closed on `main` as met, naming that run as the evidence and stamped
+with this ruling (`by: <proposal>`, `gate`, `approved_by`), and the `test-wrong` records it was
+filed from are dropped with it. An entry filed since is a different filing and stays open.
+
+All of it is staged into the merge commit, and the terminal says which items were opened, moved,
+kept or closed.
 
 **An approval whose settlement is not on `main`** is settled by
 
@@ -431,8 +443,9 @@ sdlc rule <name> --settle
 
 which reads the ruling from the gate file on `main` and the handed list from the approval's
 merge, brings the list into line with `main` the way every pipeline commit that touches it does,
-and commits what it changed as the pipeline author: `record(<gate>): <name> settles <n> missing
-tests: …`, each item named in the body. A move the approval's merge made to an item its run was
+closes the redo entries its line of work answered, and commits what it changed as the pipeline
+author: `record(<gate>): <name> settles <n> missing tests: …` (with `; <n> tests derived again
+(redo)` where it closed redo entries), each item named in the body. A move the approval's merge made to an item its run was
 not handed is reversed first, where it still stands and nothing has kept the item since: the item
 goes back to the approved stage with the reason it had there, stamped `by: runner` and
 `reverts: <name>`, and the body lists it as restored. It is not a ruling and asks for no seat. A proposal with

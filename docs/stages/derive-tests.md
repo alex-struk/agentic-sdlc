@@ -63,8 +63,10 @@ redo id is derived the same blind way a fresh one is, from its criterion and the
   future run. The closed entry stays on file as the record that it was sent. The agent never touches this
   file — it is the pipeline's own bookkeeping, written by the stage after its post-checks have judged
   the tree and before the proposal is opened, so it lands on the proposal branch with everything else
-  and is merged by the same ruling. A run whose post-checks fail leaves the list untouched: the
-  request was not answered.
+  and is merged by the same ruling. A proposal that is returned and revised is approved as a later
+  proposal whose branch was cut from `main`, where the entries are still open; that approval closes
+  them too, since it approves the line of work that derived them (`docs/stages/rule.md`). A run
+  whose post-checks fail leaves the list untouched: the request was not answered.
 - `tests/results/<target>/applied.yaml`, for every target that has one, with the `test-wrong`
   ruling record for each derived id dropped from its `rulings` list. The redo entry and the ruling
   record are two halves of the same answer: left behind, the record would mark the freshly written
