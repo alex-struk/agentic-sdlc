@@ -10,7 +10,15 @@ import { stalledOn } from "./escalation.mjs";
 import { propose } from "../commands/propose.mjs";
 import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
-import { endedBecause, runAgent, turnsFor, writeMcpConfig } from "./executor.mjs";
+import { endedBecause, runAgent, turnsFor, writeMcpConfig, metricsOf } from "./executor.mjs";
+import { agentFor } from "./agents.mjs";
+import { engineLabel } from "../lib/engine.mjs";
+
+// The run-record tail naming what ran the turn (`onEngine` in `src/commands/run.mjs`).
+function onEngine(r) {
+  const label = engineLabel(r?.engine);
+  return label ? `, on ${label}` : "";
+}
 import { skillText } from "../stages/registry.mjs";
 import { postCheckRepairs } from "../config/policy.mjs";
 import { settleRequestedRevision } from "../stages/proposals.mjs";
@@ -136,9 +144,9 @@ function commitPostCheckFailure(projectDir, stage, agentResult, messages) {
     stage: stage.name,
     title: `${stage.name}: post-checks failed`,
     body,
-    metrics: { cost: agentResult.cost, turns: agentResult.turns, session: agentResult.sessionId },
+    metrics: metricsOf(agentResult),
   });
-  const runPath = appendRun(projectDir, `run ${stage.name}: post-checks failed`);
+  const runPath = appendRun(projectDir, `run ${stage.name}: post-checks failed${onEngine(agentResult)}`);
   stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): post-checks failed`], projectDir);
   return { ok: false, journal, messages };
@@ -192,6 +200,8 @@ async function runFixTurn(cwd, stage, ctx, messages) {
       mcpConfig,
       allowedTools: stage.allowedTools,
       env: stage.env?.(ctx, ctx.config),
+      // The same backend and model as the turn it repairs, resolved the same way.
+      agent: agentFor(ctx.config, stage.name),
     });
   } finally {
     rmSync(skillDir, { recursive: true, force: true });
@@ -342,6 +352,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
         turns: (result.turns ?? 0) + (fix.turns ?? 0),
         sessionId: agentResult.sessionId,
         raw: agentResult.raw,
+        ...(agentResult.engine ? { engine: agentResult.engine } : {}),
       };
 
       post = stage.postChecks(projectDir, ctx);
@@ -373,11 +384,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     stage: stage.name,
     title: resolveTitle(stage, ctx),
     body: result.text,
-    metrics: { cost: result.cost, turns: result.turns, session: result.sessionId },
+    metrics: metricsOf(result),
   });
   appendRun(projectDir, fixTurnsRun
-    ? `run ${stage.name}: ok after ${fixTurnsRun === 1 ? "a fix turn" : `${fixTurnsRun} fix turns`}, cost ${result.cost}, turns ${result.turns}`
-    : `run ${stage.name}: ok, cost ${result.cost}, turns ${result.turns}`);
+    ? `run ${stage.name}: ok after ${fixTurnsRun === 1 ? "a fix turn" : `${fixTurnsRun} fix turns`}, cost ${result.cost}, turns ${result.turns}${onEngine(result)}`
+    : `run ${stage.name}: ok, cost ${result.cost}, turns ${result.turns}${onEngine(result)}`);
 
   // The state site is a tracked artifact of `main` and of nothing else. A gated stage's
   // work lands on a `proposal/<name>` branch, and every page of the site is regenerated
@@ -428,6 +439,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     const p = stage.proposal({ ...ctx, projectDir, agentText: account });
     const { branch } = propose(projectDir, p.name, {
       gate: stage.gate, question: p.question, recommendation: p.recommendation, page: account, paths: changed,
+      engine: result.engine ?? null,
     });
     // Owed work sent back more times than the policy allows is escalated here, on the
     // proposal that answers it, before any ruling can be asked of the gate holder

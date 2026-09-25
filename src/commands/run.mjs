@@ -8,7 +8,9 @@ import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
 import { handedNote } from "../spec/missing-tests.mjs";
 import { materialise, collect, workspaceScopeNote, workspaceScopeViolations } from "../runner/workspace.mjs";
-import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig } from "../runner/executor.mjs";
+import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig, metricsOf } from "../runner/executor.mjs";
+import { agentFor, codexRefusal } from "../runner/agents.mjs";
+import { engineLabel } from "../lib/engine.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
@@ -41,12 +43,19 @@ function agentTurnFailed(projectDir, stage, r) {
     stage: stage.name,
     title: `${stage.name}: agent turn failed`,
     body,
-    metrics: { cost: r.cost, turns: r.turns, session: r.sessionId },
+    metrics: metricsOf(r),
   });
-  const runPath = appendRun(projectDir, `run ${stage.name}: agent turn failed`);
+  const runPath = appendRun(projectDir, `run ${stage.name}: agent turn failed${onEngine(r)}`);
   stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): agent turn failed`], projectDir);
   return { ok: false, journal, messages: [reason] };
+}
+
+// What ran a turn, as the tail of its run-record line: the record says what ran the work on
+// every line an agent turn produced, failed or not.
+export function onEngine(r) {
+  const label = engineLabel(r?.engine);
+  return label ? `, on ${label}` : "";
 }
 
 // How many discarded paths a message names before it stops counting. Long enough that a
@@ -78,9 +87,9 @@ function workOutsideCollect(projectDir, stage, r, ws, collectPaths, dropped) {
     stage: stage.name,
     title: `${stage.name}: work written where it is not collected`,
     body: [r.text, message].filter(Boolean).join("\n\n"),
-    metrics: { cost: r.cost, turns: r.turns, session: r.sessionId },
+    metrics: metricsOf(r),
   });
-  const runPath = appendRun(projectDir, `run ${stage.name}: work written where it is not collected`);
+  const runPath = appendRun(projectDir, `run ${stage.name}: work written where it is not collected${onEngine(r)}`);
   stageAll(projectDir, [relative(projectDir, journal), relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): work written where it is not collected`], projectDir);
   return { ok: false, journal, dropped, messages: [message] };
@@ -165,7 +174,15 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   const scope = workspaceScopeViolations(name, wsMode, collectPaths, contextPaths);
   if (scope.length) throw new Error(scope.join("\n"));
 
+  // Which backend and model this stage's turns run on (`src/runner/agents.mjs`): the project's
+  // `policy.agents`, or an operator's `SDLC_AGENT_BACKEND` for this run.
+  const agent = stage.agent === false ? null : agentFor(config, name);
   const pre = stage.preChecks(projectDir, ctx);
+  // A stage whose safety rests on something the chosen backend cannot give is refused here,
+  // with the pre-checks, before anything is spent: a stage with no shell on Codex, unless the
+  // project accepted the weaker stage in its policy.
+  const refusal = agent ? codexRefusal(stage, config, agent) : null;
+  if (refusal) pre.push({ ok: false, messages: [refusal] });
   // After the stage's own pre-checks, which are what read the owed work this run is handed.
   if (stage.gate) pre.push(checkOwedLimits(projectDir, stage, ctx));
   // A pre-check can pass and still have something to say — a turn ceiling that looks too
@@ -293,6 +310,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       console.log(prompt);
       console.log(`skill: ${skillPath}`);
       console.log(`workspace: ${wsMode}`);
+      console.log(`agent: ${agent.backend}${agent.model ? ` ${agent.model}` : " (the CLI's default model)"}, from ${agent.from}`);
       // `prepare` writes real files, so it does not run on a dry run at all — this is
       // the only account of it a dry run gives, and only for a stage that has one.
       if (stage.prepare) console.log("prepare: skipped on dry run");
@@ -323,7 +341,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
     // agent turn is a run, and leaving no trace of it is how "nothing happened" gets
     // confused with "nothing was attempted".
     try {
-      await preflightAuth();
+      await preflightAuth(agent);
     } catch (e) {
       const runPath = appendRun(projectDir, `run ${name}: authentication check failed`);
       stageAll(projectDir, [relative(projectDir, runPath)]);
@@ -372,7 +390,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
       const r = await runAgent({
         cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name, stage.defaultTurns),
-        mcpConfig, allowedTools: stage.allowedTools, env: envVars,
+        mcpConfig, allowedTools: stage.allowedTools, env: envVars, agent,
       });
       if (!r.ok) return agentTurnFailed(projectDir, stage, r);
 

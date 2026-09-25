@@ -7,7 +7,9 @@ import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } from "../runner/persona.mjs";
-import { runAgent, endedBecause, preflightAuth, turnsFor, DEFAULT_MAX_TURNS } from "../runner/executor.mjs";
+import { runAgent, endedBecause, preflightAuth, turnsFor, DEFAULT_MAX_TURNS, metricsOf } from "../runner/executor.mjs";
+import { rulingAgentFor } from "../runner/agents.mjs";
+import { engineFrontMatter, engineLabel } from "../lib/engine.mjs";
 import { acceptanceTypecheck, formatTypecheckEvidence } from "../runner/typecheck.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { stallReason } from "../runner/escalation.mjs";
@@ -70,8 +72,18 @@ function blockScalar(text) {
 // turn that was paid for. The session named is the first turn's — the transcript a person
 // would go back and read is the one the ruling started as, not whichever turn happened to
 // answer last.
+// What ran the turns is carried the same way: both turns of one ruling run on the same
+// backend and model, and the first turn's record of it is the one kept.
 function sumMetrics(a, b) {
-  return { cost: (a?.cost ?? 0) + (b?.cost ?? 0), turns: (a?.turns ?? 0) + (b?.turns ?? 0), session: a?.session || b?.session || "" };
+  const engine = a?.engine ?? b?.engine;
+  return { cost: (a?.cost ?? 0) + (b?.cost ?? 0), turns: (a?.turns ?? 0) + (b?.turns ?? 0), session: a?.session || b?.session || "", ...(engine ? { engine } : {}) };
+}
+
+// The run-record tail naming what ran a ruling's turn; nothing for a person's ruling or for
+// an escalation no turn produced.
+function onEngine(metrics) {
+  const label = engineLabel(metrics?.engine);
+  return label ? ` on ${label}` : "";
 }
 
 // The gate file's body differs by who ruled and how: a human writes a free-text
@@ -116,8 +128,11 @@ function gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, 
     if (unparsed?.length) text += `unparsed_conditions:\n${unparsed.map((c) => `  - ${JSON.stringify(c)}`).join("\n")}\n`;
   }
   if (metrics) {
-    const { cost = 0, turns = 0, session = "" } = metrics;
+    const { cost = 0, turns = 0, session = "", engine = null } = metrics;
     text += `cost: ${cost}\nturns: ${turns}\nsession: ${JSON.stringify(session)}\n`;
+    // What ran the ruling turn. Absent where no turn ran — a mandatory escalation — and from
+    // a person's ruling, which carries no metrics at all.
+    for (const line of engineFrontMatter(engine)) text += `${line}\n`;
   }
   text += `at: ${new Date().toISOString()}\n`;
   return text;
@@ -761,7 +776,7 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
   // the proposal page (`src/lib/redact.mjs`).
   writeText(join(projectDir, gatePath),
     redactLocalPaths(gateFileText({ gate, verdict, by, heldBy, note, rationale, conditions, unparsed, metrics, reprompt }), projectDir));
-  const runPath = appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})`);
+  const runPath = appendRun(projectDir, `rule ${name} ${verdict} at ${gate} by ${by} (${heldBy})${onEngine(metrics)}`);
   const paths = [gatePath, relative(projectDir, runPath)];
   if (proposalAppended) paths.push(relative(projectDir, proposalPath));
   stagePaths(projectDir, paths);
@@ -1124,7 +1139,7 @@ function writeEscalation(projectDir, { name, gate, by, escalateTo, rationale, me
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   writeText(join(projectDir, gatePath),
     redactLocalPaths(gateFileText({ gate, verdict: "escalated", by, heldBy: "agent", escalateTo, stalled, rationale, metrics, reprompt }), projectDir));
-  const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}`
+  const runPath = appendRun(projectDir, `rule ${name} escalated at ${gate} to ${escalateTo ?? "?"} by ${by}${onEngine(metrics)}`
     + (stalled ? ` — stalled: ${stalled}` : ""));
   stagePaths(projectDir, [gatePath, relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `rule(${gate}): ${name} ${stalled ? "stalled" : `escalated to ${escalateTo ?? "?"}`}`], projectDir);
@@ -1185,7 +1200,7 @@ function recordRefusal(projectDir, { name, gate, by, heldBy, produced, reason, m
   try {
     if (branch !== "main") git(["checkout", "-q", "main"], projectDir);
     const journalPath = writeJournal(projectDir, { stage: "rule", title: `${name} ${word} at ${gate}`, body, metrics });
-    const runPath = appendRun(projectDir, `rule ${name} ${word} at ${gate} by ${by} (${heldBy}): ${headline}`);
+    const runPath = appendRun(projectDir, `rule ${name} ${word} at ${gate} by ${by} (${heldBy})${onEngine(metrics)}: ${headline}`);
     stagePaths(projectDir, [relative(projectDir, journalPath), relative(projectDir, runPath)]);
     // The journal and the runs page are both built into the site, so the site goes into the
     // same commit — otherwise the next `status` or ruling rebuilds it, finds it changed, and
@@ -1197,10 +1212,11 @@ function recordRefusal(projectDir, { name, gate, by, heldBy, produced, reason, m
   finally { if (currentBranch(projectDir) !== branch) gitOk(["checkout", "-q", branch], projectDir); }
 }
 
-function appendRulingSection(text, { verdict, by, rationale, conditions = [], typecheck = null }) {
+function appendRulingSection(text, { verdict, by, rationale, conditions = [], typecheck = null, engine = null }) {
   const cond = conditions.length ? conditions.map((c) => `- ${c}`).join("\n") : "none";
   const evidence = typecheck ? `\n### Runner-owned typecheck evidence\n\n${formatTypecheckEvidence(typecheck)}\n` : "";
-  return `${text}\n## Ruling\n\n**Verdict:** ${verdict}\n**By:** ${by}\n\n${rationale}\n\n**Conditions:**\n${cond}\n${evidence}`;
+  const ruledOn = engine ? `\n**Ruled on:** ${engineLabel(engine)}` : "";
+  return `${text}\n## Ruling\n\n**Verdict:** ${verdict}\n**By:** ${by}${ruledOn}\n\n${rationale}\n\n**Conditions:**\n${cond}\n${evidence}`;
 }
 
 // Gives the proposal's branch back when a ruling did not finish.
@@ -1602,7 +1618,11 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // there is no cost to account for, and no ruling was produced, so there is nothing to
     // preserve. The proposal is left exactly as open as it was, for the same ruling to be
     // made once the sign-in is good again.
-    await preflightAuth();
+    // The backend and model this persona's ruling runs on (`src/runner/agents.mjs`): the
+    // project's `policy.agents.rulings` for this gate or persona, its default, or an
+    // operator's `SDLC_AGENT_BACKEND` for this run. Every backend runs a ruling read-only.
+    const agent = rulingAgentFor(config, { gate, persona });
+    await preflightAuth(agent);
 
     const typecheck = await acceptanceTypecheck(projectDir, {
       name, gate, revision: git(["rev-parse", "HEAD"], projectDir),
@@ -1620,7 +1640,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // retrying will not fix, and `rule --pending` running a batch must not turn one broken
     // proposal into an unbounded loop.
     const runRuling = (text) => runAgent({ cwd: projectDir, prompt: text, stage: "rule", maxTurns: rulingTurns(config, gate, name),
-      allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"] });
+      allowedTools: ["Read", "Grep", "Glob", "Bash(git diff*)", "Bash(git log*)", "Bash(git status*)"], agent });
 
     // One turn, its failure retried once, and the verdict read out of whatever came back.
     // The clean-tree check sits inside this rather than after it: a ruling is a read-only
@@ -1632,11 +1652,11 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       // turns are carried into the retry's rather than dropped: a session that hit the
       // turn cap once before answering costs what both turns cost, not what the second
       // one alone did.
-      let spent = { cost: result.cost, turns: result.turns, session: result.sessionId };
+      let spent = metricsOf(result);
       if (!result.ok) {
         console.warn(`warning: the ruling turn for ${name} failed (${rulingFailure(result)}); retrying once`);
         result = await runRuling(text);
-        spent = sumMetrics(spent, { cost: result.cost, turns: result.turns, session: result.sessionId });
+        spent = sumMetrics(spent, metricsOf(result));
       }
       // Accumulated before the three throws below rather than after them: a turn that failed,
       // wrote to the tree, or came back in a shape the protocol could not be read out of spent
@@ -1762,7 +1782,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // The ruling has to land in the proposal page's own commit, not a follow-up one, so
     // it is appended and written before `commitRuling` stages and commits.
     recorded = true;
-    writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck }), projectDir));
+    writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict, by, rationale, conditions, typecheck, engine: metrics?.engine }), projectDir));
     const requests = commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy: "agent", rationale, conditions, unparsed, metrics, proposalPath, proposalAppended: true, executable, reprompt });
     return { verdict, rationale, conditions, unparsed, escalated: false, gate, escalateTo: null, reprompted: Boolean(reprompt), ...requests, ...metrics };
   } catch (e) {

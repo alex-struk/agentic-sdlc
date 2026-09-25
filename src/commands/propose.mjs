@@ -4,9 +4,10 @@ import { writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
+import { engineFrontMatter, engineLabel } from "../lib/engine.mjs";
 import { COMMANDS } from "../cli.mjs";
 
-export function propose(projectDir, name, { gate, question, recommendation, page = "", paths = null, tier = null }) {
+export function propose(projectDir, name, { gate, question, recommendation, page = "", paths = null, tier = null, engine = null }) {
   projectDir = resolve(projectDir);
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error("proposal name: lowercase letters, digits, hyphens");
   if (!gate || !question || !recommendation) throw new Error("propose needs --gate, --question and --recommendation");
@@ -37,6 +38,11 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   const opened = new Date().toISOString();
   const proposalPath = join(".sdlc", "proposals", `${name}.md`);
   const tierLine = tier ? `tier: ${tier}\n` : "";
+  // What ran the stage that produced the proposal, for a proposal a stage opened; a person's
+  // `sdlc propose` names none. In the front matter for the site to read, and in the page
+  // itself for whoever reads the page on the branch.
+  const engineLines = engineFrontMatter(engine).map((l) => `${l}\n`).join("");
+  const workedBy = engine ? `**Worked by:** ${engineLabel(engine)}\n\n` : "";
   // A proposal page is the agent's own account of its work: for every gated stage the
   // `page` is the journal text verbatim, and the question and the recommendation are
   // drawn from it. That text carries whatever the turn pasted into it — a failing
@@ -45,7 +51,7 @@ export function propose(projectDir, name, { gate, question, recommendation, page
   // machine a run happened on out of both, and the redaction has to happen at the write
   // rather than at a later scan, because by then the commit already carries it.
   const body = redactLocalPaths(
-    `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n${tierLine}---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${page}\n`,
+    `---\ngate: ${gate}\nquestion: ${JSON.stringify(question)}\nrecommendation: ${JSON.stringify(recommendation)}\nopened: ${opened}\n${tierLine}${engineLines}---\n\n# ${question}\n\n**Recommendation.** ${recommendation}\n\n${workedBy}${page}\n`,
     projectDir);
   writeText(join(projectDir, proposalPath), body);
   const runPath = appendRun(projectDir, `propose ${name} at ${gate}`);

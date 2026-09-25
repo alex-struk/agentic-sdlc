@@ -323,6 +323,12 @@ export function backendFor(name) {
   return b;
 }
 
+// What a record of a turn carries: its cost, its turns, its session and what ran it. Every
+// journal entry and gate file is written from this one shape.
+export function metricsOf(r) {
+  return { cost: r?.cost ?? 0, turns: r?.turns ?? 0, session: r?.sessionId ?? "", ...(r?.engine ? { engine: r.engine } : {}) };
+}
+
 // Every turn returns `engine`: the backend, the model (the one the CLI reports having used
 // where it reports one, otherwise the one configured, otherwise empty — the CLI chose), and
 // the CLI's version. It is what every record of the turn says ran the work.

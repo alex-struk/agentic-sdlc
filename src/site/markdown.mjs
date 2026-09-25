@@ -4,7 +4,7 @@
 // a change to the project visible as a change to a file.
 import { STATES } from "../spec/criteria.mjs";
 import { RESULT_VALUES, resultRows } from "./model.mjs";
-import { seatLabel } from "../lib/seat.mjs";
+import { engineLabel, engineOf, seatWithEngine } from "../lib/engine.mjs";
 
 // A GitHub-flavoured Markdown table built from a column-array header and one array of
 // cells per row, rather than joining strings by hand at each call site: that is what
@@ -109,8 +109,10 @@ export function renderMarkdown(model) {
   // decided, and the reading that must never be reached by default is the human one.
   // `Sample` is a column of its own and the only place a row claims anything about
   // sampling, so a ruling cannot be described as unsampled beside its own `sample`.
+  // A persona agent's seat names what ran its turn beside it (`src/lib/engine.mjs`); a
+  // person's ruling and the runner's verdict ran on no agent and name none.
   const gatesMd = ["# Gate log", "", "| When | Proposal | Gate | Verdict | By | Made by | Cost | Sample |", "| --- | --- | --- | --- | --- | --- | --- | --- |",
-    ...model.gates.map((g) => `| ${g.at} | ${g.name} | ${g.gate} | ${g.verdict} | ${g.by} | ${seatLabel(g.held_by)} | ${g.cost === undefined ? "" : `$${g.cost}`} | ${model.sampled.has(g) ? "sample" : ""} |`), ""].join("\n");
+    ...model.gates.map((g) => `| ${g.at} | ${g.name} | ${g.gate} | ${g.verdict} | ${g.by} | ${seatWithEngine(g.held_by, engineOf(g))} | ${g.cost === undefined ? "" : `$${g.cost}`} | ${model.sampled.has(g) ? "sample" : ""} |`), ""].join("\n");
 
   const runsMd = ["# Run log", "", ...model.runs.map((r) => r.text)].join("\n");
 
@@ -131,13 +133,16 @@ export function renderMarkdown(model) {
   const journalMd = ["# Journal", "", ...model.journal.slice().reverse().flatMap((e) => {
     const num = (e.file.match(/^(\d+)/) ?? [, ""])[1];
     const date = e.at ? String(e.at).slice(0, 10) : "";
-    return [`## ${num} · ${e.stage} · ${date}`, "", `cost $${e.cost} · turns ${e.turns}`, "", e.body.trim(), ""];
+    const ran = engineLabel(engineOf(e));
+    return [`## ${num} · ${e.stage} · ${date}`, "", `cost $${e.cost} · turns ${e.turns}${ran ? ` · ${ran}` : ""}`, "", e.body.trim(), ""];
   })].join("\n");
 
   const proposalPages = model.proposals.map((p) => {
     const rows = [["gate", p.front.gate ?? ""], ["opened", p.front.opened ?? ""]];
     if (p.front.tier) rows.push(["tier", p.front.tier]);
     rows.push(["holder", p.holder]);
+    const worked = engineLabel(engineOf(p.front));
+    if (worked) rows.push(["worked by", worked]);
     const table = ["| Field | Value |", "| --- | --- |", ...rows.map(([k, v]) => `| ${k} | ${v} |`)].join("\n");
     let tail = null;
     if (p.hasRulingSection) tail = null;

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
+import { engineFrontMatter } from "../lib/engine.mjs";
 
 function journalDir(projectDir) {
   return join(projectDir, ".sdlc", "journal");
@@ -21,7 +22,9 @@ export function writeJournal(projectDir, { stage, title, body, metrics = {} }) {
   const existing = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".md")) : [];
   const num = String(existing.length + 1).padStart(3, "0");
   const path = join(dir, `${num}-${stage}.md`);
-  const { cost = 0, turns = 0, session = "" } = metrics;
+  const { cost = 0, turns = 0, session = "", engine = null } = metrics;
+  // `backend`, `model` and `cli` say what ran the turn, and are written only where an agent
+  // turn did: a deterministic stage's entry has no engine to name.
   const front = [
     `stage: ${JSON.stringify(stage)}`,
     `title: ${JSON.stringify(title)}`,
@@ -29,6 +32,7 @@ export function writeJournal(projectDir, { stage, title, body, metrics = {} }) {
     `cost: ${cost}`,
     `turns: ${turns}`,
     `session: ${JSON.stringify(session)}`,
+    ...engineFrontMatter(engine),
   ].join("\n");
   writeText(path, redactLocalPaths(`---\n${front}\n---\n\n${body}`, projectDir));
   return path;
@@ -41,7 +45,7 @@ export function readJournal(projectDir) {
   return files.map((file) => {
     const text = readText(join(dir, file));
     const m = text.match(/^---\n([\s\S]*?)\n---\n\n([\s\S]*)$/);
-    if (!m) return { file, stage: "", title: "", at: "", cost: 0, turns: 0, session: "", body: text };
+    if (!m) return { file, stage: "", title: "", at: "", cost: 0, turns: 0, session: "", backend: "", model: "", cli: "", body: text };
     const front = parse(m[1]) ?? {};
     return {
       file,
@@ -51,6 +55,9 @@ export function readJournal(projectDir) {
       cost: front.cost ?? 0,
       turns: front.turns ?? 0,
       session: front.session ?? "",
+      backend: front.backend ?? "",
+      model: front.model ?? "",
+      cli: front.cli ?? "",
       body: m[2],
     };
   });

@@ -12,7 +12,8 @@ import { RESULT_VALUES, resultRows } from "./model.mjs";
 import { escapeHtml, markdownToHtml, inline } from "./md-to-html.mjs";
 import { stylesheet } from "./theme.mjs";
 import { TOKENS_SOURCE } from "./tokens.mjs";
-import { SEAT_AGENT, SEAT_RUNNER, SEAT_UNKNOWN, seatKind, seatLabel } from "../lib/seat.mjs";
+import { SEAT_AGENT, SEAT_RUNNER, SEAT_UNKNOWN, seatKind } from "../lib/seat.mjs";
+import { engineLabel, engineOf, seatWithEngine } from "../lib/engine.mjs";
 
 const e = escapeHtml;
 
@@ -54,8 +55,9 @@ function verdictChip(verdict) {
 // detail to skim past (`src/lib/seat.mjs`).
 const SEAT_TONE = { [SEAT_AGENT]: "escalated", [SEAT_RUNNER]: "muted", [SEAT_UNKNOWN]: "return" };
 
-function seatChip(heldBy) {
-  return chip(seatLabel(heldBy), SEAT_TONE[seatKind(heldBy)] ?? "approve");
+// A persona agent's chip names what ran its turn beside the seat (`src/lib/engine.mjs`).
+function seatChip(heldBy, engine = null) {
+  return chip(seatWithEngine(heldBy, engine), SEAT_TONE[seatKind(heldBy)] ?? "approve");
 }
 
 function shell({ title, project, profile, depth, nav, current, main }) {
@@ -348,7 +350,7 @@ function gateLegend(model) {
   const seats = new Set(model.gates.map((g) => seatKind(g.held_by)));
   if (seats.has(SEAT_AGENT) || seats.has(SEAT_RUNNER) || seats.has(SEAT_UNKNOWN)) {
     const said = [];
-    if (seats.has(SEAT_AGENT)) said.push("A persona agent is an agent that read the gate holder's written brief and ruled in that role.");
+    if (seats.has(SEAT_AGENT)) said.push("A persona agent is an agent that read the gate holder's written brief and ruled in that role; beside it is the agent backend and model its turn ran on.");
     said.push("A person is someone who ran the command themselves.");
     if (seats.has(SEAT_RUNNER)) said.push("The runner is the pipeline recording a verdict it worked out from evidence it had already gathered, such as an acceptance run that failed: no seat was held and nobody was asked, so there is no judgement behind it.");
     if (seats.has(SEAT_UNKNOWN)) said.push("An unknown seat is a value in the gate file this page cannot place, quoted back as it was found; it is not read as a person.");
@@ -375,7 +377,7 @@ function gatesPage(model) {
     <td>${e(g.gate ?? "")}</td>
     <td>${verdictChip(g.verdict)}${g.stalled ? ` ${chip("stalled", "return")}` : ""}</td>
     <td>${e(g.by ?? "")}</td>
-    <td>${seatChip(g.held_by)}</td>
+    <td>${seatChip(g.held_by, engineOf(g))}</td>
     <td class="num">${g.cost === undefined ? "" : e(dollars(g.cost))}</td>
     <td>${model.sampled.has(g) ? chip("yes", "open") : ""}</td>
   </tr>`).join("");
@@ -416,7 +418,7 @@ function rulingBlock(p) {
   const r = p.ruling;
   if (!r) return `<p class="note">Open, waiting for ${e(p.holder)}.</p>`;
   const parts = [`<section class="ruling"><h2>Ruling</h2>`,
-    `<p>${verdictChip(r.verdict)} by ${e(r.by ?? "")} (${e(seatLabel(r.held_by))})${r.at ? ` on ${e(when(r.at))}` : ""}.</p>`];
+    `<p>${verdictChip(r.verdict)} by ${e(r.by ?? "")} (${e(seatWithEngine(r.held_by, engineOf(r)))})${r.at ? ` on ${e(when(r.at))}` : ""}.</p>`];
   if (r.verdict === "escalated" && r.escalate_to) parts.push(`<p>Escalated to ${e(r.escalate_to)}.</p>`);
   // An escalation that named the role that raised it handed the question to no seat this
   // pipeline can fill, so the page says the proposal is going nowhere rather than leaving
@@ -435,6 +437,8 @@ function proposalPage(p) {
   const rows = [["gate", p.front.gate ?? ""], ["opened", when(p.front.opened)]];
   if (p.front.tier) rows.push(["tier", String(p.front.tier)]);
   rows.push(["holder", p.holder]);
+  const worked = engineLabel(engineOf(p.front));
+  if (worked) rows.push(["worked by", worked]);
   const proposalBody = p.body.split(/^## Ruling\s*$/m)[0].trim();
 
   return [
@@ -452,7 +456,7 @@ function journalPage(model) {
     return `<article class="entry">
       <header>
         <h2>${e(num)} · ${e(j.stage)}</h2>
-        <p class="meta">${e(String(j.at ?? "").slice(0, 10))} · ${e(String(j.turns))} turns · ${e(dollars(j.cost))}</p>
+        <p class="meta">${e(String(j.at ?? "").slice(0, 10))} · ${e(String(j.turns))} turns · ${e(dollars(j.cost))}${engineOf(j) ? ` · ${e(engineLabel(engineOf(j)))}` : ""}</p>
       </header>
       <div class="body">${markdownToHtml(j.body.trim())}</div>
     </article>`;
