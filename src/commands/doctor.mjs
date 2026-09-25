@@ -8,7 +8,8 @@ import { defaultNamesPath } from "../checks/egress.mjs";
 import { composeVersion } from "../oracle/compose.mjs";
 import { stagesFor } from "../profiles.mjs";
 import { STAGES_BY_NAME } from "../stages/registry.mjs";
-import { agentsInUse, agentFor, codexRefusal } from "../runner/agents.mjs";
+import { agentsInUse, stageAgent, rulingAgent, codexRefusal, isolationRefusal } from "../runner/agents.mjs";
+import { dockerStatus, imageId, agentImageTag, proxyImageTag, shortId, leftoverSessions } from "../runner/container.mjs";
 import { backendFor, cliVersion } from "../runner/executor.mjs";
 import { COMMANDS } from "../cli.mjs";
 
@@ -72,9 +73,54 @@ function agentLines(config) {
     const signIn = backend.signIn();
     out.push([signIn.ok ? "ok  " : "warn", `${u.backend} ${version}, ${signIn.said}`]);
   }
-  for (const name of names) {
-    if (!codexRefusal(STAGES_BY_NAME[name], config, agentFor(config, name))) continue;
+  let stages;
+  let rulings;
+  try {
+    stages = names.map((name) => ({ name, stage: STAGES_BY_NAME[name], agent: stageAgent(config, STAGES_BY_NAME[name]) }));
+    rulings = Object.entries(config?.policy?.gates ?? {}).filter(([, g]) => String(g?.holder ?? "").startsWith("agent:"))
+      .map(([gate, g]) => ({ gate, agent: rulingAgent(config, { gate, persona: g.holder.slice("agent:".length) }) }));
+  } catch (e) { return [...out, ["FAIL", `isolation ${e.message}`]]; }
+  for (const { name, stage, agent } of stages) {
+    if (!codexRefusal(stage, config, agent)) continue;
     out.push(["warn", `codex refuses ${name}: codex cannot hold it to its tool allowlist; set policy.agents.stages.${name}.accept_weaker: true to run it there, or run it on claude`]);
+  }
+  return [...out, ...isolationLines(config, stages, rulings)];
+}
+
+// Where each stage's turns run, and whether this machine can run the ones that are isolated
+// (`docs/decisions/0061`): Docker, the images, anything a stopped run left behind, and per
+// stage (and per isolated ruling) the backend, the isolation and the hosts it may reach.
+function where(agent) {
+  return agent.isolation === "container"
+    ? `${agent.backend}, in a container (${agent.isolationFrom}), egress ${agent.egress}: ${agent.allow.join(", ")}`
+    : `${agent.backend}, on the host`;
+}
+
+function isolationLines(config, stages, rulings) {
+  const out = [];
+  const isolated = [...stages.filter((s) => s.agent.isolation === "container"), ...rulings.filter((r) => r.agent.isolation === "container")];
+  for (const { name, stage, agent } of stages) {
+    const refusal = isolationRefusal(stage, config, agent);
+    out.push(refusal ? ["warn", `stage ${name}: ${refusal}`] : ["ok  ", `stage ${name}: ${where(agent)}`]);
+  }
+  for (const { gate, agent } of rulings) if (agent.isolation === "container") out.push(["ok  ", `ruling ${gate}: ${where(agent)}`]);
+  if (!isolated.length) return out;
+  const docker = dockerStatus();
+  if (!docker.ok) {
+    const turns = isolated.map((t) => t.name ?? `ruling ${t.gate}`).join(", ");
+    return [...out, ["warn", `isolation ${docker.said}; ${turns} will be refused until it is`]];
+  }
+  out.push(["ok  ", `isolation docker ${docker.version} answers, for the turns that run in a container`]);
+  const image = (label, tag) => {
+    const id = imageId(tag);
+    return id ? ["ok  ", `isolation ${label} ${tag} built (${shortId(id)})`]
+      : ["warn", `isolation ${label} ${tag} not built: it is built on first use, or now with \`sdlc isolation build\``];
+  };
+  for (const backend of [...new Set(isolated.map((t) => t.agent.backend))]) out.push(image(`${backend} image`, agentImageTag(backend)));
+  out.push(image("egress proxy image", proxyImageTag()));
+  const left = leftoverSessions();
+  if (left.containers.length) {
+    out.push(["warn", `isolation ${left.containers.length} session containers left behind by a run that did not finish: remove them with \`sdlc isolation clean\``]);
   }
   return out;
 }

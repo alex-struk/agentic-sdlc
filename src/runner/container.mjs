@@ -263,3 +263,20 @@ export async function runInContainer(backend, opts, agent, { recorded = true, li
     rmSync(staging, { recursive: true, force: true });
   }
 }
+
+// The session containers and networks a run left behind: one stopped before its `finally`
+// ran — killed, or the machine went down. Found by the label every session carries.
+export function leftoverSessions() {
+  const list = (args) => { try { return docker(args).split("\n").map((l) => l.trim()).filter(Boolean); } catch { return []; } };
+  return {
+    containers: list(["ps", "-a", "-q", "--filter", `label=${SESSION_LABEL}`]),
+    networks: list(["network", "ls", "-q", "--filter", `label=${SESSION_LABEL}`]),
+  };
+}
+
+export function cleanSessions() {
+  const left = leftoverSessions();
+  if (left.containers.length) quietly(["rm", "-f", ...left.containers]);
+  if (left.networks.length) quietly(["network", "rm", ...left.networks]);
+  return left;
+}

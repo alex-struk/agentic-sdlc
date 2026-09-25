@@ -24,6 +24,8 @@ const HELP = `sdlc <command> [args] [--flags]
   doctor [dir]                     check tools, config and guardrails
   oracle up|down|status [--target <t>]   start/stop/inspect the old application via Docker Compose
   sandbox up|down|reset|status [--target new] [--from <branch>]   start/stop/reseed the rebuilt application via its own compose file, optionally the one a branch carries
+  isolation build [dir] [--backend claude|codex]   build the images isolated agent turns run in (otherwise built on first use)
+  isolation clean                  remove session containers and networks a run that did not finish left behind
 `;
 
 // Command modules (new.mjs, init.mjs, ...) import `COMMANDS` back from this module to
@@ -38,7 +40,7 @@ const HELP = `sdlc <command> [args] [--flags]
 // its own top level, so `COMMANDS` is already the real object by the time they assign to it.
 let commandsLoaded = null;
 function loadCommands() {
-  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs"), import("./commands/withdraw.mjs"), import("./commands/scrub.mjs")]);
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs"), import("./commands/withdraw.mjs"), import("./commands/scrub.mjs"), import("./commands/isolation.mjs")]);
   return commandsLoaded;
 }
 
