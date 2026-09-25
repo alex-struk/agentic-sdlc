@@ -6,6 +6,10 @@ import { checkBriefs } from "../checks/briefs.mjs";
 import { checkConditions } from "../checks/conditions.mjs";
 import { defaultNamesPath } from "../checks/egress.mjs";
 import { composeVersion } from "../oracle/compose.mjs";
+import { stagesFor } from "../profiles.mjs";
+import { STAGES_BY_NAME } from "../stages/registry.mjs";
+import { agentsInUse, agentFor, codexRefusal } from "../runner/agents.mjs";
+import { backendFor, cliVersion } from "../runner/executor.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 const VERSION_ARGS = { node: ["--version"], git: ["--version"], gh: ["--version"], claude: ["--version"], docker: ["--version"] };
@@ -25,6 +29,54 @@ function denyListPresent(dir) {
 function nameListState() {
   try { const n = readFileSync(defaultNamesPath(), "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("#")).length; return n ? `${n} names` : "empty"; }
   catch { return "missing"; }
+}
+
+// How to get each backend's CLI onto a machine and signed in, for the line that says it is
+// missing. A subscription sign-in in both cases: the pipeline never uses an API key.
+const INSTALL = {
+  claude: "install Claude Code, then run `claude` and sign in",
+  codex: "install it with `npm install -g @openai/codex`, then run `codex login` and choose ChatGPT",
+};
+
+function listed(names) {
+  return names.join(", ");
+}
+
+// What the project's agent turns will run on (`src/runner/agents.mjs`), and whether this
+// machine can run them: one line per backend in use naming the stages and gates it runs and
+// the models configured for it, one line per backend saying whether its CLI is installed and
+// signed in, and one line per stage the chosen backend will refuse. Reported, never a
+// failure of `doctor` itself: a machine may check a project whose turns it never runs.
+function agentLines(config) {
+  const out = [];
+  if (!config) return [["warn", "agents not resolved: the config is not valid"]];
+  if (process.env.SDLC_AGENT_BACKEND) out.push(["warn", `agents SDLC_AGENT_BACKEND=${process.env.SDLC_AGENT_BACKEND} overrides policy.agents in this shell`]);
+  let names;
+  try {
+    names = stagesFor(config.profile).filter((n) => STAGES_BY_NAME[n]?.implemented && STAGES_BY_NAME[n].agent !== false);
+  } catch { names = []; }
+  let used;
+  try { used = agentsInUse(config, process.env, names); } catch (e) { return [...out, ["FAIL", `agents ${e.message}`]]; }
+  const allRulings = used.flatMap((u) => u.rulings).sort();
+  for (const u of used) {
+    const all = used.length === 1;
+    const runs = all
+      ? `every stage with an agent turn and every agent ruling${allRulings.length ? ` (${listed(allRulings)})` : ""}`
+      : [u.stages.length ? listed(u.stages) : "", u.rulings.length ? `rulings at ${listed(u.rulings)}` : ""].filter(Boolean).join(" and ");
+    out.push(["ok  ", `agents ${u.backend} runs ${runs}; model: ${listed(u.models)}`]);
+  }
+  for (const u of used) {
+    const backend = backendFor(u.backend);
+    const version = cliVersion(backend.bin());
+    if (!version) { out.push(["warn", `${u.backend} not found: ${INSTALL[u.backend]}`]); continue; }
+    const signIn = backend.signIn();
+    out.push([signIn.ok ? "ok  " : "warn", `${u.backend} ${version}, ${signIn.said}`]);
+  }
+  for (const name of names) {
+    if (!codexRefusal(STAGES_BY_NAME[name], config, agentFor(config, name))) continue;
+    out.push(["warn", `codex refuses ${name}: its tool allowlist gives it no shell; set policy.agents.stages.${name}.accept_weaker: true to run it there, or run it on claude`]);
+  }
+  return out;
 }
 
 COMMANDS.doctor = async ({ pos }) => {
@@ -52,6 +104,7 @@ COMMANDS.doctor = async ({ pos }) => {
   console.log(`${sandbox ? "ok  " : "warn"} SDLC_SANDBOX_PASSWORD ${sandbox ? "set" : "not set (needed only for a sandbox-idp target)"}`);
   const cfg = checkConfig(dir);
   console.log(`${cfg.ok ? "ok  " : "FAIL"} config ${cfg.messages.join("; ")}`);
+  for (const [status, line] of agentLines(cfg.ok ? cfg.config : null)) console.log(`${status} ${line}`);
   // What a ruling asked for and nobody has accounted for. A warning while it is merely
   // owed — the ordinary state between a return and the revision that answers it — and a
   // failure where an approval has gone past it, which is a record asserting two things that

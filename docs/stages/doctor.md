@@ -3,7 +3,8 @@
 ## Purpose
 
 Check that the local machine and the target project have what the pipeline needs: required and
-optional tools, the agent deny list, the egress name list, and a valid configuration.
+optional tools, the agent backends the project's turns run on, the agent deny list, the egress name
+list, and a valid configuration.
 
 ## Inputs
 
@@ -25,6 +26,22 @@ To stdout, one line each for:
   without it; a project with no `sandbox-idp` target never needs it, so an unset variable is a
   warning rather than a failure.
 - The result of `checkConfig(dir)` (see `docs/stages/checks.md`).
+- The agent backends the project's turns run on, resolved from `policy.agents` and any
+  `SDLC_AGENT_BACKEND`/`SDLC_AGENT_MODEL` in the environment (`docs/config.md`):
+  - `agents <backend> runs …; model: …` — one line per backend in use, naming the stages (of the
+    project's profile, with an agent turn) and the gates (with an `agent:` holder) it runs, and the
+    models configured for it; "the CLI's default model" where none is.
+  - `<backend> <version>, <sign-in>` — one line per backend in use: whether its CLI is on the
+    machine, and whether it is signed in. For `claude`, whether a sign-in is present in the
+    pipeline's config home; for `codex`, what `codex login status` says against the pipeline's own
+    Codex home, reduced to "signed in with ChatGPT", "signed in with an API key" (a warning: the
+    pipeline signs in with ChatGPT only) or "not signed in". Nothing the CLI prints about an
+    account is repeated, and no credential is opened. A CLI that is missing is reported with the
+    command that installs it.
+  - `codex refuses <stage>` — one line per stage set to run on Codex that Codex will refuse
+    (`docs/decisions/0060-a-second-agent-backend.md`), with the setting that accepts it.
+  - A warning when `SDLC_AGENT_BACKEND` is set, since it overrides the project's choice for every
+    turn run from that shell.
 - Whether the project's persona briefs are current with the pipeline's templates, naming each one
   that is behind or carries local edits (`docs/stages/init.md`). A brief that is behind rules by
   instructions the pipeline has since corrected while reading as a complete brief, so it is
@@ -38,7 +55,8 @@ No agent.
 
 For the exit code only: `node` and `git` must both be found, and the config check must be `ok`.
 The deny-list line, the egress-name-list line, the sandbox-password line, the persona-briefs line,
-and the optional tools (`gh`, `claude`, `docker`) are reported but do not affect the exit code.
+the agent-backend lines, and the optional tools (`gh`, `claude`, `docker`) are reported but do not
+affect the exit code: a machine may check a project whose turns it never runs.
 
 ## Exit criterion
 
@@ -47,8 +65,10 @@ regardless of the final exit code, so a failing run still shows the full report.
 
 ## Re-run behaviour
 
-Read-only and idempotent. Safe to run repeatedly, including immediately after `sdlc init`, since
-`doctor` never writes anything itself.
+Idempotent, and writes nothing to the project. Checking a backend's sign-in prepares that backend's
+config home outside the project (`ensureConfigHome`, `ensureCodexHome`) exactly as a stage would
+before its first turn, so the sign-in checked is the one a stage will use. Safe to run repeatedly,
+including immediately after `sdlc init`.
 
 ## Failure modes
 
@@ -57,3 +77,5 @@ Read-only and idempotent. Safe to run repeatedly, including immediately after `s
 - The deny rule is missing from `.claude/settings.json`: reported as a warning suggesting
   `sdlc init` be re-run.
 - The egress name list is missing or empty: reported as a warning naming the file to fill in.
+- A backend in use is not installed or not signed in: reported as a warning with the command that
+  fixes it.
