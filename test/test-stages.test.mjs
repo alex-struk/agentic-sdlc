@@ -13,7 +13,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
-import { rule } from "../src/commands/rule.mjs";
+import { rule, settleApproved } from "../src/commands/rule.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { writeLocal } from "../src/oracle/ports.mjs";
 import { STAGES, PROFILES } from "../src/profiles.mjs";
@@ -138,6 +138,111 @@ test("sdlc run contract: the missing tests contract owes are in its prompt, and 
     assert.match(git(["log", "-1", "--format=%s", "main"], dir), /record\(contract\): missing-test\/R-1\.4 re-addressed to ratify by contract-v1/);
   } finally {
     console.log = origLog;
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// What the owing stage supplied reaches `main` with its approval, and so does the hand-on to
+// the test writer that rests on it; what it was handed and did not hand on it kept.
+test("sdlc rule contract-v1 approve: the items contract supplied go to derive-tests with the ruling, and the rest are kept", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-handoff-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  writeFileSync(join(dir, "tests/acceptance/not-testable.yaml"), [
+    "criteria:",
+    "  - { id: R-1.3, version: 1, reason: \"blocked: no observation of the fee\" }",
+    "  - { id: R-1.4, version: 1, reason: \"blocked: two states at once\", missing: \"a criterion that asks for one state\", owner: contract }",
+    "  - { id: R-1.5, version: 1, reason: \"blocked: a second administrator\", missing: \"a way to sign in as a second administrator\", owner: contract }",
+    "",
+  ].join("\n"));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "records (test)"], dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-handoff-mock-"));
+  const mock = JSON.parse(readFileSync(join(MOCK_DIR, "contract.json"), "utf8"));
+  mock.text = `${mock.text}\n\nre-address missing-test/R-1.3 to derive-tests: fees-quote.amount\nre-address missing-test/R-1.4 to ratify: the criterion asks for two states at once`;
+  writeFileSync(join(mockDir, "contract.json"), JSON.stringify(mock));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "contract");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    const stageOf = (id) => parseYaml(git(["show", "main:.sdlc/owed.yaml"], dir)).owed.find((e) => e.item === id);
+    assert.equal(stageOf("R-1.4").stage, "ratify", "a move to the stage whose it is is made when the run finishes");
+    assert.equal(stageOf("R-1.3").stage, "contract", "a hand-on to the writer waits for the contract it rests on");
+
+    rule(dir, "contract-v1", "approve", { by: "tech-lead" });
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    const handed = stageOf("R-1.3");
+    assert.equal(handed.stage, "derive-tests");
+    assert.equal(handed.closed, undefined, "it stays open until a test runs");
+    assert.deepEqual([handed.readdressed.at(-1).by, handed.readdressed.at(-1).gate, handed.readdressed.at(-1).approved_by, handed.readdressed.at(-1).why],
+      ["contract-v1", "G1", "tech-lead", "fees-quote.amount"]);
+    assert.equal(stageOf("R-1.4").stage, "ratify");
+    const kept = stageOf("R-1.5");
+    assert.equal(kept.stage, "contract");
+    assert.deepEqual([kept.kept.by, kept.kept.gate, kept.kept.approved_by], ["contract-v1", "G1", "tech-lead"]);
+    assert.match(git(["log", "-1", "--format=%an %s", "main"], dir), /^sdlc merge: contract-v1 approved/);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// A proposal approved before its hand-on was applied is settled by the pipeline, in a commit
+// of its own, and settling it again changes nothing.
+test("sdlc rule <name> --settle: an approved proposal's unapplied hand-on is applied as the pipeline, once", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-settle-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  writeFileSync(join(dir, "tests/acceptance/not-testable.yaml"), [
+    "criteria:",
+    "  - { id: R-1.3, version: 1, reason: \"blocked: no observation of the fee\" }",
+    "  - { id: R-1.4, version: 1, reason: \"blocked: two states at once\", missing: \"a criterion that asks for one state\", owner: contract }",
+    "  - { id: R-1.5, version: 1, reason: \"blocked: a second administrator\", missing: \"a second administrator\", owner: contract }",
+    "",
+  ].join("\n"));
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "records (test)"], dir);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-settle-mock-"));
+  const mock = JSON.parse(readFileSync(join(MOCK_DIR, "contract.json"), "utf8"));
+  mock.text = `${mock.text}\n\nre-address missing-test/R-1.3 to derive-tests: fees-quote.amount\nre-address missing-test/R-1.4 to ratify: the criterion asks for two states at once`;
+  writeFileSync(join(mockDir, "contract.json"), JSON.stringify(mock));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const r = await runStage(dir, "contract");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    rule(dir, "contract-v1", "approve", { by: "tech-lead" });
+    // Put main back the way a pipeline that never applied either move left it.
+    const owed = parseYaml(git(["show", "main:.sdlc/owed.yaml"], dir));
+    for (const e of owed.owed) { e.stage = "contract"; delete e.readdressed; delete e.kept; }
+    writeFileSync(join(dir, ".sdlc/owed.yaml"), stringifyYaml(owed));
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=sdlc", "-c", "user.email=sdlc@localhost", "commit", "-q", "-m", "as an earlier pipeline left it (test)"], dir);
+    // A criterion superseded since: no test is derived for it, so its item is withdrawn.
+    mkdirSync(join(dir, "spec"), { recursive: true });
+    writeFileSync(join(dir, "spec/criteria-index.json"), JSON.stringify({ criteria: [
+      { id: "R-1.5", domain: "applications", version: 1, state: "accepted", supersededBy: "R-1.1" },
+    ] }));
+    git(["add", "-A"], dir);
+    git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "ratified (test)"], dir);
+
+    assert.throws(() => settleApproved(dir, "contract-v9"), /contract-v9 has no approval on main/);
+    const s = settleApproved(dir, "contract-v1");
+    assert.deepEqual(s.readdressed.map((m) => [m.id, m.to]), [["R-1.3", "derive-tests"], ["R-1.4", "ratify"]]);
+    const after = parseYaml(git(["show", "main:.sdlc/owed.yaml"], dir)).owed;
+    assert.equal(after.find((e) => e.item === "R-1.3").stage, "derive-tests");
+    assert.equal(after.find((e) => e.item === "R-1.3").readdressed.at(-1).approved_by, "tech-lead");
+    assert.equal(after.find((e) => e.item === "R-1.4").stage, "ratify");
+    assert.equal(git(["log", "-1", "--format=%an|%s", "main"], dir), "sdlc|record(G1): contract-v1 settles 3 missing tests: 1 to derive-tests, 1 to ratify, 1 withdrawn with its criterion");
+    assert.equal(after.find((e) => e.item === "R-1.5").closed.outcome, "withdrawn");
+    assert.match(git(["log", "-1", "--format=%b", "main"], dir), /re-addressed to derive-tests: missing-test\/R-1\.3\nre-addressed to ratify: missing-test\/R-1\.4/);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    const head = git(["rev-parse", "HEAD"], dir);
+    assert.equal(settleApproved(dir, "contract-v1").path, null);
+    assert.equal(git(["rev-parse", "HEAD"], dir), head, "settling twice commits nothing");
+  } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);
   }

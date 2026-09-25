@@ -13,6 +13,7 @@ const HELP = `sdlc <command> [args] [--flags]
   propose <name> --gate G1 --question "..." --recommendation "..." [--page "..."] [--tier HIGH]
   rule <name> approve|return --by <role> [--note "..."]   or: rule <name> --by agent:<persona>
   rule --pending                   rule every open proposal an agent holds the gate for
+  rule <name> --settle             apply to main what an approved proposal settles about the missing tests its run was handed
   run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--skip-suite] [--dry-run] [--reason "..."]
                                    run one pipeline stage; --reason is required to run something other than what next names
   next [dir] [--json]              name the next stage to run and why, read from main (exit 0 run, 3 waiting on a person, 4 nothing left)

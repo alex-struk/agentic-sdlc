@@ -397,9 +397,32 @@ record the merge rewrote with a different owner moves to that owner; an item han
 `derive-tests` whose approved derivation kept the record goes back to the record's owner; an item
 whose test now exists and has not run is handed to `calibrate` (a project that calibrates) or
 `verify`. An item whose test the merge shows ran — a result row for the criterion, at its current
-version, from a spec file, `pass` or `fail` — is closed as met with that row as the evidence. All
-of it is staged into the merge commit, and the terminal says which items were opened, moved or
-closed.
+version, from a spec file, `pass` or `fail` — is closed as met with that row as the evidence. An
+item whose criterion is superseded or obsolete is withdrawn, stamped by the runner: no test is
+derived for it.
+
+Then what the approved run was handed is settled. The run was handed what its stage owed on
+`main` when it ran (in its domain, for a stage that runs per domain), which is what the commit the
+proposal branch was cut from holds. Each `re-address` line in the run's account on the proposal
+page — above the `## Ruling` section — that moves an item the stage still owes is applied, stamped
+with this ruling (`by: <proposal>`, `gate`, `approved_by`): the hand-ons to `derive-tests` the run
+held back, and any other its finish did not apply. An item the run was handed and did not hand on
+is recorded as kept by its stage (`kept`, stamped the same way); it stays open, and `sdlc next`
+lists it as waiting on a ruler rather than offering the stage again. A stage with no agent turn is
+handed nothing, so its approvals settle nothing. All of it is staged into the merge commit, and
+the terminal says which items were opened, moved, kept or closed.
+
+**An approval whose settlement is not on `main`** is settled by
+
+```
+sdlc rule <name> --settle
+```
+
+which reads the ruling from the gate file on `main` and the handed list from the approval's
+merge, brings the list into line with `main` the way every pipeline commit that touches it does,
+and commits what it changed as the pipeline author: `record(<gate>): <name> settles <n> missing
+tests: …`, each item named in the body. It is not a ruling and asks for no seat. A proposal with
+no approval on `main` is refused, and one with nothing left to settle commits nothing.
 
 **A ruler withdraws one** with the line a condition is withdrawn with, on any verdict and from
 either seat:

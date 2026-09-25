@@ -39,7 +39,11 @@ first when more than one is ready is `policy.next.order` (`docs/config.md`), `pr
 
 A condition is owed and listed, and is never a reason to start a run
 (`docs/decisions/0032-an-instruction-nobody-had-to-account-for.md`). A missing test owed a run by
-`verify` is counted and not offered either: its slice is verified by the build sequence.
+`verify` is counted and not offered either: its slice is verified by the build sequence. A missing
+test its owner was handed and kept at an approval, or owed by a stage with no agent turn to be
+handed it (`ratify`), has no run that answers it: it is listed under `waiting on a person` as
+waiting on a ruler, grouped by owing stage, with the withdrawal line and, for a kept item, the
+deviation that runs the owner again.
 
 **Missing tests.** An untestable record on `main` is owed a test whether or not an entry has been
 written for it yet (`docs/operating-model.md` §7): `next` reads the entries in `.sdlc/owed.yaml`

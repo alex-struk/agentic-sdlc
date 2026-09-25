@@ -14,12 +14,13 @@ import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { close as closeOwed, conditionRef, open as openOwed, openOn, owedPath } from "../spec/owed.mjs";
-import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
+import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
 import { readSlice } from "../stages/slices.mjs";
 import { loadIndex } from "../checks/tests.mjs";
-import { proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
+import { STAGES_BY_NAME, proposalFamily, revisableStages, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
 import { COMMANDS } from "../cli.mjs";
 import { printNextBlock } from "./next.mjs";
+import { routeOf } from "../runner/next.mjs";
 import { heldByFor } from "../lib/seat.mjs";
 import { approvesUnasserted, blocksOnMissingTests, escalateTiers } from "../config/policy.mjs";
 import { proposedPolicyChange } from "../runner/ruling-config.mjs";
@@ -715,13 +716,107 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
 // and an item closed where the merge brought a result showing its test ran
 // (`src/spec/missing-tests.mjs`). `main` is checked out and the merge is `HEAD`, so the commit
 // before it is what `main` held when the ruling began.
+//
+// Then what the approved run was handed is settled (`settleApproved`): its hand-ons applied with
+// this ruling's stamp, and what it kept recorded.
 function recordMissingTests(projectDir, { name, gate, by }) {
   const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
   const before = git(["rev-parse", "HEAD^1"], projectDir);
-  const r = syncMissingTests(projectDir, { before, from: name, stage: stageForProposal(name), gate, by, config });
-  if (!r.path) return null;
+  const { stage, domain } = proposalSubject(name, config);
+  const r = syncMissingTests(projectDir, { before, from: name, stage, gate, by, config });
+  const s = settleHandedOn(projectDir, { name, gate, by, merge: "HEAD", stage, domain });
+  if (!r.path && !s.path) return null;
   stagePaths(projectDir, [owedPath(MISSING_TEST)]);
-  return { opened: r.opened, readdressed: r.readdressed, closed: r.closed };
+  return { opened: r.opened, readdressed: [...r.readdressed, ...s.readdressed], closed: r.closed, kept: s.kept };
+}
+
+// The stage a proposal came from and, for a stage that runs per domain, which domain.
+function proposalSubject(name, config) {
+  const route = routeOf(name, config);
+  return { stage: route?.stage ?? stageForProposal(name), domain: route?.domain ?? null };
+}
+
+// Settles the missing tests the run behind an approved proposal was handed, from the approval's
+// merge commit: the page the run left on `main`, and the commit its branch was cut from, which
+// holds the list the run was handed (`settleApprovedMissingTests`). Writes the working tree and
+// stages nothing.
+function settleHandedOn(projectDir, { name, gate, by, merge, stage, domain }) {
+  // A stage with no agent turn is handed nothing to settle: what it owes is answered by what it
+  // runs (`syncMissingTests`).
+  if (!stage || STAGES_BY_NAME[stage]?.agent === false) return { path: null, readdressed: [], kept: [] };
+  const base = git(["merge-base", `${merge}^1`, `${merge}^2`], projectDir);
+  const pagePath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
+  const page = existsSync(pagePath) ? readText(pagePath) : "";
+  return settleApprovedMissingTests(projectDir, { stage, proposal: name, gate, by, page, base, domain });
+}
+
+// What a settlement moved, grouped by where each item went: counts in the subject, and every
+// item in the body.
+function settledByTarget(r) {
+  const to = new Map();
+  for (const m of r.readdressed) to.set(m.to, [...(to.get(m.to) ?? []), m.id]);
+  return to;
+}
+
+function settledMessage(name, gate, stage, r) {
+  const to = settledByTarget(r);
+  const withdrawn = r.withdrawn ?? [];
+  const closed = r.closed ?? [];
+  const counts = [
+    ...[...to].map(([t, ids]) => `${ids.length} to ${t}`),
+    ...(r.kept.length ? [`${r.kept.length} kept by ${stage}`] : []),
+    ...(closed.length ? [`${closed.length} closed as run`] : []),
+    ...(withdrawn.length ? [`${withdrawn.length} withdrawn with ${withdrawn.length === 1 ? "its criterion" : "their criteria"}`] : []),
+  ];
+  const n = r.readdressed.length + r.kept.length + closed.length + withdrawn.length;
+  const subject = `record(${gate ?? "?"}): ${name} settles ${n} missing ${n === 1 ? "test" : "tests"}: ${counts.join(", ")}`;
+  const body = [
+    ...[...to].map(([t, ids]) => `re-addressed to ${t}: ${ids.map(missingTestRef).join(", ")}`),
+    ...(r.kept.length ? [`kept by ${stage}: ${r.kept.map(missingTestRef).join(", ")}`] : []),
+    ...(closed.length ? [`closed, a test ran: ${closed.map(missingTestRef).join(", ")}`] : []),
+    ...(withdrawn.length ? [`withdrawn, the criterion is superseded or obsolete: ${withdrawn.map(missingTestRef).join(", ")}`] : []),
+  ].join("\n");
+  return { subject, body };
+}
+
+// Applies to `main` what the recorded approval of `name` settles about the missing tests its
+// run was handed, where `main` does not already hold it. The ruling is
+// read from its gate file on `main` and nothing about it changes; what changes is written in a
+// pipeline commit of its own, `record(<gate>): <name> settles …`. A proposal with no approval
+// on `main` is refused, and one with nothing left to settle commits nothing. Not a ruling, so
+// it asks for no seat: the ruling it applies was made by whoever the gate file names.
+export function settleApproved(projectDir, name) {
+  projectDir = resolve(projectDir);
+  if (!name) throw new Error("rule --settle needs the name of an approved proposal");
+  const gatePath = `.sdlc/gates/${name}.yaml`;
+  let doc = null;
+  try { doc = parseYaml(git(["show", `main:${gatePath}`], projectDir)); } catch { doc = null; }
+  if (doc?.verdict !== "approve") throw new Error(`${name} has no approval on main to settle`);
+  const merge = git(["log", "main", "--first-parent", "--merges", "--diff-filter=A", "--format=%H", "--", gatePath], projectDir).split("\n").filter(Boolean).at(-1);
+  if (!merge) throw new Error(`${name}'s approval reached main without a merge, so the list its run was handed cannot be read`);
+  const start = enterBranch(projectDir, "main", "rule --settle");
+  try {
+    const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+    const { stage, domain } = proposalSubject(name, config);
+    // A pipeline commit that touches the list brings it into line with `main` first, as every
+    // other one does (`syncMissingTests`).
+    const synced = syncMissingTests(projectDir, { config });
+    const settled = settleHandedOn(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, stage, domain });
+    const r = {
+      path: settled.path ?? synced.path,
+      readdressed: [...synced.readdressed, ...settled.readdressed],
+      kept: settled.kept,
+      closed: synced.closed,
+      withdrawn: synced.withdrawn,
+    };
+    if (!r.path) return r;
+    const { subject, body } = settledMessage(name, doc.gate, stage, r);
+    stagePaths(projectDir, [owedPath(MISSING_TEST)]);
+    git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, "-m", body], projectDir);
+    return r;
+  } finally {
+    leaveBranch(projectDir, start);
+  }
 }
 
 // An escalation, whether the persona ruled one or the brief and the tier made it mandatory.
@@ -1432,6 +1527,7 @@ function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, 
   // The same for the tests this approval left owed, moved or saw run.
   if (missingTests?.opened?.length) lines.push(`  tests now owed: ${missingTests.opened.map(missingTestRef).join(", ")}`);
   for (const m of missingTests?.readdressed ?? []) lines.push(`  test re-addressed: ${missingTestRef(m.id)} from ${m.from} to ${m.to}`);
+  if (missingTests?.kept?.length) lines.push(`  tests kept by the stage that could not supply them: ${missingTests.kept.map(missingTestRef).join(", ")}`);
   if (missingTests?.closed?.length) lines.push(`  test ran, closed: ${missingTests.closed.map(missingTestRef).join(", ")}`);
   lines.push(`  recorded: ${gatePath} on ${recordedOn}`);
   return redactLocalPaths(lines.join("\n"), projectDir);
@@ -1581,6 +1677,15 @@ async function ruleCli({ pos, flags }) {
   // A batch that stopped early exits non-zero: it is holding a proposal branch open and
   // has not ruled the proposals behind it, which a zero exit reports as a finished batch.
   if (flags.pending) { const r = await rulePending(process.cwd()); return r.stopped ? 1 : 0; }
+  if (flags.settle) {
+    const r = settleApproved(process.cwd(), pos[0]);
+    if (!r.path) { console.log(`${pos[0]}: nothing left to settle`); return 0; }
+    for (const [to, ids] of settledByTarget(r)) console.log(`${pos[0]}: re-addressed to ${to}: ${ids.map(missingTestRef).join(", ")}`);
+    if (r.kept.length) console.log(`${pos[0]}: kept by the stage that could not supply them: ${r.kept.map(missingTestRef).join(", ")}`);
+    if (r.closed.length) console.log(`${pos[0]}: closed, a test ran: ${r.closed.map(missingTestRef).join(", ")}`);
+    if (r.withdrawn.length) console.log(`${pos[0]}: withdrawn, the criterion is superseded or obsolete: ${r.withdrawn.map(missingTestRef).join(", ")}`);
+    return 0;
+  }
   if (typeof flags.by === "string" && flags.by.startsWith("agent:")) {
     // An agent rules through its own turn, not a typed verdict: a verdict positional
     // alongside an `agent:` holder is refused rather than quietly dispatched to the

@@ -252,6 +252,37 @@ test("missing tests are owed work, routed by the stage that owes each one", (t) 
   assert.match(formatNext(r), /owed: .*1 missing-test \(contract\)/);
 });
 
+// A run offered for work it has already said it cannot do, or a stage with no turn to be
+// handed anything, is a loop; those wait on a ruler instead.
+test("missing tests no run can answer wait on a ruler; handed-on ones go to each domain's writer", (t) => {
+  const d = project(t);
+  specDone(d);
+  approved(d, ["contract-v1"]);
+  const item = (id, domain, stage, more = {}) => ({ kind: "missing-test", item: id, id, version: 1, domain, stage, why: "x", by: "runner", at: "2026-01-01T00:00:00.000Z", ...more });
+  const kept = { by: "contract-v1", gate: "G1", approved_by: "agent:owner", at: "2026-01-02T00:00:00.000Z" };
+  commit(d, {
+    "spec/criteria-index.json": index([["R-1.1", "alpha"], ["R-1.2", "alpha"], ["R-1.3", "alpha"], ["R-2.1", "beta"], ["R-2.2", "beta"]]),
+    ".sdlc/owed.yaml": stringifyYaml({ owed: [
+      item("R-1.1", "alpha", "contract", { kept }),
+      item("R-1.2", "alpha", "ratify"),
+      item("R-1.3", "alpha", "derive-tests"),
+      item("R-2.1", "beta", "derive-tests"),
+      item("R-2.2", "beta", "contract", { kept }),
+    ] }),
+  });
+  const r = whatNext(d);
+  assert.deepEqual(r.ready.filter((c) => c.kind === "owed").map((c) => c.command), [
+    "sdlc run derive-tests --domain alpha --stale",
+    "sdlc run derive-tests --domain beta --stale",
+  ]);
+  const waiting = r.waiting.filter((w) => /missing test/.test(w.why));
+  assert.equal(waiting.length, 2);
+  assert.match(waiting.find((w) => w.name.includes("contract")).why, /2 missing tests .*kept at contract-v1/);
+  assert.match(waiting.find((w) => w.name.includes("ratify")).why, /1 missing test owed by ratify/);
+  for (const w of waiting) assert.match(w.command, /condition-withdrawn missing-test\/<id>/);
+  assert.match(formatNext(r), /waiting on a person:\n.*missing tests \(contract\)/);
+});
+
 test("a test written against an older version of its criterion is stale and owed", (t) => {
   const d = project(t);
   specDone(d);

@@ -146,8 +146,15 @@ A criterion that asks for something contradictory or unobservable in itself goes
 not hand on an item you did not supply: it comes straight back, and the gate that rules this
 proposal reads the line as a claim that you did.
 
+A hand-on to `derive-tests` takes effect when this proposal is approved, since the test writer
+needs what you supplied to be on `main`; a hand-on to any other stage takes effect when the run
+finishes.
+
 An item you write no line for stays owed by this stage, which is the right answer for one you
-could not supply this run. Say why in the journal, so the next run does not start from nothing.
+could not supply this run. When the proposal is approved it is recorded as kept, and no run of
+this stage is offered for it again: it waits on a ruler to withdraw it, or on somebody to run the
+stage once something has changed. Say why in the journal, so that reader does not start from
+nothing.
 
 ## The journal
 

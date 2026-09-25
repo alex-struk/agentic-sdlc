@@ -285,7 +285,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
     // The missing tests this stage owes, appended by the runner for the same reason: which
     // items a stage owes is read from `main`, not from anything a stage's own prompt knows. A
     // stage whose prompt already works through them (`derive-tests --stale`) says so.
-    const owedNote = stage.missingTestsInPrompt ? null : handedNote(projectDir, name, ctx);
+    const owedNote = stage.missingTestsInPrompt ? null : handedNote(projectDir, name, { ...ctx, gated: Boolean(stage.gate) });
     const prompt = [stage.prompt(ctx), owedNote, scopeNote].filter(Boolean).join("\n\n");
     const mcpServers = stage.mcp?.(ctx, config);
     const envVars = stage.env?.(ctx, config);

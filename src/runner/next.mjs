@@ -405,6 +405,7 @@ function owedWork(record, inFlight) {
     parts.set(one, { many, n: (parts.get(one)?.n ?? 0) + 1 });
   };
   const summary = new Map();
+  const unanswered = new Map();
   for (const e of record.owed) {
     const k = `${e.kind}\u0000${e.stage}`;
     summary.set(k, { kind: e.kind, stage: e.stage, count: (summary.get(k)?.count ?? 0) + 1 });
@@ -424,8 +425,16 @@ function owedWork(record, inFlight) {
     } else if (e.kind === MISSING_TEST) {
       // A test owed by the writer is derived again in its domain; one owed a run is run by the
       // calibration of its target; one owed a run by verify is run when its slice is verified,
-      // which the build sequence already brings about, so it is counted and not offered.
-      if (e.stage === "derive-tests") group("derive-tests", { domain: e.domain ?? byId.get(e.id)?.domain ?? undefined, stale: true }, "missing test", "missing tests");
+      // which the build sequence already brings about, so it is counted and not offered. One
+      // its owner was handed and kept, or owed by a stage with no turn to be handed it, has no
+      // run that answers it, and waits on a ruler.
+      if (e.kept || (STAGES_BY_NAME[e.stage]?.agent === false && e.stage !== "calibrate" && e.stage !== "verify")) {
+        const key = `${e.stage}\u0000${e.kept ? "kept" : "no-turn"}`;
+        const w = unanswered.get(key) ?? { stage: e.stage, kept: Boolean(e.kept), n: 0, by: new Set() };
+        w.n += 1;
+        if (e.kept?.by) w.by.add(e.kept.by);
+        unanswered.set(key, w);
+      } else if (e.stage === "derive-tests") group("derive-tests", { domain: e.domain ?? byId.get(e.id)?.domain ?? undefined, stale: true }, "missing test", "missing tests");
       else if (e.stage === "calibrate") group("calibrate", { target: e.target ?? record.config?.oracle?.target ?? undefined }, "missing test owed a run", "missing tests owed a run");
       else if (e.stage !== "verify") {
         const s = SUBJECT_OF[e.stage];
@@ -452,7 +461,16 @@ function owedWork(record, inFlight) {
     const where = g.args.domain ? ` in ${g.args.domain}` : g.args.target ? ` for target ${g.args.target}` : "";
     items.push({ kind: "owed", stage: g.stage, args: g.args, command: runCommand(g.stage, g.args), why: `${detail}${where} owed by ${g.stage}` });
   }
-  return { items, summary: [...summary.values()], stale: [...stale].map(([domain, ids]) => ({ domain, ids })) };
+  const waiting = [...unanswered.values()].map((w) => {
+    const them = w.n === 1 ? "it" : "them";
+    const why = w.kept
+      ? `${plural(w.n, "missing test")} ${w.stage} was handed and kept at ${[...w.by].join(", ")}: its run could not supply what ${w.n === 1 ? "it needs" : "they need"}`
+      : `${plural(w.n, "missing test")} owed by ${w.stage}, which has no agent turn to be handed ${them}`;
+    const rerun = w.kept ? `, or sdlc run ${w.stage} --reason "<what has changed>"` : "";
+    return { on: "a ruler", kind: MISSING_TEST, count: w.n, name: `missing tests (${w.stage})`, gate: null, why,
+      command: `condition-withdrawn missing-test/<id>: <why> on any ruling${rerun} (sdlc checks lists each)` };
+  });
+  return { items, waiting, summary: [...summary.values()], stale: [...stale].map(([domain, ids]) => ({ domain, ids })) };
 }
 
 function ordered(items, record) {
@@ -499,12 +517,13 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
   };
   const ready = order.flatMap((kind) => (byKind[kind] ?? []).map((c) => ({ ...c, rule: ruleFor(kind, order, byKind) })));
   const next = ready[0] ?? null;
-  const state = next ? "run" : props.waiting.length ? "waiting" : "idle";
+  const waiting = [...props.waiting, ...owed.waiting];
+  const state = next ? "run" : waiting.length ? "waiting" : "idle";
   return {
     state,
     next,
     ready,
-    waiting: props.waiting,
+    waiting,
     owed: owed.summary,
     stale: owed.stale,
     phase: phase ? { ...phase } : null,
@@ -560,7 +579,10 @@ export function formatNextShort(r) {
   else lines.push(`next: ${idleLine(r)}`);
   const more = [];
   if (r.ready.length > 1) more.push(`${r.ready.length - 1} more ready`);
-  if (r.waiting.length) more.push(`${plural(r.waiting.length, "proposal")} waiting on a person`);
+  const proposals = r.waiting.filter((w) => w.kind !== MISSING_TEST);
+  const tests = r.waiting.filter((w) => w.kind === MISSING_TEST).reduce((n, w) => n + w.count, 0);
+  if (proposals.length) more.push(`${plural(proposals.length, "proposal")} waiting on a person`);
+  if (tests) more.push(`${plural(tests, "missing test")} waiting on a ruler`);
   if (more.length) lines.push(`  (${more.join(", ")}: sdlc next)`);
   return lines.join("\n");
 }

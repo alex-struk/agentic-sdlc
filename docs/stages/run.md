@@ -93,8 +93,11 @@ is the only place a re-run decision is made.
   stage with `re-address missing-test/<id> to <stage>: <why>` (`docs/operating-model.md` §7). Once
   the proposal is open — or the gate-less commit made — the lines are applied on `main` in a commit
   of their own, `record(<stage>): missing-test/<id> re-addressed to <stage> by <proposal>`, and a
-  line for an item the stage does not owe moves nothing and is named in that commit's body. A run
-  that fails before this point hands nothing on.
+  line for an item the stage does not owe moves nothing and is named in that commit's body. A line
+  to `derive-tests` from a run that opened a proposal is held for the proposal's approval
+  (`docs/stages/rule.md`), since the writer needs the run's work on `main`. The lines are read
+  from the run's own account, which for a run finished by `sdlc resume` is the interrupted run's
+  journal entry. A run that fails before this point hands nothing on.
 
   **A gated stage builds no state site.** Every page of the site is regenerated whole from the
   whole project, so a copy carried on a proposal branch would differ from every other open

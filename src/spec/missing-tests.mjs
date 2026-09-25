@@ -30,7 +30,15 @@
 //
 // **Re-addressing.** The stage that owes an item, when it is handed it, may say in its journal
 // that the item is another stage's (`re-address missing-test/<id> to <stage>: <why>`), and a
-// record `derive-tests` rewrites with a different owner moves the item when it is approved.
+// record `derive-tests` rewrites with a different owner moves the item when it is approved. A
+// hand-on to `derive-tests` from a gated stage rests on what that stage supplied, so it is
+// applied by the approval that brings the supply onto `main`, stamped with the ruling; any
+// other move is applied when the run finishes. What the approved run was handed and did not
+// hand on it kept (`kept`), and no run of that stage is offered for it again.
+//
+// **Retired criteria.** A criterion another supersedes, or one made obsolete, is derived no
+// test, so it is owed none: every reader leaves it out, and the next pipeline commit that
+// touches this list withdraws its item, stamped by the runner.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -42,6 +50,7 @@ import { isOpen, open, owedPath, read, readAt, rewrite } from "./owed.mjs";
 export const MISSING_TEST = "missing-test";
 export const NOT_TESTABLE_PATH = "tests/acceptance/not-testable.yaml";
 export const DEFAULT_OWNER = "contract";
+export const WRITER = "derive-tests";
 
 const REF_PREFIX = `${MISSING_TEST}/`;
 const RAN = new Set(["pass", "fail"]);
@@ -108,6 +117,19 @@ function covered(entries, record) {
     && (isOpen(e) || (e.closed?.outcome === "withdrawn" && Number(e.version) === Number(record.version))));
 }
 
+// A criterion no test is asked of any more: one another criterion supersedes, which carries
+// what it asked, or one made obsolete. `derive-tests` derives neither, so no test for it will
+// ever run, and an item for it is an item nothing could close.
+function retired(row) {
+  return Boolean(row) && (Boolean(row.supersededBy) || row.state === "obsolete");
+}
+
+function retiredWhy(row) {
+  return row.supersededBy
+    ? `${row.id} is superseded by ${row.supersededBy}, which carries what it asked; no test is derived for it`
+    : `${row.id} is obsolete; no test is derived for it`;
+}
+
 function pendingEntry(record, index) {
   return {
     kind: MISSING_TEST,
@@ -128,10 +150,11 @@ export function openMissingTestsAt(projectDir, rev = "main") {
   return openFrom(readAt(projectDir, MISSING_TEST, rev), showAt(projectDir, rev, NOT_TESTABLE_PATH), showAt(projectDir, rev, "spec/criteria-index.json"));
 }
 
+// A criterion that is retired is owed nothing, whether or not the list has caught up with it yet.
 function openFrom(stored, recordsText, indexText) {
   const index = indexIn(indexText);
-  const pending = recordsIn(recordsText).filter((r) => !covered(stored, r));
-  return [...stored.filter(isOpen), ...pending.map((r) => pendingEntry(r, index))];
+  const pending = recordsIn(recordsText).filter((r) => !covered(stored, r) && !retired(index.get(r.id)));
+  return [...stored.filter((e) => isOpen(e) && !retired(index.get(e.item))), ...pending.map((r) => pendingEntry(r, index))];
 }
 
 // Every result file a test run leaves: each target's `latest.json` and each slice's verify
@@ -181,12 +204,16 @@ function runner(config) {
   return calibrates ? { stage: "calibrate", target } : { stage: "verify" };
 }
 
-function moved(entry, to, why, by, at, more = {}) {
+// An item moved to another stage. What the stage it leaves had kept of it goes with the move:
+// the stage it reaches has kept nothing yet. `stamp` is the ruling a move made at an approval
+// carries.
+function moved(entry, to, why, by, at, more = {}, stamp = {}) {
+  const { kept: _kept, ...rest } = entry;
   return {
-    ...entry,
+    ...rest,
     ...more,
     stage: to,
-    readdressed: [...(entry.readdressed ?? []), { from: entry.stage, to, why, by, at }],
+    readdressed: [...(entry.readdressed ?? []), { from: entry.stage, to, why, by, ...stamp, at }],
   };
 }
 
@@ -207,12 +234,12 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
   const nowById = new Map(now.map((r) => [r.id, r]));
   const wasById = new Map(was.map((r) => [r.id, r]));
   const index = indexIn(workingText(projectDir, "spec/criteria-index.json"));
-  const result = { path: null, opened: [], readdressed: [], closed: [] };
+  const result = { path: null, opened: [], readdressed: [], closed: [], withdrawn: [] };
 
   const stored = read(projectDir, MISSING_TEST);
   const fresh = [];
   for (const r of [...now, ...was.filter((w) => !nowById.has(w.id))]) {
-    if (covered([...stored, ...fresh], r)) continue;
+    if (covered([...stored, ...fresh], r) || retired(index.get(r.id))) continue;
     const brought = before && from && JSON.stringify(wasById.get(r.id)?.version) !== JSON.stringify(r.version);
     const stamp = brought ? { from, gate, by, at } : { by: "runner", at };
     fresh.push({ ...pendingEntry(r, index), ...stamp });
@@ -226,6 +253,11 @@ export function syncMissingTests(projectDir, { before = null, from = null, stage
   const run = runner(config);
   const path = rewrite(projectDir, MISSING_TEST, (list) => list.map((e) => {
     if (!isOpen(e)) return e;
+    const row = index.get(e.item);
+    if (retired(row)) {
+      result.withdrawn.push(e.item);
+      return { ...e, closed: { outcome: "withdrawn", why: retiredWhy(row), by: "runner", at } };
+    }
     const record = nowById.get(e.id);
     if (record) {
       const owner = text(record.owner);
@@ -299,27 +331,89 @@ export function readdressLines(journal) {
 // Applies a stage's re-address lines to the items it owes. A line naming an item this stage
 // does not owe, a stage that does not exist, or the stage that already owes it moves nothing
 // and is reported. `by` is what the move is attributed to: the proposal the run opened.
-export function readdressMissingTests(projectDir, stage, journal, { by, at = new Date().toISOString() } = {}) {
+//
+// A line to a stage in `hold` moves nothing here and is returned in `held`: a gated run holds
+// its hand-ons to the test writer, because what the writer needs is the run's own work, which
+// reaches `main` only when the proposal is approved (`settleApprovedMissingTests`).
+export function readdressMissingTests(projectDir, stage, journal, { by, at = new Date().toISOString(), hold = [] } = {}) {
   const lines = readdressLines(journal);
-  const result = { path: null, readdressed: [], refused: [] };
+  const result = { path: null, readdressed: [], refused: [], held: [] };
   if (!lines.length) return result;
   const moves = new Map();
+  const seen = new Set();
   const owned = new Set(openInTree(projectDir).filter((e) => e.stage === stage).map((e) => e.item));
   for (const l of lines) {
     const ref = missingTestRef(l.id);
     if (!STAGES.includes(l.to)) result.refused.push(`${ref}: ${l.to} is not a stage`);
     else if (!owned.has(l.id)) result.refused.push(`${ref}: ${l.id} is not an open item owed by ${stage}`);
     else if (l.to === stage) result.refused.push(`${ref}: already owed by ${stage}`);
-    else if (!moves.has(l.id)) moves.set(l.id, l);
+    else if (!seen.has(l.id)) {
+      seen.add(l.id);
+      if (hold.includes(l.to)) result.held.push({ id: l.id, to: l.to });
+      else moves.set(l.id, l);
+    }
   }
   if (!moves.size) return result;
   materialise(projectDir, at);
   result.path = rewrite(projectDir, MISSING_TEST, (list) => list.map((e) => {
-    const m = isOpen(e) && e.stage === stage ? moves.get(e.item) : null;
+    const m = isOpen(e) && e.stage === stage && owned.has(e.item) ? moves.get(e.item) : null;
     if (!m) return e;
     result.readdressed.push({ id: e.item, from: stage, to: m.to });
     return moved(e, m.to, m.why, by ?? stage, at);
   }));
+  return result;
+}
+
+const inDomain = (e, domain) => !domain || !e.domain || e.domain === domain;
+
+// A run's own account as its proposal page carries it: everything above the ruling appended to
+// the page, so a ruler quoting a line is never read as the run saying it.
+function runAccount(page) {
+  const text = String(page ?? "");
+  const at = text.search(/^## Ruling[ \t]*$/m);
+  return at === -1 ? text : text.slice(0, at);
+}
+
+// What an approval settles about the missing tests the approved run was handed.
+//
+// The run was handed the items its stage owed on `main` when it ran, in its domain where it has
+// one (`handedNote`); `main` does not move while a stage runs, so `base` — the commit the
+// proposal branch was cut from — holds exactly that list. Each re-address line on the proposal
+// page that moves an item the stage still owes is applied, stamped with the ruling: the hand-ons
+// to the test writer the run held back, and any other the run's finish did not apply. An item
+// the run was handed and neither hand on is kept by the stage, stamped the same way (`kept`):
+// the run looked at it and could not supply what it needs, and it stays owed by the stage
+// without that stage being offered a run for it again (`src/runner/next.mjs`).
+//
+// Applying it twice changes nothing. Returns the path written (`null` when nothing changed),
+// what moved, and what was kept.
+export function settleApprovedMissingTests(projectDir, { stage, proposal, gate = null, by = null, page = "", base = null, domain = null, at = new Date().toISOString() } = {}) {
+  const result = { path: null, readdressed: [], kept: [] };
+  if (!stage || !proposal) return result;
+  const handed = new Set(base
+    ? openMissingTestsAt(projectDir, base).filter((e) => e.stage === stage && inDomain(e, domain)).map((e) => e.item)
+    : []);
+  const lines = new Map();
+  for (const l of readdressLines(runAccount(page))) {
+    if (STAGES.includes(l.to) && l.to !== stage && !lines.has(l.id)) lines.set(l.id, l);
+  }
+  const owed = openInTree(projectDir).filter((e) => e.stage === stage);
+  if (!owed.some((e) => lines.has(e.item) || (handed.has(e.item) && e.kept?.by !== proposal))) return result;
+  const live = new Set(owed.map((e) => e.item));
+  const opened = materialise(projectDir, at);
+  const stamp = { ...(gate ? { gate } : {}), ...(by ? { approved_by: by } : {}) };
+  const path = rewrite(projectDir, MISSING_TEST, (list) => list.map((e) => {
+    if (!isOpen(e) || e.stage !== stage || !live.has(e.item)) return e;
+    const l = lines.get(e.item);
+    if (l) {
+      result.readdressed.push({ id: e.item, from: stage, to: l.to });
+      return moved(e, l.to, l.why, proposal, at, {}, stamp);
+    }
+    if (!handed.has(e.item) || e.kept?.by === proposal) return e;
+    result.kept.push(e.item);
+    return { ...e, kept: { by: proposal, ...stamp, at } };
+  }));
+  result.path = path ?? opened;
   return result;
 }
 
@@ -337,9 +431,9 @@ export function blockingMissingTests(projectDir, { claimed = [], withdrawn = [],
 // What a stage run is handed: the open items it owes, read from `main`, and the line that moves
 // one to another stage. A stage with a domain is handed the items in its domain. `null` where
 // the stage owes nothing, so an ordinary run's prompt reads exactly as it would without this.
-export function handedNote(projectDir, stage, { domain } = {}) {
+export function handedNote(projectDir, stage, { domain, gated = false } = {}) {
   const owed = openMissingTestsAt(projectDir, "main")
-    .filter((e) => e.stage === stage && (!domain || !e.domain || e.domain === domain));
+    .filter((e) => e.stage === stage && inDomain(e, domain));
   if (!owed.length) return null;
   const one = owed.length === 1;
   return [
@@ -350,6 +444,9 @@ export function handedNote(projectDir, stage, { domain } = {}) {
     "To hand one to another stage — the one that writes its test once you have supplied what it needs, or the one whose it is — "
       + "write a line of its own in your journal:\n\n"
       + "re-address missing-test/<id> to <stage>: <why>\n\n"
-      + `It is recorded against this run's proposal when the run finishes. An item you write no such line for stays owed by ${stage}.`,
+      + (gated
+        ? `It is recorded against this run's proposal: a move to ${WRITER} when the proposal is approved, since the test writer needs what you supplied on main, and any other move when the run finishes. `
+        : "It is recorded when the run finishes. ")
+      + `An item you write no such line for stays owed by ${stage}, recorded as one this run could not supply; say why in your journal.`,
   ].join("\n\n");
 }

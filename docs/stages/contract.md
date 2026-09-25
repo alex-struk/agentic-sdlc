@@ -77,10 +77,15 @@ re-address missing-test/<id> to <stage>: <why>
 
 An item whose missing piece this run supplied goes to `derive-tests`, which writes its test on the
 next `--stale` run of its domain; one that is another stage's goes to that stage, and one whose
-criterion is itself the problem to `ratify`. The lines are applied when the run finishes, in a
-commit of their own on `main` attributed to the proposal the run opened (`record(contract): …`). A
-line for an item `contract` does not owe, or naming something that is not a stage, moves nothing
-and is named in that commit. An item the journal says nothing about stays owed by `contract`. When
+criterion is itself the problem to `ratify`. A move to `derive-tests` is applied by the approval
+of the proposal, in its merge commit and stamped with the ruling, because what the writer needs is
+this run's work and reaches `main` only then; a returned proposal hands nothing to the writer. Any
+other move is applied when the run finishes, in a commit of its own on `main` attributed to the
+proposal the run opened (`record(contract): …`). A line for an item `contract` does not owe, or
+naming something that is not a stage, moves nothing and is named in that commit. An item the
+journal says nothing about stays owed by `contract`, and the approval records it as kept (`kept`,
+with the ruling): `sdlc next` offers no `contract` run for it again and lists it as waiting on a
+ruler, who withdraws it or has the stage run once something has changed. When
 to hand an item on, and to whom, is judgement, and is in the contract skill ("Missing tests handed
 to you"); the runner states only the form.
 

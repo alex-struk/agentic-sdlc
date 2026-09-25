@@ -229,8 +229,13 @@ stateDiagram-v2
 - **The owing stage is handed it.** Its open items are appended to its prompt when it runs, read
   from `main`. It supplies what it can and hands each item on in its journal —
   `re-address missing-test/<id> to <stage>: <why>` — to `derive-tests` once what was missing
-  exists, or to the stage whose it is; a criterion that is itself the problem goes to `ratify`. The
-  move is recorded on `main` against the proposal the run opened. A derivation that keeps the
+  exists, or to the stage whose it is; a criterion that is itself the problem goes to `ratify`. A
+  move to the stage whose it is is recorded on `main` when the run finishes, against the proposal
+  the run opened. A move to `derive-tests` rests on what the run supplied, so the approval that
+  brings that onto `main` applies it, stamped with the ruling. An item the approved run was handed
+  and did not hand on is recorded as kept: the stage said it could not supply it, so it stays owed
+  by that stage, and `sdlc next` lists it as waiting on a ruler rather than offering the stage
+  again (`docs/decisions/0048-a-hand-on-waits-for-what-it-rests-on.md`). A derivation that keeps the
   record hands the item to the record's owner, and a test that exists and has not run is owed by
   `calibrate`, or by `verify` in a project that does not calibrate. Rulers are shown the items the
   proposal's stage owes and, for a build slice, the items its criteria are owed; `sdlc next` lists
@@ -242,7 +247,9 @@ stateDiagram-v2
   closes nothing.
 - **A ruler withdraws one** with the reason written down, `condition-withdrawn missing-test/<id>:
   <why>`, on any ruling and from either seat. The withdrawal holds for the criterion's version; a
-  record at a later version is owed again.
+  record at a later version is owed again. A criterion superseded by another, or made obsolete, is
+  derived no test and is owed none: the ruling that retired it is the withdrawal, and the runner
+  records it on the next pipeline commit that touches the list.
 - **Whether it blocks is policy.** While `policy.gates.G3.block_on_missing_tests` is true, the
   default, neither seat may approve a build slice while an open item names a criterion it claims,
   unless the ruling withdraws it. The refusal is recorded like every other.

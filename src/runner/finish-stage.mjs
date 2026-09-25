@@ -14,7 +14,7 @@ import { endedBecause, runAgent, turnsFor, writeMcpConfig } from "./executor.mjs
 import { skillText } from "../stages/registry.mjs";
 import { postCheckRepairs } from "../config/policy.mjs";
 import { settleRequestedRevision } from "../stages/proposals.mjs";
-import { MISSING_TEST, missingTestRef, readdressMissingTests } from "../spec/missing-tests.mjs";
+import { MISSING_TEST, WRITER, missingTestRef, readdressMissingTests } from "../spec/missing-tests.mjs";
 import { owedPath } from "../spec/owed.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { escalateOverLimit } from "./owed-limits.mjs";
@@ -260,9 +260,13 @@ export function finishDeterministicNoOp(projectDir, stage, ctx, text) {
 // re-read rather than threaded through, and rewritten at each phase change.
 // Moves the missing tests a run's journal hands to another stage, attributed to the proposal the
 // run opened, and commits the move. A line the run was not entitled to write — an item it does
-// not owe, a stage that does not exist — moves nothing and is named in the commit.
+// not owe, a stage that does not exist — moves nothing and is named in the commit. A run that
+// opened a proposal holds its hand-ons to the test writer for the approval, which applies them
+// (`settleApprovedMissingTests`, `src/commands/rule.mjs`).
 function recordReaddressed(projectDir, stageName, journal, proposalName) {
-  const r = readdressMissingTests(projectDir, stageName, journal, { by: proposalName ?? stageName });
+  const r = readdressMissingTests(projectDir, stageName, journal, {
+    by: proposalName ?? stageName, hold: proposalName ? [WRITER] : [],
+  });
   if (!r.path) return r;
   const by = proposalName ? ` by ${proposalName}` : "";
   const subject = `record(${stageName}): ${r.readdressed.map((m) => `${missingTestRef(m.id)} re-addressed to ${m.to}`).join(", ")}${by}`;

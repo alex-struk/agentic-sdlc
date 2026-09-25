@@ -144,6 +144,9 @@ replacement, never confirm it, so:
   one's) does not fail a spec file that exists anyway for a superseded criterion — one written
   before the criterion was superseded, say — but warns, naming the replacement, so a reviewer
   notices it rather than trusting a test that can only be wrong now.
+- A missing test for a superseded criterion is owed nothing: every reader of the owed list leaves
+  it out, and the next pipeline commit that touches the list withdraws its item, stamped by the
+  runner (`src/spec/missing-tests.mjs`). The same holds for an obsolete criterion.
 
 ## Workspace the agent sees
 

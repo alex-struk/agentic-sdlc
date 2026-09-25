@@ -12,7 +12,7 @@ import { read } from "../src/spec/owed.mjs";
 import { checkConditions } from "../src/checks/conditions.mjs";
 import {
   MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, readdressLines,
-  readdressMissingTests, recordProblems, syncMissingTests, withdrawMissingTest,
+  readdressMissingTests, recordProblems, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest,
 } from "../src/spec/missing-tests.mjs";
 
 function project(t) {
@@ -195,6 +195,104 @@ test("the stage that owes an item re-addresses it by a journal line, and only an
   const e = read(d, MISSING_TEST).find((x) => x.item === "R-1.1");
   assert.equal(e.stage, "ratify");
   assert.deepEqual([e.readdressed[0].from, e.readdressed[0].by], ["contract", "contract-v3"]);
+});
+
+// A move to the test writer rests on what the run supplied, which reaches `main` only when
+// its proposal is approved; a move to the stage whose the item is rests on nothing the run made.
+test("a gated run's hand-on to derive-tests waits for its approval, and a move elsewhere does not", (t) => {
+  const d = project(t);
+  records(d, [LEGACY, NAMED]);
+  commit(d, "records");
+  const text = [
+    `re-address ${missingTestRef("R-1.1")} to derive-tests: the seeded order`,
+    `re-address ${missingTestRef("R-1.2")} to ratify: the criterion asks for two states at once`,
+  ].join("\n");
+  const r = readdressMissingTests(d, "contract", text, { by: "contract-v2", hold: ["derive-tests"] });
+  assert.deepEqual(r.readdressed, [{ id: "R-1.2", from: "contract", to: "ratify" }]);
+  assert.deepEqual(r.held, [{ id: "R-1.1", to: "derive-tests" }]);
+  assert.equal(read(d, MISSING_TEST).find((e) => e.item === "R-1.1").stage, "contract");
+});
+
+// What an approval settles: what the run handed on, and what it was handed and kept.
+test("an approval hands on what its run supplied, stamped with the ruling, and records what the run kept", (t) => {
+  const d = project(t);
+  put(d, "spec/criteria-index.json", JSON.stringify({ criteria: [
+    { id: "R-1.1", domain: "orders", version: 1, state: "accepted" },
+    { id: "R-1.2", domain: "orders", version: 2, state: "accepted" },
+    { id: "R-1.3", domain: "orders", version: 1, state: "accepted" },
+    { id: "R-1.4", domain: "orders", version: 1, state: "accepted" },
+  ] }));
+  const R13 = { id: "R-1.3", version: 1, reason: "blocked: the criterion asks for two states", missing: "one state", owner: "contract" };
+  records(d, [LEGACY, NAMED, R13]);
+  commit(d, "records");
+  const base = git(["rev-parse", "HEAD"], d);
+  // Owed after the run was cut, so never handed to it.
+  records(d, [LEGACY, NAMED, R13, { id: "R-1.4", version: 1, reason: "blocked", missing: "a seeded refund", owner: "contract" }]);
+  commit(d, "a later record");
+  const page = [
+    "---", "gate: G1", "---", "", "## Journal: contract", "",
+    `re-address ${missingTestRef("R-1.1")} to derive-tests: the seeded order`,
+    `re-address ${missingTestRef("R-1.3")} to ratify: the criterion asks for two states at once`,
+    "", "## Ruling", "",
+    `re-address ${missingTestRef("R-1.4")} to derive-tests: a ruler quoting a line is not the run's`,
+  ].join("\n");
+  const opts = { stage: "contract", proposal: "contract-v2", gate: "G1", by: "agent:product-owner", page, base };
+  const r = settleApprovedMissingTests(d, opts);
+  assert.deepEqual(r.readdressed, [{ id: "R-1.1", from: "contract", to: "derive-tests" }, { id: "R-1.3", from: "contract", to: "ratify" }]);
+  assert.deepEqual(r.kept, ["R-1.2"]);
+  const byId = new Map(read(d, MISSING_TEST).map((e) => [e.item, e]));
+  assert.equal(byId.get("R-1.1").stage, "derive-tests");
+  assert.deepEqual(
+    (({ at: _a, ...m }) => m)(byId.get("R-1.1").readdressed.at(-1)),
+    { from: "contract", to: "derive-tests", why: "the seeded order", by: "contract-v2", gate: "G1", approved_by: "agent:product-owner" });
+  assert.equal(byId.get("R-1.2").stage, "contract");
+  assert.deepEqual((({ at: _a, ...k }) => k)(byId.get("R-1.2").kept), { by: "contract-v2", gate: "G1", approved_by: "agent:product-owner" });
+  assert.equal(byId.get("R-1.4").stage, "contract");
+  assert.equal(byId.get("R-1.4").kept, undefined, "an item the run was never handed is not one it kept");
+  assert.equal(settleApprovedMissingTests(d, opts).path, null, "settling twice changes nothing");
+
+  // A later move takes the item out of the owner's keeping.
+  readdressMissingTests(d, "contract", `re-address ${missingTestRef("R-1.2")} to archaeology: recovered wrongly`, { by: "contract-v3" });
+  assert.equal(read(d, MISSING_TEST).find((e) => e.item === "R-1.2").kept, undefined);
+});
+
+test("an approval for one domain settles only what that domain's run was handed", (t) => {
+  const d = project(t);
+  records(d, [{ ...NAMED, owner: "archaeology" }]);
+  commit(d, "records");
+  const base = git(["rev-parse", "HEAD"], d);
+  const r = settleApprovedMissingTests(d, { stage: "archaeology", proposal: "archaeology-billing", gate: "G1", by: "tech-lead", page: "", base, domain: "billing" });
+  assert.equal(r.path, null);
+  const s = settleApprovedMissingTests(d, { stage: "archaeology", proposal: "archaeology-orders", gate: "G1", by: "tech-lead", page: "", base, domain: "orders" });
+  assert.deepEqual(s.kept, ["R-1.2"]);
+});
+
+// derive-tests writes no test for a criterion another has superseded, or one made obsolete, so
+// an item for one is an item nothing can ever close.
+test("a criterion superseded or made obsolete is owed no test, and the next pipeline commit withdraws its item", (t) => {
+  const d = project(t);
+  records(d, [LEGACY, NAMED, { id: "R-1.3", version: 1, reason: "blocked", missing: "a page", owner: "contract" }]);
+  commit(d, "records");
+  syncMissingTests(d, {});
+  commit(d, "materialised");
+  put(d, "spec/criteria-index.json", JSON.stringify({ criteria: [
+    { id: "R-1.1", domain: "orders", version: 1, state: "accepted", supersededBy: "R-1.3" },
+    { id: "R-1.2", domain: "orders", version: 2, state: "obsolete" },
+    { id: "R-1.3", domain: "orders", version: 1, state: "accepted" },
+  ] }));
+  commit(d, "ratified");
+  assert.deepEqual(openMissingTestsAt(d, "main").map((e) => e.item), ["R-1.3"], "read as owed nothing before anything is written");
+  const moved = readdressMissingTests(d, "contract", `re-address ${missingTestRef("R-1.1")} to derive-tests: supplied`, { by: "contract-v2" });
+  assert.deepEqual(moved.readdressed, [], "a line cannot hand on an item nothing owes");
+  const r = syncMissingTests(d, {});
+  assert.deepEqual(r.withdrawn.sort(), ["R-1.1", "R-1.2"]);
+  const byId = new Map(read(d, MISSING_TEST).map((e) => [e.item, e]));
+  assert.equal(byId.get("R-1.1").closed.outcome, "withdrawn");
+  assert.match(byId.get("R-1.1").closed.why, /R-1\.1 is superseded by R-1\.3/);
+  assert.match(byId.get("R-1.2").closed.why, /R-1\.2 is obsolete/);
+  assert.equal(byId.get("R-1.2").closed.by, "runner");
+  assert.ok(!byId.get("R-1.3").closed);
+  assert.equal(syncMissingTests(d, {}).path, null, "and nothing reopens it");
 });
 
 test("refs name an item by its criterion", () => {
