@@ -330,8 +330,10 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
       const fix = await runFixTurn(repairDir, stage, ctx, lastMessages);
       if (repairDir !== projectDir) recollect?.();
       fixTurnsRun += 1;
+      const fixSection = `\n\n## Fix turn${fixTurnsRun > 1 ? ` ${fixTurnsRun}` : ""}\n\n${fix.text}`;
       result = {
-        text: `${result.text}\n\n## Fix turn${fixTurnsRun > 1 ? ` ${fixTurnsRun}` : ""}\n\n${fix.text}`,
+        text: `${result.text}${fixSection}`,
+        ...(result.account !== undefined ? { account: `${result.account}${fixSection}` } : {}),
         cost: (result.cost ?? 0) + (fix.cost ?? 0),
         turns: (result.turns ?? 0) + (fix.turns ?? 0),
         sessionId: agentResult.sessionId,
@@ -439,6 +441,9 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     git([...SDLC_AUTHOR, "commit", "-q", "-m", `stage(${stage.name}): ${title}`], projectDir);
   }
 
+  // What the run said, which for a resumed run is the interrupted run's account rather than the
+  // resume's own journal line: the lines below are read from it.
+  const said = result.account ?? result.text;
   // A run opened by requests addressed to this stage spends them here and nowhere earlier.
   // The checkout is back on `main` and the tree is clean by this point on either path
   // above, so the ledger moves in a commit of its own, the way `0024` files one: what the
@@ -447,11 +452,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
   // by a later pre-check, failed by its post-checks, lost mid-session — leaves every
   // request exactly where it found it, because an ask marked answered is an ask nothing
   // raises again.
-  settleRequestedRevision(projectDir, stage.name, ctx, result.text, proposal?.name ?? null);
+  settleRequestedRevision(projectDir, stage.name, ctx, said, proposal?.name ?? null);
   // And the missing tests the run handed on (`re-address missing-test/<id> to <stage>: <why>`),
   // in a commit of their own on `main` for the same reason: the owed list lives there, and
   // a run that never got this far hands nothing on.
-  recordReaddressed(projectDir, stage.name, result.text, proposal?.name ?? null);
+  recordReaddressed(projectDir, stage.name, said, proposal?.name ?? null);
 
   clearRunState(projectDir);
   return { ok: true, proposal, journal, cost: result.cost, turns: result.turns };

@@ -29,6 +29,12 @@ fail and the run has repair turns left, the journal instead carries that fixed s
 `## Fix turn` section for each repair turn that ran, with `cost` and `turns` reflecting those real
 turns (see "Checks that block" and `docs/stages/run.md`).
 
+Where the interrupted turn's own journal entry is on disk — a run whose post-checks failed commits
+it — that entry is the run's account: the proposal is built from it, and the lines a run's journal
+answers with are read from it, exactly as they would have been had the run finished first time.
+Those are `deferred-request` lines (`docs/stages/run.md`) and `re-address missing-test/<id> to
+<stage>: <why>` lines (`docs/operating-model.md` §7). A repair turn's account is added to it.
+
 ## Workspace the agent sees
 
 No agent session runs here at all. `resume` reads `.sdlc/run-state.json` and the project's

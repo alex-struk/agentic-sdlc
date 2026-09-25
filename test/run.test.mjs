@@ -1671,6 +1671,46 @@ test("resume rebuilds ctx and gives the proposal the interrupted run's own accou
   }
 });
 
+// A run that failed its post-checks and is finished by `sdlc resume` hands on what its
+// journal hands on, exactly as a run that passed first time does: the lines are in the
+// interrupted run's account, not in the resume's own entry.
+test("resume applies the re-address lines of the account it finishes", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-resume-readdress-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerStage({
+    name: "resume-owed-stage",
+    title: "resume owed stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: "G1",
+    collect: [],
+    implemented: true,
+    prompt: () => "unused",
+    postChecks: () => [],
+    proposal: () => ({ name: "resume-owed-1", question: "q?", recommendation: "r" }),
+  });
+  mkdirSync(join(dir, ".sdlc", "journal"), { recursive: true });
+  mkdirSync(join(dir, "tests", "acceptance"), { recursive: true });
+  writeFileSync(join(dir, "tests/acceptance/not-testable.yaml"),
+    "criteria:\n  - { id: R-1.1, version: 1, reason: blocked, missing: \"a page\", owner: resume-owed-stage }\n");
+  writeFileSync(join(dir, ".sdlc", "journal", "001-resume-owed-stage.md"),
+    `---\nstage: "resume-owed-stage"\ntitle: "resume-owed-stage: post-checks failed"\nat: "2026-09-20T00:00:00.000Z"\ncost: 1\nturns: 20\nsession: "abc"\n---\n\nSupplied nothing.\n\nre-address missing-test/R-1.1 to ratify: the criterion is unobservable\n\npost-check: the run record changed\n`);
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "failed run's journal"], dir);
+  writeFileSync(join(dir, ".sdlc", "run-state.json"),
+    JSON.stringify({ stage: "resume-owed-stage", ctx: {}, phase: "post-checks", fixTurns: 1 }) + "\n");
+  try {
+    const code = await resume(dir, { again: true });
+    assert.equal(code, 0);
+    const owed = git(["show", "main:.sdlc/owed.yaml"], dir);
+    assert.match(owed, /item: R-1\.1[\s\S]*stage: ratify/);
+    assert.match(owed, /by: resume-owed-1/);
+    assert.match(git(["log", "-1", "--format=%s", "main"], dir), /record\(resume-owed-stage\): missing-test\/R-1\.1 re-addressed to ratify by resume-owed-1/);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
 // A journal entry is committed and published. Its body is whatever the turn and the
 // post-checks produced, and tool output carries absolute paths from the machine the run
 // happened on — which egress rule E-2 exists to keep out of the repository. Catching them
