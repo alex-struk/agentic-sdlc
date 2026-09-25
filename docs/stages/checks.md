@@ -29,7 +29,10 @@ No agent.
 ## Checks that block
 
 - **config** — `.sdlc/config.yaml` exists, parses, validates against `schema/config.schema.json`,
-  and its `profile` is one of the four known profiles.
+  and its `profile` is one of the four known profiles. A `policy.budgets` value of 1000 or more
+  fails. Warnings, which never fail the check: `policy.budgets` is set at all (it is the deprecated
+  name for `policy.turns`); `policy.triage` or `policy.rungs` is set (both are reserved and read by
+  nothing); a `sandbox-idp` target declares no `depends_on.identity`.
 - **layout** — every path required for the configured profile's stage list exists: `constitution.md`,
   `.sdlc/config.yaml`, `.sdlc/lock.json`, `intent/`, `spec/`, `spec/features`, `spec/domains`,
   `spec/contract`, `plan/`, `app/`, `evidence/pr-evidence.md`, `tests/acceptance`, `tests/adapters`,
@@ -129,6 +132,11 @@ No agent.
   `node_modules`, `sources/` and the acceptance harness's own results are never read. A missing or empty name list is a warning, not a failure. The name list is
   read from `SDLC_EGRESS_NAMES`, then `<project>/.sdlc/egress.local.txt`, then
   `$XDG_CONFIG_HOME/agentic-sdlc/egress-names.txt` (defaulting to `~/.config`).
+
+  Every pattern and the name list are rule E-2's, and the check applies them only where the
+  project's `egress.rules` lists `E-2`. A project that leaves it out is scanned for nothing and
+  warned that it is. The redaction of local paths where a committed or published file is written
+  (`src/lib/redact.mjs`) is not governed by the list and always applies.
 
   Under `--self` one further pattern applies, case-insensitively, to every scanned file
   and its filename: the name of the application this pipeline was first built against.

@@ -96,8 +96,8 @@ Required. Container of governance gates, tiers, limits and turn ceilings.
     - `on_limit` (enum `escalate` | `obsolete`, default `escalate`): What happens at the bound. `escalate` opens the next follow-up and escalates it to G1's `escalate_to`, recorded as any escalation is, so nothing leaves the contract without somebody deciding it; `ratify` refuses to run once the bound is reached if G1 names no `escalate_to`. `obsolete` marks every provisional criterion still unresolved `obsolete`, noted `unresolved after <n> rulings`.
 - `retries` (object, optional): How many times the runner retries a stage's own work.
   - `post_check_repair` (integer, min 0, default 1): How many repair turns a stage whose output failed its post-checks is given before the run fails. Each repair turn is told exactly what the previous attempt's post-checks said, and is capped at 40 turns or the stage's own turn ceiling, whichever is lower. `0` gives none. Stages with no agent (`ratify`, `calibrate`, `verify`) get none whatever this says.
-- `rungs` (object, optional): A map of risk tier escalation rules. Keys are tier names, values are strings.
-- `triage` (object, optional): Thresholds for automatic triage.
+- `rungs` (object, optional, reserved): Autonomy rungs, a map of tier names to strings. Nothing in the pipeline reads it, and `checks` warns when it is set.
+- `triage` (object, optional, reserved): Thresholds for letting a small change bypass the full stage sequence. Nothing in the pipeline reads it, and `checks` warns when it is set.
   - `direct_max_files` (integer, optional, min 1): Maximum files changed to bypass triage.
   - `direct_allowed_paths` (array, optional): Paths that can bypass triage.
 - `turns` (object, optional): The most agent turns a session may take, by stage. Keys are stage names, values are integers from 1 to 999. A stage with no entry runs with its own default: 40 for most stages, 250 for `design`, 150 for `plan`, 400 for `build`. The key `rule` caps a persona's ruling turn the same way: without it a ruling runs with 12 turns, except at G1 and on a calibration triage proposal, where the persona rules on every criterion in a page and gets the stage default of 40. A stage that genuinely needs more than 999 turns needs splitting, not a larger number.
@@ -118,4 +118,4 @@ Required. Container of skill packs to be installed and enabled.
 
 Required. Container of outbound traffic rules.
 
-- `rules` (array): A list of egress rule identifiers. Each must be one of: `E-1`, `E-2`, `E-3`, `E-4`.
+- `rules` (array): A list of egress rule identifiers. Each must be one of: `E-1`, `E-2`, `E-3`, `E-4`. The egress check (`docs/stages/checks.md`) enforces `E-2`, that nothing private leaves in a committed file, and applies it only when this list includes `E-2`; a list without it scans nothing and `checks` warns that it does not. `E-1`, `E-3` and `E-4` are accepted and have no check in the pipeline. Redaction of local paths in what the pipeline writes applies whatever this list says.

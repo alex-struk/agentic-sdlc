@@ -37,6 +37,12 @@ export function checkConfig(projectDir, ctx = {}) {
   const warnings = [];
   // Read and honoured, because a project changes its configuration only through a policy
   // proposal and one written before `policy.turns` existed must keep working until it does.
+  // Accepted by the schema so the design's configuration validates, and read by nothing.
+  for (const key of ["triage", "rungs"]) {
+    if (config?.policy?.[key] !== undefined) {
+      warnings.push(`policy.${key} is reserved: the pipeline does not read it, so setting it changes nothing`);
+    }
+  }
   if (config?.policy?.budgets) {
     warnings.push("policy.budgets is deprecated: it is read as turns per stage, which is what policy.turns names. "
       + "Move its entries to policy.turns (a stage policy.turns names ignores policy.budgets)");

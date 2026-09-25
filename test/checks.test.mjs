@@ -70,6 +70,23 @@ test("egress: ticket numbers, notes paths and listed names are caught in tracked
   assert.ok(r.messages.some((m) => m.includes("untracked.md") && m.includes("ticket")));
 });
 
+// The rules a project lists are the rules its egress check applies. E-2 (nothing private
+// leaves in a committed file) is the one this check implements; a project that leaves it out
+// is told what that switches off.
+test("egress: the check applies the rules egress.rules lists", () => {
+  const d = repo();
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, "a.md"), `See ticket ${TICKET} and ${LISTED_NAME}\n`);
+  writeFileSync(join(d, ".sdlc/egress.local.txt"), `${LISTED_NAME}\n`);
+  git(["add", "a.md"], d);
+  assert.equal(checkEgress(d, { config: { egress: { rules: ["E-1", "E-2", "E-3", "E-4"] } } }).ok, false);
+  assert.equal(checkEgress(d, { config: { egress: { rules: ["E-2"] } } }).ok, false);
+  const without = checkEgress(d, { config: { egress: { rules: ["E-1", "E-3", "E-4"] } } });
+  assert.equal(without.ok, true, without.messages.join("\n"));
+  assert.ok(without.warnings.some((w) => /egress\.rules does not list E-2/.test(w)), without.warnings.join("\n"));
+  assert.equal(checkEgress(d, {}).ok, false, "with no configuration to read, every rule applies");
+});
+
 test("egress: an ignored file is not scanned, tracked or not", () => {
   const d = repo();
   writeFileSync(join(d, ".gitignore"), "vendor/\n");

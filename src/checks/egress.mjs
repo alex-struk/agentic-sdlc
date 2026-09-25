@@ -67,8 +67,20 @@ function scannedFiles(projectDir) {
     && !seen.has(f) && seen.add(f));
 }
 
+// The rule this check enforces. Every pattern above and the name list are rule E-2's: nothing
+// private — a colleague's name, a ticket, a notes path, a meeting, a machine's home directory —
+// leaves in a committed file. A project's `egress.rules` says which rules it holds itself to;
+// the self-check and a project whose configuration could not be read hold to every rule.
+const RULE = "E-2";
+
 export function checkEgress(projectDir, ctx = {}) {
   const id = "egress";
+  const rules = ctx.self ? null : ctx.config?.egress?.rules;
+  if (Array.isArray(rules) && !rules.includes(RULE)) {
+    return { id, ok: true, messages: [], warnings: [
+      `egress.rules does not list ${RULE}, so no file is scanned for colleagues' names, ticket numbers, private notes paths, meeting references or home paths`,
+    ] };
+  }
   const names = nameList(projectDir);
   const warnings = names.length ? [] : [`no egress name list found; add colleagues' names, one per line, to ${defaultNamesPath()}`];
   const files = scannedFiles(projectDir);

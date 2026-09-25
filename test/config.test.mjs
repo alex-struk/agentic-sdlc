@@ -27,8 +27,6 @@ policy:
     G3: { holder: "agent:reviewer", escalate_to: tech-lead, human_sample_per_week: 5 }
     G-POL: { holder: tech-lead }
   default_tier: STANDARD
-  rungs: {}
-  triage: { direct_max_files: 3, direct_allowed_paths: [app/] }
   turns: { archaeology: 120, build: 400 }
 skills:
   packs:
@@ -189,4 +187,18 @@ test("policy.turns is a turn count per stage; policy.budgets still works and is 
   const current = checkConfig(d);
   assert.equal(current.ok, true, current.messages.join("\n"));
   assert.ok(!current.warnings.some((w) => /budgets/.test(w)), current.warnings.join("\n"));
+});
+
+// Two keys the schema accepts and nothing in the pipeline reads. A project that sets one
+// believes it has configured something, so it is told it has not.
+test("policy.triage and policy.rungs are reserved: accepted, and reported as doing nothing", () => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-reserved-"));
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, ".sdlc/config.yaml"), withPolicy(["rungs: { LOW: merge }", "triage: { direct_max_files: 3 }"]));
+  const r = checkConfig(d);
+  assert.equal(r.ok, true, r.messages.join("\n"));
+  assert.ok(r.warnings.some((w) => /policy\.triage is reserved/.test(w)), r.warnings.join("\n"));
+  assert.ok(r.warnings.some((w) => /policy\.rungs is reserved/.test(w)), r.warnings.join("\n"));
+  writeFileSync(join(d, ".sdlc/config.yaml"), GOOD);
+  assert.ok(!checkConfig(d).warnings.some((w) => /reserved/.test(w)));
 });
