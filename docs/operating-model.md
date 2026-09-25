@@ -120,6 +120,11 @@ The test for a new rule: if two projects could reasonably want it different, it 
 it is a matter of judgement, it is an instruction; only what must hold for every project is
 engine.
 
+The pipeline's shape is engine by design (`docs/specs/` §5): the list of stages, what each
+stage does, their order, the phases and each phase's exit criterion. A project varies it only
+by choosing one of the built-in profiles (`src/profiles.mjs`), and within it through config,
+seat assignments, and its own copies of skills and briefs.
+
 **Where each kind of rule lives.** The limits and permissions a project could want different are
 config keys with defaults the engine applies when they are absent (`docs/config.md`, `policy`):
 how many times verify returns a slice before escalating, how many follow-up rulings ratify gives a
