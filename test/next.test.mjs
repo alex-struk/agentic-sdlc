@@ -285,6 +285,28 @@ test("owed work is taken before the sequence moves on, grouped by the run that a
   assert.deepEqual(r.owed.map((o) => [o.kind, o.stage, o.count]), [["condition", "contract", 1], ["redo", "derive-tests", 1]]);
 });
 
+// A criterion another has since superseded, or made obsolete, is derived no test
+// (`acceptedCriteria` excludes it), so a redo entry for one is an entry no `--stale` run would
+// ever take up: offering one would have `sdlc next` name the same run forever. The entry is
+// still counted as owed — until the next pipeline commit that touches the list withdraws it
+// (`docs/decisions/0052`) — but never offered as something to run.
+test("a redo entry for a criterion another has superseded is not offered as a run", (t) => {
+  const d = project(t);
+  specDone(d);
+  commit(d, {
+    "spec/criteria-index.json": JSON.stringify({ generated_from: "abc", criteria: [
+      { id: "R-1.1", domain: "alpha", version: 1, state: "accepted", confidence: "confirmed" },
+      { id: "R-2.1", domain: "beta", version: 2, state: "accepted", confidence: "confirmed", supersededBy: "R-2.2" },
+      { id: "R-2.2", domain: "beta", version: 1, state: "accepted", confidence: "confirmed" },
+    ] }),
+    "tests/acceptance/redo.yaml": stringifyYaml({ redo: [{ id: "R-2.1", version: 2, why: "notifications changed" }] }),
+  });
+  const r = whatNext(d);
+  assert.deepEqual(r.owed.map((o) => [o.kind, o.stage, o.count]), [["redo", "derive-tests", 1]], "still counted as owed");
+  assert.ok(!r.ready.some((c) => c.stage === "derive-tests" && c.args?.stale), "never offered as a run");
+  assert.ok(!formatNext(r).includes("derive again (redo)"), formatNext(r));
+});
+
 // A criterion recorded untestable is owed a test from the moment its record is on main, by
 // the stage the record names or by contract, and is routed to the run that answers it.
 test("missing tests are owed work, routed by the stage that owes each one", (t) => {

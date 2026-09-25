@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
-  OWED_PATH, owedPath, read, readAt, open, close, settle, isOpen, openFor, openForFamily, sends, entriesIn,
+  OWED_PATH, owedPath, read, readAt, open, close, settle, isOpen, openFor, openForFamily, sends, entriesIn, withdrawRetired,
 } from "../src/spec/owed.mjs";
 
 function project(t) {
@@ -223,4 +223,41 @@ test("a kind the engine has never seen needs no machinery of its own", (t) => {
   assert.equal(stored[0].kind, "missing-test");
   open(dir, "other-kind", [{ item: "z", stage: "plan", why: "w" }]);
   assert.deepEqual(read(dir, "missing-test").map((x) => x.item), ["R-4.2"], "kinds sharing the file are read apart");
+});
+
+// A redo entry (or any other owed kind bound to a criterion) for one another criterion has
+// superseded, or one made obsolete, asks for work that will never be done: `derive-tests`
+// derives no test for such a criterion, so nothing would ever close the entry
+// (`docs/decisions/0048`, `0052`). What counts as retired is the caller's to say — this
+// module only knows entries and kinds.
+test("withdrawRetired closes every open entry whose item the caller says is retired, and leaves the rest", (t) => {
+  const dir = project(t);
+  put(dir, "tests/acceptance/redo.yaml", { redo: [
+    { id: "R-1.1", version: 1, why: "asserted the wrong thing" },
+    { id: "R-1.2", version: 3, why: "the oracle changed" },
+  ] });
+
+  const isRetired = (id) => id === "R-1.1";
+  const why = (id) => `${id} is superseded by R-1.9, which carries what it asked; no test is derived for it`;
+  const r = withdrawRetired(dir, "redo", isRetired, why);
+  assert.deepEqual(r.withdrawn, ["R-1.1"]);
+
+  const [a, b] = read(dir, "redo");
+  assert.equal(a.closed.outcome, "withdrawn");
+  assert.equal(a.closed.by, "runner");
+  assert.match(a.closed.why, /R-1\.1 is superseded by R-1\.9/);
+  assert.ok(!b.closed, "an entry retired says nothing about is left open");
+
+  assert.equal(withdrawRetired(dir, "redo", isRetired, why).path, null, "nothing left to withdraw a second time");
+});
+
+// A kind whose item names something other than a criterion — a rebind's adapter member — never
+// matches, so the same call is safe for every kind without a caller having to filter by kind
+// first.
+test("withdrawRetired leaves a kind whose items are never criteria untouched", (t) => {
+  const dir = project(t);
+  put(dir, "tests/adapters/rebind.yaml", { rebind: [{ id: "R-1.1", target: "old", why: "reads the footer" }] });
+  const r = withdrawRetired(dir, "rebind", () => false, () => "unreachable");
+  assert.deepEqual(r, { path: null, withdrawn: [] });
+  assert.ok(isOpen(read(dir, "rebind")[0]));
 });

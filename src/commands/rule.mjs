@@ -13,10 +13,10 @@ import { writeJournal } from "../runner/journal.mjs";
 import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedOverreachConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { close as closeOwed, conditionRef, isOpen, open as openOwed, openOn, owedPath, read as readOwed, readAt as readOwedAt, sameFiling } from "../spec/owed.mjs";
+import { close as closeOwed, conditionRef, isOpen, open as openOwed, openOn, owedPath, read as readOwed, readAt as readOwedAt, sameFiling, withdrawRetired as withdrawOwedRetired } from "../spec/owed.mjs";
 import { revisionLine } from "../stages/proposals.mjs";
 import { dropTestWrongRulings } from "../stages/calibrate.mjs";
-import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, restoreUnhanded, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
+import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, parseMissingTestRef, restoreUnhanded, retired, retiredWhy, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
 import { readSlice } from "../stages/slices.mjs";
 import { loadIndex } from "../checks/tests.mjs";
 import { STAGES_BY_NAME, addressableStages, proposalFamily, requestTakenBy, stageForProposal, undeliverableConditions } from "../stages/registry.mjs";
@@ -734,7 +734,8 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
     mergeApproved(projectDir, branch, `merge: ${name} approved at ${gate} by ${by}`);
     missingTests = recordMissingTests(projectDir, { name, gate, by });
     const redo = closeRedoAnswered(projectDir, { name, gate, by, merge: "HEAD" });
-    if (redo.paths.length) stagePaths(projectDir, redo.paths);
+    const retiredRedo = withdrawRetiredRedo(projectDir);
+    if (redo.paths.length || retiredRedo.paths.length) stagePaths(projectDir, [...new Set([...redo.paths, ...retiredRedo.paths])]);
     amendSiteOntoMergeCommit(projectDir);
   } else {
     regenerateSiteOnMain(projectDir, `${name} ${verdict}`);
@@ -820,6 +821,20 @@ function closeRedoAnswered(projectDir, { name, gate = null, by = null, merge, at
   return { paths: [owedPath("redo"), ...dropTestWrongRulings(projectDir, closed)], closed };
 }
 
+// A redo entry for a criterion another has since superseded, or one made obsolete, asks
+// derive-tests to derive a test for a criterion `acceptedCriteria` already excludes: no run
+// will ever take it up, so nothing else would ever close it, the same way an open missing
+// test for such a criterion never would. Withdrawn here on the same occasions a missing test
+// is — an approval's merge and `rule --settle` — stamped by the runner, with the reason
+// naming the replacement or the retirement (`docs/decisions/0052`). Writes the working tree
+// and returns the paths written and the criteria withdrawn; applying it twice changes
+// nothing.
+function withdrawRetiredRedo(projectDir, at = new Date().toISOString()) {
+  const byId = new Map((loadIndex(projectDir)?.criteria ?? []).map((c) => [c.id, c]));
+  const r = withdrawOwedRetired(projectDir, "redo", (id) => retired(byId.get(id)), (id) => retiredWhy(byId.get(id)), at);
+  return { paths: r.path ? [r.path] : [], withdrawn: r.withdrawn };
+}
+
 // Settles the missing tests the run behind an approved proposal was handed, from the approval's
 // merge commit: the page the run left on `main`, and the commit its branch was cut from, which
 // holds the list the run was handed (`settleApprovedMissingTests`). Writes the working tree and
@@ -859,13 +874,16 @@ function settledMessage(name, gate, stage, r) {
   // Items, not moves: an item reopened and handed on is one missing test.
   const n = new Set([...reopened, ...restored, ...r.readdressed.map((m) => m.id), ...r.kept, ...closed, ...withdrawn]).size;
   const redo = r.redo ?? [];
+  const redoWithdrawn = r.redoWithdrawn ?? [];
   const settles = [
     ...(n ? [`${n} missing ${n === 1 ? "test" : "tests"}: ${counts.join(", ")}`] : []),
     ...(redo.length ? [`${redo.length} ${redo.length === 1 ? "test" : "tests"} derived again (redo)`] : []),
+    ...(redoWithdrawn.length ? [`${redoWithdrawn.length} redo ${redoWithdrawn.length === 1 ? "entry" : "entries"} withdrawn`] : []),
   ];
   const subject = `record(${gate ?? "?"}): ${name} settles ${settles.join("; ")}`;
   const body = [
     ...(redo.length ? [`redo closed, derived again in the line of work ${name} approved: ${redo.join(", ")}`] : []),
+    ...(redoWithdrawn.length ? [`redo withdrawn, the criterion is superseded or obsolete: ${redoWithdrawn.join(", ")}`] : []),
     ...(reopened.length ? [`reopened, closed on a result that is not of its test as it stood: ${reopened.map(missingTestRef).join(", ")}`] : []),
     ...(restored.length ? [`restored to ${stage}, moved outside what ${name} was handed: ${restored.map(missingTestRef).join(", ")}`] : []),
     ...[...to].map(([t, ids]) => `re-addressed to ${t}: ${ids.map(missingTestRef).join(", ")}`),
@@ -892,7 +910,7 @@ export function settleRuling(projectDir, name) {
   }).find((d) => d?.verdict) ?? null;
   if (!doc) throw new Error(`${name} has no ruling to settle`);
   if (doc.verdict === "approve") return { ...settleApproved(projectDir, name), verdict: "approve", addressed: [], unroutable: [] };
-  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], reopened: [], redo: [], addressed: [], unroutable: [] };
+  const none = { verdict: doc.verdict, path: null, restored: [], readdressed: [], kept: [], closed: [], withdrawn: [], reopened: [], redo: [], redoWithdrawn: [], addressed: [], unroutable: [] };
   if (doc.verdict !== "return" || conditionsAreExecutable(doc.gate, name)) return none;
   const start = enterBranch(projectDir, "main", "rule --settle");
   try {
@@ -934,8 +952,9 @@ export function settleApproved(projectDir, name) {
     const synced = syncMissingTests(projectDir, { config });
     const settled = settleHandedOn(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, stage, domain });
     const redo = closeRedoAnswered(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, at: doc.at ?? undefined });
+    const retiredRedo = withdrawRetiredRedo(projectDir, doc.at ?? undefined);
     const r = {
-      path: settled.path ?? synced.path ?? restored.path ?? redo.paths[0] ?? null,
+      path: settled.path ?? synced.path ?? restored.path ?? redo.paths[0] ?? retiredRedo.paths[0] ?? null,
       restored: restored.restored,
       readdressed: [...synced.readdressed, ...settled.readdressed],
       kept: settled.kept,
@@ -943,11 +962,12 @@ export function settleApproved(projectDir, name) {
       withdrawn: synced.withdrawn,
       reopened: synced.reopened,
       redo: redo.closed,
+      redoWithdrawn: retiredRedo.withdrawn,
     };
     if (!r.path) return r;
     const { subject, body } = settledMessage(name, doc.gate, stage, r);
     const missingChanged = settled.path ?? synced.path ?? restored.path;
-    stagePaths(projectDir, [...(missingChanged ? [owedPath(MISSING_TEST)] : []), ...redo.paths]);
+    stagePaths(projectDir, [...(missingChanged ? [owedPath(MISSING_TEST)] : []), ...new Set([...redo.paths, ...retiredRedo.paths])]);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, "-m", body], projectDir);
     return r;
   } finally {

@@ -100,7 +100,10 @@ const KINDS = {
   redo: {
     path: "tests/acceptance/redo.yaml",
     list: "redo",
-    outcomes: ["met"],
+    // A ruling closes a redo entry only as met — a test derived again — but the runner also
+    // withdraws one whose criterion is retired, the same way it withdraws a missing test for
+    // one (`withdrawRetired`, `docs/decisions/0052`).
+    outcomes: ["met", "withdrawn"],
     view: (s) => ({ ...s, item: s.id, stage: "derive-tests", closed: closedField(s) }),
     store: (v) => withClosed(without(v, ["kind", "item", "stage", "closed"]), v.closed),
     identity: (e) => e.id,
@@ -323,6 +326,27 @@ export function close(projectDir, kind, match, { outcome, why, by, at = new Date
     return { ...e, closed: closure };
   });
   return hit ? writeAll(projectDir, kind, next) : null;
+}
+
+// Withdraws, stamped by the runner, every open entry of `kind` whose item is a criterion
+// `retired` says is asked no more — superseded by another, or made obsolete
+// (`docs/decisions/0048`, `0052`). What counts as retired, and the reason to give, is the
+// caller's to say: this module keeps entries and kinds, not what a criterion is. An entry
+// whose item names nothing `retired` recognises is left open, so the same call is safe for
+// every kind — a rebind's item is an adapter member, not a criterion, and never matches.
+// Returns the path written (`null` where nothing changed) and the items withdrawn.
+export function withdrawRetired(projectDir, kind, retired, reason, at = new Date().toISOString()) {
+  const d = def(kind);
+  const list = read(projectDir, kind);
+  const withdrawn = [];
+  const next = list.map((e) => {
+    if (!isOpen(e) || !retired(e.item)) return e;
+    const closure = { outcome: "withdrawn", why: reason(e.item), by: "runner", at };
+    checkClosure(kind, d, closure);
+    withdrawn.push(e.item);
+    return { ...e, closed: closure };
+  });
+  return { path: withdrawn.length ? writeAll(projectDir, kind, next) : null, withdrawn };
 }
 
 // Several entries settled in one write: each of `close` closed as met at `when`, and each of

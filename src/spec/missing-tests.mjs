@@ -130,12 +130,14 @@ function covered(entries, record) {
 
 // A criterion no test is asked of any more: one another criterion supersedes, which carries
 // what it asked, or one made obsolete. `derive-tests` derives neither, so no test for it will
-// ever run, and an item for it is an item nothing could close.
-function retired(row) {
+// ever run, and an item for it is an item nothing could close. Exported so every owed kind
+// bound to a criterion — a redo entry among them — reads the same definition and gives the
+// same reason (`docs/decisions/0052`), rather than each kind's module re-deriving it.
+export function retired(row) {
   return Boolean(row) && (Boolean(row.supersededBy) || row.state === "obsolete");
 }
 
-function retiredWhy(row) {
+export function retiredWhy(row) {
   return row.supersededBy
     ? `${row.id} is superseded by ${row.supersededBy}, which carries what it asked; no test is derived for it`
     : `${row.id} is obsolete; no test is derived for it`;

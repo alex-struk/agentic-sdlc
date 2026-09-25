@@ -26,7 +26,7 @@ import { nextOrder } from "../config/policy.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
 import { openAcross, readAt } from "../spec/owed.mjs";
 import { bindingGaps } from "../spec/surface.mjs";
-import { MISSING_TEST, openMissingTestsAt } from "../spec/missing-tests.mjs";
+import { MISSING_TEST, openMissingTestsAt, retired } from "../spec/missing-tests.mjs";
 import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
 import { stallReason } from "./escalation.mjs";
@@ -458,6 +458,11 @@ function owedWork(record, inFlight, bindsNow) {
       const s = SUBJECT_OF[e.stage];
       group(e.stage, { ...(s ? { [s]: e[s] ?? undefined } : {}), ...(revises(e.stage) ? { revise: true } : {}) }, "revision request", "revision requests");
     } else if (e.kind === "redo") {
+      // A criterion another has since superseded, or made obsolete, is derived no test
+      // (`acceptedCriteria`), so a `--stale` run never takes this entry up: offering one
+      // loops forever. The entry is still owed — and still counted, above — until the next
+      // pipeline commit that touches the list withdraws it (`docs/decisions/0052`).
+      if (retired(byId.get(e.id))) continue;
       group("derive-tests", { domain: byId.get(e.id)?.domain ?? undefined, stale: true }, "test to derive again (redo)", "tests to derive again (redo)");
     } else if (e.kind === "recovery") {
       group("archaeology", { domain: e.domain ?? byId.get(e.id)?.domain ?? undefined, revise: true }, "criterion to recover again", "criteria to recover again");
