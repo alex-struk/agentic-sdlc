@@ -122,6 +122,33 @@ Required. Container of governance gates, tiers, limits and turn ceilings.
   The environment overrides the backend and model for one run: `SDLC_AGENT_BACKEND` (`claude` or `codex`) and `SDLC_AGENT_MODEL`. A backend override drops any configured model unless `SDLC_AGENT_MODEL` names one. `SDLC_AGENT_ISOLATION=container` runs every turn of one run in a container; it can only turn isolation on, and any other value is refused. None of them lifts a refusal.
 - `budgets` (object, optional, deprecated): The same setting as `turns`, under the name projects written before `turns` carry. A stage `turns` names ignores it. A value under 1000 is read as a turn count; a value of 1000 or more would be a token budget the runner has no conversion for, and `checks` refuses it rather than letting a run quietly fall back to its default. `checks` warns wherever this key is set; move its entries to `turns` in the project's next policy change.
 
+### How to change policy
+
+The `policy` block changes through a proposal at G-POL, ruled by the seat `main`'s policy names
+(`docs/decisions/0043-a-policy-change-is-ruled-under-the-policy-it-changes.md`), and never by editing
+the file on `main`. `sdlc policy set` opens that proposal: it edits `main`'s copy of the file, keeps
+its comments and layout, refuses anything the schema or the `config` check would refuse, and opens
+`proposal/<name>` at G-POL with the changed file and a page showing each key before and after
+(`docs/stages/policy.md`).
+
+Keys are dotted paths under `policy` and values are YAML. To move a project onto Codex while keeping
+the two stages that cannot run in a container on Claude:
+
+```
+sdlc policy set agents.backend=codex \
+  --set agents.stages.bind-adapter.backend=claude \
+  --set agents.stages.contract.backend=claude \
+  --question "Should this project's agents run on Codex?" \
+  --recommendation "Yes: every stage and ruling on Codex, isolated where it needs to be; bind-adapter and contract stay on Claude." \
+  --dry-run
+```
+
+`--dry-run` prints the page and the diff and writes nothing; without it the proposal is opened. Other
+changes take the same shape: `--set gates.G3.holder=tech-lead` moves a gate from an agent to a
+person, `--set loops.verify_returns=5` raises a loop limit, `--set "agents.stages.build={ backend: codex, egress: registry }"`
+sets a map in one go, and `--unset turns.build` puts a stage back on its default. Once the proposal
+is approved, `main`'s configuration carries the change.
+
 ### Running on Codex
 
 Every agent turn runs on the Claude Code CLI unless `policy.agents` says otherwise. To run a project's work on the OpenAI Codex CLI:
@@ -129,7 +156,7 @@ Every agent turn runs on the Claude Code CLI unless `policy.agents` says otherwi
 1. **Install the CLI** with `npm install -g @openai/codex`.
 2. **Sign in** with `codex login`, choosing ChatGPT. The pipeline signs in with that subscription only, never an API key, and keeps its own home for Codex in `$XDG_CONFIG_HOME/agentic-sdlc/codex-home` (`SDLC_CODEX_HOME`), whose `auth.json` links to `~/.codex/auth.json`.
 3. **Have Docker running.** The stages that declare a tool allowlist — `derive-tests`, `design`, `plan`, `build`, and `contract` where the project has no oracle — run on Codex in a throwaway container: the session can read only its workspace and reach only its backend's endpoints and its stage's allowlist (`docs/decisions/0061-an-agent-session-in-a-container.md`). The images are built on first use; `sdlc isolation build` builds them ahead of it.
-4. **Propose the policy change**, and have it ruled at G-POL:
+4. **Propose the policy change** with `sdlc policy set agents.backend=codex` (see "How to change policy" above), and have it ruled at G-POL. The block it proposes:
 
    ```yaml
    policy:

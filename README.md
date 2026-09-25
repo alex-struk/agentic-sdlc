@@ -39,6 +39,11 @@ move work there.
   decision as a `proposal/<name>` branch with a decision page. `--tier` records the proposal's risk
   tier on that page; `HIGH` and `CRITICAL` make the gate's persona agent escalate to a human
   instead of ruling.
+- `sdlc policy set <key>=<value> [--set <key>=<value> …] [--unset <key> …] --question "..."
+  --recommendation "..." [--name <n>] [--dry-run]` — propose a change to the `policy` block of
+  `main`'s `.sdlc/config.yaml` at G-POL, with the changed file on the proposal branch and a page
+  showing each key before and after; `--dry-run` prints the page and writes nothing
+  (`docs/stages/policy.md`).
 - `sdlc rule <name> approve|return --by <role>` — record a verdict on an open proposal and merge it
   into `main` on approval.
 - `sdlc rule <name> --by agent:<persona>` — let the gate's own persona agent rule instead of a
