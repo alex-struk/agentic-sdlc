@@ -10,6 +10,7 @@ import { stalledOn } from "./escalation.mjs";
 import { propose } from "../commands/propose.mjs";
 import { buildSite } from "../commands/status.mjs";
 import { readRunState, writeRunState, clearRunState } from "./run-state.mjs";
+import { deviationContext } from "./deviation-context.mjs";
 import { endedBecause, runAgent, turnsFor, writeMcpConfig, metricsOf } from "./executor.mjs";
 import { stageAgent } from "./agents.mjs";
 import { engineLabel } from "../lib/engine.mjs";
@@ -193,7 +194,7 @@ async function runFixTurn(cwd, stage, ctx, messages) {
     const mcpConfig = writeMcpConfig(skillDir, stage.mcp?.(ctx, ctx.config));
     return await runAgent({
       cwd,
-      prompt: fixTurnPrompt(stage.prompt(ctx), messages),
+      prompt: fixTurnPrompt([stage.prompt(ctx), deviationContext(ctx)].filter(Boolean).join("\n\n"), messages),
       systemPromptFile: skillPath,
       stage: stage.name,
       maxTurns: Math.min(40, turnsFor(ctx.config, stage.name)),

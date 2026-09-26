@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, readdirSync, mkdirSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, assertOnMain } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
@@ -247,6 +247,34 @@ test("a project-mode stage whose first turn fails a post-check and whose fix tur
     assert.match(runs, /run fixable-ok: ok after a fix turn, cost/);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a fix turn retains the scrubbed reason for an off-sequence agent run", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-fixturn-context-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  registerFixableStage("fixable-context");
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-fixturn-context-mock-"));
+  const promptFile = join(tmp, "fixturn-prompt.txt");
+  writeFileSync(join(mockDir, "fixable-context.json"), JSON.stringify({
+    sequence: [
+      { text: "missing required word", files: { "app/FIXABLE.md": "nope\n" } },
+      { text: "added required word", files: { "app/FIXABLE.md": "fixed\n" } },
+    ],
+  }));
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mockDir;
+  process.env.SDLC_MOCK_PROMPT_FILE = promptFile;
+  try {
+    const r = await runStage(dir, "fixable-context", { deviationReason: `investigate evidence under ${join(homedir(), "work")}` });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    const prompt = readFileSync(promptFile, "utf8");
+    assert.match(prompt, /Operator's reason for running this stage instead of what sdlc next named/);
+    assert.match(prompt, /investigate evidence under ~\/work/);
+    assert.ok(!prompt.includes(homedir()), "no local home path reaches the fix turn");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; delete process.env.SDLC_MOCK_PROMPT_FILE;
     restoreEgress(prevEgress);
   }
 });

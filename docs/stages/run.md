@@ -15,7 +15,24 @@ proposal, depending on whether the stage holds a gate.
 A run other than the one `sdlc next` names needs `--reason`, and without one it is refused before
 anything is written, with a message naming what `next` names. With one, what `next` named, what
 ran and the reason are appended to the run record and committed before the run starts
-(`docs/stages/next.md`, "Running something else"). A `--dry-run` needs no reason.
+(`docs/stages/next.md`, "Running something else"). On an agent stage, the same reason is
+shown in the first and any fix-turn prompt as operator context to investigate, clearly
+separate from a ruling or permission to change the stage's scope. It is scrubbed of local
+home paths, including mounted Windows home directories, before it reaches a prompt or the
+untracked run state that `resume` reads. A
+run that follows `next` adds no context, even if `--reason` was supplied.
+For a home folder containing spaces, a following path separator marks the end of the
+folder; a bare folder name with no separator is ambiguous with prose, so omit it from
+the reason.
+
+A reason containing a named password, token, secret or key assignment, a Bearer value, a
+private-key header, or a nine-digit social insurance number (SIN) shape is refused before
+the run writes anything. The refusal does not quote the input. This catches common forms;
+the operator remains responsible for keeping any other sensitive value out of the reason.
+
+A `--dry-run` needs no reason. When given one for a run other than `next` named, it shows
+the same contextual note in its prompt preview without writing a deviation record or
+run state.
 
 `<stage>` must be a name in the stage registry (`src/stages/registry.mjs`). Implemented today:
 `probe` (which proves the runner itself and is not one of the pipeline's own stages), `intent`,

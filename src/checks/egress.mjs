@@ -19,7 +19,8 @@ const PATTERNS = [
   // middle of one. A page called "home" makes an ordinary identifier like
   // `opportunities/home/default`, and that is no more a machine's home directory than
   // `docs/home/index.md` is.
-  [new RegExp("((?<![A-Za-z0-9._-])/" + "home/|(?<![A-Za-z0-9._-])/" + "Users/|[A-Za-z]:\\\\" + "Users\\\\)[A-Za-z0-9._-]+"), "local home path (rule E-2)"],
+  [new RegExp("((?<![A-Za-z0-9._-])/" + "home/|(?<![A-Za-z0-9._-])/" + "Users/|[A-Za-z]:\\\\" + "Users\\\\)[A-Za-z0-9._-]+", "i"), "local home path (rule E-2)"],
+  [new RegExp("(?<![A-Za-z0-9._-])/" + "mnt/[A-Za-z]/" + "Users/[A-Za-z0-9._-]+", "i"), "local home path (rule E-2)"],
 ];
 const TEXT_EXT = /\.(md|mjs|js|ts|tsx|json|ya?ml|txt|sh|sql|feature|svg|py|html|css)$/i;
 

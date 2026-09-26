@@ -11,7 +11,9 @@ import { materialise, collect, workspaceScopeNote, workspaceScopeViolations } fr
 import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig, metricsOf } from "../runner/executor.mjs";
 import { stageAgent, codexRefusal, isolationRefusal, isolationUnavailable } from "../runner/agents.mjs";
 import { engineLabel } from "../lib/engine.mjs";
+import { redactLocalPaths } from "../lib/redact.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
+import { deviationContext } from "../runner/deviation-context.mjs";
 import { writeJournal } from "../runner/journal.mjs";
 import { finishStage, finishDeterministicNoOp, checkProposalNotOpen, commitProposalStillOpen } from "../runner/finish-stage.mjs";
 import { checkOwedLimits } from "../runner/owed-limits.mjs";
@@ -63,6 +65,23 @@ export function onEngine(r) {
 // a session which rewrote a whole tree does not bury the sentence that says what happened.
 const DROPPED_SHOWN = 20;
 
+// A reason is copied into records and agent context. Refuse common forms that carry a
+// credential or personal identifier before either sink can see it. The operator still
+// has to keep anything this narrow check cannot recognise out of the reason.
+const UNSAFE_REASON = [
+  /(?:^|[^A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9._-]*[_-])?(?:password|token|secret|key)["']?[ \t]*[:=][ \t]*\S/i,
+  /(?:^|[^A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:Password|Token|Secret|Key)["']?[ \t]*[:=][ \t]*\S/,
+  /(?:^|[^A-Za-z0-9_])(?:api|access|client|auth|private|consumer|refresh|session|bearer|id)(?:password|token|secret|key)["']?[ \t]*[:=][ \t]*\S/i,
+  /\bBearer[ \t]+\S+/i,
+  /-----BEGIN[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY-----/i,
+  /(?<!\d)\d{3}(?:[ -]?\d{3}){2}(?!\d)/,
+];
+
+function assertSafeDeviationReason(reason) {
+  if (typeof reason === "string" && UNSAFE_REASON.some((pattern) => pattern.test(reason)))
+    throw new Error("run: --reason appears to contain a credential or personal identifier; remove it and supply a redacted summary");
+}
+
 // A turn that produced work the stage has no way to deliver. The agent did what it was
 // asked, said so in its journal text, and the paths it wrote are ones the workspace takes
 // back from nobody: torn down with the workspace, absent from the branch, and described as
@@ -108,7 +127,8 @@ function followUp(projectDir, stage, ctx, result) {
   return { ...result, proposal: opened };
 }
 
-export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false, skipSuite = false } = {}) {
+export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, deviationReason } = {}) {
+  assertSafeDeviationReason(deviationReason);
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
   assertOnMain(projectDir, "run");
@@ -146,7 +166,10 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // requests a ratification ruling filed for its domain (`spec/recovery.yaml`) this way.
   // `finishStage` adds the same field before calling `stage.proposal`, which is where
   // every other reader of it already gets it.
-  const ctx = { slice, domain, target, stale, config, revise, dryRun, skipSuite, projectDir };
+  const contextReason = typeof deviationReason === "string" && deviationReason.trim()
+    ? redactLocalPaths(deviationReason.trim(), projectDir) : undefined;
+  const ctx = { slice, domain, target, stale, config, revise, dryRun, skipSuite, projectDir,
+    ...(contextReason ? { deviationReason: contextReason } : {}) };
   // `stage.workspace` may be a plain string or a function of `config` — resolved once,
   // here, so every later use (`materialise`, the run-state a crashed session leaves for
   // `resume` to read, the dry-run print below) sees the same resolved mode rather than
@@ -306,7 +329,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
     // items a stage owes is read from `main`, not from anything a stage's own prompt knows. A
     // stage whose prompt already works through them (`derive-tests --stale`) says so.
     const owedNote = stage.missingTestsInPrompt ? null : handedNote(projectDir, name, { ...ctx, gated: Boolean(stage.gate) });
-    const prompt = [stage.prompt(ctx), owedNote, scopeNote].filter(Boolean).join("\n\n");
+    const prompt = [stage.prompt(ctx), owedNote, deviationContext(ctx), scopeNote].filter(Boolean).join("\n\n");
     const mcpServers = stage.mcp?.(ctx, config);
     const envVars = stage.env?.(ctx, config);
     if (dryRun) {
@@ -386,7 +409,8 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
       // Written only once the dry-run return above is behind us: a dry run makes no
       // change of any kind, so nothing should exist for `sdlc resume` to find.
-      const state = { stage: name, ctx: { slice, domain, target, stale, revise }, startedAt: new Date().toISOString(), phase: "agent" };
+      const state = { stage: name, ctx: { slice, domain, target, stale, revise,
+        ...(ctx.deviationReason ? { deviationReason: ctx.deviationReason } : {}) }, startedAt: new Date().toISOString(), phase: "agent" };
       writeRunState(projectDir, state);
 
       // The workspace as the session first sees it, after `prepare` has generated whatever
@@ -433,6 +457,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 // before anything is written where no reason is given. A dry run changes nothing and needs
 // none.
 export function recordDeviation(projectDir, name, opts, reason) {
+  assertSafeDeviationReason(reason);
   let named;
   try { named = whatNext(projectDir); } catch (e) {
     console.warn(`warning: next could not be read, so this run is not checked against it (${e.message.split("\n")[0]})`);
@@ -441,17 +466,20 @@ export function recordDeviation(projectDir, name, opts, reason) {
   if (matchesNext(named, name, opts)) return null;
   const ran = runCommand(name, opts);
   const said = namedByNext(named);
+  if (opts.dryRun && (typeof reason !== "string" || !reason.trim())) return null;
   if (typeof reason !== "string" || !reason.trim()) {
     throw new Error(`run ${name}: next names ${named.next ? `\`${said}\`` : said}, not \`${ran}\`.\n`
       + `Run what next names, or give the reason for running this instead with --reason "<why>"; the reason is kept in the run record.`);
   }
+  const why = redactLocalPaths(reason.trim(), projectDir);
+  if (opts.dryRun) return { named: said, ran, reason: why };
   assertCleanTree(projectDir, "run");
   assertOnMain(projectDir, "run");
   if (!stageFor(name).implemented) throw new Error(`stage ${name} is not implemented yet`);
-  const runPath = appendRun(projectDir, `deviation: next named \`${said}\`; ran \`${ran}\`; reason: ${reason.trim()}`);
+  const runPath = appendRun(projectDir, `deviation: next named \`${said}\`; ran \`${ran}\`; reason: ${why}`);
   stageAll(projectDir, [relative(projectDir, runPath)]);
   git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): ran instead of what next named`], projectDir);
-  return { named: said, ran };
+  return { named: said, ran, reason: why };
 }
 
 COMMANDS.run = async ({ pos, flags }) => {
@@ -465,10 +493,11 @@ COMMANDS.run = async ({ pos, flags }) => {
     revise: !!flags.revise,
     skipSuite: !!flags["skip-suite"],
   };
-  if (opts.dryRun) return runCli(pos, opts);
-  recordDeviation(process.cwd(), pos[0], opts, flags.reason);
+  const deviation = recordDeviation(process.cwd(), pos[0], opts, flags.reason);
+  const runOpts = { ...opts, ...(deviation ? { deviationReason: deviation.reason } : {}) };
+  if (opts.dryRun) return runCli(pos, runOpts);
   try {
-    return await runCli(pos, opts);
+    return await runCli(pos, runOpts);
   } finally {
     printNextBlock(process.cwd());
   }

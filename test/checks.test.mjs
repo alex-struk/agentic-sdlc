@@ -118,6 +118,18 @@ test("egress: a local home path is a finding", () => {
     assert.ok(r.messages.some((m) => m.startsWith(`${f}:`) && m.includes("local home path")), f);
 });
 
+test("egress: mounted and drive Windows home paths with lowercase users and spaces are findings", () => {
+  const d = repo();
+  const mountedHome = ["", "mnt", "c", "us" + "ers", "Jamie Example", "Documents", "note.txt"].join("/");
+  const driveHome = ["D:", "us" + "ers", "Jamie Example", "Documents", "note.txt"].join("\\");
+  writeFileSync(join(d, "mounted.md"), `See ${mountedHome}\n`);
+  writeFileSync(join(d, "drive.md"), `See ${driveHome}\n`);
+  git(["add", "-A"], d);
+  const r = checkEgress(d, {});
+  for (const file of ["mounted.md", "drive.md"])
+    assert.ok(r.messages.some((m) => m.startsWith(`${file}:`) && m.includes("local home path")), r.messages.join(" | "));
+});
+
 // A page called "home" is an identifier segment, not a directory at the root of a machine.
 test("egress: a path segment named home inside an identifier is not a home path", () => {
   const d = repo();
