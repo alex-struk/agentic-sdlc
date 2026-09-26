@@ -130,6 +130,18 @@ test("egress: mounted and drive Windows home paths with lowercase users and spac
     assert.ok(r.messages.some((m) => m.startsWith(`${file}:`) && m.includes("local home path")), r.messages.join(" | "));
 });
 
+test("egress: a lowercase user route is allowed while a macOS home is flagged", () => {
+  const d = repo();
+  const route = ["", "us" + "ers", "item"].join("/");
+  const home = ["", "Us" + "ers", "someone", "Documents"].join("/");
+  writeFileSync(join(d, "routes.md"), `open ${route}\n`);
+  writeFileSync(join(d, "home.md"), `open ${home}\n`);
+  git(["add", "-A"], d);
+  const r = checkEgress(d, {});
+  assert.ok(!r.messages.some((m) => m.startsWith("routes.md:")), r.messages.join(" | "));
+  assert.ok(r.messages.some((m) => m.startsWith("home.md:") && m.includes("local home path")), r.messages.join(" | "));
+});
+
 // A page called "home" is an identifier segment, not a directory at the root of a machine.
 test("egress: a path segment named home inside an identifier is not a home path", () => {
   const d = repo();

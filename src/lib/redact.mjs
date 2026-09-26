@@ -17,6 +17,7 @@ export function redactLocalPaths(text, projectDir) {
     .split(projectDir).join(".")
     // A space belongs to the user folder only when the next separator proves where
     // that folder ends. With no separator, scrub the first word and keep prose after it.
-    .replace(/(?<![A-Za-z0-9._-])\/(?:mnt\/[A-Za-z]\/Users|home|Users)\/(?:[A-Za-z0-9._-]+(?: [A-Za-z0-9._-]+)+(?=\/)|[A-Za-z0-9._-]+)/gi, "~")
+    .replace(/(?<![A-Za-z0-9._-])\/mnt\/[A-Za-z]\/Users\/(?:[A-Za-z0-9._-]+(?: [A-Za-z0-9._-]+)+(?=\/)|[A-Za-z0-9._-]+)/gi, "~")
+    .replace(/(?<![A-Za-z0-9._-])\/(?:home|Users)\/(?:[A-Za-z0-9._-]+(?: [A-Za-z0-9._-]+)+(?=\/)|[A-Za-z0-9._-]+)/g, "~")
     .replace(/[A-Za-z]:\\Users\\(?:[A-Za-z0-9._-]+(?: [A-Za-z0-9._-]+)+(?=\\)|[A-Za-z0-9._-]+)/gi, "~");
 }
