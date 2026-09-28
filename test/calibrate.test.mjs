@@ -1394,7 +1394,7 @@ test("an unbound row bind-adapter has had its sends for goes to the reviewer's t
     const page = git(["show", `${first.proposal.branch}:.sdlc/proposals/calibrate-triage-old-1.md`], dir);
     assert.match(page, /R-1\.2/);
     assert.match(page, /unbound: application\.status — the status is shown only behind a link the application emails/, "the adapter's own reason");
-    assert.match(page, /bind-adapter was sent (it|them) 2 times/);
+    assert.match(page, /bind-adapter was sent (it|each) 2 times without binding it/);
     assert.match(page, /oracle-cannot <ID>: <why>/);
     assert.match(page, /never a way to skip binding work/);
 

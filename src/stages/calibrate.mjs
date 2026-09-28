@@ -598,7 +598,7 @@ function triagePage(target, baseUrl, failing, unbound, byId) {
       "## Unbound after binding",
       "",
       `Every failing test of each criterion below ended in the adapter's own \`unbound:\` error, quoted as it said it, and`,
-      `bind-adapter was sent ${shownUnbound.length === 1 ? "it" : "them"} ${sends} times without binding it. Answer \`adapter-wrong\` where the`,
+      `bind-adapter was sent ${shownUnbound.length === 1 ? "it" : "each"} ${sends} times without binding it. Answer \`adapter-wrong\` where the`,
       "application does offer what the test needs — under another label, behind a step, as another persona —",
       "and the binding run goes back for it. Answer `oracle-cannot` only where the oracle genuinely cannot be",
       "driven into, or observed in, the state the test needs without changing its code: behind an external",
