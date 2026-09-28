@@ -539,6 +539,7 @@ test("a spent unbound row on a target other than the oracle still waits on a rul
   assert.equal(w.on, "a ruler");
   assert.equal(w.name, "unbound bindings (new)");
   assert.match(w.why, /^1 binding bind-adapter was sent 2 times \(policy\.loops\.rebind\) and still reports unbound on new: R-1\.1/);
+  assert.match(w.command, /no calibration verb closes an unbound row on new/);
   assert.match(formatNextShort(r), /1 unbound binding waiting on a ruler/);
 });
 

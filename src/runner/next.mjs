@@ -595,7 +595,7 @@ function owedWork(record, inFlight, bindsNow) {
     return { on: "a ruler", kind: UNBOUND, count: list.length, name: `unbound bindings (${target})`, gate: null,
       why: `${plural(list.length, "binding")} bind-adapter was sent ${plural(limit, "time")} (policy.loops.rebind) and still reports unbound on ${target}: ${shown}; `
         + `${list.length === 1 ? "it is" : "they are"} not sent again, and each row stays open until a ruler decides it`,
-      command: "no calibration verb closes an unbound row: a ruler decides what each one needs" };
+      command: `oracle-cannot applies only on the oracle's target, so no calibration verb closes an unbound row on ${target}: a ruler decides what each one needs` };
   });
   const waiting = [...spent, ...[...unanswered.values()].map((w) => {
     const them = w.n === 1 ? "it" : "them";
