@@ -387,6 +387,10 @@
                   "sequence"
                 ]
               }
+            },
+            "calibrate_after": {
+              "type": "integer",
+              "minimum": 1
             }
           }
         },

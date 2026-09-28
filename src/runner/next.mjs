@@ -15,14 +15,18 @@
 //              exit criterion is not met, and within it the sequence's own order
 //
 // Which kind goes first when more than one is ready is not in the record, and is
-// `policy.next.order`. Work that only a person can move — a proposal at a seat a person
+// `policy.next.order`. Two rules cut across the kinds: the contract run that answers owed work
+// waits while the test writer has ready work that does not rest on it (`docs/decisions/0069`),
+// and a calibration `policy.next.calibrate_after` makes due goes before owed and sequence work
+// (`docs/decisions/0070`). Work that only a person can move — a proposal at a seat a person
 // holds, an escalation to a person, an escalation that reached the role that raised it — is
 // reported as waiting and never offered as something to run.
 import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../lib/git.mjs";
 import { parseConfig } from "../config/load.mjs";
-import { nextOrder, owedLoopLimit } from "../config/policy.mjs";
+import { calibrateAfter, nextOrder, owedLoopLimit } from "../config/policy.mjs";
+import { oracleOverridePath } from "../oracle/paths.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
 import { openAcross, readAt } from "../spec/owed.mjs";
 import { bindingGaps } from "../spec/surface.mjs";
@@ -687,6 +691,46 @@ function holdContractForTestWriter(record, byKind) {
   return held;
 }
 
+// What a calibration of the oracle's target measures: the acceptance tests, the target's adapter,
+// and the contract, seed and Compose override the oracle is brought up and reset with.
+function measuredPaths(config, target) {
+  return ["tests/acceptance/", `tests/adapters/${target}/`, "spec/contract/", config.oracle?.seed ?? "tests/seed/", oracleOverridePath(config)];
+}
+
+const under = (file, path) => file === path.replace(/\/+$/, "") || file.startsWith(path.endsWith("/") ? path : `${path}/`);
+
+// The calibration `policy.next.calibrate_after` makes due, or `null` (`docs/decisions/0070`).
+// It counts the approved proposals merged into `rev` since the oracle's suite last ran — the
+// newest first-parent commit that added a dated result file, which only a run of the suite
+// writes — whose merge changes a path the calibration measures. A project that has never
+// calibrated is brought its first calibration by the sequence, and a calibration proposal still
+// open is that calibration's question, so neither is due.
+function calibrationDue(projectDir, record, inFlight) {
+  const n = calibrateAfter(record.config);
+  const target = record.config.oracle?.target;
+  if (n === null || !target || !stagesFor(record.config.profile).includes("calibrate")) return null;
+  if (inFlight.has(subjectKey("calibrate", { target }))) return null;
+  let since;
+  let log;
+  try {
+    since = git(["log", "-1", "--first-parent", "--diff-filter=A", "--format=%H", record.rev, "--", `:(glob)tests/results/${target}/[0-9]*.json`], projectDir);
+    if (!since) return null;
+    log = git(["log", "--first-parent", "--merges", "--diff-merges=first-parent", "--name-only", "--format=%x00%s", `${since}..${record.rev}`], projectDir);
+  } catch { return null; }
+  const paths = measuredPaths(record.config, target);
+  const names = [];
+  for (const chunk of log.split("\0").slice(1)) {
+    const [subject, ...files] = chunk.split("\n").map((l) => l.trim()).filter(Boolean);
+    const name = /^merge: (\S+) approved at /.exec(subject ?? "")?.[1];
+    if (name && files.some((f) => paths.some((p) => under(f, p)))) names.unshift(name);
+  }
+  if (names.length < n) return null;
+  const shown = names.length > 10 ? `${names.slice(0, 10).join(", ")} and ${names.length - 10} more` : names.join(", ");
+  const args = { target };
+  return { kind: "calibration", stage: "calibrate", args, command: runCommand("calibrate", args),
+    why: `${plural(names.length, "approved proposal")} changed what calibration measures on ${target} since its suite last ran (${shown}); policy.next.calibrate_after is ${n}` };
+}
+
 // Whether a target's adapter is bound now. The oracle's is bound in the Tests phase, where
 // calibration measures the suite against it; any other target's application exists only
 // on a build proposal until it merges, so its adapter is bound in the Build phase.
@@ -727,7 +771,20 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     sequence,
   };
   const held = [...props.held, ...holdContractForTestWriter(record, byKind)];
+  // A calibration the cadence makes due goes before owed and sequence work, and replaces any
+  // other offer of the same calibration; proposals keep the place the order gives them.
+  const due = calibrationDue(projectDir, record, props.inFlight);
+  if (due) {
+    const same = (c) => c.stage === "calibrate" && c.args?.target === due.args.target;
+    byKind.owed = byKind.owed.filter((c) => !same(c));
+    byKind.sequence = byKind.sequence.filter((c) => !same(c));
+  }
   const ready = order.flatMap((kind) => (byKind[kind] ?? []).map((c) => ({ ...c, rule: ruleFor(kind, order, byKind) })));
+  if (due) {
+    const at = ready.findIndex((c) => c.kind === "owed" || c.kind === "sequence");
+    ready.splice(at === -1 ? ready.length : at, 0, { ...due,
+      rule: `a calibration is due (policy.next.calibrate_after: ${calibrateAfter(record.config)}), and goes before owed and sequence work; proposals keep their place (policy.next.order: ${order.join(", ")})` });
+  }
   const next = ready[0] ?? null;
   const waiting = [...props.waiting, ...owed.waiting];
   const state = next ? "run" : waiting.length ? "waiting" : "idle";

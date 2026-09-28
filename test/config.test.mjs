@@ -202,3 +202,27 @@ test("policy.triage and policy.rungs are reserved: accepted, and reported as doi
   writeFileSync(join(d, ".sdlc/config.yaml"), GOOD);
   assert.ok(!checkConfig(d).warnings.some((w) => /reserved/.test(w)));
 });
+
+// A calibration cadence counts approved proposals since the oracle's last calibration, so it
+// means something only where the profile calibrates and the config names the oracle's target.
+test("policy.next.calibrate_after is a positive whole number, and only where there is an oracle to calibrate", () => {
+  assert.deepEqual(parseConfig(withPolicy(["next: { calibrate_after: 6 }"])).errors, []);
+  assert.deepEqual(parseConfig(withPolicy(["next: { order: [proposals, owed, sequence], calibrate_after: 1 }"])).errors, []);
+  assert.ok(parseConfig(withPolicy(["next: { calibrate_after: 0 }"])).errors.length > 0);
+  assert.ok(parseConfig(withPolicy(["next: { calibrate_after: 2.5 }"])).errors.length > 0);
+  assert.ok(parseConfig(withPolicy(["next: { calibrate_after: often }"])).errors.length > 0);
+
+  const d = mkdtempSync(join(tmpdir(), "sdlc-calibrate-after-"));
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  const check = (text) => { writeFileSync(join(d, ".sdlc/config.yaml"), text); return checkConfig(d); };
+  const set = withPolicy(["next: { calibrate_after: 6 }"]);
+  const ok = check(set);
+  assert.equal(ok.ok, true, ok.messages.join("\n"));
+
+  const noOracle = check(set.replace(/^oracle: .*\n/m, ""));
+  assert.equal(noOracle.ok, false);
+  assert.ok(noOracle.messages.some((m) => /policy\.next\.calibrate_after is set, but .*no oracle\.target/.test(m)), noOracle.messages.join("\n"));
+
+  const noCalibrate = check(set.replace("profile: rebuild", "profile: greenfield"));
+  assert.ok(noCalibrate.messages.some((m) => /policy\.next\.calibrate_after is set, but the greenfield profile does not run calibrate/.test(m)), noCalibrate.messages.join("\n"));
+});

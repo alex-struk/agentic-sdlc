@@ -16,7 +16,8 @@ whichever branch is checked out and whatever is uncommitted.
 
 | Read from `main` | What it contributes |
 |---|---|
-| `.sdlc/config.yaml` | the profile's stages, the domains in order, the oracle target, the gate seats, `policy.next.order` |
+| `.sdlc/config.yaml` | the profile's stages, the domains in order, the oracle target, the gate seats, `policy.next.order`, `policy.next.calibrate_after` |
+| first-parent history of `main` since the oracle's suite last ran | with `policy.next.calibrate_after` set, the approved proposals merged since whose merge changes what calibration measures |
 | `.sdlc/gates/*.yaml` | which proposals have been ruled, and which lines of work are approved |
 | every `proposal/*` and `returned/*` branch, with its proposal page and gate file | open proposals, escalations and returns, and which proposal in a line of work is the newest |
 | the owed-work lists (`src/spec/owed.mjs`) | open conditions, requests, redos, rebinds, recoveries and any other kind; every rebind entry, closed ones too, counts a binding's sends |
@@ -70,6 +71,19 @@ with the reason. When no such work is left, `next` names the contract run, and t
 handed every domain's needs. Work that rests on contract never holds it, so contract is held only
 while something else can run, whatever `policy.next.order` says
 (`docs/decisions/0069-contract-waits-for-the-test-writer.md`).
+
+**A calibration cadence.** With `policy.next.calibrate_after: <n>` set (`docs/config.md`), a
+calibration of the oracle's target falls due once `n` approved proposals that change what it
+measures have merged into `main` since its suite last ran. A proposal counts when the merge that
+approved it changes `tests/acceptance/`, `tests/adapters/<oracle>/`, `spec/contract/`, the oracle's
+`seed` or its Compose override; the suite last ran at the newest first-parent commit that added a
+dated result file under `tests/results/<oracle>/`, which a `--skip-suite` run does not write. A due
+calibration is offered as `sdlc run calibrate --target <oracle>`, of kind `calibration`, before
+every owed and sequence item, and replaces any other offer of the same calibration; proposals keep
+the place `policy.next.order` gives them, so with the default order an open proposal an agent can
+rule still comes first. Its `why` names the proposals that made it due. Nothing is due before the
+first calibration, which the sequence brings, or while a calibration or triage proposal for the
+oracle is open. Unset, nothing changes (`docs/decisions/0070-a-calibration-cadence.md`).
 
 **Missing tests.** An untestable record on `main` is owed a test whether or not an entry has been
 written for it yet (`docs/operating-model.md` §7): `next` reads the entries in `.sdlc/owed.yaml`
@@ -166,7 +180,7 @@ The `held` block appears only when something is held, and the `stale adapters` l
 an adapter is stale.
 
 `--json` prints the same as one object: `state` (`run`, `waiting` or `idle`), `next` (the chosen
-item, with `kind`, `stage`, `args`, `command`, `why` and `rule`), `ready` (every ready item in
+item, with `kind` — `proposals`, `owed`, `sequence`, or `calibration` for a calibration the cadence made due — `stage`, `args`, `command`, `why` and `rule`), `ready` (every ready item in
 order, `next` first), `held` (each held revision, and a contract run held for the test writer with the runs held behind it, each with `command`, `why` and, for a revision, `name`), `waiting`, `owed` (open entries counted by kind and stage), `stale` (by
 domain), `staleAdapters` (by target: the `missing` and `extra` names, whether it is `offered`,
 and what it `waits` for when it is not), `phase`, `complete`, `blocked` and `order`.

@@ -93,6 +93,14 @@ export function nextOrder(config) {
   return Array.isArray(order) && order.length ? [...order] : [...NEXT_KINDS];
 }
 
+// How many approved proposals that change what the oracle's calibration measures may merge
+// after its suite last ran before `sdlc next` names a calibration ahead of owed and sequence
+// work, or `null` when the project sets no cadence (`docs/decisions/0070`).
+export function calibrateAfter(config) {
+  const n = config?.policy?.next?.calibrate_after;
+  return Number.isInteger(n) && n >= 1 ? n : null;
+}
+
 // Whether a change to a record file made outside a pipeline commit warns or fails `checks`.
 export const DEFAULT_HAND_EDITS = "warn";
 

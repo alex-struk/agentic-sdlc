@@ -667,6 +667,79 @@ test("an unbound row whose persona the contract marks unavailable is sent to no 
   assert.deepEqual(r.waiting, []);
 });
 
+// An approved proposal merged into main the way a ruling merges one.
+function merged(d, name, files, gate = "G3") {
+  git(d, ["checkout", "-q", "-b", `proposal/${name}`]);
+  commit(d, { [`.sdlc/proposals/${name}.md`]: `---\ngate: ${gate}\n---\n`, [`.sdlc/gates/${name}.yaml`]: gateText(gate, "approve"), ...files }, `propose(${gate}): ${name}`);
+  git(d, ["checkout", "-q", "main"]);
+  git(d, [...AS_PIPELINE, "merge", "-q", "--no-ff", "-m", `merge: ${name} approved at ${gate} by agent:owner`, `proposal/${name}`]);
+}
+
+// The oracle's suite, measured with every row passing: a dated result file and latest.json.
+function measured(d, day) {
+  const results = JSON.stringify({ target: "old", rows: [{ id: "R-1.1", result: "pass" }, { id: "R-2.1", result: "pass" }] });
+  commit(d, { [`tests/results/old/${day}.json`]: results, "tests/results/old/latest.json": results }, "stage(calibrate): calibrate against old");
+}
+
+function calibratedProject(t, policy = []) {
+  const d = project(t, { extra: TARGETS, policy });
+  specDone(d);
+  adaptersBound(d, { old: bindingsFor("old", FULL), fresh: bindingsFor("new", FULL) });
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  measured(d, "2026-01-01");
+  commit(d, { "tests/acceptance/redo.yaml": stringifyYaml({ redo: [{ id: "R-2.1", version: 1, why: "w" }] }) });
+  return d;
+}
+
+// Calibration is the only stage that runs the tests against the oracle, and nothing else in the
+// sequence brings it back once its rows are closed. A project can ask for it every so many
+// approved changes to what it measures (`docs/decisions/0070`).
+test("a calibration falls due after policy.next.calibrate_after approved changes to what it measures", (t) => {
+  const d = calibratedProject(t, ["next: { calibrate_after: 2 }"]);
+  const other = "sdlc run derive-tests --domain beta --stale";
+  assert.equal(whatNext(d).next.command, other);
+
+  merged(d, "derive-tests-alpha-stale-1", { "tests/acceptance/alpha/R-1.1.spec.ts": "// criterion: @R-1.1 v1\n" });
+  merged(d, "design-alpha", { "design/alpha/screen.md": "a screen\n" }, "G-DESIGN");
+  assert.equal(whatNext(d).next.command, other, "one change to what it measures, and a design it does not measure");
+
+  merged(d, "bind-adapter-old-2", { "tests/adapters/old/index.ts": "export default 2;\n" });
+  let r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run calibrate --target old");
+  assert.equal(r.next.kind, "calibration");
+  assert.match(r.next.why, /^2 approved proposals changed what calibration measures on old since its suite last ran \(derive-tests-alpha-stale-1, bind-adapter-old-2\); policy\.next\.calibrate_after is 2$/);
+  assert.match(r.next.rule, /^a calibration is due \(policy\.next\.calibrate_after: 2\), and goes before owed and sequence work/);
+  assert.equal(r.ready.filter((c) => c.stage === "calibrate").length, 1);
+  assert.equal(r.ready[1].command, other);
+  assert.equal(matchesNext(r, "calibrate", { target: "old" }), true);
+
+  // A calibration that runs no suite measures nothing, and leaves it due.
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", rows: [{ id: "R-1.1", result: "pass" }, { id: "R-2.1", result: "pass" }] }) }, "stage(calibrate): calibrate against old");
+  assert.equal(whatNext(d).next.command, "sdlc run calibrate --target old");
+
+  // A proposal an agent can rule still comes first.
+  proposal(d, "derive-tests-beta-stale-1", "G3");
+  r = whatNext(d);
+  assert.equal(r.next.command, "sdlc rule derive-tests-beta-stale-1 --by agent:owner");
+  assert.equal(r.ready[1].command, "sdlc run calibrate --target old");
+
+  // Measured again, and the count starts over.
+  measured(d, "2026-01-02");
+  assert.ok(!whatNext(d).ready.some((c) => c.stage === "calibrate"));
+});
+
+test("with policy.next.calibrate_after unset, or no calibration yet, nothing falls due", (t) => {
+  const d = calibratedProject(t);
+  for (const n of [1, 2, 3]) merged(d, `derive-tests-alpha-stale-${n}`, { [`tests/acceptance/alpha/R-1.${n}.spec.ts`]: "x\n" });
+  assert.ok(!whatNext(d).ready.some((c) => c.stage === "calibrate"));
+
+  const never = project(t, { extra: TARGETS, policy: ["next: { calibrate_after: 1 }"] });
+  specDone(never);
+  adaptersBound(never, { old: bindingsFor("old", FULL), fresh: bindingsFor("new", FULL) });
+  merged(never, "derive-tests-alpha", { "tests/acceptance/alpha/R-1.1.spec.ts": "x\n" });
+  assert.ok(!whatNext(never).ready.some((c) => c.kind === "calibration"), "the sequence brings the first calibration");
+});
+
 test("which kind of ready work goes first is policy.next.order", (t) => {
   const d = project(t, { policy: ["next: { order: [sequence, owed, proposals] }"] });
   specDone(d);

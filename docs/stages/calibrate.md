@@ -379,6 +379,11 @@ any other target a spent unbound row waits on a ruler.
 
 ## Re-run behaviour
 
+A project can have `sdlc next` name this stage on a cadence: `policy.next.calibrate_after` counts
+the approved proposals that changed the tests, the oracle's adapter, the contract, the seed or the
+Compose override since the suite last ran, and a calibration falls due at that count
+(`docs/stages/next.md`). Only a run of the suite writes the dated file the count starts from.
+
 Re-running is safe and is the ordinary way the stage is used: rule the proposal, run again, and the
 answers are applied. Two things make that safe.
 

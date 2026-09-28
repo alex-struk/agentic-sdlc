@@ -41,6 +41,18 @@ function agentEntryMessages(config) {
   return messages;
 }
 
+// A calibration cadence counts approved changes since the oracle's suite last ran, so it applies
+// to nothing in a project whose profile does not calibrate or whose config names no oracle, and
+// reads as though calibration had been scheduled.
+function calibrateAfterMessages(config) {
+  if (config?.policy?.next?.calibrate_after === undefined) return [];
+  let stages = [];
+  try { stages = stagesFor(config.profile); } catch { return []; }
+  if (!stages.includes("calibrate")) return [`policy.next.calibrate_after is set, but the ${config.profile} profile does not run calibrate, so nothing is ever due`];
+  if (!config.oracle?.target) return ["policy.next.calibrate_after is set, but the config names no oracle.target to calibrate, so nothing is ever due"];
+  return [];
+}
+
 export function checkConfig(projectDir, ctx = {}) {
   const p = join(projectDir, ".sdlc", "config.yaml");
   if (!existsSync(p)) return { id: "config", ok: false, messages: [".sdlc/config.yaml is missing"], config: null };
@@ -54,7 +66,7 @@ export function checkConfigText(text) {
   const { config, errors } = parseConfig(text);
   const messages = [...errors];
   try { stagesFor(config?.profile); } catch (e) { messages.push(e.message); }
-  if (config) messages.push(...agentEntryMessages(config));
+  if (config) messages.push(...agentEntryMessages(config), ...calibrateAfterMessages(config));
   // A turn budget that the runner would ignore or silently reduce is worse than no budget
   // at all: it reads as a cap that a gate approved and a run honoured, and it is neither.
   // Refusing it here puts the failure in front of whoever proposes the number, rather than
