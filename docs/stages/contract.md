@@ -135,6 +135,13 @@ run in a mode that refuses a shell outright, which is why the first version of t
 nothing at all — the agent was refused on every attempt and correctly reported that it had made
 none. The CLI is on nobody's PATH, so the runner passes its own entry point as `$SDLC_BIN`.
 
+`oracle up` takes minutes — pulling images, installing, migrating — and the agent waits for it in
+the foreground. The session is headless and ends when the agent stops replying, so an `oracle up`
+left running in the background finishes with nobody to read it, and the proposal says only that a
+result is coming. A Claude session's commands may run for `policy.command_minutes.contract`, 30
+minutes unless the policy says otherwise, rather than Claude Code's own two
+(`docs/decisions/0065-a-session-waits-for-its-own-commands.md`).
+
 Three things bound that loop, and each exists for a reason. They are judgement, so they are
 written in the contract skill (`src/stages/skills/contract.md`, "Proving the oracle starts")
 rather than in the stage's prompt, which only asks for the oracle to be brought up and taken down
