@@ -18,6 +18,9 @@ import { rule, settleApproved } from "../src/commands/rule.mjs";
 import { propose } from "../src/commands/propose.mjs";
 import { stageFor, recordReturnOnMain } from "../src/stages/registry.mjs";
 import { writeLocal } from "../src/oracle/ports.mjs";
+import { writeGenerated } from "../src/spec/surface.mjs";
+import { checkGenerated } from "../src/checks/generated.mjs";
+import { loadConfig } from "../src/config/load.mjs";
 import { STAGES, PROFILES } from "../src/profiles.mjs";
 
 // A gated stage's work is committed to its proposal branch and the checkout is left on
@@ -778,6 +781,104 @@ test("resume refuses a returned contract whose branch no longer holds the commit
     assert.equal(await resume(dir), 1);
     assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
     assert.equal(gitOk(["rev-parse", "--verify", "proposal/contract-v2"], dir), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+// `tests/generated/*` is derived from the contract. A project that has generated it (every
+// project past `derive-tests`) has it judged against the contract by the `generated` check, so
+// a contract proposal that changed the contract without regenerating it would reach main
+// inconsistent, and the next proposal would be the one to fail for it.
+function withGenerated(dir) {
+  writeGenerated(dir);
+  git(["add", "-A"], dir);
+  git([...TEST_AUTHOR, "commit", "-q", "-m", "generated from the contract (test)"], dir);
+}
+
+// The generated check run against a proposal branch's own tree.
+function generatedOnBranch(dir, branch) {
+  git(["checkout", "-q", branch], dir);
+  try { return checkGenerated(dir); } finally { git(["checkout", "-q", "main"], dir); }
+}
+
+test("sdlc run contract: the proposal carries tests/generated regenerated from the contract it opens", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-generated-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  withGenerated(dir);
+  const before = readFileSync(join(dir, "tests/generated/surface.d.ts"), "utf8");
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const r = await runStage(dir, "contract");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    const branch = r.proposal.branch;
+    assert.notEqual(onBranch(dir, branch, "tests/generated/surface.d.ts"), before);
+    assert.deepEqual(generatedOnBranch(dir, branch), { id: "generated", ok: true, messages: [] });
+    assert.match(git(["diff", "--name-only", "main", branch], dir), /^tests\/generated\/surface\.d\.ts$/m);
+    assert.equal(readFileSync(join(dir, "tests/generated/surface.d.ts"), "utf8"), before, "main is untouched until G1 approves");
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("sdlc run contract: a project that has generated nothing yet is given nothing generated", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-no-generated-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const r = await runStage(dir, "contract");
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.equal(existsOnBranch(dir, r.proposal.branch, "tests/generated/surface.d.ts"), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("contract's post-checks judge tests/generated against the contract", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-generated-check-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  try {
+    withGenerated(dir);
+    writeFileSync(join(dir, "tests/generated/surface.d.ts"), "// stale\n");
+    const results = stageFor("contract").postChecks(dir, { config: loadConfig(join(dir, ".sdlc/config.yaml")).config, projectDir: dir });
+    const generated = results.find((c) => c.id === "generated");
+    assert.ok(generated, `no generated check among ${results.map((c) => c.id).join(", ")}`);
+    assert.equal(generated.ok, false);
+    assert.match(generated.messages.join("\n"), /surface\.d\.ts: does not match the contract/);
+  } finally {
+    restoreEgress(prevEgress);
+  }
+});
+
+// The returned draft carries its own regenerated files, but they are derived and main's may
+// have moved since: they are regenerated from the contract the run ends with rather than
+// carried over from the branch, where they could only conflict with main's.
+test("a returned contract's successor regenerates tests/generated rather than carrying the branch's", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-generated-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  withGenerated(dir);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name } = await returnedContract(dir);
+    assert.deepEqual(generatedOnBranch(dir, `proposal/${name}`).messages, []);
+    writeFileSync(join(dir, "tests/generated/seed.ts"), "// main moved on\n");
+    git(["add", "-A"], dir);
+    git([...TEST_AUTHOR, "commit", "-q", "-m", "main's generated files moved (test)"], dir);
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-return-generated-mock-"));
+    writeFileSync(join(mockDir, "contract.json"), JSON.stringify({ text: "Kept the draft and addressed the return.", files: {} }));
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const next = await runStage(dir, "contract");
+    assert.equal(next.ok, true, JSON.stringify(next.messages));
+    assert.equal(next.proposal.name, "contract-v2");
+    assert.deepEqual(generatedOnBranch(dir, "proposal/contract-v2"), { id: "generated", ok: true, messages: [] });
+    assert.equal(git(["status", "--porcelain"], dir), "");
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

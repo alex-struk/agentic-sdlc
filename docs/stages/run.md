@@ -236,6 +236,14 @@ line staged, and `{ ok: false, messages: [<the error's message>] }` returned. Th
 turn to have run and so no journal entry — a journal entry is the account of a turn, and none
 happened.
 
+## The `beforePostChecks` hook
+
+A stage may declare `stage.beforePostChecks(projectDir, ctx)`, run by `finishStage` after the agent
+turn and before its post-checks, and again after every repair turn before they are judged again.
+It exists for a stage whose output has files derived from it: `contract` regenerates
+`tests/generated/*` from the contract the turn left, so the post-checks judge, and the proposal
+carries, derived files consistent with it.
+
 ## MCP servers, tools and environment
 
 A stage may declare `stage.mcp(ctx, config)`, returning an object of MCP servers (the value that

@@ -25,6 +25,7 @@ import { checkEgress } from "../checks/egress.mjs";
 import { checkTests, coverage, namesClause, readNotTestable, readWholeNotTestable } from "../checks/tests.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
 import { bindingGaps, loadContract, writeGenerated } from "../spec/surface.mjs";
+import { checkGenerated } from "../checks/generated.mjs";
 import { turnsFor } from "../runner/executor.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
@@ -786,13 +787,28 @@ function checkOracleOverride(projectDir, config) {
   return { id, ok: true, messages: [] };
 }
 
-// `contract` may only touch the paths the guard hook allows it: the contract itself, the
-// synthetic seed, and the oracle's compose override.
+// `contract` may only touch the paths the guard hook allows it — the contract itself, the
+// synthetic seed, and the oracle's compose override — and `tests/generated/`, which the
+// runner regenerates from that contract after the turn (`regenerateFromContract`) and the
+// agent itself cannot write.
 function checkContractScope(projectDir) {
   const id = "contract-scope";
-  const outside = changedPaths(projectDir).filter((p) => !/^(spec\/contract\/|tests\/seed\/|\.sdlc\/oracle\/)/.test(p));
+  const outside = changedPaths(projectDir).filter((p) => !/^(spec\/contract\/|tests\/seed\/|tests\/generated\/|\.sdlc\/oracle\/)/.test(p));
   if (!outside.length) return { id, ok: true, messages: [] };
-  return { id, ok: false, messages: [`contract may only change spec/contract/, tests/seed/ and .sdlc/oracle/, but also touched: ${outside.join(", ")}`] };
+  return { id, ok: false, messages: [`contract may only change spec/contract/, tests/seed/, .sdlc/oracle/ and the tests/generated/ derived from them, but also touched: ${outside.join(", ")}`] };
+}
+
+// `tests/generated/*` is derived from the contract and the seed manifest, and the `generated`
+// check fails wherever it does not match them. A contract proposal changes both, so it
+// regenerates the derived files from what the turn left and carries them, and main never
+// holds a contract its generated files disagree with. Only in a project that has generated
+// them at all: before `derive-tests` has run there is nothing for the check to judge, and
+// nothing here to keep in step. A contract that does not load is left for `contract-loads`
+// to report, since there is nothing to generate from.
+function regenerateFromContract(projectDir) {
+  if (!existsSync(join(projectDir, "tests", "generated"))) return;
+  if (loadContract(projectDir).errors.length) return;
+  writeGenerated(projectDir);
 }
 
 // Where this run's contract question comes from. A return of the contract's own newest
@@ -872,7 +888,9 @@ function contractReturnProblem(projectDir, returned) {
 // used by blind stages does not reach it. Apply only the returned draft's own changes,
 // relative to where its branch began. A newer main edit that conflicts with that patch
 // is refused before a byte is written; silently restoring the whole branch would erase
-// work another proposal has since brought to main.
+// work another proposal has since brought to main. The draft's `tests/generated/` is not
+// among them: it is derived, regenerated from the contract this run ends with, and carried
+// over it could only conflict with main's own derived files.
 function prepareReturnedContract(projectDir, ctx) {
   const tip = ctx.revision?.name && ctx.revision?.branchCommit;
   if (!tip) return;
@@ -985,6 +1003,9 @@ const contract = {
   prepare(wsDir, ctx) {
     prepareReturnedContract(wsDir, ctx);
   },
+  beforePostChecks(projectDir) {
+    regenerateFromContract(projectDir);
+  },
   beforeProposal(projectDir, ctx) {
     settleReturnedContract(projectDir, ctx);
   },
@@ -1015,6 +1036,7 @@ const contract = {
       checkSeed(projectDir),
       checkEgress(projectDir, ctx),
       checkOracleOverride(projectDir, ctx.config),
+      checkGenerated(projectDir),
       checkContractScope(projectDir),
     ];
   },

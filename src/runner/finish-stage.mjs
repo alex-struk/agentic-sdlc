@@ -293,6 +293,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
   state.phase = "post-checks";
   writeRunState(projectDir, state);
 
+  // A stage whose output has files derived from it (`contract`, whose contract derives
+  // `tests/generated/*`) regenerates them here, from whatever the turn left, before anything
+  // judges that output — and again after every repair turn below — so what the post-checks
+  // see, and what the proposal carries, is consistent with itself.
+  stage.beforePostChecks?.(projectDir, ctx);
   let post = stage.postChecks(projectDir, ctx);
   let postFail = post.filter((r) => !r.ok);
 
@@ -357,6 +362,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
         ...(agentResult.engine ? { engine: agentResult.engine } : {}),
       };
 
+      stage.beforePostChecks?.(projectDir, ctx);
       post = stage.postChecks(projectDir, ctx);
       postFail = post.filter((r) => !r.ok);
       lastMessages = postFail.flatMap((r) => r.messages);

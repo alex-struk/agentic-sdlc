@@ -107,7 +107,9 @@ No agent.
   the live contract (`spec/contract/*.yaml`, `tests/seed/manifest.yaml`) and compares every file it
   produces against `tests/generated/*` byte for byte — a mismatch or a missing file fails. A
   contract that fails to load is reported as a failure with its load errors, the same errors
-  `loadContract` itself would raise.
+  `loadContract` itself would raise. Two stages write these files: `derive-tests`, which generates
+  them in its workspace before its turn, and `contract`, which regenerates them after its turn so
+  its proposal carries them consistent with the contract it changes (`docs/stages/contract.md`).
 - **tests** — runs whenever `tests/` and `spec/criteria-index.json` both exist; a project that has
   not ratified anything yet has no accepted criteria for a spec file's header to be checked against.
   For every `tests/acceptance/<domain>/<file>.spec.ts`: the first two lines must be exactly
