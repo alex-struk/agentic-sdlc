@@ -27,7 +27,7 @@ import { STAGES, stagesFor } from "../profiles.mjs";
 import { openAcross, readAt } from "../spec/owed.mjs";
 import { bindingGaps } from "../spec/surface.mjs";
 import { MISSING_TEST, openMissingTestsAt, retired } from "../spec/missing-tests.mjs";
-import { UNBOUND, legacyAdapter, openUnboundRows, unboundOwed } from "../spec/unbound.mjs";
+import { UNBOUND, legacyAdapter, openUnboundRows, personaUnavailable, targetIdentity, unavailablePersonas, unboundOwed } from "../spec/unbound.mjs";
 import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
 import { stallReason } from "./escalation.mjs";
@@ -187,7 +187,7 @@ export function readRecord(projectDir, rev = "main") {
   const targets = [...new Set([config.oracle?.target, ...Object.keys(config.targets ?? {})].filter(Boolean))];
 
   const wanted = [
-    at("spec/criteria-index.json"), at("plan/tasks.md"), at("spec/contract/surface.yaml"),
+    at("spec/criteria-index.json"), at("plan/tasks.md"), at("spec/contract/surface.yaml"), at("spec/contract/personas.yaml"),
     ...gateFiles.map((f) => at(`.sdlc/gates/${f}`)),
     ...domains.map((d) => at(`spec/domains/${d}.md`)),
     ...targets.flatMap((t) => [at(`tests/results/${t}/latest.json`), at(`tests/results/${t}/applied.yaml`), at(`tests/adapters/${t}/bindings.yaml`)]),
@@ -231,20 +231,27 @@ export function readRecord(projectDir, rev = "main") {
     ...openAcross(projectDir, { rev, familyOf: proposalFamily }).filter((e) => e.kind !== MISSING_TEST),
     ...openMissingTestsAt(projectDir, rev),
   ];
-  // An unbound calibration row nothing has filed is owed all the same, and one sent to
-  // bind-adapter as often as `policy.loops.rebind` allows waits on a ruler
-  // (`src/spec/unbound.mjs`). Every rebind entry is read, closed ones too, since they are what
+  // An unbound calibration row nothing has filed is owed all the same (`src/spec/unbound.mjs`).
+  // One sent to bind-adapter as often as `policy.loops.rebind` allows goes to the reviewer's
+  // triage on the oracle's target, and waits on a ruler on any other; one needing a persona the
+  // contract marks unavailable is owed to nobody, and calibration closes it
+  // (`docs/decisions/0068`). Every rebind entry is read, closed ones too, since they are what
   // counts the sends.
   const unboundSpent = [];
+  const unboundTriage = [];
+  const unboundUnavailable = [];
   const rebinds = readAt(projectDir, "rebind", rev);
+  const personas = yamlOf(objects.get(at("spec/contract/personas.yaml")));
   for (const t of targets) {
     const r = results.get(t);
     const rows = openUnboundRows(r.latest);
     if (!rows.length) continue;
+    const unavailable = unavailablePersonas(personas, targetIdentity(config, t));
     const fallback = rows.some((row) => row.adapter === undefined) ? legacyAdapter(projectDir, t, rev) : "";
-    const { pending, spent } = unboundOwed({ target: t, rows, adapter: r.adapter, fallback, entries: rebinds, limit: owedLoopLimit(config, "rebind") });
+    const { pending, spent } = unboundOwed({ target: t, rows, adapter: r.adapter, fallback, entries: rebinds, limit: owedLoopLimit(config, "rebind"), unavailable });
     owed.push(...pending);
-    unboundSpent.push(...spent);
+    (t === config.oracle?.target ? unboundTriage : unboundSpent).push(...spent);
+    for (const row of rows) if (personaUnavailable(row, unavailable)) unboundUnavailable.push({ id: row.id, target: t });
   }
   // Every request, answered or not: a return waits on what its own ruling asked of another
   // stage until the answer is approved, which the open list alone cannot say.
@@ -254,7 +261,7 @@ export function readRecord(projectDir, rev = "main") {
     ...proposalBranches.map((b) => b.slice("proposal/".length)),
     ...returnedBranches.map((b) => b.slice("returned/".length)),
   ];
-  return { rev, config, domains, targets, gates, proposals, names, index, tasks, domainIds, results, owed, unboundSpent, requests, headers: specHeaders(projectDir, rev) };
+  return { rev, config, domains, targets, gates, proposals, names, index, tasks, domainIds, results, owed, unboundSpent, unboundTriage, unboundUnavailable, requests, headers: specHeaders(projectDir, rev) };
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────────────
@@ -265,7 +272,7 @@ export function runCommand(stage, args = {}) {
     if (args[k] === undefined || args[k] === null) return SUBJECT_OF[stage] === k ? `--${k} <${k}>` : null;
     return `--${k} ${args[k]}`;
   };
-  return ["sdlc run", stage, flag("domain"), flag("target"), flag("slice"), args.stale ? "--stale" : null, args.revise ? "--revise" : null]
+  return ["sdlc run", stage, flag("domain"), flag("target"), flag("slice"), args.stale ? "--stale" : null, args.revise ? "--revise" : null, args.skipSuite ? "--skip-suite" : null]
     .filter(Boolean).join(" ");
 }
 
@@ -314,15 +321,28 @@ function calibrated(record, target) {
   return rows.every(closesCalibration);
 }
 
-// Whether all that keeps a target's calibration open is unbound rows sent to bind-adapter as
-// often as `policy.loops.rebind` allows. Calibrating again cannot close them, so the step waits
-// on a ruler rather than being offered.
-function calibrationWaitsOnRuler(record, target) {
+// Why a target's calibration is next with `--skip-suite`, or `null`: when all that keeps it
+// open is unbound rows the suite would only report unbound again, and a calibration settles
+// without running it — rows bind-adapter has had its sends for, which it puts to the reviewer's
+// triage, and rows needing a persona the contract marks unavailable, which it closes.
+function calibrationSettlesWithoutSuite(record, target) {
   const rows = record.results.get(target)?.latest?.rows;
-  if (!Array.isArray(rows)) return false;
-  const spent = new Set((record.unboundSpent ?? []).filter((s) => s.target === target).map((s) => s.id));
+  if (!Array.isArray(rows)) return null;
+  const triage = (record.unboundTriage ?? []).filter((s) => s.target === target);
+  const unavailable = (record.unboundUnavailable ?? []).filter((s) => s.target === target);
+  const settles = new Set([...triage, ...unavailable].map((s) => s.id));
   const open = rows.filter((r) => !closesCalibration(r));
-  return open.length > 0 && open.every((r) => r?.result === UNBOUND && spent.has(r.id));
+  if (!open.length || !open.every((r) => r?.result === UNBOUND && settles.has(r.id))) return null;
+  const ids = (list) => { const all = list.map((s) => s.id); return all.length > 10 ? `${all.slice(0, 10).join(", ")} and ${all.length - 10} more` : all.join(", "); };
+  const said = [];
+  if (triage.length) {
+    said.push(`${plural(triage.length, "unbound row")} bind-adapter was sent ${plural(triage[0].limit, "time")} (policy.loops.rebind) `
+      + `${triage.length === 1 ? "goes" : "go"} to the reviewer's triage: ${ids(triage)}`);
+  }
+  if (unavailable.length) {
+    said.push(`${plural(unavailable.length, "unbound row")} ${unavailable.length === 1 ? "needs" : "need"} a persona the approved contract marks unavailable on ${target}: ${ids(unavailable)}`);
+  }
+  return `${said.join("; ")}; the suite would report ${open.length === 1 ? "it" : "them"} unbound again, so none is run`;
 }
 
 // The steps of the sequence this project's profile runs, in order, each with what closes it.
@@ -642,11 +662,12 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
   for (const s of open.filter((x) => x.phase === phaseNumber)) {
     if (!s.after.every((k) => byKey.get(k)?.done ?? true)) continue;
     if (props.inFlight.has(subjectKey(s.stage, s.args))) continue;
-    if (s.stage === "calibrate" && calibrationWaitsOnRuler(record, s.args.target)) continue;
     if (!STAGES_BY_NAME[s.stage]?.implemented) { blocked ??= `the next stage in the sequence, ${s.stage}, is not implemented in this pipeline yet`; continue; }
     const where = s.args.domain ? ` for ${s.args.domain}` : s.args.target ? ` for target ${s.args.target}` : s.args.slice !== undefined ? ` for slice ${s.args.slice}` : "";
-    sequence.push({ kind: "sequence", stage: s.stage, args: s.args, command: runCommand(s.stage, s.args),
-      why: `phase ${phase.number} ${phase.name} is not complete (exit: ${phase.exit}), and ${s.stage}${where} is next in it` });
+    const settles = s.stage === "calibrate" ? calibrationSettlesWithoutSuite(record, s.args.target) : null;
+    const args = settles ? { ...s.args, skipSuite: true } : s.args;
+    sequence.push({ kind: "sequence", stage: s.stage, args, command: runCommand(s.stage, args),
+      why: `phase ${phase.number} ${phase.name} is not complete (exit: ${phase.exit}), and ${s.stage}${where} is next in it${settles ? `: ${settles}` : ""}` });
   }
 
   const byKind = {

@@ -494,25 +494,69 @@ test("an unbound row found under an adapter that has since changed is checked ag
   assert.match(r.next.why, /^1 unbound row to check again now that its adapter has changed for target old owed by calibrate$/);
 });
 
-test("an unbound row sent to bind-adapter as often as policy.loops.rebind allows waits on a ruler", (t) => {
+const spentOn = (target, id = "R-1.1") => ["a1", "a2"].map((adapter) => ({ id, target, why: "unbound: a-page.stop — gone", found: "unbound", adapter,
+  closed: { outcome: "met", why: `tests/adapters/${target} has changed since this was found`, by: "runner:calibrate", at: "2026-01-02T00:00:00.000Z" } }));
+
+// Past the limit, the oracle's unbound row goes to the reviewer's triage, where a verdict closes
+// or re-queues it (`docs/decisions/0068`). The suite would only say the same again, so the
+// calibration that opens the triage runs none.
+test("an unbound row bind-adapter has had its sends for is taken to the reviewer's triage by calibrate --skip-suite", (t) => {
   const d = project(t, { extra: TARGETS, policy: ["loops: { rebind: 2 }"] });
   specDone(d);
-  const sent = (adapter) => ({ id: "R-1.1", target: "old", why: "unbound: a-page.stop — gone", found: "unbound", adapter,
-    closed: { outcome: "met", why: "tests/adapters/old has changed since this was found", by: "runner:calibrate", at: "2026-01-02T00:00:00.000Z" } });
-  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [sent("a1"), sent("a2")] }) });
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: spentOn("old") }) });
   calibratedWithUnbound(d, [unboundRow("R-1.1", "alpha"), { id: "R-2.1", result: "pass" }]);
   const r = whatNext(d);
   assert.ok(!r.ready.some((c) => c.stage === "bind-adapter"), "not sent a third time");
-  assert.ok(!r.ready.some((c) => c.stage === "calibrate"), "calibrating again changes nothing a ruler has not decided");
-  assert.equal(r.state, "waiting");
-  const [w] = r.waiting;
+  assert.equal(r.next.command, "sdlc run calibrate --target old --skip-suite");
+  assert.equal(r.next.kind, "sequence");
+  assert.match(r.next.why, /1 unbound row bind-adapter was sent 2 times \(policy\.loops\.rebind\) goes to the reviewer's triage: R-1\.1/);
+  assert.deepEqual(r.waiting, [], "nothing waits on a person with no route");
+  assert.doesNotMatch(formatNext(r), /waiting on a person/);
+  assert.doesNotMatch(formatNextShort(r), /unbound binding/);
+  assert.equal(matchesNext(r, "calibrate", { target: "old" }), true);
+});
+
+test("while the reviewer's triage is open, a spent unbound row is that proposal's question and nothing else's", (t) => {
+  const d = project(t, { extra: TARGETS, policy: ["loops: { rebind: 2 }"] });
+  specDone(d);
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: spentOn("old") }) });
+  calibratedWithUnbound(d, [unboundRow("R-1.1", "alpha"), { id: "R-2.1", result: "pass" }]);
+  proposal(d, "calibrate-triage-old-1", "G3");
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc rule calibrate-triage-old-1 --by agent:owner");
+  assert.ok(!r.ready.some((c) => c.stage === "calibrate" || c.stage === "bind-adapter"));
+  assert.deepEqual(r.waiting, []);
+});
+
+test("a spent unbound row on a target other than the oracle still waits on a ruler", (t) => {
+  const d = project(t, { extra: TARGETS, policy: ["loops: { rebind: 2 }"] });
+  specDone(d);
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: spentOn("new") }) });
+  calibratedWithUnbound(d, [{ id: "R-1.1", result: "pass" }, { id: "R-2.1", result: "pass" }]);
+  commit(d, { "tests/results/new/latest.json": JSON.stringify({ rows: [unboundRow("R-1.1", "alpha"), { id: "R-2.1", result: "pass" }] }) }, "stage(calibrate): calibrate against new");
+  const r = whatNext(d);
+  const w = r.waiting.find((x) => x.kind === "unbound");
   assert.equal(w.on, "a ruler");
-  assert.equal(w.kind, "unbound");
-  assert.equal(w.count, 1);
-  assert.match(w.why, /^1 binding bind-adapter was sent 2 times \(policy\.loops\.rebind\) and still reports unbound on old: R-1\.1/);
-  assert.match(w.command, /no calibration verb closes an unbound row/);
-  assert.match(formatNext(r), /waiting on a person:\n {2}a ruler: unbound bindings \(old\) — /);
+  assert.equal(w.name, "unbound bindings (new)");
+  assert.match(w.why, /^1 binding bind-adapter was sent 2 times \(policy\.loops\.rebind\) and still reports unbound on new: R-1\.1/);
   assert.match(formatNextShort(r), /1 unbound binding waiting on a ruler/);
+});
+
+// A test signing in as a persona the approved contract marks unavailable on the target can never
+// run there, so no binding run is sent it; calibration closes the row.
+test("an unbound row whose persona the contract marks unavailable is sent to no binding run", (t) => {
+  const d = project(t, { extra: TARGETS });
+  specDone(d);
+  commit(d, { "spec/contract/personas.yaml": stringifyYaml({ personas: [
+    { id: "second-staff", can: ["approve"], sign_in: { "session-route": { unavailable: "the target has one staff account" } } },
+  ] }) });
+  const needsPersona = unboundRow("R-1.1", "alpha", { tests: [{ title: "t", status: "failed", error: "Error: unbound: signIn.second-staff — the target has one staff account" }] });
+  calibratedWithUnbound(d, [needsPersona, { id: "R-2.1", result: "pass" }]);
+  const r = whatNext(d);
+  assert.deepEqual(r.owed, [], "owed to no binding run");
+  assert.equal(r.next.command, "sdlc run calibrate --target old --skip-suite");
+  assert.match(r.next.why, /1 unbound row needs a persona the approved contract marks unavailable on old: R-1\.1/);
+  assert.deepEqual(r.waiting, []);
 });
 
 test("which kind of ready work goes first is policy.next.order", (t) => {
