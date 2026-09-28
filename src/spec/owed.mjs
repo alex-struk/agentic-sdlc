@@ -15,7 +15,9 @@
 //   request    `.sdlc/revision-requests.yaml`  `addressed-to <stage>: <why>` — a ruling
 //                                               asking another stage to revise
 //   redo       `tests/acceptance/redo.yaml`    a criterion whose test is to be derived again
-//   rebind     `tests/adapters/rebind.yaml`    a binding a calibration found wanting
+//   rebind     `tests/adapters/rebind.yaml`    a binding a calibration found wanting, by a
+//                                               reviewer's verdict or by the adapter's own
+//                                               `unbound:` report (`src/spec/unbound.mjs`)
 //   recovery   `spec/recovery.yaml`            a criterion to be recovered again
 //
 // Any other kind is stored in `.sdlc/owed.yaml`, in the shape above with nothing added, so a
@@ -112,7 +114,9 @@ const KINDS = {
   rebind: {
     path: "tests/adapters/rebind.yaml",
     list: "rebind",
-    outcomes: ["met"],
+    // Met when the binding is fixed or its adapter has changed; withdrawn by the runner when
+    // the unbound row that filed it is ruled or gone (`src/spec/unbound.mjs`).
+    outcomes: ["met", "withdrawn"],
     view: (s) => ({ ...s, item: `${s.target}:${s.id}`, stage: "bind-adapter", closed: closedField(s) }),
     store: (v) => withClosed(without(v, ["kind", "item", "stage", "closed"]), v.closed),
     identity: (e) => `${e.target}:${e.id}`,

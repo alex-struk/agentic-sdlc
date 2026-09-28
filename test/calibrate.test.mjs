@@ -385,6 +385,37 @@ test("sdlc run calibrate --target old: a result set with no failures opens nothi
   }
 });
 
+// An unbound row reaches neither the reviewer nor the product owner, so the calibration that
+// finds one files it for the binding run, with the adapter's own reason and the adapter it was
+// found under, and closes it once a later calibration finds the binding reaches the test.
+test("sdlc run calibrate --target old: an unbound row is filed for bind-adapter with the adapter's reason, and closed once it passes", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-unbound-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  const unbound = { ...FAILING_ROW, result: "unbound", tests: [{ title: "status", status: "failed", error: 'Error: unbound: application.status — no field labelled "Status"' }] };
+  calibrateEnv(mockRunnerDir("unbound", [PASSING_ROW, unbound]));
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(!r.proposal, "an unbound row is asked of nobody");
+    const tree = git(["rev-parse", "HEAD:tests/adapters/old"], dir);
+    assert.equal(rowFor(latest(dir), "R-1.2").adapter, tree, "a row records the adapter it was found under");
+    const [entry] = parseYaml(git(["show", "main:tests/adapters/rebind.yaml"], dir)).rebind;
+    assert.deepEqual([entry.id, entry.target, entry.found, entry.adapter, entry.by], ["R-1.2", "old", "unbound", tree, "runner:calibrate"]);
+    assert.equal(entry.why, 'unbound: application.status — no field labelled "Status"');
+    assert.equal(entry.closed, undefined);
+
+    calibrateEnv(mockRunnerDir("bound", [PASSING_ROW, { ...FAILING_ROW, result: "pass", tests: [{ title: "status", status: "passed" }] }]));
+    const again = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(again.ok, true, JSON.stringify(again.messages));
+    const [settled] = parseYaml(git(["show", "main:tests/adapters/rebind.yaml"], dir)).rebind;
+    assert.equal(settled.closed.outcome, "met");
+    assert.match(settled.closed.why, /the calibration row is pass/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
 // A missing test whose test now exists is owed a run, and the calibration that runs it closes
 // the item with the row it ran as the evidence.
 test("sdlc run calibrate --target old: a missing test whose test ran is closed, with the row as its evidence", async () => {

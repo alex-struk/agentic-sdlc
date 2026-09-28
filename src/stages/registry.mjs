@@ -19,6 +19,7 @@ import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, ch
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
 import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee, overreachConditions, OVERREACH_STAGE } from "../spec/criteria.mjs";
 import { close as closeOwed, identityOf, isOpen, open as openOwed, openOn, read as readOwed, readAt, rewrite, sameFiling, sends, unexpectedChange } from "../spec/owed.mjs";
+import { UNBOUND, unboundHanded } from "../spec/unbound.mjs";
 import { NOT_TESTABLE_PATH, missingTestRef, openMissingTestsAt, recordProblems } from "../spec/missing-tests.mjs";
 import { checkCriteria, checkCriteriaIndex } from "../checks/criteria.mjs";
 import { checkEgress } from "../checks/egress.mjs";
@@ -1980,13 +1981,29 @@ function bindAdapterRevisionInstructions(ctx) {
 // the page. Each names the criterion whose test failed, so the agent can see what the
 // binding was being asked for.
 function bindAdapterCalibrationFindings(ctx) {
-  const entries = ctx.bindAdapterRebind ?? [];
-  if (!entries.length) return null;
-  const lines = entries.map((e) => `- ${e.id}: ${e.why}`).join("\n");
+  const all = ctx.bindAdapterRebind ?? [];
+  const lines = (entries) => entries.map((e) => `- ${e.id}: ${e.why}`).join("\n");
+  const reviewed = all.filter((e) => e.found !== UNBOUND);
+  const unbound = all.filter((e) => e.found === UNBOUND);
   return [
-    `A calibration run found these bindings wanting. Sorting its failures, the reviewer found the criterion and the test sound in each case, and this adapter to be what failed:`,
-    lines,
-    `Correct each one. Where a finding says a control exists that you reported unbound, look again for it — under a different label, behind a step, on a page reached another way — before reporting it unbound a second time, and say in the reason what you did to look.`,
+    reviewed.length ? [
+      `A calibration run found these bindings wanting. Sorting its failures, the reviewer found the criterion and the test sound in each case, and this adapter to be what failed:`,
+      lines(reviewed),
+      `Correct each one. Where a finding says a control exists that you reported unbound, look again for it — under a different label, behind a step, on a page reached another way — before reporting it unbound a second time, and say in the reason what you did to look.`,
+    ].join("\n\n") : null,
+    bindAdapterUnboundFindings(unbound, lines),
+  ].filter(Boolean).join("\n\n") || null;
+}
+
+// The criteria a calibration could not test because this adapter reported what their tests
+// needed as unbound, each with the adapter's own reason. Nobody has judged these: the reason is
+// the adapter's, and the run is asked to look again rather than told the control exists.
+function bindAdapterUnboundFindings(entries, lines) {
+  if (!entries.length) return null;
+  return [
+    `A calibration run could not test these criteria, because this adapter reported unbound what their tests needed. Each line quotes the adapter's own reason:`,
+    lines(entries),
+    `Look for each one again on the running application — under a different label, behind a step or a sign-in, on a page reached another way, as another persona — and bind it where the application offers it. Where it really does not, leave it unbound and say in the reason what you did to look.`,
   ].join("\n\n");
 }
 
@@ -2124,7 +2141,10 @@ const bindAdapter = {
     // cleared by this stage: a proposal that is returned has fixed nothing, and a revise of
     // it still needs the findings. `calibrate` clears them once it has run against an
     // adapter that changed since they were written.
-    ctx.bindAdapterRebind = ctx.target ? readOwed(projectDir, "rebind").filter((e) => isOpen(e) && e.target === ctx.target) : [];
+    // Beside them, the unbound rows on file that nothing has filed yet (`src/spec/unbound.mjs`).
+    ctx.bindAdapterRebind = ctx.target
+      ? [...readOwed(projectDir, "rebind").filter((e) => isOpen(e) && e.target === ctx.target), ...unboundHanded(projectDir, ctx.target, ctx.config)]
+      : [];
     ctx.bindAdapterGaps = ctx.target ? adapterContractGaps(projectDir, ctx.target) : null;
     return [
       checkTargetOption("bind-adapter", ctx),

@@ -15,12 +15,13 @@ import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skill
 import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR, TRIAGE_GRAMMAR, parseTriageConditions } from "../spec/criteria.mjs";
 import { close as closeOwed, open as openOwed } from "../spec/owed.mjs";
 import { syncMissingTests } from "../spec/missing-tests.mjs";
+import { legacyAdapter, syncUnbound } from "../spec/unbound.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp, instancesOf } from "../commands/oracle.mjs";
 import { runSuite, sortRows } from "../testrun/playwright.mjs";
 import { environmentFaults } from "../testrun/results.mjs";
-import { calibrateEnvironmentFaults } from "../config/policy.mjs";
+import { calibrateEnvironmentFaults, owedLoopLimit } from "../config/policy.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { propose } from "../commands/propose.mjs";
@@ -645,7 +646,15 @@ export const calibrate = {
     // 2. Every ruling that came back since the last run, applied to the spec.
     const rulings = applyCalibrateGates(projectDir, target, today);
     const triage = applyTriageGates(projectDir, target);
-    const rulingPaths = [...new Set([...rulings.changed, ...triage.changed, ...expireAdapterVerdicts(projectDir, target)])];
+    // Unbound rows on file found under an adapter that has since changed are counted as sent
+    // under it, and every unbound entry about another adapter lapses (`src/spec/unbound.mjs`).
+    const adapter = adapterTree(projectDir, target);
+    const unboundLimit = owedLoopLimit(ctx.config, "rebind");
+    const unboundFallback = legacyAdapter(projectDir, target);
+    const lapsed = syncUnbound(projectDir, target, {
+      rows: readLatestResults(projectDir, target).results?.rows ?? [], adapter, fallback: unboundFallback, limit: unboundLimit, settle: false,
+    });
+    const rulingPaths = [...new Set([...rulings.changed, ...triage.changed, ...expireAdapterVerdicts(projectDir, target), ...(lapsed.path ? [lapsed.path] : [])])];
 
     // The index and the spec page are regenerated here, before the suite runs, rather
     // than after it: a `spec-wrong` ruling bumps a criterion's version, and staleness is
@@ -679,7 +688,10 @@ export const calibrate = {
         instances: calibrateInstances(projectDir, ctx.config, target),
       });
       haltOnEnvironmentFault(projectDir, ctx, target, fresh);
-      rows = ctx.domain === undefined ? fresh : mergeRows(projectDir, target, fresh);
+      // Each row that ran a spec file records the adapter it ran with, which is what an unbound
+      // row's owed binding is about; a row carried over keeps its own.
+      const stamped = fresh.map((row) => (row.file ? { ...row, adapter } : row));
+      rows = ctx.domain === undefined ? stamped : mergeRows(projectDir, target, stamped);
     }
 
     // 4. The result set: a dated file per run, and `latest.json` beside it for everything
@@ -718,6 +730,11 @@ export const calibrate = {
     const owed = syncMissingTests(projectDir, { config: ctx.config });
     if (owed.path) changed.push(owed.path);
 
+    // An open unbound row is owed to bind-adapter for this target, and an entry whose row has
+    // settled is closed (`src/spec/unbound.mjs`).
+    const unbound = syncUnbound(projectDir, target, { rows: ruledRows, adapter, fallback: unboundFallback, limit: unboundLimit });
+    if (unbound.path && !changed.includes(unbound.path)) changed.push(unbound.path);
+
     // 5. What happened, in the order a person reads it: how the suite came out, which
     // criteria are still questions, and what the last ruling actually did.
     const counts = new Map();
@@ -728,6 +745,7 @@ export const calibrate = {
     if (unruled.length) lines.push(`Failing with no ruling: ${unruled.map((r) => r.id).join(", ")}`);
     const ruled = ruledRows.filter((r) => r.ruled);
     if (ruled.length) lines.push(`Ruled: ${ruled.map((r) => `${r.id} ${r.ruled}`).join(", ")}`);
+    if (unbound.opened.length) lines.push(`Unbound, owed to bind-adapter --target ${target}: ${unbound.opened.join(", ")}`);
     if (rulings.applied.length) {
       lines.push(`Applied ${rulings.applied.length} condition(s) from ${rulings.gateNames.join(", ") || "an earlier ruling"}:`);
       for (const a of rulings.applied) lines.push(`- ${a.verb} ${a.id}`);
