@@ -67,11 +67,12 @@ dated file beside it records when that was.
   | `reason` | why the application was never asked about this criterion, on a `not-testable` or `attested` row — the entry's own text, carried onto the row because the file it was written in is the only place it exists |
   | `tests` | one entry per `test()` in the file: title, status, and the failure message where there is one |
   | `ruled` | the verb an applied ruling gave this criterion, present only when one has been |
+  | `adapter` | the tree of `tests/adapters/<t>` the row's tests ran with, on every row that ran a spec file; a row carried over from an earlier run keeps its own |
   | `error` | why the row is `fail` when no individual test in it carries a failure message of its own — present only then. `no result recorded` (every test in the file was skipped, or it ran none); `<path>: spec file not found on disk` (the suite's own report names the file but it is missing from disk); or the provenance header's own parse error (the header could not be read at all). The last two also leave `id` and `version` null, since neither the filename nor a missing header can say which criterion the row is for. |
 
   `unbound` is a failure whose every message begins `unbound:` — the adapter says the surface member
   it needed does not exist on this target, which is a gap in the binding rather than a difference in
-  behaviour. `stale` is a test whose header version trails the index, so it was written against a
+  behaviour. It is owed to `bind-adapter` for the target (below). `stale` is a test whose header version trails the index, so it was written against a
   criterion that has since moved on and its result says nothing about the target.
 
 - **`tests/results/<t>/applied.yaml`** — `{ applied: [<gate file names>], rulings: [{ id, version,
@@ -95,13 +96,23 @@ dated file beside it records when that was.
   <n> condition(s) not applied` instead, and does not record the ruling those conditions came from as
   applied, so the next run — once the file is fixed — reads it again.
 
-- **`tests/adapters/rebind.yaml`** — `{ rebind: [{ id, target, why, closed? }] }`, owed work of kind
-  `rebind` (`src/spec/owed.mjs`), appended by the reviewer's `adapter-wrong` triage verdicts. The next
-  `bind-adapter` run for that target reads its own open entries into its prompt. `calibrate` closes
-  them once it runs against an adapter that has changed since they were written, and a closed entry
-  stays on file, so a finding made again about the new adapter counts as a second send of the same
-  binding (`policy.loops.rebind`). Keyed by target as well as by criterion, because an adapter exists
-  per target and a finding about one says nothing about another's.
+- **`tests/adapters/rebind.yaml`** — `{ rebind: [{ id, target, why, found?, adapter?, by?, at?, closed? }] }`,
+  owed work of kind `rebind` (`src/spec/owed.mjs`), owed by `bind-adapter` for the target. Two things
+  file it. The reviewer's `adapter-wrong` triage verdicts append an entry with the reviewer's words.
+  An open `unbound` row is filed by this stage, stamped `runner:calibrate`, with `found: unbound`,
+  the `adapter` it was found under, and the adapter's own reason as `why` — every distinct
+  `unbound:` message on the row, once each (`src/spec/unbound.mjs`,
+  `docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`). The next `bind-adapter` run for
+  that target reads its own open entries into its prompt.
+
+  `calibrate` closes an entry once it runs against an adapter that has changed since it was written,
+  and a closed entry stays on file, so a finding made again about the new adapter, or a row still
+  unbound under it, counts as a second send of the same binding. An unbound row is filed only while
+  its binding has been sent fewer times than `policy.loops.rebind` (two by default), counting both
+  kinds of entry; past that it is not filed, and `sdlc next` lists it as waiting on a ruler. An
+  unbound entry whose row now passes or fails is closed as met, and one whose row is ruled or gone is
+  withdrawn. Keyed by target as well as by criterion, because an adapter exists per target and a
+  finding about one says nothing about another's.
 
 - **`tests/acceptance/redo.yaml`** — `{ redo: [{ id, version, why, closed? }] }`, owed work of kind
   `redo` (`src/spec/owed.mjs`), appended by `test-wrong`. It is the list `derive-tests --stale` reads
@@ -154,7 +165,12 @@ the runner's own process, never through a tool call.
 2. **Apply the rulings that came back.** Every approved `calibrate-<t>-<n>` gate file not already in
    `applied.yaml`, in order, applied across every domain file (`applyCalibrateRulings`,
    `src/spec/criteria.mjs`). Each domain file is read once, offered the whole condition list, and
-   written back only if something in it actually changed.
+   written back only if something in it actually changed. Then the verdicts and entries about an
+   earlier adapter lapse: an `adapter-wrong` verdict and its rebind entry, and an unbound entry,
+   once the adapter has changed since. An unbound row on file that was found under an earlier
+   adapter and never filed is filed under it and lapses at once, so that adapter's attempt is
+   counted as a send. A row that records no adapter was found under the adapter at the commit that
+   last wrote `latest.json`.
 3. **Regenerate the index and the spec page** if step 2 changed a domain file — before the suite,
    for the staleness reason above — and commit steps 2 and 3 together as
    `stage(calibrate): apply rulings <gate names>`, staging exactly the paths they wrote. The suite
@@ -192,6 +208,10 @@ the runner's own process, never through a tool call.
    (`tests/results/<t>/latest.json: <id> v<n> <result>`) and the file's id recorded, and one whose
    test exists and has not run is owed by `calibrate` for this target. `.sdlc/owed.yaml` is committed
    with the result set.
+   Then the unbound rows: each open `unbound` row found under the adapter the target has now, with no
+   open entry and sent fewer times than `policy.loops.rebind`, is filed on `tests/adapters/rebind.yaml`
+   for `bind-adapter`, and an unbound entry whose row has settled is closed. The journal names the
+   criteria filed.
 6. **Return the summary and every path written.**
 
 ## Checks that block
@@ -220,10 +240,18 @@ the runner's own process, never through a tool call.
 
 ## Exit criterion
 
-The stage's own exit condition is the one in the design spec: **no row is `fail` without a ruling**.
-That is reached over runs rather than within one — a run that finds unruled failures still exits 0,
-having written the results and opened the proposal that asks about them. The loop is closed when a
-run finds every failure ruled and opens nothing.
+The stage's own exit condition is the one in the design spec, and the one phase 2 exits on: **every
+row is pass or ruled** (§5.7, §15), where a `not-testable` or `attested` row, which the application
+was never asked about, closes too. No row is `fail` without a ruling, and no row is `unbound`: an
+unbound row is closed by a binding run that reaches its test, which the next calibration then finds
+passing or failing, or by a ruling on the row. That is reached over runs rather than within one — a
+run that finds unruled failures or unbound rows still exits 0, having written the results, opened
+the proposal that asks about the failures and filed the unbound rows for `bind-adapter`. The loop is
+closed when a run finds every failure ruled, nothing unbound, and opens nothing.
+
+An unbound row whose binding has been sent to `bind-adapter` as often as `policy.loops.rebind`
+allows is not sent again. No calibration verb closes one, so it waits on a ruler, and the phase with
+it (`docs/stages/next.md`).
 
 Any pre-check or post-check failure exits 1 and prints the failing check's messages;
 `stage(calibrate): post-checks failed` is committed with only the journal and run record staged, and
@@ -266,7 +294,8 @@ the product owner's to answer (`docs/decisions/0008-adapter-wrong.md`). So the f
 personas in turn:
 
 1. A failure whose every failing test ended in the adapter's own `unbound:` error is recorded as
-   `unbound`, not `fail`, and reaches neither.
+   `unbound`, not `fail`, and reaches neither. It is owed to `bind-adapter` instead, with the
+   adapter's own reason (`tests/adapters/rebind.yaml`, above).
 2. Every other failure is first put to the reviewer at G3, as `calibrate-triage-<target>-<n>`, in
    the triage grammar: `adapter-wrong <ID>: <why>` or `product-question <ID>`. Nothing goes to the
    product owner while any failure is unsorted or a sorting is still waiting on its ruling.

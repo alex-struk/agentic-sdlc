@@ -456,8 +456,12 @@ row per criterion: pass, fail, unbound, not-testable. Every fail opens a ratify
 item with the test's expectation and the observed behaviour side by side.
 Rulings: `defect-in-old` (keep the test; the rebuild must pass it), `spec-wrong`
 (edit the criterion, which bumps its version and marks the test stale), or
-`test-wrong` (back to `derive-tests` for that criterion, still blind). Exit: no
-row is `fail` without a ruling. Deterministic. Re-run safe.
+`test-wrong` (back to `derive-tests` for that criterion, still blind). An
+`unbound` row is a gap in the old adapter, not a question about the product: it
+is owed to `bind-adapter old`, which is shown the adapter's own reason for it.
+Exit: every row is pass or ruled, as phase 2 requires (section 15): no row is
+`fail` without a ruling, and no row is `unbound` until the binding reaches its
+test or a ruling closes it. Deterministic. Re-run safe.
 
 ### 5.8 `design` (gate G-DESIGN)
 

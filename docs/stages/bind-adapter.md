@@ -21,12 +21,24 @@ by `sdlc oracle up` and never committed. Any other `--target <t>` must be a key 
 `config.targets`, and its base URL comes straight from `targets.<t>.base_url` — a real target has
 no local file and no mail catcher of its own for this stage to point at.
 
-The run also reads the open entries for its target on `tests/adapters/rebind.yaml`: the bindings a
-calibration's triage found wanting (`docs/stages/calibrate.md`), each with the reviewer's words,
-which go into the prompt. `calibrate` closes them once it has run against an adapter that changed
-since. A binding sent back more often than `policy.loops.rebind` allows (two by default,
-`docs/config.md`) is still rebound, and the proposal the run opens is escalated by the runner to
-G3's escalation target instead of being put to G3's holder (`docs/stages/run.md`, "Outputs").
+The run also reads the open entries for its target on `tests/adapters/rebind.yaml`
+(`docs/stages/calibrate.md`), and they go into the prompt in two blocks:
+
+- **The reviewer's findings**: the bindings a calibration's triage found wanting, each with the
+  reviewer's words. A binding sent back by the reviewer more often than `policy.loops.rebind`
+  allows (two by default, `docs/config.md`) is still rebound, and the proposal the run opens is
+  escalated by the runner to G3's escalation target instead of being put to G3's holder
+  (`docs/stages/run.md`, "Outputs").
+- **The adapter's own unbound reports** (`found: unbound`): the criteria a calibration could not
+  test because this adapter reported what their tests needed as unbound, each with the adapter's
+  own reason. The run is asked to look for each again and bind it where the application offers it,
+  or leave it unbound and say what it did to look. Beside the filed entries, the run is handed the
+  unbound rows on `tests/results/<t>/latest.json` nothing has filed yet, found under the adapter it
+  is binding (`src/spec/unbound.mjs`). A row whose binding has been sent as often as
+  `policy.loops.rebind` allows is not handed at all: it waits on a ruler
+  (`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`).
+
+`calibrate` closes both kinds once it has run against an adapter that changed since.
 
 The run also compares the target's `tests/adapters/<t>/bindings.yaml`, where one exists, with
 `spec/contract/surface.yaml`, using the same comparison as the bindings post-check below

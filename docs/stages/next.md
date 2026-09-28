@@ -19,10 +19,10 @@ whichever branch is checked out and whatever is uncommitted.
 | `.sdlc/config.yaml` | the profile's stages, the domains in order, the oracle target, the gate seats, `policy.next.order` |
 | `.sdlc/gates/*.yaml` | which proposals have been ruled, and which lines of work are approved |
 | every `proposal/*` and `returned/*` branch, with its proposal page and gate file | open proposals, escalations and returns, and which proposal in a line of work is the newest |
-| the owed-work lists (`src/spec/owed.mjs`) | open conditions, requests, redos, rebinds, recoveries and any other kind |
+| the owed-work lists (`src/spec/owed.mjs`) | open conditions, requests, redos, rebinds, recoveries and any other kind; every rebind entry, closed ones too, counts a binding's sends |
 | `spec/criteria-index.json`, `spec/domains/<d>.md` | whether a domain is ratified, and each criterion's current version |
 | `tests/acceptance/<d>/*.spec.ts` headers | stale tests: a header version below the index's |
-| `tests/results/<t>/latest.json`, `applied.yaml`, `tests/adapters/<t>` | whether calibration is clean, and whether an adapter has changed since a rebind was filed |
+| `tests/results/<t>/latest.json`, `applied.yaml`, `tests/adapters/<t>` | whether calibration is clean, the unbound rows, and whether an adapter has changed since a rebind was filed or an unbound row was found |
 | `spec/contract/surface.yaml`, `tests/adapters/<t>/bindings.yaml` | stale adapters: members the contract declares that a target's bindings do not name, or names they carry that it no longer declares |
 | `plan/tasks.md` | the slices, in build order |
 
@@ -35,7 +35,7 @@ first when more than one is ready is `policy.next.order` (`docs/config.md`), `pr
 | Kind | What is ready | Order within the kind |
 |---|---|---|
 | `proposals` | an open proposal whose holder is an agent (`sdlc rule <name> --by agent:<persona>`); an escalation to a role an agent plays, raised by someone else (`--by agent:<target>`); a build proposal with no verify result for the application it carries (`sdlc run verify --slice <n>`) | oldest proposal branch first |
-| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again), unless it is held (below); open requests (`--revise` for a stage that has it, otherwise the stage run again: `sdlc run contract`); redo entries and stale tests (`derive-tests --domain <d> --stale`, not offered while that domain's test proposal is returned, since its `--revise` takes up the entries its own line's rulings filed); rebind entries (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed); stale adapters (`bind-adapter --target <t>`, one run with that target's rebinds); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target (the oracle's first), then slice |
+| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again), unless it is held (below); open requests (`--revise` for a stage that has it, otherwise the stage run again: `sdlc run contract`); redo entries and stale tests (`derive-tests --domain <d> --stale`, not offered while that domain's test proposal is returned, since its `--revise` takes up the entries its own line's rulings filed); rebind entries and unbound rows (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed or the row was found); stale adapters (`bind-adapter --target <t>`, one run with that target's rebinds); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target (the oracle's first), then slice |
 | `sequence` | the next stage the phases call for | the first phase whose exit criterion is not met; within it, the sequence's order |
 
 A condition is owed and listed, and is never a reason to start a run
@@ -62,6 +62,18 @@ written for it yet (`docs/operating-model.md` §7): `next` reads the entries in 
 and, beside them, an item for each record nothing accounts for, owed by the stage the record names
 or by `contract`. The `owed:` line counts them by owing stage (`69 missing-test (contract)`).
 
+**Unbound rows.** A calibration row the adapter reported unbound is owed to `bind-adapter` for
+its target, whether or not an entry has been written for it yet: `next` reads the rebind entries
+and, beside them, an item for each open unbound row nothing accounts for, and counts both on the
+`owed:` line as `rebind (bind-adapter)`. A row found under an adapter other than the target's
+current one is offered to `calibrate --target <t>` to be looked at again. A row whose binding has
+been sent to `bind-adapter` as often as `policy.loops.rebind` allows, counting the reviewer's
+rebind entries for the same criterion, is not offered again: it is listed under `waiting on a
+person` as waiting on a ruler, one line per target naming the criteria, since no calibration verb
+closes an unbound row. The sequence does not offer `calibrate` for a target whose only open rows
+are such rows, since running the suite again cannot close them
+(`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`).
+
 **Stale adapters.** A target's adapter is stale when its `bindings.yaml` on `main` disagrees with
 the surface on `main` by name, the comparison the bind-adapter post-check makes. The oracle's is
 offered as owed work at once; any other target's is offered once the phases before Build are
@@ -86,7 +98,7 @@ replaces `contract-v2`), since what it asked has been asked again.
 | 2 Tests | `contract` | a `contract-v<n>` proposal is approved |
 | | `bind-adapter --target <oracle>` | the `bind-adapter-<oracle>` line of work has an approval |
 | | `derive-tests --domain <d>` | the `derive-tests-<d>` line of work has an approval |
-| | `calibrate --target <oracle>` | every row of `tests/results/<oracle>/latest.json` is `pass`, `not-testable` or `attested`, or carries a ruling |
+| | `calibrate --target <oracle>` | every row of `tests/results/<oracle>/latest.json` is `pass`, `not-testable` or `attested`, or carries a ruling; an `unbound` row is neither, and stays open until a binding reaches its test or a ruling closes it |
 | 3 Design | `design --domain <d>` | the `design-<d>` line of work has an approval |
 | 4 Build | `plan` | the `plan` line of work has an approval |
 | | `build --slice <n>` | the `build-slice-<n>` line of work has an approval at G3 |
@@ -104,8 +116,10 @@ profile runs `calibrate` and the config names `oracle.target`, and `ratify` only
 **Waiting on a person.** Never offered as something to run: a proposal at a seat a person holds;
 an escalation to a role a person holds; an escalation that reached the role that raised it, or
 that carries `stalled` (`docs/decisions/0039-an-escalation-that-reaches-nobody.md`); a returned
-proposal no stage produces, which whoever opened it proposes again. Each is listed with who it
-waits on and the command that person types.
+proposal no stage produces, which whoever opened it proposes again; missing tests no run can
+answer, and unbound rows whose binding has been sent as often as `policy.loops.rebind` allows,
+each waiting on a ruler. Each is listed with who it waits on and the command that person types, or
+for unbound rows what is needed.
 
 ## Outputs
 
@@ -137,7 +151,8 @@ domain), `staleAdapters` (by target: the `missing` and `extra` names, whether it
 and what it `waits` for when it is not), `phase`, `complete`, `blocked` and `order`.
 
 Every `sdlc run` and every `sdlc rule` ends with the short form: the `next:` and `why:` lines, and
-a count of what else is ready, held and waiting.
+a count of what else is ready, held and waiting — proposals waiting on a person, and missing tests
+and unbound bindings waiting on a ruler, each counted apart.
 
 ## Running something else
 
