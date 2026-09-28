@@ -15,7 +15,7 @@ import { checkSandboxPassword, checkTargetOption, escapeRe, followUpState, skill
 import { parseDomainFile, parseAll, applyCalibrateRulings, calibrateConditionIds, serialiseDomainFile, writeIndex, renderSpecIndex, compareIds, CALIBRATE_GRAMMAR, TRIAGE_GRAMMAR, parseTriageConditions } from "../spec/criteria.mjs";
 import { close as closeOwed, open as openOwed } from "../spec/owed.mjs";
 import { syncMissingTests } from "../spec/missing-tests.mjs";
-import { legacyAdapter, syncUnbound } from "../spec/unbound.mjs";
+import { PERSONA_UNAVAILABLE, UNBOUND, legacyAdapter, personaUnavailable, syncUnbound, unavailableOn, unboundSpent } from "../spec/unbound.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp, instancesOf } from "../commands/oracle.mjs";
@@ -274,10 +274,18 @@ function writeApplied(projectDir, target, applied, rulings) {
 // Every approved triage ruling for this target not applied before. The reviewer sorts a
 // calibration's failures before any reaches the product owner: `adapter-wrong` puts the
 // criterion on the rebind list and takes its row out of both queues, and `product-question`
-// marks the row as sorted so the product owner is asked about it. Neither touches the spec,
-// because both say the spec is not where the trouble is — or not yet known to be.
-export function applyTriageGates(projectDir, target) {
-  const result = { changed: [], applied: [], gateNames: [] };
+// marks the row as sorted so the product owner is asked about it. None of the three verbs
+// touches the spec, because each says the spec is not where the trouble is — or not yet known
+// to be.
+//
+// `oracle-cannot` closes an unbound row on the oracle's target: the oracle cannot be driven into,
+// or observed in, the state the test needs (`docs/decisions/0068`). It is recorded with the
+// reviewer's reason and the criterion's version, so it stands whatever the adapter becomes and
+// lapses when the criterion moves on, and any open rebind entry for the row is withdrawn. On a
+// row that is not unbound, or on another target, it is reported and not applied, and the row is
+// sorted again.
+export function applyTriageGates(projectDir, target, config) {
+  const result = { changed: [], applied: [], gateNames: [], refused: [] };
   const dir = join(projectDir, ".sdlc", "gates");
   if (!existsSync(dir)) return result;
   const re = new RegExp(`^calibrate-triage-${escapeRe(target)}-(\\d+)\\.yaml$`);
@@ -288,7 +296,10 @@ export function applyTriageGates(projectDir, target) {
   const state = readCalibrateApplied(projectDir, target);
   const { byId } = calibrateIndex(projectDir);
   const tree = adapterTree(projectDir, target);
+  const onFile = new Map((readLatestResults(projectDir, target).results?.rows ?? []).filter((r) => r?.id).map((r) => [r.id, r]));
+  const oracle = target === config?.oracle?.target;
   const rebind = [];
+  const cannot = [];
   for (const name of names) {
     if (state.applied.includes(name)) continue;
     let gate;
@@ -297,7 +308,19 @@ export function applyTriageGates(projectDir, target) {
     for (const c of parseTriageConditions((gate.conditions ?? []).map(String))) {
       const version = byId.get(c.id)?.version;
       if (version === undefined) continue;
-      result.applied.push({ id: c.id, version, verb: c.verb, gate: name, ...(c.verb === "adapter-wrong" ? { adapter: tree } : {}) });
+      if (c.verb === "oracle-cannot") {
+        const row = onFile.get(c.id);
+        const why = !oracle ? `${target} is not the oracle's target`
+          : row?.result !== UNBOUND ? `the row is ${row?.result ?? "not on file"}, not unbound`
+          : null;
+        if (why) { result.refused.push(`${name}: oracle-cannot ${c.id} not applied: ${why}`); continue; }
+        cannot.push({ id: c.id, why: c.text, gate: name });
+      }
+      result.applied.push({
+        id: c.id, version, verb: c.verb, gate: name,
+        ...(c.verb === "adapter-wrong" ? { adapter: tree } : {}),
+        ...(c.verb === "oracle-cannot" ? { why: redactLocalPaths(c.text, projectDir) } : {}),
+      });
       if (c.verb === "adapter-wrong") rebind.push({ id: c.id, target, why: c.text });
     }
     result.gateNames.push(name);
@@ -307,6 +330,12 @@ export function applyTriageGates(projectDir, target) {
   if (rel) result.changed.push(rel);
   const rebindPath = openOwed(projectDir, "rebind", rebind).path;
   if (rebindPath) result.changed.push(rebindPath);
+  for (const c of cannot) {
+    const closed = closeOwed(projectDir, "rebind", (e) => e.target === target && e.id === c.id, {
+      outcome: "withdrawn", why: redactLocalPaths(`the reviewer ruled oracle-cannot at ${c.gate}: ${c.why}`, projectDir), by: "runner:calibrate",
+    });
+    if (closed && !result.changed.includes(closed)) result.changed.push(closed);
+  }
   return result;
 }
 
@@ -366,6 +395,18 @@ function calibrateRuledVerb(rulings, id, version) {
   // on, and until they have, the row is still an open question.
   const matches = rulings.filter((r) => r?.id === id && r?.version === version && r?.verb !== "product-question");
   return matches.length ? matches[matches.length - 1].verb : null;
+}
+
+// The newest approved contract (`contract-v<n>`), whose approval established the personas the
+// working tree's contract marks unavailable, or `null` where none is on file.
+function approvedContract(projectDir) {
+  const dir = join(projectDir, ".sdlc", "gates");
+  if (!existsSync(dir)) return null;
+  const approved = readdirSync(dir)
+    .map((f) => /^contract-v(\d+)\.yaml$/.exec(f)).filter(Boolean)
+    .filter((m) => { try { return parseYaml(readText(join(dir, m[0])))?.verdict === "approve"; } catch { return false; } })
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
+  return approved.length ? `contract-v${approved[0][1]}` : null;
 }
 
 // Whether the reviewer has sorted this row and passed it on, on the same version-bound
@@ -491,10 +532,23 @@ function checkCalibrateFailsAnswerable(projectDir, target) {
 
 // Every failing row nobody has ruled on, in id order — what `followUp` asks about and
 // what `execute` names in its own summary, read from the same results file so the two can
-// never disagree about which criteria are still open questions.
+// never disagree about which criteria are still open questions. An unbound row the reviewer
+// has passed on to the product owner is one of them.
 function calibrateUnruledFailures(results) {
   return (results?.rows ?? [])
-    .filter((r) => r?.result === "fail" && r.id && !r.ruled)
+    .filter((r) => r?.id && !r.ruled && (r.result === "fail" || (r.result === UNBOUND && r.triage === "product-question")))
+    .sort((a, b) => compareIds(a.id, b.id));
+}
+
+// The unbound rows on the oracle's target that `bind-adapter` has had its sends for and nobody
+// has sorted, in id order, each with how often it was sent: the reviewer is asked about them
+// with the failures (`docs/decisions/0068`). Any other target's wait on a ruler.
+function calibrateSpentUnbound(projectDir, config, target, results) {
+  if (target !== config?.oracle?.target) return [];
+  const rows = results?.rows ?? [];
+  const spent = new Map(unboundSpent(projectDir, target, config, rows).map((s) => [s.id, s]));
+  return rows.filter((r) => spent.has(r.id) && r.triage !== "product-question")
+    .map((r) => ({ ...r, sends: spent.get(r.id).sends }))
     .sort((a, b) => compareIds(a.id, b.id));
 }
 
@@ -518,19 +572,43 @@ const CALIBRATE_PAGE_CAP = 40;
 
 // The reviewer's page: the same evidence the product owner's carries, framed as the one
 // technical question that has to be settled before theirs can be asked. Where the adapter
-// lives is named, because the adapter is where the answer is visible.
-function triagePage(target, baseUrl, rows, byId) {
+// lives is named, because the adapter is where the answer is visible. Unbound rows
+// `bind-adapter` has had its sends for come after the failures, with the adapter's own reasons
+// and when `oracle-cannot` is the answer.
+function triagePage(target, baseUrl, failing, unbound, byId) {
+  const rows = [...failing, ...unbound];
   const shown = rows.slice(0, CALIBRATE_PAGE_CAP);
-  const lines = [
-    `${rows.length} criterion(s) failed against the **${target}** target at ${baseUrl}, and nobody has sorted them yet.`,
+  const shownFailing = shown.filter((r) => r.result !== UNBOUND);
+  const shownUnbound = shown.filter((r) => r.result === UNBOUND);
+  const lines = [];
+  if (failing.length) lines.push(`${failing.length} criterion(s) failed against the **${target}** target at ${baseUrl}, and nobody has sorted them yet.`);
+  if (unbound.length) lines.push(`${unbound.length} criterion(s) are unbound on the **${target}** target after bind-adapter was sent them as often as \`policy.loops.rebind\` allows.`);
+  lines.push(
     `Before any reaches the product owner, say which of them this project's own adapter caused. The adapter is`,
-    `under \`tests/adapters/${target}/\`; read each failure against it and against the test.`,
+    `under \`tests/adapters/${target}/\`; read each one against it and against the test.`,
     "",
-  ];
+  );
   if (shown.length < rows.length) {
     lines.push(`The ${shown.length} below are the ones to sort now; the remaining ${rows.length - shown.length} come back on the next run.`, "");
   }
-  lines.push(...failureSections(shown, byId));
+  if (shownFailing.length) lines.push(...failureSections(shownFailing, byId));
+  if (shownUnbound.length) {
+    const sends = [...new Set(shownUnbound.map((r) => r.sends))].sort((a, b) => a - b).join(" or ");
+    lines.push(
+      "## Unbound after binding",
+      "",
+      `Every failing test of each criterion below ended in the adapter's own \`unbound:\` error, quoted as it said it, and`,
+      `bind-adapter was sent ${shownUnbound.length === 1 ? "it" : "them"} ${sends} times without binding it. Answer \`adapter-wrong\` where the`,
+      "application does offer what the test needs — under another label, behind a step, as another persona —",
+      "and the binding run goes back for it. Answer `oracle-cannot` only where the oracle genuinely cannot be",
+      "driven into, or observed in, the state the test needs without changing its code: behind an external",
+      "identity provider, reachable only through a link the application emails, enforced only by a",
+      "browser-native dialog. It is never a way to skip binding work. Answer `product-question` where the",
+      "criterion itself looks suspect.",
+      "",
+      ...failureSections(shownUnbound, byId),
+    );
+  }
   lines.push("## Triage conditions", "", TRIAGE_GRAMMAR, "");
   return lines.join("\n");
 }
@@ -645,14 +723,17 @@ export const calibrate = {
 
     // 2. Every ruling that came back since the last run, applied to the spec.
     const rulings = applyCalibrateGates(projectDir, target, today);
-    const triage = applyTriageGates(projectDir, target);
+    const triage = applyTriageGates(projectDir, target, ctx.config);
     // Unbound rows on file found under an adapter that has since changed are counted as sent
     // under it, and every unbound entry about another adapter lapses (`src/spec/unbound.mjs`).
     const adapter = adapterTree(projectDir, target);
     const unboundLimit = owedLoopLimit(ctx.config, "rebind");
     const unboundFallback = legacyAdapter(projectDir, target);
+    // A persona the approved contract marks unavailable on this target is a fact about the
+    // target: a row whose tests stopped at signing in as one is closed here, and never owed.
+    const unavailable = unavailableOn(projectDir, target, ctx.config);
     const lapsed = syncUnbound(projectDir, target, {
-      rows: readLatestResults(projectDir, target).results?.rows ?? [], adapter, fallback: unboundFallback, limit: unboundLimit, settle: false,
+      rows: readLatestResults(projectDir, target).results?.rows ?? [], adapter, fallback: unboundFallback, limit: unboundLimit, unavailable, settle: false,
     });
     const rulingPaths = [...new Set([...rulings.changed, ...triage.changed, ...expireAdapterVerdicts(projectDir, target), ...(lapsed.path ? [lapsed.path] : [])])];
 
@@ -703,9 +784,15 @@ export const calibrate = {
     const applied = readCalibrateApplied(projectDir, target);
     // Rows read back from a file already carry the marks of the run that wrote them, so they
     // are cleared first and worked out again from the rulings as they stand now.
-    const ruledRows = rows.map(({ ruled: _r, triage: _t, ...row }) => {
+    // A ruling a person or persona made comes first; a row nobody ruled on that needs a persona
+    // the contract marks unavailable is closed as `persona-unavailable`, citing the contract
+    // approval that marks it, and worked out afresh on every run.
+    const contract = approvedContract(projectDir);
+    const ruledRows = rows.map(({ ruled: _r, triage: _t, unavailable: _u, ...row }) => {
       const version = row.id ? byId.get(row.id)?.version : undefined;
       const verb = row.id ? calibrateRuledVerb(applied.rulings, row.id, version) : null;
+      const personas = row.id && !verb ? personaUnavailable(row, unavailable) : null;
+      if (personas) return { ...row, ruled: PERSONA_UNAVAILABLE, unavailable: { personas, contract } };
       const sorted = row.id && !verb && calibrateTriagedForProduct(applied.rulings, row.id, version);
       return { ...row, ...(verb ? { ruled: verb } : {}), ...(sorted ? { triage: "product-question" } : {}) };
     });
@@ -732,7 +819,7 @@ export const calibrate = {
 
     // An open unbound row is owed to bind-adapter for this target, and an entry whose row has
     // settled is closed (`src/spec/unbound.mjs`).
-    const unbound = syncUnbound(projectDir, target, { rows: ruledRows, adapter, fallback: unboundFallback, limit: unboundLimit });
+    const unbound = syncUnbound(projectDir, target, { rows: ruledRows, adapter, fallback: unboundFallback, limit: unboundLimit, unavailable });
     if (unbound.path && !changed.includes(unbound.path)) changed.push(unbound.path);
 
     // 5. What happened, in the order a person reads it: how the suite came out, which
@@ -743,9 +830,15 @@ export const calibrate = {
     const lines = [`calibrate ${target}: ${ruledRows.length} row(s) — ${summary || "no rows"}.`];
     const unruled = calibrateUnruledFailures(results);
     if (unruled.length) lines.push(`Failing with no ruling: ${unruled.map((r) => r.id).join(", ")}`);
-    const ruled = ruledRows.filter((r) => r.ruled);
+    const ruled = ruledRows.filter((r) => r.ruled && r.ruled !== PERSONA_UNAVAILABLE);
     if (ruled.length) lines.push(`Ruled: ${ruled.map((r) => `${r.id} ${r.ruled}`).join(", ")}`);
+    const closedByContract = ruledRows.filter((r) => r.ruled === PERSONA_UNAVAILABLE);
+    if (closedByContract.length) {
+      lines.push(`Closed as persona-unavailable (${contract ?? "spec/contract/personas.yaml"}): ${closedByContract.map((r) => r.id).join(", ")} — each needs a persona the contract marks unavailable on ${target}`);
+    }
     if (unbound.opened.length) lines.push(`Unbound, owed to bind-adapter --target ${target}: ${unbound.opened.join(", ")}`);
+    const spent = calibrateSpentUnbound(projectDir, ctx.config, target, results);
+    if (spent.length) lines.push(`Unbound after bind-adapter's sends, for the reviewer's triage: ${spent.map((r) => r.id).join(", ")}`);
     if (rulings.applied.length) {
       lines.push(`Applied ${rulings.applied.length} condition(s) from ${rulings.gateNames.join(", ") || "an earlier ruling"}:`);
       for (const a of rulings.applied) lines.push(`- ${a.verb} ${a.id}`);
@@ -758,8 +851,12 @@ export const calibrate = {
     // opens nothing because the previous question is still unanswered has to say so, or
     // it reads as a run that decided the failures did not matter.
     if (triage.applied.length) lines.push(`Sorted ${triage.applied.length} failure(s) from ${triage.gateNames.join(", ")}: ${triage.applied.map((a) => `${a.id} ${a.verb}`).join(", ")}`);
+    if (triage.refused.length) {
+      lines.push("Triage conditions not applied (reported, not acted on):");
+      for (const u of triage.refused) lines.push(`- ${u}`);
+    }
     const open = followUpState(projectDir, `calibrate-triage-${target}`).open ?? followUpState(projectDir, `calibrate-${target}`).open;
-    if (open && unruled.length) lines.push(`proposal/${open} is still open, so no second question is asked; rule it and run calibrate --skip-suite.`);
+    if (open && (unruled.length || spent.length)) lines.push(`proposal/${open} is still open, so no second question is asked; rule it and run calibrate --skip-suite.`);
 
     return { text: lines.join("\n"), changed };
   },
@@ -797,25 +894,33 @@ export const calibrate = {
     const { results } = readLatestResults(projectDir, target);
     if (!results) return null;
     const unruled = calibrateUnruledFailures(results);
-    if (unruled.length === 0) return null;
+    const spent = calibrateSpentUnbound(projectDir, ctx.config, target, results);
+    if (unruled.length === 0 && spent.length === 0) return null;
     const { byId } = calibrateIndex(projectDir);
 
     // Sorted first. A failure nobody has sorted may be the adapter's, and the product owner
     // is never the one asked that; while any are unsorted, or a sorting is still waiting on
-    // its ruling, nothing goes to the product owner at all.
+    // its ruling, nothing goes to the product owner at all. An unbound row bind-adapter has had
+    // its sends for is sorted with them.
     const unsorted = unruled.filter((r) => r.triage !== "product-question");
     const triageState = followUpState(projectDir, `calibrate-triage-${target}`);
     if (triageState.open) return null;
-    if (unsorted.length) {
+    if (unsorted.length || spent.length) {
       const name = `calibrate-triage-${target}-${triageState.highest + 1}`;
+      const asked = [...unsorted, ...spent].slice(0, CALIBRATE_PAGE_CAP).map((r) => r.id);
+      const question = [
+        unsorted.length ? `${unsorted.length} criterion(s) fail against ${target}` : null,
+        spent.length ? `${spent.length} criterion(s) are still unbound after bind-adapter's sends` : null,
+      ].filter(Boolean).join(", and ");
       const { branch } = propose(projectDir, name, {
         gate: "G3",
-        question: `${unsorted.length} criterion(s) fail against ${target}: which of them did this project's own adapter cause?`,
-        recommendation: `Sort ${unsorted.slice(0, CALIBRATE_PAGE_CAP).map((r) => r.id).join(", ")} with a triage condition each, so the adapter's failures are fixed there and only product questions reach the product owner.`,
-        page: triagePage(target, results.base_url ?? "", unsorted, byId),
+        question: `${question}: which of them did this project's own adapter cause${spent.length ? ", and which can the oracle not reach" : ""}?`,
+        recommendation: `Sort ${asked.join(", ")} with a triage condition each, so the adapter's failures are fixed there and only product questions reach the product owner.`,
+        page: triagePage(target, results.base_url ?? "", unsorted, spent, byId),
       });
-      return { name, gate: "G3", branch, failing: unsorted.length };
+      return { name, gate: "G3", branch, failing: unsorted.length + spent.length };
     }
+    if (unruled.length === 0) return null;
 
     const { open, highest } = followUpState(projectDir, `calibrate-${target}`);
     if (open) return null;

@@ -1337,3 +1337,201 @@ test("a row's error is redacted in the written result file, the same as the halt
     restoreEgress(prevEgress);
   }
 });
+
+// ── unbound rows that bind-adapter cannot close (`docs/decisions/0068`) ──────────────────
+
+const UNREACHABLE = 'Error: unbound: application.status — the status is shown only behind a link the application emails';
+const unboundR12 = (error = UNREACHABLE) => ({ ...FAILING_ROW, result: "unbound", tests: [{ title: "status", status: "failed", error }] });
+
+// Two sends of R-1.2's binding already made and closed, so a calibration finding it unbound
+// again finds bind-adapter's attempts spent (`policy.loops.rebind`, two by default).
+function spendRebinds(dir) {
+  const sent = (adapter) => ({ id: "R-1.2", target: "old", why: "unbound: application.status — gone", found: "unbound", adapter,
+    closed: { outcome: "met", why: "tests/adapters/old has changed since this was found", by: "runner:calibrate", at: "2026-01-02T00:00:00.000Z" } });
+  writeFileSync(join(dir, "tests/adapters/rebind.yaml"), stringifyYaml({ rebind: [sent("a1"), sent("a2")] }));
+  git(["add", "-A"], dir);
+  git([...COMMIT, "two binding runs have looked for R-1.2 (test)"], dir);
+}
+
+// Rules the open triage proposal as the reviewer persona with exactly these conditions, then
+// applies the ruling with `--skip-suite`. Leaves the repository on `main`.
+async function triageAs(dir, name, conditions) {
+  const mock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-triage-verbs-"));
+  writeFileSync(join(mock, "rule.json"), JSON.stringify({
+    text: '```json\n' + JSON.stringify({ verdict: "approve", rationale: "sorted", conditions }) + '\n```',
+  }));
+  const prevMockDir = process.env.SDLC_MOCK_DIR;
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = mock;
+  try {
+    const ruled = await ruleByAgent(dir, name, { persona: "reviewer" });
+    if (ruled.verdict !== "approve") throw new Error(`triage was not approved: ${JSON.stringify(ruled)}`);
+  } finally {
+    delete process.env.SDLC_EXECUTOR;
+    if (prevMockDir === undefined) delete process.env.SDLC_MOCK_DIR;
+    else process.env.SDLC_MOCK_DIR = prevMockDir;
+  }
+  git(["checkout", "-q", "main"], dir);
+  const applied = await runStage(dir, "calibrate", { target: "old", skipSuite: true });
+  if (!applied.ok) throw new Error(`calibrate --skip-suite failed: ${JSON.stringify(applied.messages)}`);
+  return applied;
+}
+
+const rebindList = (dir) => (existsSync(join(dir, "tests/adapters/rebind.yaml"))
+  ? parseYaml(readFileSync(join(dir, "tests/adapters/rebind.yaml"), "utf8")).rebind : []);
+
+test("an unbound row bind-adapter has had its sends for goes to the reviewer's triage, and oracle-cannot closes it without touching the criterion", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-oracle-cannot-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  spendRebinds(dir);
+  calibrateEnv(mockRunnerDir("unreachable", [PASSING_ROW, unboundR12()]));
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    assert.equal(first.proposal?.name, "calibrate-triage-old-1", "the reviewer is asked about it");
+    assert.equal(first.proposal.gate, "G3");
+    assert.deepEqual(rebindList(dir).filter((e) => !e.closed), [], "not sent to bind-adapter a third time");
+    const page = git(["show", `${first.proposal.branch}:.sdlc/proposals/calibrate-triage-old-1.md`], dir);
+    assert.match(page, /R-1\.2/);
+    assert.match(page, /unbound: application\.status — the status is shown only behind a link the application emails/, "the adapter's own reason");
+    assert.match(page, /bind-adapter was sent (it|them) 2 times/);
+    assert.match(page, /oracle-cannot <ID>: <why>/);
+    assert.match(page, /never a way to skip binding work/);
+
+    const domainBefore = readFileSync(join(dir, "spec/domains/applications.md"), "utf8");
+    const applied = await triageAs(dir, "calibrate-triage-old-1", ["oracle-cannot R-1.2: the status is reached only through a link the application emails to an address outside the test"]);
+    assert.ok(!applied.proposal, "nothing is put to the product owner");
+    const row = rowFor(latest(dir), "R-1.2");
+    assert.equal(row.result, "unbound");
+    assert.equal(row.ruled, "oracle-cannot");
+    const rulings = parseYaml(readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8")).rulings;
+    const ruling = rulings.find((x) => x.verb === "oracle-cannot");
+    assert.deepEqual([ruling.id, ruling.version, ruling.gate], ["R-1.2", 1, "calibrate-triage-old-1"]);
+    assert.match(ruling.why, /emails to an address outside the test/);
+    assert.equal(readFileSync(join(dir, "spec/domains/applications.md"), "utf8"), domainBefore, "no criterion changes");
+
+    // A ruling about what the oracle can reach is not about the adapter, so a new adapter
+    // leaves it standing.
+    const adapterPath = join(dir, "tests/adapters/old/index.ts");
+    writeFileSync(adapterPath, `${readFileSync(adapterPath, "utf8")}\n// rebound\n`);
+    git(["add", "-A"], dir);
+    git([...COMMIT, "rebind the old adapter (test)"], dir);
+    const again = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(again.ok, true, JSON.stringify(again.messages));
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, "oracle-cannot");
+    assert.ok(!again.proposal);
+    assert.deepEqual(rebindList(dir).filter((e) => !e.closed), [], "and it is not sent to bind-adapter under the new adapter");
+
+    // A criterion that moves on to a version nobody has ruled on is asked about afresh.
+    const index = JSON.parse(readFileSync(join(dir, "spec/criteria-index.json"), "utf8"));
+    for (const c of index.criteria) if (c.id === "R-1.2") c.version = 2;
+    writeFileSync(join(dir, "spec/criteria-index.json"), `${JSON.stringify(index, null, 2)}\n`);
+    git(["add", "-A"], dir);
+    git([...COMMIT, "R-1.2 moves on (test)"], dir);
+    await runStage(dir, "calibrate", { target: "old", skipSuite: true });
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, undefined, "the ruling lapsed with the version it was about");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("adapter-wrong on a spent unbound row sends it to bind-adapter again past the limit", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-unbound-adapter-wrong-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  spendRebinds(dir);
+  calibrateEnv(mockRunnerDir("unreachable", [PASSING_ROW, unboundR12()]));
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.proposal?.name, "calibrate-triage-old-1");
+    const applied = await triageAs(dir, "calibrate-triage-old-1", ["adapter-wrong R-1.2: the status field is on the application's own summary page, one step past the list"]);
+    assert.ok(!applied.proposal);
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, "adapter-wrong");
+    const open = rebindList(dir).filter((e) => !e.closed);
+    assert.deepEqual(open.map((e) => [e.id, e.target, e.found]), [["R-1.2", "old", undefined]], "the reviewer's finding, filed past the limit");
+    assert.match(open[0].why, /one step past the list/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("product-question on a spent unbound row puts it to the product owner", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-unbound-product-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  spendRebinds(dir);
+  calibrateEnv(mockRunnerDir("unreachable", [PASSING_ROW, unboundR12()]));
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.proposal?.name, "calibrate-triage-old-1");
+    const applied = await triageAs(dir, "calibrate-triage-old-1", ["product-question R-1.2"]);
+    assert.equal(applied.proposal?.name, "calibrate-old-1");
+    assert.equal(applied.proposal.gate, "G1");
+    const page = git(["show", `${applied.proposal.branch}:.sdlc/proposals/calibrate-old-1.md`], dir);
+    assert.match(page, /R-1\.2/);
+    assert.match(page, /the status is shown only behind a link/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("oracle-cannot is applied only to an unbound row: on a failing row it is reported and the row is sorted again", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-oracle-cannot-fail-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.proposal?.name, "calibrate-triage-old-1");
+    const applied = await triageAs(dir, "calibrate-triage-old-1", ["oracle-cannot R-1.2: the oracle cannot reach it"]);
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, undefined);
+    assert.match(lastCalibrateText(dir), /oracle-cannot R-1\.2 not applied: .*fail, not unbound/);
+    assert.equal(applied.proposal?.name, "calibrate-triage-old-2", "the failure is sorted again");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+// A persona the approved contract marks unavailable on the target is a fact about the target,
+// so a row whose tests stopped at signing in as one is closed by calibration itself.
+function markPersona(dir, signIn) {
+  const p = join(dir, "spec/contract/personas.yaml");
+  const doc = parseYaml(readFileSync(p, "utf8"));
+  doc.personas = doc.personas.filter((x) => x.id !== "second-applicant");
+  doc.personas.push({ id: "second-applicant", can: ["submit a permit application"], sign_in: { "sandbox-idp": signIn } });
+  writeFileSync(p, stringifyYaml(doc));
+  git(["add", "-A"], dir);
+  git([...COMMIT, "contract: second-applicant (test)"], dir);
+}
+
+test("an unbound row needing a persona the approved contract marks unavailable is closed as persona-unavailable, and re-opens when the persona is offered", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-persona-unavailable-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  markPersona(dir, { unavailable: "the target has one applicant account" });
+  calibrateEnv(mockRunnerDir("persona", [PASSING_ROW, unboundR12("Error: unbound: signIn.second-applicant — the target has one applicant account")]));
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.ok(!r.proposal, "asked of nobody");
+    const row = rowFor(latest(dir), "R-1.2");
+    assert.equal(row.result, "unbound");
+    assert.equal(row.ruled, "persona-unavailable");
+    assert.deepEqual(row.unavailable, { personas: ["second-applicant"], contract: "contract-v1" });
+    assert.deepEqual(rebindList(dir).filter((e) => !e.closed), [], "sent to no binding run");
+    assert.match(lastCalibrateText(dir), /Closed as persona-unavailable \(contract-v1\): R-1\.2/);
+    assert.ok(!existsSync(join(dir, "tests/results/old/applied.yaml")) || !readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8").includes("persona-unavailable"),
+      "worked out from the contract on every run, not recorded as a ruling");
+
+    markPersona(dir, { username: "applicant-2" });
+    const reopened = await runStage(dir, "calibrate", { target: "old", skipSuite: true });
+    assert.equal(reopened.ok, true, JSON.stringify(reopened.messages));
+    const again = rowFor(latest(dir), "R-1.2");
+    assert.equal(again.ruled, undefined);
+    assert.equal(again.unavailable, undefined);
+    assert.deepEqual(rebindList(dir).filter((e) => !e.closed).map((e) => [e.id, e.found]), [["R-1.2", "unbound"]], "owed to bind-adapter now the persona exists");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});

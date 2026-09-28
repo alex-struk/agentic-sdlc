@@ -457,15 +457,24 @@ export const CALIBRATE_GRAMMAR = [
 // persona that already rules on adapters, and only the ones it passes on are put to the
 // product owner at all (`docs/decisions/0008-adapter-wrong.md`).
 export const TRIAGE_GRAMMAR = [
-  "One condition per line, one for every failing criterion the page lists, in exactly one of these forms:",
+  "One condition per line, one for every criterion the page lists, in exactly one of these forms:",
   "",
   "- `adapter-wrong <ID>: <why>` — the criterion and the test are both fine, and this target's adapter",
   "  is what failed: it read the wrong thing off the page, reported a control missing that the page",
   "  does render, or answered empty where it never reached the page. `<why>` names what the adapter",
   "  did wrong, specifically enough for the next binding run to fix it. The criterion is not touched.",
+  "  On an unbound row it sends the binding back to `bind-adapter` however often it has been sent.",
   "- `product-question <ID>` — nothing in the evidence points at the adapter. The failure goes to the",
   "  product owner, who decides whether the application, the criterion or the test is wrong. No text",
-  "  after the ID.",
+  "  after the ID. On an unbound row, use it when the criterion itself looks suspect.",
+  "- `oracle-cannot <ID>: <why>` — only for a row listed as unbound, on the oracle's target: the",
+  "  oracle genuinely cannot be driven into, or observed in, the state the test needs without",
+  "  changing its code — the state sits behind an external identity provider, is reachable only",
+  "  through a link the application emails, or is enforced only by a browser-native dialog.",
+  "  `<why>` names that state and why the oracle cannot reach it. It closes the row, changes no",
+  "  criterion, and stands until the criterion's version changes. It is never a way to skip binding",
+  "  work: where the application offers the control under another label, behind a step or as",
+  "  another persona, the answer is `adapter-wrong`.",
   "",
   "The ID is the criterion's own id exactly as `spec/criteria-index.json` spells it. A condition may",
   "not span more than one line. When the evidence is genuinely unclear, it is a `product-question`:",
@@ -546,7 +555,7 @@ export function malformedOverreachConditions(lines) {
 //
 // A third family, `calibrate-triage-<target>-<n>`, is checked first because its name also
 // starts `calibrate-`: the reviewer's sorting of a calibration's failures, read in its own
-// two-verb grammar at G3, before any failure reaches the product owner.
+// three-verb grammar at G3, before any failure reaches the product owner.
 export function conditionGrammarFor(name) {
   if (name.startsWith("calibrate-triage-"))
     return { label: "triage", text: TRIAGE_GRAMMAR, unparsed: unparsedTriageConditions, checked: true };
@@ -827,13 +836,17 @@ export function splitConditionsByAddressee(lines) {
   return { mine, elsewhere, accounted };
 }
 
-// The reviewer's two triage verbs, read on their own so a triage line can never be taken for
+// The reviewer's three triage verbs, read on their own so a triage line can never be taken for
 // a product ruling or the other way round: each proposal family is read in its own grammar.
 function parseTriageCondition(line) {
   const t = line.trim();
   let m;
   if ((m = /^adapter-wrong\s+(\S+):\s*(.+)$/.exec(t))) return { verb: "adapter-wrong", id: m[1], text: collapseWhitespace(m[2]) };
   if ((m = /^product-question\s+(\S+)\s*$/.exec(t))) return { verb: "product-question", id: m[1] };
+  if ((m = /^oracle-cannot\s+(\S+):\s*(.+)$/.exec(t))) {
+    const text = collapseWhitespace(m[2]);
+    return text ? { verb: "oracle-cannot", id: m[1], text } : null;
+  }
   return null;
 }
 
