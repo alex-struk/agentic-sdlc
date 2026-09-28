@@ -36,7 +36,7 @@ first when more than one is ready is `policy.next.order` (`docs/config.md`), `pr
 | Kind | What is ready | Order within the kind |
 |---|---|---|
 | `proposals` | an open proposal whose holder is an agent (`sdlc rule <name> --by agent:<persona>`); an escalation to a role an agent plays, raised by someone else (`--by agent:<target>`); a build proposal with no verify result for the application it carries (`sdlc run verify --slice <n>`) | oldest proposal branch first |
-| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again), unless it is held (below); open requests (`--revise` for a stage that has it, otherwise the stage run again: `sdlc run contract`); redo entries and stale tests (`derive-tests --domain <d> --stale`, not offered while that domain's test proposal is returned, since its `--revise` takes up the entries its own line's rulings filed); rebind entries and unbound rows (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed or the row was found); stale adapters (`bind-adapter --target <t>`, one run with that target's rebinds); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target (the oracle's first), then slice |
+| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again), unless it is held (below); open requests (`--revise` for a stage that has it, otherwise the stage run again: `sdlc run contract`); redo entries and stale tests (`derive-tests --domain <d> --stale`, not offered while that domain's test proposal is returned, since its `--revise` takes up the entries its own line's rulings filed); rebind entries and unbound rows (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed or the row was found); stale adapters (`bind-adapter --target <t>`, one run with that target's rebinds); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target (the oracle's first), then slice; a contract run for owed work waits for the test writer (below) |
 | `sequence` | the next stage the phases call for | the first phase whose exit criterion is not met; within it, the sequence's order |
 
 A condition is owed and listed, and is never a reason to start a run
@@ -57,6 +57,19 @@ proposal's ruling, then the revision. Held revisions are listed under `held:` wi
 request addressed to the returned proposal's own stage holds nothing: the revision answers it. A
 request taken before the proposal that took it was recorded (`taken_by`) names none, and is read
 as answered (`docs/decisions/0050-a-request-reaches-a-stage-that-takes-it-up.md`).
+
+**Contract waits for the test writer.** What `contract` owes in the Tests phase is mostly filed by
+the rulings of `derive-tests` proposals, one domain at a time. The contract run that answers owed
+work (not a return of contract's own proposal) is held while the test writer has ready work that
+does not rest on contract: a `derive-tests` run, owed or in the sequence, in a domain contract owes
+nothing, or a ruling of a `derive-tests` proposal an agent can make now. A domain contract owes is
+one with an open missing test contract owes and has not kept, or a request to contract from that
+domain's line of work. While contract is held, the test writer's runs in the domains it owes are
+held behind it, since each would be run again once contract answers. Both are listed under `held:`
+with the reason. When no such work is left, `next` names the contract run, and that one run is
+handed every domain's needs. Work that rests on contract never holds it, so contract is held only
+while something else can run, whatever `policy.next.order` says
+(`docs/decisions/0069-contract-waits-for-the-test-writer.md`).
 
 **Missing tests.** An untestable record on `main` is owed a test whether or not an entry has been
 written for it yet (`docs/operating-model.md` §7): `next` reads the entries in `.sdlc/owed.yaml`
@@ -149,12 +162,12 @@ stale tests: none
 stale adapters: 12 members in old, 12 members in new (bound in phase 4 Build)
 ```
 
-The `held` block appears only when a revision is held, and the `stale adapters` line only when
+The `held` block appears only when something is held, and the `stale adapters` line only when
 an adapter is stale.
 
 `--json` prints the same as one object: `state` (`run`, `waiting` or `idle`), `next` (the chosen
 item, with `kind`, `stage`, `args`, `command`, `why` and `rule`), `ready` (every ready item in
-order, `next` first), `held` (each held revision, with `command`, `name` and `why`), `waiting`, `owed` (open entries counted by kind and stage), `stale` (by
+order, `next` first), `held` (each held revision, and a contract run held for the test writer with the runs held behind it, each with `command`, `why` and, for a revision, `name`), `waiting`, `owed` (open entries counted by kind and stage), `stale` (by
 domain), `staleAdapters` (by target: the `missing` and `extra` names, whether it is `offered`,
 and what it `waits` for when it is not), `phase`, `complete`, `blocked` and `order`.
 

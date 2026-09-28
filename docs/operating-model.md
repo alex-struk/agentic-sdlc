@@ -350,6 +350,10 @@ owes, stale tests, stale adapters, open and escalated proposals, and the plan's 
 - It only reads. Records change only through stage runs and rulings, which are commits.
 - Where more than one kind of work is ready (an open proposal, owed work, the next step of the
   sequence), which goes first is policy: `policy.next.order`.
+- What contract owes is filed by the test writer's rulings one domain at a time, so the contract
+  run for that owed work waits while the test writer has ready work in a domain contract owes
+  nothing. One contract run then takes every domain's needs, rather than one contract version
+  per domain.
 - Where nothing can run without a person, it says so, names who the work waits on, and exits
   differently from when something can run.
 - Running something other than what `next` named is allowed and recorded: `sdlc run` needs

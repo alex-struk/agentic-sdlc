@@ -186,6 +186,7 @@ test("a request is offered as the run of the stage it is addressed to", (t) => {
   const d = project(t);
   specDone(d);
   approved(d, ["contract-v1"]);
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
   commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [
     { stage: "contract", why: "seed a second record", from: "derive-tests-alpha-stale-1", gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" },
   ] }) });
@@ -202,7 +203,7 @@ test("a returned proposal waits for what its own ruling asked of another stage",
   const d = project(t);
   specDone(d);
   approved(d, ["contract-v1"]);
-  approved(d, ["derive-tests-alpha"], "G3");
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
   proposal(d, "derive-tests-alpha-stale-1", "G3", { ruling: { verdict: "return" } });
   const request = { stage: "contract", why: "seed a second record", from: "derive-tests-alpha-stale-1", gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" };
   commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [request] }) });
@@ -234,7 +235,7 @@ test("a returned proposal does not wait for a request addressed to its own stage
   const d = project(t);
   specDone(d);
   approved(d, ["contract-v1"]);
-  approved(d, ["derive-tests-alpha"], "G3");
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
   proposal(d, "derive-tests-alpha-stale-1", "G3", { ruling: { verdict: "return" } });
   commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [
     { stage: "derive-tests", why: "and the other suite too", from: "derive-tests-alpha-stale-1", gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" },
@@ -326,13 +327,14 @@ test("missing tests are owed work, routed by the stage that owes each one", (t) 
   });
   const r = whatNext(d);
   const owed = r.ready.filter((c) => c.kind === "owed");
+  // Contract owes alpha a test and nothing in beta, so beta's test writer goes first and the
+  // contract run waits to take whatever that surfaces with it (`docs/decisions/0069`).
   assert.deepEqual(owed.map((c) => c.command), [
-    "sdlc run contract",
     "sdlc run derive-tests --domain beta --stale",
     "sdlc run calibrate --target old",
   ]);
-  assert.match(owed[0].why, /1 missing test owed by contract/);
-  assert.match(owed[2].why, /1 missing test owed a run for target old/);
+  assert.match(r.held.find((h) => h.command === "sdlc run contract")?.why ?? "", /^1 missing test owed by contract/);
+  assert.match(owed[1].why, /1 missing test owed a run for target old/);
   assert.deepEqual(r.owed.filter((o) => o.kind === "missing-test").map((o) => [o.stage, o.count]),
     [["derive-tests", 1], ["calibrate", 1], ["verify", 1], ["contract", 1]]);
   assert.match(formatNext(r), /owed: .*1 missing-test \(contract\)/);
@@ -367,6 +369,111 @@ test("missing tests no run can answer wait on a ruler; handed-on ones go to each
   assert.match(waiting.find((w) => w.name.includes("ratify")).why, /1 missing test owed by ratify/);
   for (const w of waiting) assert.match(w.command, /condition-withdrawn missing-test\/<id>/);
   assert.match(formatNext(r), /waiting on a person:\n.*missing tests \(contract\)/);
+});
+
+// What contract owes comes from the test writer's rulings, one domain at a time. A contract run
+// started the moment one domain's ruling filed a need would be followed by the next domain's
+// ruling filing another, one contract version each. So contract waits while the test writer
+// has ready work in a domain contract owes nothing, and takes every domain's needs in one run
+// (`docs/decisions/0069`).
+const contractOwes = (id, domain, from) => ({ kind: "missing-test", item: id, id, version: 1, domain, stage: "contract", why: "a seeded record in a second state", from, gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" });
+
+function testsDerived(d) {
+  specDone(d);
+  approved(d, ["contract-v1"]);
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+}
+
+test("a contract run for downstream needs waits while the test writer has ready work in a domain contract owes nothing", (t) => {
+  const d = project(t);
+  testsDerived(d);
+  commit(d, {
+    ".sdlc/owed.yaml": stringifyYaml({ owed: [contractOwes("R-1.1", "alpha", "derive-tests-alpha")] }),
+    "tests/acceptance/redo.yaml": stringifyYaml({ redo: [{ id: "R-2.1", version: 1, why: "asserted the wrong thing" }] }),
+  });
+  let r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run derive-tests --domain beta --stale");
+  assert.ok(!r.ready.some((c) => c.stage === "contract"), "contract is not offered yet");
+  const held = r.held.find((h) => h.command === "sdlc run contract");
+  assert.equal(held?.stage, "contract");
+  assert.match(held.why, /^1 missing test owed by contract; held while derive-tests has ready work in beta, where contract owes nothing yet, so one contract run takes every domain's needs$/);
+  assert.match(formatNext(r), /^held:\n {2}sdlc run contract — 1 missing test owed by contract; held while /m);
+  assert.match(formatNextShort(r), /1 held/);
+
+  // Beta's test writer has run and its proposal is being ruled: the ruling comes first, and
+  // what it files joins the same contract run.
+  proposal(d, "derive-tests-beta-stale-1", "G3");
+  r = whatNext(d);
+  assert.equal(r.next.command, "sdlc rule derive-tests-beta-stale-1 --by agent:owner");
+  assert.equal(r.next.kind, "proposals");
+
+  // Ruled, and it filed a need of its own: nothing is left for the test writer that does not
+  // rest on contract, so contract runs, once, for both domains.
+  approved(d, ["derive-tests-beta-stale-1"], "G3");
+  commit(d, {
+    "tests/acceptance/redo.yaml": stringifyYaml({ redo: [{ id: "R-2.1", version: 1, why: "asserted the wrong thing", closed: { outcome: "met", why: "derived again", by: "runner", at: "2026-01-03T00:00:00.000Z" } }] }),
+    ".sdlc/owed.yaml": stringifyYaml({ owed: [contractOwes("R-1.1", "alpha", "derive-tests-alpha"), contractOwes("R-2.1", "beta", "derive-tests-beta-stale-1")] }),
+  });
+  r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run contract");
+  assert.match(r.next.why, /^2 missing tests owed by contract$/);
+  assert.deepEqual(r.held, []);
+});
+
+// Held behind contract is only work that does not rest on it. The test writer's work in a
+// domain contract owes something would be done again once contract answers, so it waits with
+// contract rather than going ahead of it.
+test("the test writer's work in a domain contract owes waits behind the contract run", (t) => {
+  const d = project(t);
+  testsDerived(d);
+  commit(d, {
+    ".sdlc/owed.yaml": stringifyYaml({ owed: [contractOwes("R-1.1", "alpha", "derive-tests-alpha")] }),
+    "tests/acceptance/redo.yaml": stringifyYaml({ redo: [{ id: "R-1.1", version: 1, why: "w" }, { id: "R-2.1", version: 1, why: "w" }] }),
+  });
+  let r = whatNext(d);
+  assert.deepEqual(r.ready.filter((c) => c.kind === "owed").map((c) => c.command), ["sdlc run derive-tests --domain beta --stale"]);
+  assert.match(r.held.find((h) => h.command === "sdlc run derive-tests --domain alpha --stale")?.why ?? "",
+    /^1 test to derive again \(redo\) in alpha owed by derive-tests; held behind sdlc run contract, which owes alpha what this run would otherwise be run again for$/);
+
+  // With only that domain's work left, nothing holds contract: it runs, and the domain after it.
+  commit(d, { "tests/acceptance/redo.yaml": stringifyYaml({ redo: [{ id: "R-1.1", version: 1, why: "w" }] }) });
+  r = whatNext(d);
+  assert.deepEqual(r.ready.filter((c) => c.kind === "owed").map((c) => c.command), ["sdlc run contract", "sdlc run derive-tests --domain alpha --stale"]);
+  assert.deepEqual(r.held, []);
+});
+
+// A returned revision whose own ruling asked contract for something is held on that request
+// (`heldBy`), so it is not ready work and cannot hold the contract run it is waiting on.
+test("a revision waiting on contract never holds contract back", (t) => {
+  const d = project(t);
+  testsDerived(d);
+  proposal(d, "derive-tests-beta-stale-1", "G3", { ruling: { verdict: "return" } });
+  commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [
+    { stage: "contract", why: "seed a second record", from: "derive-tests-beta-stale-1", gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" },
+  ] }) });
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run contract");
+  assert.match(r.held.find((h) => h.command === "sdlc run derive-tests --domain beta --revise")?.why ?? "", /asked contract .* not yet answered/);
+});
+
+// A domain whose tests have never been derived is the test writer's work too, though the
+// sequence offers it rather than the owed list.
+test("a domain never derived holds contract, whatever policy.next.order says", (t) => {
+  const d = project(t, { policy: ["next: { order: [owed, proposals, sequence] }"] });
+  specDone(d);
+  approved(d, ["contract-v1"]);
+  approved(d, ["derive-tests-alpha"], "G3");
+  commit(d, { ".sdlc/owed.yaml": stringifyYaml({ owed: [contractOwes("R-1.1", "alpha", "derive-tests-alpha")] }) });
+  let r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run derive-tests --domain beta");
+  assert.equal(r.next.kind, "sequence");
+  assert.match(r.held.find((h) => h.command === "sdlc run contract")?.why ?? "", /held while derive-tests has ready work in beta/);
+
+  // Its proposal, open for a ruling an agent makes, holds contract until it is ruled.
+  proposal(d, "derive-tests-beta", "G3");
+  r = whatNext(d);
+  assert.equal(r.next.command, "sdlc rule derive-tests-beta --by agent:owner");
+  assert.match(r.held.find((h) => h.command === "sdlc run contract")?.why ?? "", /held while derive-tests-beta is ruled/);
 });
 
 test("a test written against an older version of its criterion is stale and owed", (t) => {

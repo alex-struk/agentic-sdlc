@@ -636,6 +636,57 @@ const WITHIN = {
 
 const BUILD = PHASES.find((p) => p.name === "Build");
 
+// The domains contract owes something to: an open missing test it has not kept, or a request
+// filed by a ruling in that domain's line of work. Those are the domains whose test writer
+// would be run again once contract answers.
+function domainsContractOwes(record) {
+  const out = new Set();
+  const byId = new Map((record.index?.criteria ?? []).map((c) => [c.id, c]));
+  for (const e of record.owed) {
+    if (e.stage !== "contract") continue;
+    if (e.kind === MISSING_TEST && !e.kept) {
+      const domain = e.domain ?? byId.get(e.id)?.domain;
+      if (domain) out.add(domain);
+    } else if (e.kind === "request") {
+      const domain = routeOf(e.from ?? "", record.config)?.domain;
+      if (domain) out.add(domain);
+    }
+  }
+  return out;
+}
+
+// Contract waits for the test writer (`docs/decisions/0069`). What contract owes is filed by
+// the rulings of derive-tests proposals, one domain at a time, and a contract run started the
+// moment one domain's ruling files a need is followed by the next domain's ruling filing
+// another. So the contract run that answers owed work — not a return of contract's own
+// proposal — is held while the test writer has ready work that does not rest on contract: a
+// derive-tests run in a domain contract owes nothing, or a ruling of a derive-tests proposal an
+// agent can make now. The test writer's runs in a domain contract does owe are held behind it,
+// where the upstream-first order already puts them, since each would be run again once contract
+// answers. Work that rests on contract never holds it, so contract is held only while something
+// else can run.
+function holdContractForTestWriter(record, byKind) {
+  const contract = byKind.owed.find((c) => c.stage === "contract" && !c.name);
+  if (!contract) return [];
+  const owes = domainsContractOwes(record);
+  const runs = [...byKind.owed, ...byKind.sequence].filter((c) => c.stage === "derive-tests");
+  const clean = [...new Set(runs.filter((c) => !owes.has(c.args?.domain)).map((c) => c.args?.domain ?? "<domain>"))];
+  const rulings = byKind.proposals.filter((c) => c.stage === "rule" && routeOf(c.name, record.config)?.stage === "derive-tests").map((c) => c.name);
+  if (!clean.length && !rulings.length) return [];
+  const whiles = [];
+  if (clean.length) whiles.push(`derive-tests has ready work in ${clean.join(", ")}, where contract owes nothing yet`);
+  if (rulings.length) whiles.push(`${rulings.join(", ")} ${rulings.length === 1 ? "is" : "are"} ruled`);
+  const behind = runs.filter((c) => owes.has(c.args?.domain));
+  const held = [
+    { ...contract, why: `${contract.why}; held while ${whiles.join(" and while ")}, so one contract run takes every domain's needs` },
+    ...behind.map((c) => ({ ...c, why: `${c.why}; held behind ${contract.command}, which owes ${c.args.domain} what this run would otherwise be run again for` })),
+  ];
+  const out = new Set([contract, ...behind]);
+  byKind.owed = byKind.owed.filter((c) => !out.has(c));
+  byKind.sequence = byKind.sequence.filter((c) => !out.has(c));
+  return held;
+}
+
 // Whether a target's adapter is bound now. The oracle's is bound in the Tests phase, where
 // calibration measures the suite against it; any other target's application exists only
 // on a build proposal until it merges, so its adapter is bound in the Build phase.
@@ -675,6 +726,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     owed: ordered([...props.returned, ...owed.items], record),
     sequence,
   };
+  const held = [...props.held, ...holdContractForTestWriter(record, byKind)];
   const ready = order.flatMap((kind) => (byKind[kind] ?? []).map((c) => ({ ...c, rule: ruleFor(kind, order, byKind) })));
   const next = ready[0] ?? null;
   const waiting = [...props.waiting, ...owed.waiting];
@@ -683,7 +735,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     state,
     next,
     ready,
-    held: props.held,
+    held,
     waiting,
     owed: owed.summary,
     stale: owed.stale,
@@ -748,7 +800,7 @@ export function formatNextShort(r) {
   else lines.push(`next: ${idleLine(r)}`);
   const more = [];
   if (r.ready.length > 1) more.push(`${r.ready.length - 1} more ready`);
-  if (r.held?.length) more.push(`${plural(r.held.length, "revision")} held`);
+  if (r.held?.length) more.push(`${r.held.length} held`);
   const proposals = r.waiting.filter((w) => w.kind !== MISSING_TEST && w.kind !== UNBOUND);
   const tests = r.waiting.filter((w) => w.kind === MISSING_TEST).reduce((n, w) => n + w.count, 0);
   const unbound = r.waiting.filter((w) => w.kind === UNBOUND).reduce((n, w) => n + w.count, 0);
