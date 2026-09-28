@@ -13,9 +13,10 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { git, gitOk } from "../src/lib/git.mjs";
 import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
+import { resume } from "../src/commands/resume.mjs";
 import { rule, settleApproved } from "../src/commands/rule.mjs";
 import { propose } from "../src/commands/propose.mjs";
-import { recordReturnOnMain } from "../src/stages/registry.mjs";
+import { stageFor, recordReturnOnMain } from "../src/stages/registry.mjs";
 import { writeLocal } from "../src/oracle/ports.mjs";
 import { STAGES, PROFILES } from "../src/profiles.mjs";
 
@@ -407,6 +408,295 @@ test("sdlc run contract: re-run after approving contract-v1 opens contract-v2", 
   }
 });
 
+test("a returned contract's rationale reaches an ordinary dry run and plans v10 without writing", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-dry-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  const logs = [];
+  const originalLog = console.log;
+  try {
+    const { name, tip } = await returnedContract(dir, 9);
+    const head = git(["rev-parse", "HEAD"], dir);
+    console.log = (...args) => logs.push(args.join(" "));
+    const preview = await runStage(dir, "contract", { dryRun: true });
+    assert.equal(preview.ok, true, JSON.stringify(preview.messages));
+    const prompt = logs.join("\n");
+    assert.match(prompt, /The seed needs another declared record; preserve the earlier pages/);
+    assert.match(prompt, /no separate conditions/i);
+    assert.match(prompt, /contract-v10/);
+    assert.equal(git(["rev-parse", "HEAD"], dir), head);
+    assert.equal(git(["rev-parse", `proposal/${name}`], dir), tip);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+    assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
+    assert.equal(gitOk(["rev-parse", "--verify", `returned/${name}`], dir), false);
+  } finally {
+    console.log = originalLog;
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("contract numbering uses the highest ruled version even when earlier gate numbers have gaps", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-gaps-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name } = await returnedContract(dir, 9, [1, 3, 8]);
+    assert.equal(name, "contract-v9");
+    const ctx = { dryRun: true };
+    const checks = stageFor("contract").preChecks(dir, ctx);
+    assert.ok(checks.every((c) => c.ok), JSON.stringify(checks));
+    assert.equal(ctx.contractVersion, 10);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a newer ruled contract leaves an older returned branch superseded", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-superseded-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    await returnedContract(dir);
+    mkdirSync(join(dir, ".sdlc/gates"), { recursive: true });
+    writeFileSync(join(dir, ".sdlc/gates/contract-v2.yaml"), "gate: G1\nverdict: approve\nby: tech-lead\n");
+    git(["add", "-A"], dir);
+    git([...TEST_AUTHOR, "commit", "-q", "-m", "newer contract approved (test)"], dir);
+    git(["branch", "proposal/contract-v2", "main"], dir);
+    const ctx = { dryRun: true };
+    const checks = stageFor("contract").preChecks(dir, ctx);
+    assert.ok(checks.every((c) => c.ok), JSON.stringify(checks));
+    assert.equal(ctx.revision?.name, undefined, "the older return is no longer the next contract question");
+    assert.equal(ctx.contractVersion, 3);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("an ordinary contract rerun carries the returned draft into its successor and retires the return after checks", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-run-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name } = await returnedContract(dir);
+    const priorSurface = onBranch(dir, `proposal/${name}`, "spec/contract/surface.yaml");
+    const priorSeed = onBranch(dir, `proposal/${name}`, "tests/seed/001-users.sql");
+    const requestWhy = "another accepted record must be reachable in the seed";
+    writeFileSync(join(dir, ".sdlc/revision-requests.yaml"), stringifyYaml({ requests: [{
+      stage: "contract", why: requestWhy, from: "derive-tests-fees-1", gate: "G3", by: "agent:reviewer",
+      at: "2026-09-25T00:00:00.000Z",
+    }] }));
+    git(["add", "-A"], dir);
+    git([...TEST_AUTHOR, "commit", "-q", "-m", "unrelated request (test)"], dir);
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-return-run-mock-"));
+    const promptFile = join(mockDir, "prompt.txt");
+    writeFileSync(join(mockDir, "contract.json"), JSON.stringify({ text: "Kept the draft and addressed the return.", files: {} }));
+    process.env.SDLC_MOCK_DIR = mockDir;
+    process.env.SDLC_MOCK_PROMPT_FILE = promptFile;
+    const next = await runStage(dir, "contract");
+    assert.equal(next.ok, true, JSON.stringify(next.messages));
+    assert.equal(next.proposal.name, "contract-v2");
+    assert.equal(onBranch(dir, "proposal/contract-v2", "spec/contract/surface.yaml"), priorSurface);
+    assert.equal(onBranch(dir, "proposal/contract-v2", "tests/seed/001-users.sql"), priorSeed);
+    const prompt = readFileSync(promptFile, "utf8");
+    assert.match(prompt, /The seed needs another declared record; preserve the earlier pages/);
+    assert.match(prompt, /no separate conditions/i);
+    assert.match(prompt, /open and no part of this revision/);
+    assert.match(prompt, /another accepted record must be reachable in the seed/);
+    const requests = parseYaml(readFileSync(join(dir, ".sdlc/revision-requests.yaml"), "utf8")).requests;
+    assert.equal(requests[0].taken, undefined, "the return did not spend an unrelated request");
+    assert.match(onBranch(dir, "main", `.sdlc/gates/${name}.yaml`), /verdict: return/);
+    assert.equal(gitOk(["rev-parse", "--verify", `proposal/${name}`], dir), false);
+    assert.equal(gitOk(["rev-parse", "--verify", `returned/${name}`], dir), true);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR; delete process.env.SDLC_MOCK_PROMPT_FILE;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("resume after a returned contract was recorded opens one successor without recording it twice", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-resume-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    writeFileSync(join(dir, ".sdlc/revision-requests.yaml"), stringifyYaml({ requests: [{
+      stage: "contract", why: "add a separate observation later", from: "derive-tests-fees-1", gate: "G3", by: "agent:reviewer",
+      at: "2026-09-25T00:00:00.000Z",
+    }] }));
+    git(["add", "-A"], dir);
+    git([...TEST_AUTHOR, "commit", "-q", "-m", "unrelated request (test)"], dir);
+    const stage = stageFor("contract");
+    const ctx = { dryRun: false };
+    const checks = stage.preChecks(dir, ctx);
+    assert.ok(checks.every((c) => c.ok), JSON.stringify(checks));
+    stage.prepare(dir, ctx);
+    stage.beforeProposal(dir, ctx);
+    writeFileSync(join(dir, ".sdlc/run-state.json"), JSON.stringify({
+      stage: "contract", ctx: { stale: false, revise: false, returnSource: { name, commit: tip } }, startedAt: new Date().toISOString(), phase: "post-checks",
+    }));
+    const code = await resume(dir);
+    assert.equal(code, 0);
+    assert.equal(gitOk(["rev-parse", "--verify", `returned/${name}`], dir), true);
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/contract-v2"], dir), true);
+    assert.equal(git(["log", "--format=%s", "main"], dir).split("\n").filter((s) => s === `record(G1): ${name} returned`).length, 1);
+    const requests = parseYaml(readFileSync(join(dir, ".sdlc/revision-requests.yaml"), "utf8")).requests;
+    assert.equal(requests[0].taken, undefined, "resume did not claim an unrelated request was answered");
+    assert.equal(existsSync(join(dir, ".sdlc/run-state.json")), false);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("recording a return commits only its gate and page when an agent staged the draft", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-staged-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    const mainSurface = onBranch(dir, "main", "spec/contract/surface.yaml");
+    const returnedSurface = onBranch(dir, `proposal/${name}`, "spec/contract/surface.yaml");
+    const stage = stageFor("contract");
+    const ctx = { dryRun: false };
+    assert.ok(stage.preChecks(dir, ctx).every((c) => c.ok));
+    stage.prepare(dir, ctx);
+    git(["add", "--", "spec/contract/surface.yaml"], dir);
+    stage.beforeProposal(dir, ctx);
+    assert.equal(onBranch(dir, "main", "spec/contract/surface.yaml"), mainSurface, "G1 has not accepted the draft");
+    assert.match(git(["diff", "--cached", "--name-only"], dir), /spec\/contract\/surface\.yaml/);
+    writeFileSync(join(dir, ".sdlc/run-state.json"), JSON.stringify({
+      stage: "contract", ctx: { stale: false, revise: false, returnSource: { name, commit: tip } }, startedAt: new Date().toISOString(), phase: "post-checks",
+    }));
+    assert.equal(await resume(dir), 0);
+    assert.equal(onBranch(dir, "proposal/contract-v2", "spec/contract/surface.yaml"), returnedSurface);
+    assert.equal(onBranch(dir, "main", "spec/contract/surface.yaml"), mainSurface);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("an agent failure leaves a returned contract branch and its ruling unspent", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-fail-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-return-fail-mock-"));
+    writeFileSync(join(mockDir, "contract.json"), JSON.stringify({ ok: false, text: "agent turn failed" }));
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const failed = await runStage(dir, "contract");
+    assert.equal(failed.ok, false);
+    assert.equal(git(["rev-parse", `proposal/${name}`], dir), tip);
+    assert.equal(gitOk(["rev-parse", "--verify", `returned/${name}`], dir), false);
+    assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
+    const state = JSON.parse(readFileSync(join(dir, ".sdlc/run-state.json"), "utf8"));
+    assert.deepEqual(state.ctx.returnSource, { name, commit: tip });
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a post-check failure leaves a returned contract branch and its ruling unspent", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-postcheck-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    const mockDir = mkdtempSync(join(tmpdir(), "sdlc-contract-return-postcheck-mock-"));
+    writeFileSync(join(mockDir, "contract.json"), JSON.stringify({ text: "left the persona file unreadable", files: {
+      "spec/contract/personas.yaml": "personas: [ }\n",
+    } }));
+    process.env.SDLC_MOCK_DIR = mockDir;
+    const failed = await runStage(dir, "contract");
+    assert.equal(failed.ok, false);
+    assert.equal(git(["rev-parse", `proposal/${name}`], dir), tip);
+    assert.equal(gitOk(["rev-parse", "--verify", `returned/${name}`], dir), false);
+    assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a returned contract cannot replace a different gate already on main", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-gate-collision-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    const mainGate = "gate: G1\nverdict: approve\nby: tech-lead\n";
+    mkdirSync(join(dir, ".sdlc/gates"), { recursive: true });
+    writeFileSync(join(dir, `.sdlc/gates/${name}.yaml`), mainGate);
+    git(["add", "-A"], dir);
+    git([...TEST_AUTHOR, "commit", "-q", "-m", "different gate on main (test)"], dir);
+    const failed = await runStage(dir, "contract", { dryRun: true });
+    assert.equal(failed.ok, false);
+    assert.match(failed.messages.join("\n"), /different gate on main/);
+    assert.equal(readFileSync(join(dir, `.sdlc/gates/${name}.yaml`), "utf8"), mainGate);
+    assert.equal(git(["rev-parse", `proposal/${name}`], dir), tip);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a returned contract cannot retire into an occupied branch name", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-branch-collision-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    git(["branch", `returned/${name}`, "main"], dir);
+    const failed = await runStage(dir, "contract", { dryRun: true });
+    assert.equal(failed.ok, false);
+    assert.match(failed.messages.join("\n"), /already exists/);
+    assert.equal(git(["rev-parse", `proposal/${name}`], dir), tip);
+    assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a returned contract is refused before its agent turn where a branch occupies its retired name's parent", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-parent-ref-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    git(["branch", "returned", "main"], dir);
+    const failed = await runStage(dir, "contract");
+    assert.equal(failed.ok, false);
+    assert.match(failed.messages.join("\n"), /returned\/contract-v1 cannot be created/);
+    assert.equal(git(["log", "-1", "--format=%s", "main"], dir), "run(contract): pre-checks failed");
+    assert.equal(git(["log", "--format=%s", "main"], dir).includes(`record(G1): ${name} returned`), false);
+    assert.equal(git(["rev-parse", `proposal/${name}`], dir), tip);
+    assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
+    assert.equal(existsSync(join(dir, ".sdlc/run-state.json")), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
 test("recordReturnOnMain records nothing when the returned branch cannot be kept under returned/", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-record-return-rename-"));
   const { dir, prevEgress } = await makeProject(tmp);
@@ -442,6 +732,76 @@ test("recordReturnOnMain commits only the gate and page, leaving other staged ch
     assert.deepEqual(committed, [`.sdlc/gates/${name}.yaml`, `.sdlc/proposals/${name}.md`]);
     assert.equal(git(["diff", "--cached", "--name-only"], dir), "unrelated.txt");
     assert.equal(gitOk(["rev-parse", "--verify", `returned/${name}`], dir), true);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("resume after a returned contract's branch was retired but before its return reached main records it once", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-resume-retired-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    const stage = stageFor("contract");
+    const ctx = { dryRun: false };
+    assert.ok(stage.preChecks(dir, ctx).every((c) => c.ok));
+    stage.prepare(dir, ctx);
+    git(["branch", "-m", `proposal/${name}`, `returned/${name}`], dir);
+    writeFileSync(join(dir, ".sdlc/run-state.json"), JSON.stringify({
+      stage: "contract", ctx: { stale: false, revise: false, returnSource: { name, commit: tip } }, startedAt: new Date().toISOString(), phase: "post-checks",
+    }));
+    assert.equal(await resume(dir), 0);
+    assert.match(onBranch(dir, "main", `.sdlc/gates/${name}.yaml`), /verdict: return/);
+    assert.equal(git(["log", "--format=%s", "main"], dir).split("\n").filter((s) => s === `record(G1): ${name} returned`).length, 1);
+    assert.equal(git(["rev-parse", `returned/${name}`], dir), tip);
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/contract-v2"], dir), true);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("resume refuses a returned contract whose branch no longer holds the commit the run started from", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-resume-moved-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    git(["branch", "-D", `proposal/${name}`], dir);
+    writeFileSync(join(dir, ".sdlc/run-state.json"), JSON.stringify({
+      stage: "contract", ctx: { stale: false, revise: false, returnSource: { name, commit: tip } }, startedAt: new Date().toISOString(), phase: "post-checks",
+    }));
+    assert.equal(await resume(dir), 1);
+    assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
+    assert.equal(gitOk(["rev-parse", "--verify", "proposal/contract-v2"], dir), false);
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a returned contract draft conflicting with newer main content is refused without clobbering it", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-contract-return-conflict-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    const newer = "pages:\n  - id: newer-main-page\n    domain: applications\n    route: /newer\n    title: Newer main page\n";
+    writeFileSync(join(dir, "spec/contract/surface.yaml"), newer);
+    git(["add", "-A"], dir);
+    git([...TEST_AUTHOR, "commit", "-q", "-m", "newer contract content (test)"], dir);
+    const failed = await runStage(dir, "contract");
+    assert.equal(failed.ok, false);
+    assert.match(failed.messages.join("\n"), /returned contract draft.*conflict/i);
+    assert.equal(readFileSync(join(dir, "spec/contract/surface.yaml"), "utf8"), newer);
+    assert.equal(git(["rev-parse", `proposal/${name}`], dir), tip);
+    assert.equal(gitOk(["rev-parse", "--verify", `returned/${name}`], dir), false);
+    assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

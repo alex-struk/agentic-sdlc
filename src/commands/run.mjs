@@ -409,8 +409,12 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
       // Written only once the dry-run return above is behind us: a dry run makes no
       // change of any kind, so nothing should exist for `sdlc resume` to find.
+      // `returnSource` names the returned proposal a run answers where the return is only
+      // recorded once post-checks pass (`contract`), so a resume answers that same return
+      // after the branch it was found on has moved.
       const state = { stage: name, ctx: { slice, domain, target, stale, revise,
-        ...(ctx.deviationReason ? { deviationReason: ctx.deviationReason } : {}) }, startedAt: new Date().toISOString(), phase: "agent" };
+        ...(ctx.deviationReason ? { deviationReason: ctx.deviationReason } : {}),
+        ...(ctx.returnSource ? { returnSource: ctx.returnSource } : {}) }, startedAt: new Date().toISOString(), phase: "agent" };
       writeRunState(projectDir, state);
 
       // The workspace as the session first sees it, after `prepare` has generated whatever

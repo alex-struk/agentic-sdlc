@@ -381,6 +381,14 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     return commitPostCheckFailure(projectDir, stage, result, [message]);
   }
 
+  // A stage may have an earlier returned proposal to record once its replacement has
+  // passed every post-check. Doing so before the agent turn would spend that return if
+  // authentication, the agent or its output failed, leaving no ruling for a retry to read.
+  if (stage.beforeProposal) {
+    try { stage.beforeProposal(projectDir, ctx); }
+    catch (e) { return commitPostCheckFailure(projectDir, stage, result, [e.message]); }
+  }
+
   const journal = writeJournal(projectDir, {
     stage: stage.name,
     title: resolveTitle(stage, ctx),

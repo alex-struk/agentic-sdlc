@@ -48,8 +48,8 @@ from the ratified criteria.
   exist, which sign-in method each persona uses, what the seed contains, and what could not be
   recovered.
 - A proposal at gate G1: `.sdlc/proposals/contract-v<n>.md` on a new `proposal/contract-v<n>`
-  branch (`<n>` = 1 + however many `contract-v*` gate files are already on disk — one per ruling,
-  not per attempt), holding the question "Is this the contract the tests will act through?" and a
+  branch (`<n>` = one above the highest ruled `contract-v*` version, including a return the
+  current run answers), holding the question "Is this the contract the tests will act through?" and a
   recommendation taken from the agent's own journal text, the same way archaeology's is.
 
 The product-owner persona rules this proposal in the same ratification grammar archaeology's is
@@ -212,14 +212,47 @@ whatever the agent wrote, if anything, stays in the working tree, untracked, for
 `contract` re-runs the same way any gated stage does (`docs/stages/run.md`): its own proposal must
 be ruled before it can run again. Unlike archaeology, whose proposal name (`archaeology-<d>`) is
 fixed per domain, `contract` has no natural per-run key — a rebuild is a rebuild — so each ruled
-attempt gets its own version: the first run opens `contract-v1`; once that is approved and merged,
-the next run opens `contract-v2`, and so on. A returned or escalated proposal's branch is left in
-place and keeps blocking a re-run until a person deletes it, exactly as archaeology's does.
+attempt gets its own version: the first run opens `contract-v1`; a later run uses one more than the
+highest ruled version, including where gate numbers have gaps.
+
+An approved proposal is merged into `main`. An escalated proposal still waits for its ruler. A
+returned `contract-v<n>` is the ordinary next contract run's input: the agent sees the ruler's
+rationale and any separate conditions, alongside the returned draft's own changes under
+`spec/contract/`, `tests/seed/` and `.sdlc/oracle/`. A dry run shows that prompt and the planned
+`contract-v<n+1>` name without recording the return or changing files. A real run checks that the
+draft can be applied over newer main content before importing it. Conflicting edits are refused,
+leaving the main content and the return branch intact.
+
+Only after the replacement passes its post-checks does the runner record the earlier return on
+`main`, preserve its branch under `returned/contract-v<n>`, and open the successor at G1. A failed
+authentication check, preparation, agent turn or post-check leaves the return unspent. An open
+request addressed to contract is shown beside its own returned ruling and stays open for a later
+run; without an own return, the ordinary run takes up those requests.
+
+Recording the return moves its branch to `returned/contract-v<n>` first, then commits only the
+gate file and proposal page to `main`. Whatever else is staged, including the replacement's own
+draft, stays off `main` until G1 approves the successor. If git cannot create the new branch name,
+nothing is recorded; if the commit fails, the branch goes back under its old name.
+
+A run answering a return keeps that return's name and branch commit in its run state. `sdlc
+resume` answers the same return: it reads it from `proposal/contract-v<n>` if the interrupted run
+had not retired it yet, or from `returned/contract-v<n>` if it had, and records it on `main` at
+most once. It never turns to the open requests in its place.
 
 ## Failure modes
 
-- The contract's own proposal (`proposal/contract-v<n>`) is still open: refused before a workspace
-  is materialised, the same way archaeology's re-run check works.
+- The contract's own proposal (`proposal/contract-v<n>`) has no ruling or is escalated and
+  awaiting a ruler: refused before a workspace is materialised. A returned proposal is taken up
+  by the next ordinary run.
+- A returned draft conflicts with newer main content on a contract-owned path: refused before
+  importing any of its files or spending its return.
+- A returned proposal cannot be retired: `main` holds a different `contract-v<n>` gate file, or
+  `returned/contract-v<n>` cannot be created because that branch exists or another branch's name
+  contains or extends that path (a branch called `returned`, say). Refused before a workspace is
+  materialised, with the return unspent.
+- `sdlc resume` of a run answering a return finds neither `proposal/contract-v<n>` nor
+  `returned/contract-v<n>` at the commit the run started from: refused, with nothing recorded and
+  no request taken up. Run `contract` again.
 - The agent session itself fails to run, or reports failure: handled the same way every stage's
   agent-turn failure is (`docs/stages/run.md`).
 - A persona is missing a `sign_in` for a configured identity, an accepted criterion's domain has no

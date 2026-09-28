@@ -10,7 +10,7 @@ import { parse as parseYaml } from "yaml";
 // sits in an import cycle with `init.mjs`.
 const SDLC_BIN = resolve(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs");
 import { readText, writeText } from "../lib/fsx.mjs";
-import { changedPaths, git, gitOk } from "../lib/git.mjs";
+import { branchNameFree, changedPaths, git, gitOk, gitRaw } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
 import { MODES, coveredBy } from "../runner/workspace.mjs";
 import { runCatalogueScan } from "../runner/catalogue.mjs";
@@ -587,21 +587,37 @@ const archaeology = {
   },
 };
 
-// The proposal `contract` re-runs land on: `contract-v<n>`, `n` counting up from every
+// The proposal `contract` re-runs land on: `contract-v<n>`, one higher than the highest
 // ruled `contract-v*` gate file already on disk — a gate file only exists once `sdlc
-// rule` has recorded a verdict, so this counts rulings, not attempts, the same way the
-// brief's naming rule reads. Unlike archaeology's `archaeology-<domain>` (one name per
+// rule` has recorded a verdict. Numbers need not be contiguous. Unlike archaeology's `archaeology-<domain>` (one name per
 // domain, forever), `contract` has no natural per-run key of its own — a rebuild is a
 // rebuild — so the run itself is what versions the name.
 function nextContractVersion(projectDir) {
   const dir = join(projectDir, ".sdlc", "gates");
   if (!existsSync(dir)) return 1;
   const re = /^contract-v(\d+)\.yaml$/;
-  return readdirSync(dir).filter((f) => re.test(f)).length + 1;
+  return 1 + Math.max(0, ...readdirSync(dir).map((f) => re.exec(f)?.[1]).filter(Boolean).map(Number));
+}
+
+// The newest contract proposal, only if it was returned and main has not recorded or
+// superseded it. A returned draft's files exist only on its branch, so its next ordinary
+// run must read that branch as well as the rationale before it can ask G1 again.
+function returnedContract(projectDir) {
+  const refs = git(["for-each-ref", "--format=%(refname:short)", "refs/heads/proposal/contract-v*"], projectDir)
+    .split("\n").filter(Boolean);
+  const re = /^proposal\/contract-v(\d+)$/;
+  const latest = refs.map((branch) => [branch, Number(re.exec(branch)?.[1])])
+    .filter(([, n]) => Number.isInteger(n)).sort((a, b) => b[1] - a[1])[0];
+  if (!latest) return null;
+  const [branch, number] = latest;
+  if (number < nextContractVersion(projectDir) - 1) return null;
+  const name = `contract-v${number}`;
+  const found = returnedRulingOn(projectDir, name, branch);
+  return found ? { name, branch, number, branchCommit: git(["rev-parse", branch], projectDir), ...found } : null;
 }
 
 // Every `contract-v<n>` gate file present, oldest first — `nextContractVersion` above
-// only needs the count; `readRulings` (below) needs the names themselves, in the same
+// only needs the highest number; `readRulings` (below) needs the names themselves, in the same
 // oldest-first order a domain's own follow-ups are read in, so a later contract ruling's
 // condition on a criterion is applied after (and therefore over) an earlier follow-up's.
 function contractGateNames(projectDir) {
@@ -779,13 +795,109 @@ function checkContractScope(projectDir) {
   return { id, ok: false, messages: [`contract may only change spec/contract/, tests/seed/ and .sdlc/oracle/, but also touched: ${outside.join(", ")}`] };
 }
 
-// The requests addressed to `contract` that nothing has taken up, as the round this run
-// answers. Reading them takes nothing: the round is spent where the run delivers
-// (`settleRequestedRevision`), so a run that never opens a proposal leaves every one open.
-function checkContractRequests(projectDir, ctx) {
-  if (!ctx || ctx.revision) return;
+// Where this run's contract question comes from. A return of the contract's own newest
+// proposal comes first; otherwise the requests addressed to `contract` that nothing has
+// taken up are the round this run answers. Reading either spends nothing: the return is
+// recorded where the replacement passes its post-checks (`settleReturnedContract`) and the
+// requests where the run delivers (`settleRequestedRevision`), so a run that never opens a
+// proposal leaves both where it found them.
+//
+// A run answering a return names it in `ctx.returnSource`, which the run state keeps. A
+// resumed run rebuilds the return from that record alone: by then the branch may already
+// be `returned/<name>` and its gate on main, and a fresh search would find no return and
+// take up the requests instead, spending an ask this run never answered.
+function checkContractReturn(projectDir, ctx) {
+  const id = "contract-return-source";
+  const refuse = (message) => ({ id, ok: false, messages: [`contract: ${message}`] });
+  const returned = ctx.returnSource ? resumedContractReturn(projectDir, ctx.returnSource) : returnedContract(projectDir);
+  if (ctx.returnSource && !returned)
+    return refuse(`${ctx.returnSource.name}, the returned proposal this run answers, is no longer on proposal/ or returned/ at the commit the run started from; run contract again`);
+  if (returned) {
+    const problem = contractReturnProblem(projectDir, returned);
+    if (problem) return refuse(problem);
+    ctx.revision = withOpenRequests(projectDir, "contract", returned);
+    ctx.returnSource = { name: returned.name, commit: returned.branchCommit };
+    ctx.contractVersion = Math.max(nextContractVersion(projectDir), returned.number + 1);
+    return { id, ok: true, messages: [] };
+  }
   const requested = requestedRevision(projectDir, "contract");
   if (requested) ctx.revision = requested;
+  ctx.contractVersion = nextContractVersion(projectDir);
+  return { id, ok: true, messages: [] };
+}
+
+// The return a resumed run was answering, read from the branch that still holds the commit
+// it started from: `proposal/<name>` if the run stopped before retiring it, `returned/<name>`
+// if after. Null where neither does, or where that commit no longer carries a return.
+function resumedContractReturn(projectDir, { name, commit } = {}) {
+  const number = Number(/^contract-v(\d+)$/.exec(name ?? "")?.[1]);
+  if (!Number.isInteger(number) || !commit) return null;
+  for (const branch of [`proposal/${name}`, `returned/${name}`]) {
+    if (!gitOk(["rev-parse", "--verify", branch], projectDir) || git(["rev-parse", branch], projectDir) !== commit) continue;
+    let gate;
+    try { gate = parseYaml(git(["show", `${commit}:.sdlc/gates/${name}.yaml`], projectDir)) ?? {}; } catch { return null; }
+    if (gate.verdict !== "return") return null;
+    return { name, branch, number, branchCommit: commit, rationale: gate.rationale ?? gate.note ?? "", ...splitRulingConditions(gate, name) };
+  }
+  return null;
+}
+
+// Whether main already holds this return exactly as its branch recorded it: the state a
+// resumed run finds when the run it continues had already retired the return.
+function contractReturnRecorded(projectDir, { name, branch, branchCommit }) {
+  const gateRel = `.sdlc/gates/${name}.yaml`;
+  return branch === `returned/${name}`
+    && gitOk(["cat-file", "-e", `main:${gateRel}`], projectDir)
+    && git(["show", `main:${gateRel}`], projectDir) === git(["show", `${branchCommit}:${gateRel}`], projectDir);
+}
+
+// What would stop this return being recorded on main and its branch kept under
+// `returned/<name>`, asked before the agent turn so a run that could never retire its
+// return does not spend one, and again just before the return is recorded.
+function contractReturnProblem(projectDir, returned) {
+  if (contractReturnRecorded(projectDir, returned)) return null;
+  const { name, branch } = returned;
+  const retired = `returned/${name}`;
+  if (gitOk(["cat-file", "-e", `main:.sdlc/gates/${name}.yaml`], projectDir))
+    return `${name} has a different gate on main; its return cannot replace that record`;
+  if (branch === retired) return null;
+  if (gitOk(["rev-parse", "--verify", retired], projectDir))
+    return `${retired} already exists; the return cannot retire its branch there`;
+  if (!branchNameFree(projectDir, retired))
+    return `${retired} cannot be created: another branch's name contains or extends that path; the return cannot retire its branch there`;
+  return null;
+}
+
+// A contract agent works in the project directory, so the scratch-workspace overlay
+// used by blind stages does not reach it. Apply only the returned draft's own changes,
+// relative to where its branch began. A newer main edit that conflicts with that patch
+// is refused before a byte is written; silently restoring the whole branch would erase
+// work another proposal has since brought to main.
+function prepareReturnedContract(projectDir, ctx) {
+  const tip = ctx.revision?.name && ctx.revision?.branchCommit;
+  if (!tip) return;
+  const base = git(["merge-base", "main", tip], projectDir);
+  const paths = ["spec/contract", "tests/seed", ".sdlc/oracle"];
+  const patch = gitRaw(["diff", "--binary", base, tip, "--", ...paths], projectDir);
+  if (!patch.trim()) return;
+  try {
+    execFileSync("git", ["apply", "--check", "-"], { cwd: projectDir, input: patch, stdio: ["pipe", "pipe", "pipe"] });
+  } catch {
+    throw new Error("returned contract draft conflicts with newer main content; no contract file was changed");
+  }
+  execFileSync("git", ["apply", "-"], { cwd: projectDir, input: patch, stdio: ["pipe", "pipe", "pipe"] });
+}
+
+function settleReturnedContract(projectDir, ctx) {
+  const revision = ctx.revision;
+  if (!revision?.name) return;
+  if (!gitOk(["rev-parse", "--verify", revision.branch], projectDir)
+    || git(["rev-parse", revision.branch], projectDir) !== revision.branchCommit)
+    throw new Error(`contract: ${revision.branch} changed during this run; its return cannot be retired`);
+  if (contractReturnRecorded(projectDir, revision)) return;
+  const problem = contractReturnProblem(projectDir, revision);
+  if (problem) throw new Error(`contract: ${problem}`);
+  recordReturnOnMain(projectDir, revision, { gate: "G1", keepBranch: true });
 }
 
 // `contract` completes `spec/contract/` — the pages, personas, API description and
@@ -805,8 +917,8 @@ const contract = {
   gate: "G1",
   collect: [],
   implemented: true,
-  // Every run completes the whole contract from `main`, so there is no `--revise` to reopen
-  // it with: the ordinary run takes up the requests addressed to it (`checkContractRequests`).
+  // Every run completes the whole contract, so there is no `--revise` flag: the ordinary
+  // run takes up its own return first, or requests addressed to it when none is returned.
   takesRequests: "run",
   prompt(ctx) {
     const config = ctx.config;
@@ -837,7 +949,16 @@ const contract = {
         : "",
       "Finish with your journal entry: say which pages exist, which sign-in method each persona uses, what the seed contains, what could not be recovered, and — when this project has an oracle — whether the application started and what you had to change to get it there.",
     ].filter(Boolean);
-    if (isReopening(ctx)) lines.push(revisionRulingBlock(ctx));
+    if (ctx.revision?.name) {
+      const conditions = ctx.revision.conditions ?? [];
+      lines.push(`The proposal ${ctx.revision.name} was returned at G1. The ruler's rationale, verbatim:\n\n${ctx.revision.rationale || "(no rationale recorded)"}`);
+      lines.push(conditions.length
+        ? `Its separate conditions, verbatim:\n\n${conditions.map((c) => `- ${c}`).join("\n")}`
+        : "The ruling recorded no separate conditions; act on its rationale.");
+      lines.push(`Continue from that proposal's contract draft and change only what the return asks for. This run opens contract-v${ctx.contractVersion} for G1 to judge.`);
+      const elsewhere = addressedElsewhereNote(ctx);
+      if (elsewhere) lines.push(elsewhere);
+    } else if (isReopening(ctx)) lines.push(revisionRulingBlock(ctx));
     return lines.join("\n\n");
   },
   // With an oracle, this stage proves the override it wrote by bringing the application up
@@ -861,6 +982,12 @@ const contract = {
     // `sdlc` is on nobody's PATH: the CLI is invoked by path, so the agent needs the path.
     return { SDLC_BIN };
   },
+  prepare(wsDir, ctx) {
+    prepareReturnedContract(wsDir, ctx);
+  },
+  beforeProposal(projectDir, ctx) {
+    settleReturnedContract(projectDir, ctx);
+  },
   proposal(ctx) {
     const n = ctx.contractVersion ?? nextContractVersion(ctx.projectDir);
     return {
@@ -873,14 +1000,13 @@ const contract = {
   // takes no `--domain`: a rebuild covers every domain's pages and personas at once, not
   // one domain per run.
   preChecks(projectDir, ctx) {
-    checkContractRequests(projectDir, ctx);
-    return [];
+    return [checkContractReturn(projectDir, ctx)];
   },
   postChecks(projectDir, ctx) {
-    // Stashed on `ctx` the same way `intent` stashes the file it discovers: the real
-    // proposal call in `finishStage` does not carry `projectDir`, so the version has to
-    // be resolved here, while it is available, for `proposal` to read back.
-    ctx.contractVersion = nextContractVersion(projectDir);
+    // Pre-checks planned a version before the dry-run prompt or an agent turn. Keep that
+    // value while the returned gate is still on its branch; it reaches main only after
+    // these checks pass, immediately before the successor proposal opens.
+    ctx.contractVersion ??= nextContractVersion(projectDir);
     return [
       checkContractLoads(projectDir),
       checkPersonaSignIns(projectDir, ctx.config),
