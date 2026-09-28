@@ -225,7 +225,7 @@ stateDiagram-v2
 | `condition` | a plain condition on a return | the stage the proposal goes back to | a later ruling's `condition-met` or `condition-withdrawn` |
 | `request` | `addressed-to <stage>: <why>` on a return | that stage's `--revise` run, or `contract`'s ordinary run | the run that takes it up, naming the proposal it opened; a request cannot be withdrawn |
 | `redo` | `test-wrong` at calibration, `test-overreaches` on a return | `derive-tests --stale`, or the `--revise` of the derive-tests line of work whose ruling filed it | the run that derives the test again, reaching `main` with the approval of its line of work |
-| `rebind` | `adapter-wrong` in a calibration's triage, or an `unbound` calibration row, whose entry `calibrate` writes and every reader counts from the row until then | `bind-adapter` for that target | `calibrate`, once the adapter has changed, or once an unbound row passes, fails, is ruled or is gone |
+| `rebind` | `adapter-wrong` in a calibration's triage, or an `unbound` calibration row, whose entry `calibrate` writes and every reader counts from the row until then | `bind-adapter` for that target | `calibrate`, once the adapter has changed, or once an unbound row passes, fails, is ruled or is gone; the reviewer's `oracle-cannot` at triage |
 | `recovery` | `recovery-wrong` at ratification | `archaeology` for that domain | the run that recovers the criterion again |
 | `missing-test` | an untestable record on `main`, whole or for one clause; or a ruling's `missing-test` line (section 7) | the stage the record or the line names, `contract` where a record names none | a result row showing its test ran, once no clause is owed; or a ruler's `condition-withdrawn` |
 
@@ -241,8 +241,14 @@ list says how many times each item has been sent. The sending loops are bounded 
 more times than that still does the work, and the proposal it opens is escalated by the runner to
 its gate's escalation target rather than put to the gate holder for another round. An unbound
 calibration row is the exception: once its binding has been sent as many times as
-`policy.loops.rebind` allows, it is not sent again and waits on a ruler
-(`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`).
+`policy.loops.rebind` allows, it is not sent again
+(`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`). On the oracle's target it goes
+to the reviewer's calibration triage, where `oracle-cannot <ID>: <why>` closes it as a state the
+oracle cannot be put into or observed in, `adapter-wrong` sends it back to `bind-adapter` past the
+limit, and `product-question` passes it to the product owner; on any other target it waits on a
+ruler. A row needing a persona the approved contract marks unavailable on the target is owed to
+nobody: calibration closes it as `persona-unavailable`, and re-opens it if a later contract offers
+the persona (`docs/decisions/0068-an-unbound-row-the-binding-cannot-close.md`).
 
 ## 7. A requirement with no test
 

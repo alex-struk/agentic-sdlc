@@ -23,6 +23,7 @@ whichever branch is checked out and whatever is uncommitted.
 | `spec/criteria-index.json`, `spec/domains/<d>.md` | whether a domain is ratified, and each criterion's current version |
 | `tests/acceptance/<d>/*.spec.ts` headers | stale tests: a header version below the index's |
 | `tests/results/<t>/latest.json`, `applied.yaml`, `tests/adapters/<t>` | whether calibration is clean, the unbound rows, and whether an adapter has changed since a rebind was filed or an unbound row was found |
+| `spec/contract/personas.yaml` | the personas the contract marks unavailable on each target's identity, whose unbound rows are owed to no binding run |
 | `spec/contract/surface.yaml`, `tests/adapters/<t>/bindings.yaml` | stale adapters: members the contract declares that a target's bindings do not name, or names they carry that it no longer declares |
 | `plan/tasks.md` | the slices, in build order |
 
@@ -66,13 +67,20 @@ or by `contract`. The `owed:` line counts them by owing stage (`69 missing-test 
 its target, whether or not an entry has been written for it yet: `next` reads the rebind entries
 and, beside them, an item for each open unbound row nothing accounts for, and counts both on the
 `owed:` line as `rebind (bind-adapter)`. A row found under an adapter other than the target's
-current one is offered to `calibrate --target <t>` to be looked at again. A row whose binding has
+current one is offered to `calibrate --target <t>` to be looked at again. A row whose every
+failing test stopped at signing in as a persona the contract on `main` marks unavailable on the
+target is owed to nobody: calibration closes it as `persona-unavailable`. A row whose binding has
 been sent to `bind-adapter` as often as `policy.loops.rebind` allows, counting the reviewer's
-rebind entries for the same criterion, is not offered again: it is listed under `waiting on a
-person` as waiting on a ruler, one line per target naming the criteria, since no calibration verb
-closes an unbound row. The sequence does not offer `calibrate` for a target whose only open rows
-are such rows, since running the suite again cannot close them
-(`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`).
+rebind entries for the same criterion, is not offered to `bind-adapter` again. On the oracle's
+target it goes to the reviewer's calibration triage, where `oracle-cannot`, `adapter-wrong` or
+`product-question` answers it. When such rows, and rows needing an unavailable persona, are all
+that keep the oracle's calibration open, the sequence offers `calibrate --target <oracle>
+--skip-suite`, since the suite would only report them unbound again, and says which rows and why;
+that run opens the triage or closes the rows, and while the triage proposal is open they are its
+question. On any other target a spent row is listed under `waiting on a person` as waiting on a
+ruler, one line per target naming the criteria
+(`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`,
+`docs/decisions/0068-an-unbound-row-the-binding-cannot-close.md`).
 
 **Stale adapters.** A target's adapter is stale when its `bindings.yaml` on `main` disagrees with
 the surface on `main` by name, the comparison the bind-adapter post-check makes. The oracle's is
@@ -98,7 +106,7 @@ replaces `contract-v2`), since what it asked has been asked again.
 | 2 Tests | `contract` | a `contract-v<n>` proposal is approved |
 | | `bind-adapter --target <oracle>` | the `bind-adapter-<oracle>` line of work has an approval |
 | | `derive-tests --domain <d>` | the `derive-tests-<d>` line of work has an approval |
-| | `calibrate --target <oracle>` | every row of `tests/results/<oracle>/latest.json` is `pass`, `not-testable` or `attested`, or carries a ruling; an `unbound` row is neither, and stays open until a binding reaches its test or a ruling closes it |
+| | `calibrate --target <oracle>` | every row of `tests/results/<oracle>/latest.json` is `pass`, `not-testable` or `attested`, or carries a ruling; an `unbound` row stays open until a binding reaches its test, calibration closes it as `persona-unavailable`, or the reviewer's triage rules it. Offered with `--skip-suite` when only such unbound rows keep it open |
 | 3 Design | `design --domain <d>` | the `design-<d>` line of work has an approval |
 | 4 Build | `plan` | the `plan` line of work has an approval |
 | | `build --slice <n>` | the `build-slice-<n>` line of work has an approval at G3 |
@@ -117,8 +125,8 @@ profile runs `calibrate` and the config names `oracle.target`, and `ratify` only
 an escalation to a role a person holds; an escalation that reached the role that raised it, or
 that carries `stalled` (`docs/decisions/0039-an-escalation-that-reaches-nobody.md`); a returned
 proposal no stage produces, which whoever opened it proposes again; missing tests no run can
-answer, and unbound rows whose binding has been sent as often as `policy.loops.rebind` allows,
-each waiting on a ruler. Each is listed with who it waits on and the command that person types, or
+answer, and unbound rows on a target other than the oracle's whose binding has been sent as often
+as `policy.loops.rebind` allows, each waiting on a ruler. Each is listed with who it waits on and the command that person types, or
 for unbound rows what is needed.
 
 ## Outputs
@@ -157,7 +165,8 @@ and unbound bindings waiting on a ruler, each counted apart.
 ## Running something else
 
 `sdlc run <stage>` compares itself with what `next` names: the stage, and each of `--domain`,
-`--target` and `--slice` that `next` names, plus `--stale` and `--revise`. A run that differs is
+`--target` and `--slice` that `next` names, plus `--stale` and `--revise`. `--skip-suite` is not
+compared: a calibration that runs the suite does what one that skips it does, and more. A run that differs is
 refused unless `--reason "<why>"` is given, with a message naming what `next` names. With a
 reason, a line is appended to `.sdlc/runs/<day>.md` before the run starts and committed on its own
 as `run(<stage>): ran instead of what next named`:

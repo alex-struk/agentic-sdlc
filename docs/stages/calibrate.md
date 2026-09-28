@@ -66,17 +66,22 @@ dated file beside it records when that was.
   | `result` | `pass`, `fail`, `unbound`, `stale`, `not-testable` or `attested` |
   | `reason` | why the application was never asked about this criterion, on a `not-testable` or `attested` row — the entry's own text, carried onto the row because the file it was written in is the only place it exists |
   | `tests` | one entry per `test()` in the file: title, status, and the failure message where there is one |
-  | `ruled` | the verb an applied ruling gave this criterion, present only when one has been |
+  | `ruled` | the verb an applied ruling gave this criterion, present only when one has been; `persona-unavailable` on an unbound row closed by the contract (below) |
+  | `unavailable` | on a row ruled `persona-unavailable`: `{ personas, contract }`, the personas its tests needed and the approved `contract-v<n>` proposal that marks them unavailable |
+  | `triage` | `product-question` on a row the reviewer has passed on to the product owner and nobody has ruled on yet |
   | `adapter` | the tree of `tests/adapters/<t>` the row's tests ran with, on every row that ran a spec file; a row carried over from an earlier run keeps its own |
   | `error` | why the row is `fail` when no individual test in it carries a failure message of its own — present only then. `no result recorded` (every test in the file was skipped, or it ran none); `<path>: spec file not found on disk` (the suite's own report names the file but it is missing from disk); or the provenance header's own parse error (the header could not be read at all). The last two also leave `id` and `version` null, since neither the filename nor a missing header can say which criterion the row is for. |
 
   `unbound` is a failure whose every message begins `unbound:` — the adapter says the surface member
   it needed does not exist on this target, which is a gap in the binding rather than a difference in
-  behaviour. It is owed to `bind-adapter` for the target (below). `stale` is a test whose header version trails the index, so it was written against a
-  criterion that has since moved on and its result says nothing about the target.
+  behaviour. It is owed to `bind-adapter` for the target (below), and closes as described under
+  "Unbound rows the binding cannot close". `stale` is a test whose header version trails the index,
+  so it was written against a criterion that has since moved on and its result says nothing about
+  the target.
 
 - **`tests/results/<t>/applied.yaml`** — `{ applied: [<gate file names>], rulings: [{ id, version,
-  verb, gate }] }`. The first list is what makes the stage re-run safe: a ruling whose name is on it
+  verb, gate, adapter?, why? }] }`, where `adapter` is the adapter an `adapter-wrong` verdict was
+  about and `why` the reviewer's reason on an `oracle-cannot` ruling. The first list is what makes the stage re-run safe: a ruling whose name is on it
   is never applied a second time. The second is what puts `ruled` on a row, and it records the
   version the criterion carried *after* the ruling was applied, so a criterion later moved on again
   — by another calibration pass, or by re-running archaeology — comes back unruled and is asked
@@ -109,9 +114,11 @@ dated file beside it records when that was.
   and a closed entry stays on file, so a finding made again about the new adapter, or a row still
   unbound under it, counts as a second send of the same binding. An unbound row is filed only while
   its binding has been sent fewer times than `policy.loops.rebind` (two by default), counting both
-  kinds of entry; past that it is not filed, and `sdlc next` lists it as waiting on a ruler. An
-  unbound entry whose row now passes or fails is closed as met, and one whose row is ruled or gone is
-  withdrawn. Keyed by target as well as by criterion, because an adapter exists per target and a
+  kinds of entry; past that it is not filed, and on the oracle's target it goes to the reviewer's
+  triage (below); on any other target `sdlc next` lists it as waiting on a ruler. A row needing a
+  persona the contract marks unavailable is never filed. An unbound entry whose row now passes or
+  fails is closed as met, and one whose row is ruled or gone is withdrawn; an `oracle-cannot`
+  ruling withdraws any open entry for its row when it is applied. Keyed by target as well as by criterion, because an adapter exists per target and a
   finding about one says nothing about another's.
 
 - **`tests/acceptance/redo.yaml`** — `{ redo: [{ id, version, why, closed? }] }`, owed work of kind
@@ -198,7 +205,8 @@ the runner's own process, never through a tool call.
 
 5. **Write the result set** — this run's own dated file (`<date>.json`, or `<date>-<n>.json` when the
    day already has one) and `latest.json` — marking each row `ruled` where an applied ruling covers
-   that id at its current version.
+   that id at its current version, and `persona-unavailable` where no ruling does and the row needs
+   a persona the contract marks unavailable on the target.
    Each row that names a spec file carries `file_sha`, git's object id for that file as the suite
    ran it, and a row carried over from an earlier run keeps its own.
    Then the missing tests (`docs/operating-model.md` §7): an open item whose test these rows show
@@ -211,7 +219,8 @@ the runner's own process, never through a tool call.
    Then the unbound rows: each open `unbound` row found under the adapter the target has now, with no
    open entry and sent fewer times than `policy.loops.rebind`, is filed on `tests/adapters/rebind.yaml`
    for `bind-adapter`, and an unbound entry whose row has settled is closed. The journal names the
-   criteria filed.
+   criteria filed, the rows closed as `persona-unavailable`, and the rows going to the reviewer's
+   triage.
 6. **Return the summary and every path written.**
 
 ## Checks that block
@@ -242,16 +251,14 @@ the runner's own process, never through a tool call.
 
 The stage's own exit condition is the one in the design spec, and the one phase 2 exits on: **every
 row is pass or ruled** (§5.7, §15), where a `not-testable` or `attested` row, which the application
-was never asked about, closes too. No row is `fail` without a ruling, and no row is `unbound`: an
-unbound row is closed by a binding run that reaches its test, which the next calibration then finds
-passing or failing, or by a ruling on the row. That is reached over runs rather than within one — a
-run that finds unruled failures or unbound rows still exits 0, having written the results, opened
-the proposal that asks about the failures and filed the unbound rows for `bind-adapter`. The loop is
-closed when a run finds every failure ruled, nothing unbound, and opens nothing.
-
-An unbound row whose binding has been sent to `bind-adapter` as often as `policy.loops.rebind`
-allows is not sent again. No calibration verb closes one, so it waits on a ruler, and the phase with
-it (`docs/stages/next.md`).
+was never asked about, closes too. No row is `fail` without a ruling, and no row is `unbound`
+without one. An unbound row closes in one of three ways: a binding run reaches its test, which the
+next calibration then finds passing or failing; the contract marks a persona it needs unavailable,
+and calibration rules it `persona-unavailable`; or, once `bind-adapter` has had its sends for it,
+the reviewer rules it at triage (see "Unbound rows the binding cannot close"). That is reached
+over runs rather than within one — a run that finds unruled failures or unbound rows still exits
+0, having written the results, opened the proposal that asks about them and filed the unbound rows
+for `bind-adapter`. The loop is closed when a run finds every row pass or ruled, and opens nothing.
 
 Any pre-check or post-check failure exits 1 and prints the failing check's messages;
 `stage(calibrate): post-checks failed` is committed with only the journal and run record staged, and
@@ -294,11 +301,13 @@ the product owner's to answer (`docs/decisions/0008-adapter-wrong.md`). So the f
 personas in turn:
 
 1. A failure whose every failing test ended in the adapter's own `unbound:` error is recorded as
-   `unbound`, not `fail`, and reaches neither. It is owed to `bind-adapter` instead, with the
-   adapter's own reason (`tests/adapters/rebind.yaml`, above).
-2. Every other failure is first put to the reviewer at G3, as `calibrate-triage-<target>-<n>`, in
-   the triage grammar: `adapter-wrong <ID>: <why>` or `product-question <ID>`. Nothing goes to the
-   product owner while any failure is unsorted or a sorting is still waiting on its ruling.
+   `unbound`, not `fail`, and reaches neither at first. It is owed to `bind-adapter` instead, with
+   the adapter's own reason (`tests/adapters/rebind.yaml`, above).
+2. Every other failure, and every unbound row on the oracle's target that `bind-adapter` has had its
+   sends for, is first put to the reviewer at G3, as `calibrate-triage-<target>-<n>`, in the triage
+   grammar: `adapter-wrong <ID>: <why>`, `product-question <ID>` or, for an unbound row only,
+   `oracle-cannot <ID>: <why>`. Nothing goes to the product owner while any failure is unsorted or
+   a sorting is still waiting on its ruling.
 3. Once every failure is sorted, the ones passed on as `product-question` go to the product owner at
    G1, as `calibrate-<target>-<n>`, in the three verbs above.
 
@@ -331,6 +340,42 @@ A proposal the persona **escalated** is unruled: escalation hands the question t
 answers nothing, so the gate file it leaves on the branch does not close the proposal. The stage
 keeps waiting on it rather than opening `-2` and `-3` on every run while a person still owes the
 answer.
+
+### Unbound rows the binding cannot close
+
+Two kinds of unbound row are not closed by a binding run
+(`docs/decisions/0068-an-unbound-row-the-binding-cannot-close.md`).
+
+**A persona the approved contract marks unavailable.** A row whose every failing test ended in the
+adapter's `unbound: signIn.<persona> — …` error, where each persona named has its sign-in for the
+target's identity marked `{ unavailable: "<reason>" }` in `spec/contract/personas.yaml`
+(`docs/stages/contract.md`), is ruled `persona-unavailable` by calibration itself and carries
+`unavailable: { personas, contract }`, `contract` naming the newest approved `contract-v<n>`
+proposal. It is never filed for `bind-adapter` and never put to the reviewer. It is worked out from
+the contract on every run and never recorded in `applied.yaml`, so a later contract that offers the
+persona re-opens the row, which is then owed to `bind-adapter` like any other. A row with any other
+unbound member is not closed this way.
+
+**The oracle cannot reach the state the test needs.** Once `bind-adapter` has been sent a criterion
+on the oracle's target as often as `policy.loops.rebind` allows and the adapter still reports it
+unbound, the row goes onto the reviewer's triage page, in a section of its own that quotes the
+adapter's reasons and says how often the binding was sent. The reviewer answers:
+
+- `oracle-cannot <ID>: <why>` — the oracle genuinely cannot be driven into, or observed in, the
+  state the test needs without changing its code: behind an external identity provider, reachable
+  only through a link the application emails, enforced only by a browser-native dialog. The row is
+  ruled `oracle-cannot`, the ruling is recorded in `applied.yaml` with its reason, any open rebind
+  entry for the row is withdrawn, and no criterion changes. It does not lapse when the adapter
+  changes; it lapses when the criterion's version does, and the row is asked about afresh. It is
+  applied only to an unbound row on the oracle's target: on any other row the run reports it as not
+  applied and the row is sorted again. It is never a way to skip binding work.
+- `adapter-wrong <ID>: <why>` — the adapter could bind it. The finding is filed on the rebind list
+  whatever the count, and the binding run it goes to past the limit has its proposal escalated.
+- `product-question <ID>` — the criterion itself looks suspect; the row goes to the product owner.
+
+`sdlc next` offers `calibrate --target <oracle> --skip-suite` when such rows are all that keeps the
+calibration open, since the suite would only report them unbound again (`docs/stages/next.md`). On
+any other target a spent unbound row waits on a ruler.
 
 ## Re-run behaviour
 

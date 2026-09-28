@@ -459,9 +459,16 @@ Rulings: `defect-in-old` (keep the test; the rebuild must pass it), `spec-wrong`
 `test-wrong` (back to `derive-tests` for that criterion, still blind). An
 `unbound` row is a gap in the old adapter, not a question about the product: it
 is owed to `bind-adapter old`, which is shown the adapter's own reason for it.
+Once the binding has been sent as often as `policy.loops.rebind` allows, the
+row goes to the reviewer's calibration triage, which rules `oracle-cannot`
+(the old target cannot be put into, or observed in, the state the test needs
+without changing its code), `adapter-wrong` or `product-question`. A row whose
+tests need a persona the approved contract marks unavailable on the target is
+ruled `persona-unavailable` by the stage itself.
 Exit: every row is pass or ruled, as phase 2 requires (section 15): no row is
 `fail` without a ruling, and no row is `unbound` until the binding reaches its
-test or a ruling closes it. Deterministic. Re-run safe.
+test, the contract closes it or the reviewer's triage rules it. Deterministic.
+Re-run safe.
 
 ### 5.8 `design` (gate G-DESIGN)
 
@@ -881,7 +888,7 @@ availability.
 |---|---|---|---|
 | 0 Harness | Create both repos locally, `sdlc init`, constitution, config, guardrails, persona briefs | Checkpoint checks green on an empty proposal branch | Tech lead |
 | 1 Spec | `intent`, `archaeology` per domain, `ratify` | Every domain ratified; `criteria-index.json` has no `inferred` or `open` accepted rows | Tech lead |
-| 2 Tests | `derive-tests`, `bind-adapter old`, `calibrate` | Every calibrate row is pass or ruled | Tech lead |
+| 2 Tests | `derive-tests`, `bind-adapter old`, `calibrate` | Every calibrate row is pass or ruled; an unbound row is ruled by the reviewer's triage (`oracle-cannot`) or closed as `persona-unavailable` | Tech lead |
 | 3 Design | `design` | Catalogue approved | UX reviewer |
 | 4 Build | `plan`, then per slice `build`, `verify`, `review-and-ship`, `deploy` | Every slice done per section 7.4; parity metric reported | Tech lead |
 | 5 Rails | `operate` metrics, one feature through the full chain, one trivial change through the short circuit, harness improvements from the run record | The pipeline version bumps; rebuild two starts from the same config | Tech lead |

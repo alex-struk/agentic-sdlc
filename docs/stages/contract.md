@@ -34,7 +34,10 @@ from the ratified criteria.
   offers no way to act as carries `sign_in: { <identity>: { unavailable: "<reason>" } }` instead —
   used only when the target truly has no way to act as that role, with a reason saying why.
   `bind-adapter`'s `signIn` throws `unbound: signIn.<persona id> — <reason>` for an identity marked
-  this way, so calibrate reports every criterion that needs it as `unbound`.
+  this way, so calibrate reports every criterion that needs it as `unbound`, and closes a row whose
+  every failing test stopped there as `persona-unavailable` (`docs/stages/calibrate.md`). Marking a
+  persona unavailable therefore closes the criteria that need it on that target; offering it again
+  in a later contract re-opens them.
 - `spec/contract/openapi.yaml`, assembled from the old application's own API description when one
   exists, or written from its routes, with a `# recovered from <path(s)> at <commit>` header — only
   when `config.sources.old` is configured.
