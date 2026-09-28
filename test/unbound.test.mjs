@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isOpen, read, sends } from "../src/spec/owed.mjs";
-import { UNBOUND, openUnboundRows, unboundHanded, unboundOwed, unboundWhy, syncUnbound, legacyAdapter } from "../src/spec/unbound.mjs";
+import { UNBOUND, PERSONA_UNAVAILABLE, openUnboundRows, unboundHanded, unboundOwed, unboundWhy, syncUnbound, legacyAdapter, targetIdentity, unavailablePersonas, personaUnavailable } from "../src/spec/unbound.mjs";
 import { stageFor } from "../src/stages/registry.mjs";
 
 const row = (id, result, more = {}) => ({
@@ -219,4 +219,64 @@ test("a binding run is told which bindings its own adapter reported unbound, in 
   assert.match(prompt, /say in the reason what you did to look/);
   const only = stage.prompt({ target: "old", bindAdapterBaseUrl: "http://x", bindAdapterRebind: [{ id: "R-2.3", found: UNBOUND, why: "unbound: a-page.go — gone" }] });
   assert.doesNotMatch(only, /the reviewer found/);
+});
+
+// ── a persona the contract marks unavailable ─────────────────────────────────────────────
+
+// A test signing in as a persona the approved contract says the target offers no way to act as
+// can never run against it, whatever a binding run does (`docs/decisions/0068`).
+const PERSONAS = {
+  personas: [
+    { id: "applicant", can: ["apply"], sign_in: { "session-route": { route: "/as/applicant" }, "sandbox-idp": { username: "applicant-1" } } },
+    { id: "second-applicant", can: ["apply"], sign_in: { "session-route": { unavailable: "the target has one applicant account" }, "sandbox-idp": { username: "applicant-2" } } },
+    { id: "blank-reason", can: ["apply"], sign_in: { "session-route": { unavailable: "  " } } },
+    { id: "visitor", can: ["look"], sign_in: null },
+  ],
+};
+
+const signInRow = (id, personas, more = {}) => row(id, "unbound", {
+  tests: personas.map((p, i) => ({ title: `t${i}`, status: "failed", error: `Error: unbound: signIn.${p} — the target has one applicant account\n    at stack` })),
+  ...more,
+});
+
+test("a target's identity is the oracle's for the oracle, and its own entry's otherwise", () => {
+  const config = { oracle: { target: "old", identity: "session-route" }, targets: { new: { identity: "sandbox-idp" } } };
+  assert.equal(targetIdentity(config, "old"), "session-route");
+  assert.equal(targetIdentity(config, "new"), "sandbox-idp");
+  assert.equal(targetIdentity(config, "elsewhere"), null);
+});
+
+test("the personas the contract marks unavailable are read per identity, each with its reason", () => {
+  const onOracle = unavailablePersonas(PERSONAS, "session-route");
+  assert.deepEqual([...onOracle], [["second-applicant", "the target has one applicant account"]], "a blank reason marks nothing");
+  assert.deepEqual([...unavailablePersonas(PERSONAS, "sandbox-idp")], []);
+  assert.deepEqual([...unavailablePersonas(null, "session-route")], []);
+  assert.deepEqual([...unavailablePersonas(PERSONAS, null)], []);
+});
+
+test("a row closes on an unavailable persona only when every failing test stopped at signing in as one", () => {
+  const unavailable = unavailablePersonas(PERSONAS, "session-route");
+  assert.deepEqual(personaUnavailable(signInRow("R-1.1", ["second-applicant", "second-applicant"]), unavailable), ["second-applicant"]);
+  const mixed = signInRow("R-1.2", ["second-applicant"]);
+  mixed.tests.push({ title: "member", status: "failed", error: 'Error: unbound: a-page.go — no button labelled "Go" on /a' });
+  assert.equal(personaUnavailable(mixed, unavailable), null, "a member the adapter did not bind is still binding work");
+  assert.equal(personaUnavailable(signInRow("R-1.3", ["applicant"]), unavailable), null, "a persona the contract offers is the adapter's to sign in as");
+  assert.equal(personaUnavailable(signInRow("R-1.4", ["second-applicant"]), unavailablePersonas(PERSONAS, "sandbox-idp")), null, "unavailable on another identity only");
+  assert.equal(personaUnavailable(signInRow("R-1.5", ["second-applicant"], { result: "fail" }), unavailable), null, "only an unbound row");
+  const prefix = signInRow("R-1.6", ["second-applicant-other"]);
+  assert.equal(personaUnavailable(prefix, unavailable), null, "the persona is named whole, not by prefix");
+  const passing = signInRow("R-1.7", ["second-applicant"]);
+  passing.tests.push({ title: "fine", status: "passed" });
+  assert.deepEqual(personaUnavailable(passing, unavailable), ["second-applicant"], "a passing test beside it changes nothing");
+});
+
+test("a row needing an unavailable persona is owed to nobody, and never waits on a ruler", () => {
+  const unavailable = unavailablePersonas(PERSONAS, "session-route");
+  const sent = (adapter) => ({ kind: "rebind", item: "old:R-1.1", id: "R-1.1", target: "old", why: "x", found: UNBOUND, adapter, closed: { outcome: "met", why: "changed" } });
+  const rows = [signInRow("R-1.1", ["second-applicant"], { adapter: "C" }), row("R-1.2", "unbound", { adapter: "C" })];
+  const fresh = unboundOwed({ target: "old", rows, adapter: "C", entries: [], limit: 2, unavailable });
+  assert.deepEqual(fresh.pending.map((e) => e.id), ["R-1.2"]);
+  const past = unboundOwed({ target: "old", rows, adapter: "C", entries: [sent("A"), sent("B")], limit: 2, unavailable });
+  assert.deepEqual(past.spent, []);
+  assert.equal(PERSONA_UNAVAILABLE, "persona-unavailable");
 });

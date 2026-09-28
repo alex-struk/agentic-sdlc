@@ -23,7 +23,17 @@
 //
 // **The limit.** An item is filed only while it has been sent fewer times than
 // `policy.loops.rebind`. Past that it is no longer owed to `bind-adapter`, which has had as many
-// attempts as the policy allows, and `sdlc next` lists it as waiting on a ruler instead.
+// attempts as the policy allows. On the oracle's target the row goes to the reviewer's
+// calibration triage, which closes it (`oracle-cannot`), sends it back to `bind-adapter`
+// (`adapter-wrong`) or passes it to the product owner (`product-question`); on any other target
+// `sdlc next` lists it as waiting on a ruler (`docs/decisions/0068`).
+//
+// **A persona the contract marks unavailable.** A row whose every failing test stopped at the
+// adapter's `unbound: signIn.<persona>` error, for a persona whose sign-in the approved contract
+// marks `{ unavailable: "<reason>" }` on the target's identity, can never run there whatever a
+// binding run does. It is owed to nobody, and calibration closes it as `persona-unavailable`,
+// worked out afresh from the contract on every run, so a later contract that offers the persona
+// re-opens it.
 //
 // **Rows nothing has filed.** A row on file with no entry for it is owed all the same, by every
 // reader, the way a missing test's record is (`src/spec/missing-tests.mjs`): `sdlc next` and a
@@ -35,6 +45,7 @@
 // when the row is ruled, is some other result, or is gone.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
 import { owedLoopLimit } from "../config/policy.mjs";
@@ -42,10 +53,13 @@ import { redactLocalPaths } from "../lib/redact.mjs";
 import { close, isOpen, open, read, sends } from "./owed.mjs";
 
 export const UNBOUND = "unbound";
+export const PERSONA_UNAVAILABLE = "persona-unavailable";
 
 const KIND = "rebind";
 const BY = "runner:calibrate";
 const UNBOUND_LINE = /^(?:Error: )?(unbound: .*)$/m;
+// The adapter's sign-in error names the persona whole, then a space: `unbound: signIn.<id> — …`.
+const SIGN_IN_LINE = /^unbound: signIn\.(\S+)(?:\s|$)/;
 
 const itemOf = (target, id) => `${target}:${id}`;
 
@@ -66,6 +80,44 @@ export function unboundWhy(row) {
   for (const t of row?.tests ?? []) if (t?.status !== "passed" && t?.status !== "skipped") take(t?.error);
   if (!said.length) take(row?.error);
   return said.join("; ") || "unbound: the adapter gave no reason";
+}
+
+// The identity a target signs its personas in through: the oracle's for the oracle's target,
+// the target's own entry's otherwise, or `null` where the config names none.
+export function targetIdentity(config, target) {
+  if (target && target === config?.oracle?.target) return config.oracle.identity ?? null;
+  return config?.targets?.[target]?.identity ?? null;
+}
+
+// The personas the contract (`spec/contract/personas.yaml`, parsed) marks unavailable on
+// `identity`, each with its reason. A reason that is blank marks nothing, as the contract's own
+// post-check reads it.
+export function unavailablePersonas(doc, identity) {
+  const out = new Map();
+  if (!identity) return out;
+  for (const p of Array.isArray(doc?.personas) ? doc.personas : []) {
+    const entry = p?.sign_in?.[identity];
+    const reason = entry && typeof entry === "object" && !Array.isArray(entry) ? entry.unavailable : undefined;
+    if (typeof p?.id === "string" && typeof reason === "string" && reason.trim()) out.set(p.id, reason.trim());
+  }
+  return out;
+}
+
+// The unavailable personas an unbound row's failures all stopped at, in the order the tests
+// named them, or `null` unless every failing test ended in the adapter's sign-in error for a
+// persona `unavailable` names. A row with any other unbound member is still binding work.
+export function personaUnavailable(row, unavailable) {
+  if (row?.result !== UNBOUND || !unavailable?.size) return null;
+  const failing = (row.tests ?? []).filter((t) => t?.status !== "passed" && t?.status !== "skipped");
+  const messages = failing.length ? failing.map((t) => t?.error) : [row.error];
+  const named = [];
+  for (const text of messages) {
+    const line = UNBOUND_LINE.exec(String(text ?? ""))?.[1]?.trim() ?? "";
+    const persona = SIGN_IN_LINE.exec(line)?.[1];
+    if (!persona || !unavailable.has(persona)) return null;
+    if (!named.includes(persona)) named.push(persona);
+  }
+  return named.length ? named : null;
 }
 
 // The tree of `tests/adapters/<target>` at `rev`, or "" where it has none.
@@ -94,14 +146,15 @@ function entryFor(target, row, adapter) {
 // has since changed is `pending` whatever its count, carrying the adapter it was found under, so
 // a reader sends it to calibration to be looked at again; one found under the adapter the target
 // has now is `pending` while it has been sent fewer than `limit` times, and `spent` once it has
-// been sent that many.
-export function unboundOwed({ target, rows, adapter, fallback = "", entries = [], limit }) {
+// been sent that many. A row needing a persona `unavailable` names is neither: calibration
+// closes it.
+export function unboundOwed({ target, rows, adapter, fallback = "", entries = [], limit, unavailable = new Map() }) {
   const pending = [];
   const spent = [];
   const held = new Set(entries.filter((e) => e?.kind === KIND && isOpen(e)).map((e) => e.item));
   for (const row of openUnboundRows({ rows })) {
     const item = itemOf(target, row.id);
-    if (held.has(item)) continue;
+    if (held.has(item) || personaUnavailable(row, unavailable)) continue;
     const found = row.adapter ?? fallback;
     if (found !== adapter) { pending.push(entryFor(target, row, found)); continue; }
     const n = sends(entries, item);
@@ -117,18 +170,45 @@ function readResults(projectDir, target) {
   try { return JSON.parse(readText(p)); } catch { return null; }
 }
 
+// The contract's personas in the working tree, parsed, or `null` where there are none.
+function readPersonas(projectDir) {
+  const p = join(projectDir, "spec", "contract", "personas.yaml");
+  if (!existsSync(p)) return null;
+  try { return parseYaml(readText(p)); } catch { return null; }
+}
+
+// The personas the contract in the working tree marks unavailable on `target`.
+export function unavailableOn(projectDir, target, config) {
+  return unavailablePersonas(readPersonas(projectDir), targetIdentity(config, target));
+}
+
+// What the working tree's unbound rows for `target` owe, as `unboundOwed` reads it.
+function owedHere(projectDir, target, config, rows) {
+  const adapter = adapterAt(projectDir, target);
+  return {
+    adapter,
+    ...unboundOwed({
+      target, rows, adapter, fallback: legacyAdapter(projectDir, target),
+      entries: read(projectDir, KIND), limit: owedLoopLimit(config, KIND), unavailable: unavailableOn(projectDir, target, config),
+    }),
+  };
+}
+
 // What a binding run for `target` is handed beyond its open rebind entries: the unbound rows in
 // the working tree nothing has filed, found under the adapter it is about to change and not yet
 // sent as often as `policy.loops.rebind` allows.
 export function unboundHanded(projectDir, target, config) {
   const results = readResults(projectDir, target);
   if (!openUnboundRows(results).length) return [];
-  const adapter = adapterAt(projectDir, target);
-  const { pending } = unboundOwed({
-    target, rows: results.rows, adapter, fallback: legacyAdapter(projectDir, target),
-    entries: read(projectDir, KIND), limit: owedLoopLimit(config, KIND),
-  });
+  const { adapter, pending } = owedHere(projectDir, target, config, results.rows);
   return pending.filter((e) => e.adapter === adapter);
+}
+
+// The unbound rows among `rows` that `bind-adapter` has had its sends for under the adapter the
+// target has now, each as `unboundOwed` reports it (id, sends, limit, the adapter's reason).
+export function unboundSpent(projectDir, target, config, rows) {
+  if (!openUnboundRows({ rows }).length) return [];
+  return owedHere(projectDir, target, config, rows).spent;
 }
 
 // Brings the target's unbound entries into line with `rows`, stamped by the runner. `adapter` is
@@ -142,13 +222,15 @@ export function unboundHanded(projectDir, target, config) {
 //    with no open entry and sent fewer than `limit` times, is filed; and an open entry under
 //    `adapter` whose row is no longer an open unbound row is closed.
 //
+// A row needing a persona `unavailable` names is never filed: calibration closes it.
+//
 // Returns the path written (`null` when nothing changed) and the criteria opened and closed.
-export function syncUnbound(projectDir, target, { rows = [], adapter, fallback = "", limit, settle = true, at = new Date().toISOString() } = {}) {
+export function syncUnbound(projectDir, target, { rows = [], adapter, fallback = "", limit, settle = true, unavailable = new Map(), at = new Date().toISOString() } = {}) {
   const opened = [];
   const closed = [];
   let path = null;
   const wrote = (p) => { if (p) path = p; };
-  const unbound = openUnboundRows({ rows });
+  const unbound = openUnboundRows({ rows }).filter((row) => !personaUnavailable(row, unavailable));
   const foundUnder = (row) => row.adapter ?? fallback;
   const stamp = { by: BY, at };
   // The reason is written into a committed file, so it is scrubbed of local paths here, where
