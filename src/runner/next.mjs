@@ -22,11 +22,12 @@ import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../lib/git.mjs";
 import { parseConfig } from "../config/load.mjs";
-import { nextOrder } from "../config/policy.mjs";
+import { nextOrder, owedLoopLimit } from "../config/policy.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
 import { openAcross, readAt } from "../spec/owed.mjs";
 import { bindingGaps } from "../spec/surface.mjs";
 import { MISSING_TEST, openMissingTestsAt, retired } from "../spec/missing-tests.mjs";
+import { UNBOUND, legacyAdapter, openUnboundRows, unboundOwed } from "../spec/unbound.mjs";
 import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
 import { stallReason } from "./escalation.mjs";
@@ -230,6 +231,21 @@ export function readRecord(projectDir, rev = "main") {
     ...openAcross(projectDir, { rev, familyOf: proposalFamily }).filter((e) => e.kind !== MISSING_TEST),
     ...openMissingTestsAt(projectDir, rev),
   ];
+  // An unbound calibration row nothing has filed is owed all the same, and one sent to
+  // bind-adapter as often as `policy.loops.rebind` allows waits on a ruler
+  // (`src/spec/unbound.mjs`). Every rebind entry is read, closed ones too, since they are what
+  // counts the sends.
+  const unboundSpent = [];
+  const rebinds = readAt(projectDir, "rebind", rev);
+  for (const t of targets) {
+    const r = results.get(t);
+    const rows = openUnboundRows(r.latest);
+    if (!rows.length) continue;
+    const fallback = rows.some((row) => row.adapter === undefined) ? legacyAdapter(projectDir, t, rev) : "";
+    const { pending, spent } = unboundOwed({ target: t, rows, adapter: r.adapter, fallback, entries: rebinds, limit: owedLoopLimit(config, "rebind") });
+    owed.push(...pending);
+    unboundSpent.push(...spent);
+  }
   // Every request, answered or not: a return waits on what its own ruling asked of another
   // stage until the answer is approved, which the open list alone cannot say.
   const requests = readAt(projectDir, "request", rev, { familyOf: proposalFamily });
@@ -238,7 +254,7 @@ export function readRecord(projectDir, rev = "main") {
     ...proposalBranches.map((b) => b.slice("proposal/".length)),
     ...returnedBranches.map((b) => b.slice("returned/".length)),
   ];
-  return { rev, config, domains, targets, gates, proposals, names, index, tasks, domainIds, results, owed, requests, headers: specHeaders(projectDir, rev) };
+  return { rev, config, domains, targets, gates, proposals, names, index, tasks, domainIds, results, owed, unboundSpent, requests, headers: specHeaders(projectDir, rev) };
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────────────
@@ -290,10 +306,23 @@ function ratified(record, domain) {
   return (record.domainIds.get(domain) ?? []).every((id) => inIndex.has(id));
 }
 
+const closesCalibration = (r) => ["pass", "not-testable", "attested"].includes(r?.result) || Boolean(r?.ruled);
+
 function calibrated(record, target) {
   const rows = record.results.get(target)?.latest?.rows;
   if (!Array.isArray(rows)) return false;
-  return rows.every((r) => ["pass", "not-testable", "attested"].includes(r?.result) || r?.ruled);
+  return rows.every(closesCalibration);
+}
+
+// Whether all that keeps a target's calibration open is unbound rows sent to bind-adapter as
+// often as `policy.loops.rebind` allows. Calibrating again cannot close them, so the step waits
+// on a ruler rather than being offered.
+function calibrationWaitsOnRuler(record, target) {
+  const rows = record.results.get(target)?.latest?.rows;
+  if (!Array.isArray(rows)) return false;
+  const spent = new Set((record.unboundSpent ?? []).filter((s) => s.target === target).map((s) => s.id));
+  const open = rows.filter((r) => !closesCalibration(r));
+  return open.length > 0 && open.every((r) => r?.result === UNBOUND && spent.has(r.id));
 }
 
 // The steps of the sequence this project's profile runs, in order, each with what closes it.
@@ -467,9 +496,16 @@ function owedWork(record, inFlight, bindsNow) {
     } else if (e.kind === "recovery") {
       group("archaeology", { domain: e.domain ?? byId.get(e.id)?.domain ?? undefined, revise: true }, "criterion to recover again", "criteria to recover again");
     } else if (e.kind === "rebind") {
+      // A reviewer's verdict records the adapter it was about on its ruling; an unbound row's
+      // entry carries the adapter it was found under.
       const r = record.results.get(e.target);
-      const found = (r?.applied?.rulings ?? []).filter((x) => x?.verb === "adapter-wrong" && x.id === e.id).at(-1);
-      if (found?.adapter && r.adapter && found.adapter !== r.adapter) group("calibrate", { target: e.target }, "binding to check again now that its adapter has changed (rebind)", "bindings to check again now that their adapter has changed (rebind)");
+      const ruling = (r?.applied?.rulings ?? []).filter((x) => x?.verb === "adapter-wrong" && x.id === e.id).at(-1);
+      const about = e.adapter || ruling?.adapter;
+      const unbound = e.found === UNBOUND;
+      if (about && r?.adapter && about !== r.adapter) {
+        if (unbound) group("calibrate", { target: e.target }, "unbound row to check again now that its adapter has changed", "unbound rows to check again now that their adapter has changed");
+        else group("calibrate", { target: e.target }, "binding to check again now that its adapter has changed (rebind)", "bindings to check again now that their adapter has changed (rebind)");
+      } else if (unbound) group("bind-adapter", { target: e.target }, "binding the adapter reports unbound", "bindings the adapter reports unbound");
       else group("bind-adapter", { target: e.target }, "binding to fix (rebind)", "bindings to fix (rebind)");
     } else if (e.kind === MISSING_TEST) {
       // A test owed by the writer is derived again in its domain; one owed a run is run by the
@@ -527,7 +563,21 @@ function owedWork(record, inFlight, bindsNow) {
     const where = g.args.domain ? ` in ${g.args.domain}` : g.args.target ? ` for target ${g.args.target}` : "";
     items.push({ kind: "owed", stage: g.stage, args: g.args, command: runCommand(g.stage, g.args), why: `${detail}${where} owed by ${g.stage}` });
   }
-  const waiting = [...unanswered.values()].map((w) => {
+  const spentBy = new Map();
+  for (const s of record.unboundSpent ?? []) {
+    if (!spentBy.has(s.target)) spentBy.set(s.target, []);
+    spentBy.get(s.target).push(s);
+  }
+  const spent = [...spentBy].map(([target, list]) => {
+    const ids = list.map((s) => s.id);
+    const shown = ids.length > 10 ? `${ids.slice(0, 10).join(", ")} and ${ids.length - 10} more` : ids.join(", ");
+    const limit = list[0].limit;
+    return { on: "a ruler", kind: UNBOUND, count: list.length, name: `unbound bindings (${target})`, gate: null,
+      why: `${plural(list.length, "binding")} bind-adapter was sent ${plural(limit, "time")} (policy.loops.rebind) and still reports unbound on ${target}: ${shown}; `
+        + `${list.length === 1 ? "it is" : "they are"} not sent again, and each row stays open until a ruler decides it`,
+      command: "no calibration verb closes an unbound row: a ruler decides what each one needs" };
+  });
+  const waiting = [...spent, ...[...unanswered.values()].map((w) => {
     const them = w.n === 1 ? "it" : "them";
     const why = w.kept
       ? `${plural(w.n, "missing test")} ${w.stage} was handed and kept at ${[...w.by].join(", ")}: its run could not supply what ${w.n === 1 ? "it needs" : "they need"}`
@@ -535,7 +585,7 @@ function owedWork(record, inFlight, bindsNow) {
     const rerun = w.kept ? `, or sdlc run ${w.stage} --reason "<what has changed>"` : "";
     return { on: "a ruler", kind: MISSING_TEST, count: w.n, name: `missing tests (${w.stage})`, gate: null, why,
       command: `condition-withdrawn missing-test/<id>: <why> on any ruling${rerun} (sdlc checks lists each)` };
-  });
+  })];
   return { items, waiting, summary: [...summary.values()], stale: [...stale].map(([domain, ids]) => ({ domain, ids })), staleAdapters };
 }
 
@@ -592,6 +642,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
   for (const s of open.filter((x) => x.phase === phaseNumber)) {
     if (!s.after.every((k) => byKey.get(k)?.done ?? true)) continue;
     if (props.inFlight.has(subjectKey(s.stage, s.args))) continue;
+    if (s.stage === "calibrate" && calibrationWaitsOnRuler(record, s.args.target)) continue;
     if (!STAGES_BY_NAME[s.stage]?.implemented) { blocked ??= `the next stage in the sequence, ${s.stage}, is not implemented in this pipeline yet`; continue; }
     const where = s.args.domain ? ` for ${s.args.domain}` : s.args.target ? ` for target ${s.args.target}` : s.args.slice !== undefined ? ` for slice ${s.args.slice}` : "";
     sequence.push({ kind: "sequence", stage: s.stage, args: s.args, command: runCommand(s.stage, s.args),
@@ -677,10 +728,12 @@ export function formatNextShort(r) {
   const more = [];
   if (r.ready.length > 1) more.push(`${r.ready.length - 1} more ready`);
   if (r.held?.length) more.push(`${plural(r.held.length, "revision")} held`);
-  const proposals = r.waiting.filter((w) => w.kind !== MISSING_TEST);
+  const proposals = r.waiting.filter((w) => w.kind !== MISSING_TEST && w.kind !== UNBOUND);
   const tests = r.waiting.filter((w) => w.kind === MISSING_TEST).reduce((n, w) => n + w.count, 0);
+  const unbound = r.waiting.filter((w) => w.kind === UNBOUND).reduce((n, w) => n + w.count, 0);
   if (proposals.length) more.push(`${plural(proposals.length, "proposal")} waiting on a person`);
   if (tests) more.push(`${plural(tests, "missing test")} waiting on a ruler`);
+  if (unbound) more.push(`${plural(unbound, "unbound binding")} waiting on a ruler`);
   if (more.length) lines.push(`  (${more.join(", ")}: sdlc next)`);
   return lines.join("\n");
 }

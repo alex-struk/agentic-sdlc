@@ -457,6 +457,64 @@ test("another target's stale adapter is offered once the Build phase is reached,
   assert.match(formatNext(r), /^stale adapters: 1 member in old, 1 member in new$/m);
 });
 
+// A calibration row whose every failing test ended in the adapter's own `unbound:` error
+// reaches no reviewer and no product owner, so the only run that can close it is a binding run
+// (`docs/decisions/0067`).
+const unboundRow = (id, domain, more = {}) => ({
+  id, version: 1, domain, file: `tests/acceptance/${domain}/${id}.spec.ts`, result: "unbound",
+  tests: [{ title: "t", status: "failed", error: `Error: unbound: a-page.stop — no button labelled "Stop" on /a` }], ...more,
+});
+
+function calibratedWithUnbound(d, rows) {
+  adaptersBound(d, { old: bindingsFor("old", FULL), fresh: bindingsFor("new", FULL) });
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ rows }) }, "stage(calibrate): calibrate against old");
+}
+
+test("an unbound calibration row is owed to bind-adapter for its target", (t) => {
+  const d = project(t, { extra: TARGETS });
+  specDone(d);
+  calibratedWithUnbound(d, [unboundRow("R-1.1", "alpha"), unboundRow("R-2.1", "beta")]);
+  const r = whatNext(d);
+  assert.equal(r.phase.number, 2, "an unbound row keeps phase 2 open");
+  assert.equal(r.next.command, "sdlc run bind-adapter --target old");
+  assert.equal(r.next.kind, "owed");
+  assert.match(r.next.why, /^2 bindings the adapter reports unbound for target old owed by bind-adapter$/);
+  assert.deepEqual(r.owed.map((o) => [o.kind, o.stage, o.count]), [["rebind", "bind-adapter", 2]]);
+});
+
+test("an unbound row found under an adapter that has since changed is checked again by calibrate", (t) => {
+  const d = project(t, { extra: TARGETS });
+  specDone(d);
+  calibratedWithUnbound(d, [unboundRow("R-1.1", "alpha"), { id: "R-2.1", result: "pass" }]);
+  commit(d, { "tests/adapters/old/index.ts": "export default 2;\n" }, "merge bind-adapter-old-2");
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run calibrate --target old");
+  assert.equal(r.next.kind, "owed");
+  assert.match(r.next.why, /^1 unbound row to check again now that its adapter has changed for target old owed by calibrate$/);
+});
+
+test("an unbound row sent to bind-adapter as often as policy.loops.rebind allows waits on a ruler", (t) => {
+  const d = project(t, { extra: TARGETS, policy: ["loops: { rebind: 2 }"] });
+  specDone(d);
+  const sent = (adapter) => ({ id: "R-1.1", target: "old", why: "unbound: a-page.stop — gone", found: "unbound", adapter,
+    closed: { outcome: "met", why: "tests/adapters/old has changed since this was found", by: "runner:calibrate", at: "2026-01-02T00:00:00.000Z" } });
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [sent("a1"), sent("a2")] }) });
+  calibratedWithUnbound(d, [unboundRow("R-1.1", "alpha"), { id: "R-2.1", result: "pass" }]);
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.stage === "bind-adapter"), "not sent a third time");
+  assert.ok(!r.ready.some((c) => c.stage === "calibrate"), "calibrating again changes nothing a ruler has not decided");
+  assert.equal(r.state, "waiting");
+  const [w] = r.waiting;
+  assert.equal(w.on, "a ruler");
+  assert.equal(w.kind, "unbound");
+  assert.equal(w.count, 1);
+  assert.match(w.why, /^1 binding bind-adapter was sent 2 times \(policy\.loops\.rebind\) and still reports unbound on old: R-1\.1/);
+  assert.match(w.command, /no calibration verb closes an unbound row/);
+  assert.match(formatNext(r), /waiting on a person:\n {2}a ruler: unbound bindings \(old\) — /);
+  assert.match(formatNextShort(r), /1 unbound binding waiting on a ruler/);
+});
+
 test("which kind of ready work goes first is policy.next.order", (t) => {
   const d = project(t, { policy: ["next: { order: [sequence, owed, proposals] }"] });
   specDone(d);
