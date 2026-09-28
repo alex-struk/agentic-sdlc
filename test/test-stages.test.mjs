@@ -15,6 +15,7 @@ import { newProject } from "../src/commands/new.mjs";
 import { runStage } from "../src/commands/run.mjs";
 import { rule, settleApproved } from "../src/commands/rule.mjs";
 import { propose } from "../src/commands/propose.mjs";
+import { recordReturnOnMain } from "../src/stages/registry.mjs";
 import { writeLocal } from "../src/oracle/ports.mjs";
 import { STAGES, PROFILES } from "../src/profiles.mjs";
 
@@ -25,6 +26,32 @@ const existsOnBranch = (dir, branch, path) => gitOk(["cat-file", "-e", `${branch
 
 const FROM = new URL("../fixture-project/fixture.config.yaml", import.meta.url).pathname;
 const MOCK_DIR = new URL("../fixture-project/mock", import.meta.url).pathname;
+const TEST_AUTHOR = ["-c", "user.name=t", "-c", "user.email=t@example.org"];
+
+// A returned contract proposal whose work has not reached main. Higher numbers stand
+// for earlier ruled versions, so tests can exercise numbering without running them.
+async function returnedContract(dir, number = 1, earlier = Array.from({ length: number - 1 }, (_, i) => i + 1)) {
+  mkdirSync(join(dir, ".sdlc/gates"), { recursive: true });
+  for (const n of earlier)
+    writeFileSync(join(dir, `.sdlc/gates/contract-v${n}.yaml`), "gate: G1\nverdict: approve\nby: tech-lead\n");
+  if (earlier.length) {
+    git(["add", "-A"], dir);
+    git([...TEST_AUTHOR, "commit", "-q", "-m", "earlier contract rulings (test)"], dir);
+  }
+  const first = await runStage(dir, "contract");
+  assert.equal(first.ok, true, JSON.stringify(first.messages));
+  const name = `contract-v${number}`;
+  assert.equal(first.proposal.name, name);
+  git(["checkout", "-q", `proposal/${name}`], dir);
+  writeFileSync(join(dir, `.sdlc/gates/${name}.yaml`),
+    "gate: G1\nverdict: return\nby: agent:product-owner\nheld_by: agent\n"
+    + "rationale: The seed needs another declared record; preserve the earlier pages.\nconditions: []\n");
+  git(["add", "-A"], dir);
+  git([...TEST_AUTHOR, "commit", "-q", "-m", "return contract (test)"], dir);
+  const tip = git(["rev-parse", "HEAD"], dir);
+  git(["checkout", "-q", "main"], dir);
+  return { name, tip };
+}
 
 // Both `bind-adapter` and `calibrate` refuse a `sandbox-idp` target with nothing in
 // `SDLC_SANDBOX_PASSWORD`, and this fixture's oracle uses that identity. Only the
@@ -374,6 +401,47 @@ test("sdlc run contract: re-run after approving contract-v1 opens contract-v2", 
     assert.equal(second.ok, true, JSON.stringify(second.messages));
     assert.equal(second.proposal.name, "contract-v2");
     assert.equal(second.proposal.branch, "proposal/contract-v2");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("recordReturnOnMain records nothing when the returned branch cannot be kept under returned/", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-record-return-rename-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name, tip } = await returnedContract(dir);
+    git(["branch", "returned", "main"], dir);
+    const head = git(["rev-parse", "main"], dir);
+    assert.throws(() => recordReturnOnMain(dir, { name, branch: `proposal/${name}` }, { gate: "G1", keepBranch: true }),
+      /returned\/contract-v1/);
+    assert.equal(git(["rev-parse", "main"], dir), head);
+    assert.equal(git(["rev-parse", `proposal/${name}`], dir), tip);
+    assert.equal(existsSync(join(dir, `.sdlc/gates/${name}.yaml`)), false);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
+    restoreEgress(prevEgress);
+  }
+});
+
+test("recordReturnOnMain commits only the gate and page, leaving other staged changes staged", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-record-return-only-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = MOCK_DIR;
+  try {
+    const { name } = await returnedContract(dir);
+    writeFileSync(join(dir, "unrelated.txt"), "staged by someone else\n");
+    git(["add", "--", "unrelated.txt"], dir);
+    recordReturnOnMain(dir, { name, branch: `proposal/${name}` }, { gate: "G1", keepBranch: true });
+    const committed = git(["show", "--name-only", "--format=", "main"], dir).split("\n").filter(Boolean).sort();
+    assert.deepEqual(committed, [`.sdlc/gates/${name}.yaml`, `.sdlc/proposals/${name}.md`]);
+    assert.equal(git(["diff", "--cached", "--name-only"], dir), "unrelated.txt");
+    assert.equal(gitOk(["rev-parse", "--verify", `returned/${name}`], dir), true);
   } finally {
     delete process.env.SDLC_EXECUTOR; delete process.env.SDLC_MOCK_DIR;
     restoreEgress(prevEgress);

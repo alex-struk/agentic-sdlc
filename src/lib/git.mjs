@@ -44,6 +44,18 @@ export function gitOk(args, cwd) {
   try { git(args, cwd); return true; } catch { return false; }
 }
 
+// Whether a branch called `name` could be created now. Git keeps branches as paths under
+// `refs/heads/`, so a name is taken not only by a branch of that exact name but also by one
+// named like any of its leading segments (`a` blocks `a/b`) and by one nested beneath it
+// (`a/b/c` blocks `a/b`). `rev-parse --verify` sees only the first of the three.
+export function branchNameFree(projectDir, name) {
+  const parts = name.split("/");
+  for (let i = 1; i <= parts.length; i++) {
+    if (gitOk(["show-ref", "--verify", "--quiet", `refs/heads/${parts.slice(0, i).join("/")}`], projectDir)) return false;
+  }
+  return git(["for-each-ref", "--count=1", "--format=%(refname)", `refs/heads/${name}/`], projectDir) === "";
+}
+
 // `.gitignore` is project hygiene, and it belongs to the project rather than to any one
 // branch of it. A proposal branch carries the ignore rules of the day it was opened, so a
 // directory the project learned to ignore since — a build output, a runtime's own mirror

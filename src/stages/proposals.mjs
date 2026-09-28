@@ -208,24 +208,47 @@ function openRequestsPart(ctx) {
 // carries, and that content exists nowhere else, so its branch is renamed to
 // `returned/<name>` instead — every commit kept, just out of the `proposal/*` namespace a
 // fresh run needs clear. `keepBranch` picks between the two; `gate` only shapes the commit
-// subject (`record(G1): …` vs `record(G3): …`).
+// subject (`record(G1): …` vs `record(G3): …`). A kept branch already named
+// `returned/<name>` is read where it is.
+//
+// The rename comes first, because it is the step that can be refused by the branch names
+// already present: a branch called `returned` occupies the path `returned/<name>` would
+// need. Refused there, nothing has been written or committed. A commit that then fails puts
+// the branch back under its old name, so the return is either recorded and retired or
+// neither.
+//
+// The commit names its own paths (`--only`), so whatever else is staged in the project —
+// an in-place stage's draft, waiting for its own gate — stays staged and off `main`.
 export function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", keepBranch = false } = {}) {
   const gateRel = `.sdlc/gates/${name}.yaml`;
   const proposalRel = `.sdlc/proposals/${name}.md`;
-  writeText(join(projectDir, gateRel), `${git(["show", `${branch}:${gateRel}`], projectDir)}\n`);
-  const staged = [gateRel];
-  let proposalFound = true;
-  try {
-    writeText(join(projectDir, proposalRel), `${git(["show", `${branch}:${proposalRel}`], projectDir)}\n`);
-    staged.push(proposalRel);
-  } catch {
-    proposalFound = false;
+  const retired = `returned/${name}`;
+  const moved = keepBranch && branch !== retired;
+  if (moved) {
+    try { git(["branch", "-m", branch, retired], projectDir); }
+    catch (e) {
+      throw new Error(`${name}: ${branch} cannot be kept as ${retired} (${e.message.split("\n")[0]}); its return is not recorded`);
+    }
   }
-  stagePaths(projectDir, staged);
-  const subject = proposalFound ? `record(${gate}): ${name} returned` : `record(${gate}): ${name} returned (no proposal page found on ${branch})`;
-  git([...SDLC_AUTHOR, "commit", "-q", "-m", subject], projectDir);
-  if (keepBranch) git(["branch", "-m", branch, `returned/${name}`], projectDir);
-  else git(["branch", "-D", branch], projectDir);
+  const source = keepBranch ? retired : branch;
+  try {
+    writeText(join(projectDir, gateRel), `${git(["show", `${source}:${gateRel}`], projectDir)}\n`);
+    const staged = [gateRel];
+    let proposalFound = true;
+    try {
+      writeText(join(projectDir, proposalRel), `${git(["show", `${source}:${proposalRel}`], projectDir)}\n`);
+      staged.push(proposalRel);
+    } catch {
+      proposalFound = false;
+    }
+    stagePaths(projectDir, staged);
+    const subject = proposalFound ? `record(${gate}): ${name} returned` : `record(${gate}): ${name} returned (no proposal page found on ${branch})`;
+    git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, "--only", "--", ...staged], projectDir);
+  } catch (e) {
+    if (moved) git(["branch", "-m", retired, branch], projectDir);
+    throw e;
+  }
+  if (!keepBranch) git(["branch", "-D", branch], projectDir);
 }
 
 // The returned proposal whose return `commit` recorded on `main`, or `null`. A revision's
