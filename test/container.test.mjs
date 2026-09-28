@@ -325,6 +325,18 @@ test("an isolated claude turn reads its skill and its sign-in from inside the co
   } finally { clear(); }
 });
 
+test("an isolated claude turn is given the same command limit a turn on the host is", async () => {
+  const { ws } = machine({ output: CLAUDE_OK });
+  try {
+    const r = await runAgent({ cwd: ws, prompt: "x", stage: "contract", allowedTools: ["Read", "Write"], commandMs: 45 * 60_000,
+      agent: { backend: "claude", model: "", isolation: "container", egress: "model", allow: ["api.anthropic.com"] } });
+    assert.equal(r.ok, true, r.text);
+    const env = flagValues(agentCall().args, "-e");
+    assert.ok(env.includes(`BASH_DEFAULT_TIMEOUT_MS=${45 * 60_000}`), env.join(" "));
+    assert.ok(env.includes(`BASH_MAX_TIMEOUT_MS=${45 * 60_000}`), env.join(" "));
+  } finally { clear(); }
+});
+
 test("a mock turn reports the isolation the run resolved", async () => {
   const mock = mkdtempSync(join(tmpdir(), "sdlc-mock-iso-"));
   writeFileSync(join(mock, "design.json"), JSON.stringify({ text: "ok" }));

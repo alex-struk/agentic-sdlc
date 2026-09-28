@@ -255,6 +255,15 @@ process's environment alongside the backend's home (`CLAUDE_CONFIG_DIR` or `CODE
 `SDLC_STAGE`. Neither is printed by a dry
 run except by name — `env`'s keys, via the `env: <names>` line described above, and never a value.
 
+A Claude session is also given its command time limit: `BASH_DEFAULT_TIMEOUT_MS` and
+`BASH_MAX_TIMEOUT_MS`, both the stage's `policy.command_minutes` (30 minutes unless the policy says
+otherwise), set by the runner over anything in the operator's environment, on the host and in a
+container alike. Without them Claude Code stops a command at two minutes and never allows one more
+than ten. A session runs headless and ends when it stops replying, so the preamble every stage
+reads tells it to run a command whose result it needs in the foreground and wait for it; a
+background command would outlive the session with nobody left to read what it printed
+(`docs/decisions/0065-a-session-waits-for-its-own-commands.md`).
+
 ## The authentication check
 
 A stage session signs in with the operator's own CLI login, read from the config directory the

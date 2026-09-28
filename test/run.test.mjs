@@ -1613,6 +1613,53 @@ test("a fix turn carries the same MCP servers as the first turn", async () => {
   }
 });
 
+test("a stage's first turn and its fix turn both run with the command limit its policy names", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-cmdlimit-"));
+  const { dir, prevEgress } = await makeProject(tmp);
+  setPolicy(dir, "command_minutes:", "  cmdlimit-stage: 45");
+  const root = mkdtempSync(join(tmpdir(), "sdlc-cmdlimit-fake-claude-"));
+  const captureFile = join(root, "capture.jsonl");
+  const outFile = join(root, "out.json");
+  writeFileSync(outFile, JSON.stringify({ is_error: false, result: "waited for it", num_turns: 1, session_id: "s1" }));
+  const bin = join(root, "fake-claude");
+  writeFileSync(bin, [
+    "#!/usr/bin/env node",
+    'import { appendFileSync, readFileSync } from "node:fs";',
+    'if (process.argv.includes("--version")) { process.stdout.write("fake 1.0\\n"); process.exit(0); }',
+    'appendFileSync(process.env.CAPTURE_FILE, JSON.stringify({ def: process.env.BASH_DEFAULT_TIMEOUT_MS ?? null, max: process.env.BASH_MAX_TIMEOUT_MS ?? null }) + "\\n");',
+    'process.stdout.write(readFileSync(process.env.FAKE_OUT, "utf8"));',
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  registerStage({
+    name: "cmdlimit-stage",
+    title: "cmdlimit stage",
+    skill: PROBE_SKILL,
+    workspace: "project",
+    gate: null,
+    collect: [],
+    implemented: true,
+    prompt: () => "run the long command",
+    proposal: () => null,
+    preChecks: () => [],
+    postChecks: () => [{ id: "always-fail", ok: false, messages: ["never satisfied"] }],
+  });
+  process.env.SDLC_CLAUDE_BIN = bin;
+  process.env.SDLC_CLAUDE_HOME = join(root, "claude-home");
+  process.env.SDLC_CREDENTIALS = join(root, "no-such-credentials.json");
+  process.env.FAKE_OUT = outFile;
+  process.env.CAPTURE_FILE = captureFile;
+  try {
+    await runStage(dir, "cmdlimit-stage");
+    const turns = readFileSync(captureFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    // The sign-in check, the first turn and the fix turn.
+    assert.equal(turns.length, 3);
+    for (const t of turns.slice(1)) assert.deepEqual(t, { def: String(45 * 60_000), max: String(45 * 60_000) });
+  } finally {
+    for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "FAKE_OUT", "CAPTURE_FILE"]) delete process.env[k];
+    restoreEgress(prevEgress);
+  }
+});
+
 test("runStage prints a passing pre-check's warnings before anything is spent", async () => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-run-prewarn-"));
   const { dir, prevEgress } = await makeProject(tmp);

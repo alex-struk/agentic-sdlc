@@ -12,6 +12,7 @@ export const DEFAULT_OWED_LOOP = 2;
 export const OWED_LOOP_KINDS = Object.freeze(["rebind", "redo", "recovery", "request"]);
 export const DEFAULT_POST_CHECK_REPAIRS = 1;
 export const DEFAULT_CALIBRATE_ENVIRONMENT_FAULTS = 0;
+export const DEFAULT_COMMAND_MINUTES = 30;
 export const DEFAULT_ESCALATE_TIERS = Object.freeze(["HIGH", "CRITICAL"]);
 export const DEFAULT_BLOCK_UNVERIFIED = Object.freeze(["HIGH", "CRITICAL"]);
 
@@ -44,6 +45,15 @@ export function owedLoopLimit(config, kind) {
 // answer in front of the reviewer.
 export function calibrateEnvironmentFaults(config) {
   return config?.policy?.calibrate?.environment_faults ?? DEFAULT_CALIBRATE_ENVIRONMENT_FAULTS;
+}
+
+// How long one command an agent session runs may take before the session's own tooling stops
+// it, in minutes, by stage. It is long enough for the slowest thing a stage is asked to run for
+// itself — bringing the oracle up, which pulls images, installs and migrates — and a session
+// waits for a command in the foreground, so the limit is what keeps a hung one from holding the
+// session for the rest of its turns (`docs/decisions/0065`).
+export function commandMinutes(config, stage) {
+  return config?.policy?.command_minutes?.[stage] ?? DEFAULT_COMMAND_MINUTES;
 }
 
 // How many repair turns a stage whose output failed its post-checks is given.

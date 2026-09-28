@@ -85,6 +85,12 @@ oracle, both needing something on the host — and run on Codex only when the pr
 weaker stage. Rulings, and stages with no allowlist, run on either backend on the host unless
 configured into a container, and a Claude turn may be isolated the same way.
 
+**A session waits for its own commands.** A stage session runs headless and ends when it stops
+replying, so whatever a command prints after that reaches nobody. Every stage is told to run a
+command whose result it needs in the foreground, and a Claude session's commands may run for the
+stage's `policy.command_minutes` — 30 minutes unless the policy says otherwise — rather than the
+CLI's own two (`docs/decisions/0065-a-session-waits-for-its-own-commands.md`).
+
 **What ran the work, and where, is on the record.** Every agent turn records its backend, its model
 (as the CLI reports it, else as configured, else "the CLI's default model"), the CLI's version, and
 whether it ran in a container — with the image's short id and its egress allowlist — or on the host:

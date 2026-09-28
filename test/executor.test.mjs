@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, readFileS
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { ensureConfigHome } from "../src/runner/config-home.mjs";
-import { runAgent, buildArgs, endedBecause, preflightAuth, AUTH_ADVICE, DEFAULT_MAX_TURNS } from "../src/runner/executor.mjs";
+import { runAgent, buildArgs, endedBecause, preflightAuth, AUTH_ADVICE, DEFAULT_MAX_TURNS, BACKENDS } from "../src/runner/executor.mjs";
+import { DEFAULT_COMMAND_MINUTES, commandMinutes } from "../src/config/policy.mjs";
 import { turnsFor } from "../src/commands/run.mjs";
 
 test("config home is created with a credentials symlink when the source exists", () => {
@@ -30,6 +31,40 @@ test("buildArgs carries isolation flags and the stage, and hands the prompt back
   assert.equal(env.CLAUDE_CONFIG_DIR, "/cfg"); assert.equal(env.SDLC_STAGE, "build");
   // No caller-supplied tool list, so the flag is absent rather than present and empty.
   assert.ok(!args.includes("--allowedTools"));
+});
+
+// Claude Code's Bash tool stops a command at two minutes unless told otherwise, and never
+// lets one run past ten. A stage whose own work includes a command longer than that — the
+// contract stage bringing the oracle up — needs the limit raised in the session itself.
+test("buildArgs gives a claude session's commands the stage's command limit, the default when the caller names none", () => {
+  const def = String(DEFAULT_COMMAND_MINUTES * 60_000);
+  const { env } = buildArgs({ prompt: "hi", stage: "contract" }, "/cfg");
+  assert.equal(env.BASH_DEFAULT_TIMEOUT_MS, def);
+  assert.equal(env.BASH_MAX_TIMEOUT_MS, def);
+  const named = buildArgs({ prompt: "hi", stage: "contract", commandMs: 45 * 60_000 }, "/cfg").env;
+  assert.equal(named.BASH_DEFAULT_TIMEOUT_MS, String(45 * 60_000));
+  assert.equal(named.BASH_MAX_TIMEOUT_MS, String(45 * 60_000));
+});
+
+test("a stage's command limit is policy.command_minutes for that stage, thirty minutes where nothing names it", () => {
+  assert.equal(DEFAULT_COMMAND_MINUTES, 30);
+  assert.equal(commandMinutes({}, "contract"), 30);
+  assert.equal(commandMinutes({ policy: { command_minutes: { contract: 50 } } }, "contract"), 50);
+  assert.equal(commandMinutes({ policy: { command_minutes: { contract: 50 } } }, "build"), 30);
+});
+
+// Codex has no command limit the pipeline can set, so its wall-clock ceiling is what bounds a
+// long command: a session allowed a shell may spend one command limit waiting on top of its turns.
+test("a codex session given a shell has its command limit added to its wall-clock ceiling", () => {
+  const stop = BACKENDS.codex.stopAfterMs;
+  const turns = 40 * 30_000;
+  const commandMs = 30 * 60_000;
+  assert.equal(stop({ maxTurns: 40, allowedTools: ["Read", "Bash(node *sdlc.mjs oracle*)"], commandMs }), turns + commandMs);
+  assert.equal(stop({ maxTurns: 40, allowedTools: [], commandMs }), turns + commandMs);
+  assert.equal(stop({ maxTurns: 40, allowedTools: ["Read", "Grep"], commandMs }), turns);
+  assert.equal(stop({ maxTurns: 40, allowedTools: ["Read", "Bash(git diff*)"] }), turns + DEFAULT_COMMAND_MINUTES * 60_000);
+  assert.equal(stop({ maxTurns: 40, allowedTools: [], wallClockMs: 300 }), 300);
+  assert.equal(BACKENDS.claude.stopAfterMs({ maxTurns: 40, allowedTools: [] }), undefined);
 });
 
 test("buildArgs passes an allowed tool list as one flag followed by each tool", () => {

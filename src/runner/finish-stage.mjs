@@ -21,7 +21,7 @@ function onEngine(r) {
   return label ? `, on ${label}` : "";
 }
 import { skillText } from "../stages/registry.mjs";
-import { postCheckRepairs } from "../config/policy.mjs";
+import { commandMinutes, postCheckRepairs } from "../config/policy.mjs";
 import { settleRequestedRevision } from "../stages/proposals.mjs";
 import { MISSING_TEST, WRITER, missingTestRef, readdressMissingTests } from "../spec/missing-tests.mjs";
 import { owedPath } from "../spec/owed.mjs";
@@ -198,6 +198,7 @@ async function runFixTurn(cwd, stage, ctx, messages) {
       systemPromptFile: skillPath,
       stage: stage.name,
       maxTurns: Math.min(40, turnsFor(ctx.config, stage.name)),
+      commandMs: commandMinutes(ctx.config, stage.name) * 60_000,
       mcpConfig,
       allowedTools: stage.allowedTools,
       env: stage.env?.(ctx, ctx.config),

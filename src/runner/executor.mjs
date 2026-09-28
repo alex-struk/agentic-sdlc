@@ -2,9 +2,10 @@ import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ensureConfigHome, ensureCodexHome } from "./config-home.mjs";
-import { buildCodexArgs, codexBin, parseCodexOutput, codexWallClockMs, CODEX_AUTH_ADVICE, writesFiles } from "./codex.mjs";
+import { buildCodexArgs, codexBin, parseCodexOutput, codexWallClockMs, CODEX_AUTH_ADVICE, writesFiles, grantsShell } from "./codex.mjs";
 import { runInContainer } from "./container.mjs";
 import { writeText } from "../lib/fsx.mjs";
+import { DEFAULT_COMMAND_MINUTES } from "../config/policy.mjs";
 
 // The MCP servers a stage names (`stage.mcp?.(ctx, config)`) live in their own scratch
 // file rather than a project path, since the set is run-specific and never any stage's
@@ -141,13 +142,31 @@ export function endedBecause(raw) {
   return `ended with ${reason}`;
 }
 
+// How long one command a session runs may take, in milliseconds: what the caller resolved
+// from the stage's policy (`commandMinutes`, `src/config/policy.mjs`), or the default where it
+// named none — a ruling, the sign-in check.
+export function commandMsOf(opts) {
+  return opts?.commandMs ?? DEFAULT_COMMAND_MINUTES * 60_000;
+}
+
+// The variables through which Claude Code's Bash tool takes its time limits: the limit a
+// command runs under when the session names none, and the most a session may name. Without
+// them a command stops at two minutes and can never be given more than ten, which is shorter
+// than bringing an application up takes. Both are the stage's command limit, so a command
+// the session starts without naming a limit gets the whole of it.
+function claudeSessionEnv(opts) {
+  const ms = String(commandMsOf(opts));
+  return { BASH_DEFAULT_TIMEOUT_MS: ms, BASH_MAX_TIMEOUT_MS: ms };
+}
+
 // The prompt travels on stdin, not argv: a persona ruling at G3 carries a diff of up to
 // `DIFF_CAP_BY_GATE.G3` (120,000 characters, `src/runner/persona.mjs`), and an argument
 // that size runs into the OS's argv/environment size limit (`spawn E2BIG`) well before
 // it reaches that cap. `-p` with no positional prompt reads the prompt from stdin the
 // same way an operator's own piped `claude -p` invocation would, so `runAgent` writes
 // `input` to the child's stdin instead of appending it to `args`.
-export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {}, mcpConfig, model }, configHome) {
+export function buildArgs(opts, configHome) {
+  const { prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemPromptFile, addDirs = [], allowedTools = [], env = {}, mcpConfig, model } = opts;
   const args = ["-p", "--output-format", "json", "--permission-mode", "acceptEdits",
     "--strict-mcp-config"];
   // `--mcp-config` sits right after `--strict-mcp-config`: strict mode refuses any
@@ -164,7 +183,7 @@ export function buildArgs({ prompt, stage, maxTurns = DEFAULT_MAX_TURNS, systemP
   if (allowedTools.length) args.push("--allowedTools", ...allowedTools);
   if (systemPromptFile) args.push("--append-system-prompt-file", systemPromptFile);
   for (const d of addDirs) args.push("--add-dir", d);
-  return { args, env: { ...process.env, ...env, CLAUDE_CONFIG_DIR: configHome, SDLC_STAGE: stage }, input: prompt };
+  return { args, env: { ...process.env, ...env, ...claudeSessionEnv(opts), CLAUDE_CONFIG_DIR: configHome, SDLC_STAGE: stage }, input: prompt };
 }
 
 // How many times each canned file has been consumed in this process, so a `sequence`
@@ -289,6 +308,12 @@ function codexSignIn() {
 // `stopAfterMs` is the ceiling the runner enforces for a CLI with no turn cap of its own;
 // Claude has one (`--max-turns`) and gets none.
 //
+// `sessionEnv` is what the session is given beyond the stage's own environment, set by the
+// runner whichever way the turn runs: Claude's command time limits. Codex takes no
+// equivalent the pipeline can set — a command's time limit is one its model names per call,
+// and a long command keeps running while the model polls it — so its wall-clock ceiling
+// allows one command limit on top of its turns wherever the session was given a shell.
+//
 // For a turn in a container (`src/runner/container.mjs`): `credential` is the sign-in file its
 // home holds, `homeEnv` the variable that names the home, `homeFiles` what else of the home the
 // session is given (read-only), `filesInSession` whether its arguments name files the session
@@ -302,6 +327,16 @@ function codexSignIn() {
 // `api.anthropic.com` — and the hosts the CLI refreshes its sign-in at, which a session reaches
 // only when its credential is near expiry. Anything else a CLI reaches for — telemetry, a
 // plugin catalogue — is refused, and the session goes on without it.
+// A Codex session's wall-clock ceiling: its turns' worth of time, and one command limit more
+// where it may run commands at all — no tool list (a writing stage confined by the guard) or
+// one granting a shell — since a single command it waits on can take that long by itself.
+function codexStopAfterMs(opts) {
+  if (opts.wallClockMs) return opts.wallClockMs;
+  const allowed = opts.allowedTools ?? [];
+  const runsCommands = allowed.length === 0 || grantsShell(allowed);
+  return codexWallClockMs(opts.maxTurns ?? DEFAULT_MAX_TURNS) + (runsCommands ? commandMsOf(opts) : 0);
+}
+
 export const BACKENDS = {
   claude: {
     name: "claude",
@@ -314,6 +349,7 @@ export const BACKENDS = {
     advice: AUTH_ADVICE,
     maxBuffer: 64 * 1024 * 1024,
     stopAfterMs: () => undefined,
+    sessionEnv: claudeSessionEnv,
     signIn: claudeSignIn,
     credential: ".credentials.json",
     homeEnv: "CLAUDE_CONFIG_DIR",
@@ -332,7 +368,8 @@ export const BACKENDS = {
     unreadable: "no JSONL events",
     advice: CODEX_AUTH_ADVICE,
     maxBuffer: 256 * 1024 * 1024,
-    stopAfterMs: (opts) => opts.wallClockMs ?? codexWallClockMs(opts.maxTurns ?? DEFAULT_MAX_TURNS),
+    stopAfterMs: codexStopAfterMs,
+    sessionEnv: () => ({}),
     signIn: codexSignIn,
     credential: "auth.json",
     homeEnv: "CODEX_HOME",
@@ -373,7 +410,7 @@ export async function runAgent(opts) {
   // vocabulary (`endedBecause`), with whatever it had reported by then.
   if (stopped) {
     const minutes = Math.round(limitMs / 6000) / 10;
-    return { ok: false, text: `the session was stopped at its wall-clock ceiling of ${minutes} minutes: ${backend.name} has no turn cap, so the runner ends a session that runs longer than its turn ceiling allows.`,
+    return { ok: false, text: `the session was stopped at its wall-clock ceiling of ${minutes} minutes: ${backend.name} has no turn cap, so the runner ends a session that runs longer than its turn ceiling and its command limit allow.`,
       cost: parsed?.cost ?? 0, turns: parsed?.turns ?? 0, sessionId: parsed?.sessionId ?? "",
       raw: { ...(parsed?.raw ?? {}), subtype: undefined, terminal_reason: "wall_clock_limit" }, engine };
   }

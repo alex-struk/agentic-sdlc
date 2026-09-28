@@ -206,6 +206,15 @@ test("skillText concatenates the preamble and the stage skill", () => {
   assert.match(text, /app\/PROBE\.md/);
 });
 
+// A headless session ends the moment it stops replying, and a background command outlives
+// it with nobody left to read its result. Every stage is told so in the preamble.
+test("the preamble tells every stage to run a command whose result it needs in the foreground", () => {
+  const text = skillText("probe");
+  assert.match(text, /session ends when you stop\s+replying/);
+  assert.match(text, /foreground/);
+  assert.match(text, /never in the\s+background/);
+});
+
 // A stage skill is instructions, and a project may hold its own. Its copy at
 // `.sdlc/skills/<stage>.md` replaces the pipeline's for that stage; the preamble, which is the
 // runner's protocol with every stage, stays the pipeline's.

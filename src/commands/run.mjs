@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { git, assertCleanTree, assertOnMain, stageAll, SDLC_AUTHOR } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
+import { commandMinutes } from "../config/policy.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
 import { handedNote } from "../spec/missing-tests.mjs";
@@ -424,7 +425,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
 
       const r = await runAgent({
         cwd: ws.dir, prompt, systemPromptFile: skillPath, stage: name, maxTurns: turnsFor(config, name, stage.defaultTurns),
-        mcpConfig, allowedTools: stage.allowedTools, env: envVars, agent,
+        commandMs: commandMinutes(config, name) * 60_000, mcpConfig, allowedTools: stage.allowedTools, env: envVars, agent,
       });
       if (!r.ok) return agentTurnFailed(projectDir, stage, r);
 

@@ -169,7 +169,7 @@ export function proxyRunArgs(names, image, allow) {
     image];
 }
 
-export function agentRunArgs({ names, image, user, readOnly, homeEnv, readOnlyHomeFiles = [], session = false, stage = "", passEnv = [], command }) {
+export function agentRunArgs({ names, image, user, readOnly, homeEnv, readOnlyHomeFiles = [], session = false, stage = "", sessionEnv = {}, passEnv = [], command }) {
   const proxy = `http://${PROXY_ALIAS}:${PROXY_PORT}`;
   const args = ["run", "--rm", "-i", "--name", names.agent, "--label", `${SESSION_LABEL}=${names.session}`,
     "--network", names.network, "--user", user,
@@ -185,6 +185,10 @@ export function agentRunArgs({ names, image, user, readOnly, homeEnv, readOnlyHo
     "-e", "HOME=/tmp", "-e", `${homeEnv}=${HOME_MOUNT}`, "-e", `SDLC_STAGE=${stage}`,
     "-e", `HTTPS_PROXY=${proxy}`, "-e", `HTTP_PROXY=${proxy}`, "-e", `https_proxy=${proxy}`, "-e", `http_proxy=${proxy}`,
     "-e", "NO_PROXY=", "-e", "no_proxy=", "-e", "NODE_USE_ENV_PROXY=1");
+  // What the runner sets for every session of this backend (`sessionEnv` in
+  // `src/runner/executor.mjs`) is written with its value: it is the runner's own setting, never
+  // a secret, and a session in a container is given exactly what one on the host is.
+  for (const [name, value] of Object.entries(sessionEnv)) args.push("-e", `${name}=${value}`);
   for (const name of passEnv) args.push("-e", name);
   args.push(image, ...command);
   return args;
@@ -239,7 +243,8 @@ export async function runInContainer(backend, opts, agent, { recorded = true, li
     const stageEnv = opts.env ?? {};
     const runArgs = agentRunArgs({
       names, image: images.agentTag, user, readOnly: !backend.writes(opts.allowedTools ?? []), homeEnv: backend.homeEnv,
-      readOnlyHomeFiles: backend.homeFiles ?? [], session, stage: opts.stage ?? "", passEnv: Object.keys(stageEnv), command: [cli.command, ...args],
+      readOnlyHomeFiles: backend.homeFiles ?? [], session, stage: opts.stage ?? "", sessionEnv: backend.sessionEnv?.(opts) ?? {},
+      passEnv: Object.keys(stageEnv), command: [cli.command, ...args],
     });
     docker(networkCreateArgs(names));
     docker(proxyRunArgs(names, images.proxyTag, agent.allow ?? []));

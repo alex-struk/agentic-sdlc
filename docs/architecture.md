@@ -39,7 +39,11 @@ repository are the primitives that shape composes into:
   `docs/decisions/0035-a-credential-refreshed-where-the-next-run-deletes-it.md`), `.claude/settings.json`'s deny list, which
   blocks destructive commands and reading secrets outright, and
   `templates/hooks/implement-guard.sh`, which reads `SDLC_STAGE` and blocks edits outside the paths
-  that stage owns (see `docs/stages/init.md` for both tables). A Codex session gets an isolated
+  that stage owns (see `docs/stages/init.md` for both tables). A Claude session's commands may run
+  for the stage's `policy.command_minutes` (`BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS`), and
+  every session is told to wait for a command whose result it needs in the foreground, since a
+  headless session ends when it stops replying
+  (`docs/decisions/0065-a-session-waits-for-its-own-commands.md`). A Codex session gets an isolated
   `CODEX_HOME` holding the operator's ChatGPT sign-in and the same guard registered as its hook,
   and no deny list, which is why a stage that declares a tool allowlist runs there in a throwaway
   container — only its workspace mounted, only its egress allowlist reachable

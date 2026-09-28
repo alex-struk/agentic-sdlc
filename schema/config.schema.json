@@ -248,6 +248,14 @@
             "maximum": 999
           }
         },
+        "command_minutes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1440
+          }
+        },
         "agents": {
           "type": "object",
           "additionalProperties": false,
