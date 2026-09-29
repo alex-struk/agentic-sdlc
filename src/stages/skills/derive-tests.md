@@ -128,6 +128,17 @@ criterion turns on what is inside, or `bytes` when it turns on how big it is. Ne
 path: the harness makes the file, so a name is all the adapter needs and a path would only be
 true on one machine.
 
+## When a test needs the target started differently
+
+Some criteria are about a setting the application reads once at start-up, such as a switch that
+turns every outgoing message off. The contract names each one under `configurations:` in
+`spec/contract/observables.yaml`, with the criteria it is `for` and the `tag` its tests carry.
+A test for one of those criteria assumes the target it runs against was started in that
+configuration: it does not try to detect the setting and does not skip itself. Put the tag on
+the test itself, with Playwright's `tag` option — `test("…", { tag: "@<name>" }, async (…) => …)`
+— since that is how the runner picks it out to run against an instance started that way, and
+leaves it out of every other run. A tag that appears only in a comment selects nothing.
+
 ## The journal
 
 Your final message is read by whoever rules this proposal and by whoever writes the contract

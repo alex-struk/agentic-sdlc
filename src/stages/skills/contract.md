@@ -66,6 +66,28 @@ application's internals: email, observed through a mail catcher reachable at
 `${SDLC_MAIL_API}` (never a literal host or port — the oracle chooses the port at run time), and
 any file or notification endpoint the criteria depend on.
 
+A criterion whose given is a setting the application reads once at start-up — a switch no test
+can reach by acting on a running service — is written as a configuration, under
+`configurations:` in the same file, in exactly this shape, because the runner reads it:
+
+```yaml
+configurations:
+  <name>:
+    for: [<criterion id>, ...]
+    select: <VARIABLE>=<value>    # the environment the oracle is started with to be in it
+    tag: "@<name>"                # what every test written for it carries
+```
+
+Add whatever else a test writer and a ruler need beside those keys (`default`, `sets`,
+`observable`, `notes`); the runner reads only `select` and `tag`. Each `select` variable must be one
+the Compose override below interpolates, with the default as its fallback
+(`${<VARIABLE>:-<default>}`), so that the oracle left alone is the default and nothing measured
+against it changes. The calibration starts a separate copy of the oracle with `select`, runs only
+the tests carrying the tag against it, and leaves them out of every other run; it refuses to run at
+all when a `select` variable is one the override does not read, or when no test carries the tag.
+This is the one flag you may set that changes what the application does rather than where it runs,
+because it is set only on that copy.
+
 **`tests/seed/`.** `NNN-<name>.sql` files, applied in ascending name order, that a later stage
 loads into the oracle's database before any test runs. Insert one synthetic user per persona whose
 identity a session route or sandbox IdP looks up, plus whatever fixture records the accepted

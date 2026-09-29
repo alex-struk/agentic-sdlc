@@ -42,7 +42,12 @@ from the ratified criteria.
   exists, or written from its routes, with a `# recovered from <path(s)> at <commit>` header — only
   when `config.sources.old` is configured.
 - `spec/contract/observables.yaml` completed: email via a mail catcher at `${SDLC_MAIL_API}`, plus
-  any file or notification endpoint the criteria need.
+  any file or notification endpoint the criteria need. A setting the application reads once at
+  start-up, which some criterion is about, is written under `configurations:` with the environment
+  that selects it (`select`, a variable the Compose override reads) and the tag its tests carry
+  (`tag`); `calibrate` runs those tests against a copy of the oracle started with `select` and
+  leaves them out of every other run (`docs/stages/oracle.md`, "A copy in one of the contract's
+  configurations").
 - `tests/seed/NNN-<name>.sql`, applied in name order, and `tests/seed/manifest.yaml` naming every
   record a test will refer to by handle.
 - `<oracle.compose_override>` (`.sdlc/oracle/compose.yml` by default) — a Compose override for
