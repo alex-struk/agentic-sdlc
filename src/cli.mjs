@@ -24,7 +24,7 @@ const HELP = `sdlc <command> [args] [--flags]
   resume [--again]                 continue an interrupted run
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails
-  oracle up|down|status [--target <t>]   start/stop/inspect the old application via Docker Compose
+  oracle up|down|status|reseed [--target <t>] [--configuration <name>]   start/stop/inspect/reset the old application via Docker Compose, or a copy of it in one of the contract's configurations
   sandbox up|down|reset|status [--target new] [--from <branch>]   start/stop/reseed the rebuilt application via its own compose file, optionally the one a branch carries
   isolation build [dir] [--backend claude|codex]   build the images isolated agent turns run in (otherwise built on first use)
   isolation clean                  remove session containers and networks a run that did not finish left behind

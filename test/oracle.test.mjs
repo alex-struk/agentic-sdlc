@@ -582,3 +582,129 @@ test("a line left waiting by a stage that never recorded is committed with the n
   const runs = git(["show", `HEAD:.sdlc/runs/${day}.md`], dir);
   assert.match(runs, /oracle up old[^\n]*\n- [^\n]*oracle down old/);
 });
+
+// --- a configuration the application reads at start-up ---
+
+// The contract names a configuration by the variable the oracle override reads for it and the
+// tag its tests carry. The override below reads the variable; everything else about the
+// project is the micro project's.
+const OBSERVABLES_WITH_CONFIGURATION = `email: { via: mail-catcher }
+configurations:
+  maintenance_mode:
+    for: [R-1.1]
+    select: SDLC_ORACLE_MAINTENANCE=1
+    tag: "@maintenance_mode"
+`;
+const OVERRIDE_READING = `services:
+  app:
+    environment: !override
+      MAINTENANCE: "\${SDLC_ORACLE_MAINTENANCE:-0}"
+`;
+
+function makeConfiguredProject(tmp, override = OVERRIDE_READING) {
+  const dir = makeMicroProject(tmp);
+  mkdirSync(join(dir, "spec", "contract"), { recursive: true });
+  writeFileSync(join(dir, "spec", "contract", "observables.yaml"), OBSERVABLES_WITH_CONFIGURATION);
+  writeFileSync(join(dir, ".sdlc", "oracle", "compose.yml"), override);
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "a configuration"], dir);
+  return dir;
+}
+
+function captureErrors(fn) {
+  const said = [];
+  const prev = console.error;
+  console.error = (...a) => said.push(a.join(" "));
+  return Promise.resolve(fn()).then((v) => ({ value: v, said: said.join("\n") }), (e) => { throw e; })
+    .finally(() => { console.error = prev; });
+}
+
+test("oracle up --configuration: a copy of its own, started with the configuration's variables, recorded beside the default", async () => {
+  const dir = makeConfiguredProject(mkdtempSync(join(tmpdir(), "sdlc-oracle-cfg-up-")));
+  await withMock(null, async (mockDir) => {
+    assert.equal(await runOracle(dir, "up", {}), 0);
+    const before = readLocal(dir, "old");
+    const defaultCalls = readCalls(mockDir);
+    assert.ok(defaultCalls.every((c) => c.env.SDLC_ORACLE_MAINTENANCE === undefined), "the default copy is started without it");
+
+    assert.equal(await runOracle(dir, "up", { configuration: "maintenance_mode" }), 0);
+    const after = readLocal(dir, "old");
+    const copy = after.configurations?.maintenance_mode;
+    assert.ok(copy, JSON.stringify(after));
+    assert.equal(copy.compose_project, "sdlc-micro-oracle-old-maintenance_mode");
+    assert.equal(copy.base_url, `http://localhost:${copy.ports.app}`);
+    // The default copy is exactly as it was.
+    for (const k of ["base_url", "mail_api", "ports", "compose_project", "instances"]) assert.deepEqual(after[k], before[k], k);
+
+    const calls = readCalls(mockDir).slice(defaultCalls.length).filter((c) => c.args[1] === copy.compose_project);
+    // The services are listed first, to give each container a name of this project's own:
+    // the default copy is running beside it.
+    assert.deepEqual(calls.map((c) => c.args.slice(6).join(" ")), [
+      "config --services",
+      "up -d --build db mailpit",
+      "exec -T db pg_isready -U postgres",
+      "run --rm migrate",
+      "exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d appdb",
+      "exec -T db psql -v ON_ERROR_STOP=1 -U postgres -d appdb",
+      "up -d app",
+    ]);
+    assert.ok(calls.every((c) => c.env.SDLC_ORACLE_MAINTENANCE === "1"), "every call for the copy carries the configuration's variable");
+    assert.ok(calls.every((c) => c.env.SDLC_APP_PORT === String(copy.ports.app)));
+  });
+});
+
+test("oracle reseed --configuration resets that copy and no other", async () => {
+  const dir = makeConfiguredProject(mkdtempSync(join(tmpdir(), "sdlc-oracle-cfg-reseed-")));
+  await withMock(null, async (mockDir) => {
+    assert.equal(await runOracle(dir, "up", {}), 0);
+    assert.equal(await runOracle(dir, "up", { configuration: "maintenance_mode" }), 0);
+    rmSync(join(mockDir, "oracle-calls.json"));
+    assert.equal(await runOracle(dir, "reseed", { configuration: "maintenance_mode" }), 0);
+    const calls = readCalls(mockDir);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].args[1], "sdlc-micro-oracle-old-maintenance_mode");
+    assert.equal(calls[0].env.SDLC_ORACLE_MAINTENANCE, "1");
+  });
+});
+
+test("oracle down --configuration takes that copy down and keeps the default; oracle down takes both", async () => {
+  const dir = makeConfiguredProject(mkdtempSync(join(tmpdir(), "sdlc-oracle-cfg-down-")));
+  await withMock(null, async (mockDir) => {
+    assert.equal(await runOracle(dir, "up", {}), 0);
+    assert.equal(await runOracle(dir, "up", { configuration: "maintenance_mode" }), 0);
+    rmSync(join(mockDir, "oracle-calls.json"));
+
+    assert.equal(await runOracle(dir, "down", { configuration: "maintenance_mode" }), 0);
+    assert.deepEqual(readCalls(mockDir).map((c) => [c.args[1], ...c.args.slice(6)]), [["sdlc-micro-oracle-old-maintenance_mode", "down", "-v"]]);
+    const local = readLocal(dir, "old");
+    assert.equal(local.configurations?.maintenance_mode, undefined);
+    assert.equal(local.compose_project, "sdlc-micro-oracle-old");
+
+    assert.equal(await runOracle(dir, "up", { configuration: "maintenance_mode" }), 0);
+    rmSync(join(mockDir, "oracle-calls.json"));
+    assert.equal(await runOracle(dir, "down", {}), 0);
+    assert.deepEqual(readCalls(mockDir).map((c) => c.args[1]).sort(), ["sdlc-micro-oracle-old", "sdlc-micro-oracle-old-maintenance_mode"]);
+    assert.equal(readLocal(dir, "old"), null);
+  });
+});
+
+// A variable the override never reads starts a copy exactly like the default one, whose
+// tests would then fail for a reason that has nothing to do with the application.
+test("oracle up --configuration refuses a configuration whose variable the override does not read, and one the contract does not name", async () => {
+  const dir = makeConfiguredProject(mkdtempSync(join(tmpdir(), "sdlc-oracle-cfg-refuse-")),
+    "services:\n  app:\n    environment:\n      # ${SDLC_ORACLE_MAINTENANCE} is only mentioned here\n      OTHER: \"${SDLC_OTHER:-0}\"\n");
+  await withMock(null, async (mockDir) => {
+    assert.equal(await runOracle(dir, "up", {}), 0);
+    const before = readCalls(mockDir).length;
+    const unread = await captureErrors(() => runOracle(dir, "up", { configuration: "maintenance_mode" }));
+    assert.equal(unread.value, 1);
+    assert.match(unread.said, /maintenance_mode/);
+    assert.match(unread.said, /SDLC_ORACLE_MAINTENANCE/);
+    assert.match(unread.said, /\.sdlc\/oracle\/compose\.yml/);
+
+    const unknown = await captureErrors(() => runOracle(dir, "up", { configuration: "no_such" }));
+    assert.equal(unknown.value, 1);
+    assert.match(unknown.said, /no_such/);
+    assert.equal(readCalls(mockDir).length, before, "nothing was started");
+  });
+});
