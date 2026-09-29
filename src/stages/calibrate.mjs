@@ -25,7 +25,7 @@ import { taggedSpecFiles } from "../testrun/tags.mjs";
 import { environmentFaults } from "../testrun/results.mjs";
 import { calibrateEnvironmentFaults, owedLoopLimit } from "../config/policy.mjs";
 import { appendRun, deferRun } from "../lib/runrecord.mjs";
-import { calibrationInputs, currentSpecs, describePlan, fullRunCountdown, legacyProvenance, planCalibration, rulingsSeen, runIdOf, sinceFull, stampProvenance, withLegacyProvenance } from "../testrun/scope.mjs";
+import { OWED_A_RUN, calibrationInputs, currentSpecs, describePlan, fullRunCountdown, planCalibration, rulingsSeen, runIdOf, sinceFull, stampProvenance } from "../testrun/scope.mjs";
 import { isOpen, read as readOwed } from "../spec/owed.mjs";
 import { openMissingTests } from "../spec/missing-tests.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
@@ -512,12 +512,9 @@ function withCarried(fresh, carry) {
   return sortRows([...fresh, ...carry.filter((r) => !(r.file && files.has(r.file)) && !(r.id && ids.has(r.id)))]);
 }
 
-// `latest.json` as a plan reads it: rows written before rows recorded their provenance are read
-// as measured by the run that wrote the newest dated results file (`src/testrun/scope.mjs`).
-function resultsOnFile(projectDir, config, target) {
-  const { results } = readLatestResults(projectDir, target);
-  if (!results || results.run) return results ?? null;
-  return withLegacyProvenance(results, legacyProvenance(projectDir, config, target));
+// `latest.json` as a plan reads it.
+function resultsOnFile(projectDir, target) {
+  return readLatestResults(projectDir, target).results ?? null;
 }
 
 // The open owed work naming each criterion, for this target: a rebind entry, a redo entry, and a
@@ -532,7 +529,7 @@ function owedNaming(projectDir, target) {
   };
   for (const e of readOwed(projectDir, "rebind").filter(isOpen)) if (e.target === target) add(e.id, "owed a rebind");
   for (const e of readOwed(projectDir, "redo").filter(isOpen)) add(e.id, "owed a redo");
-  for (const e of openMissingTests(projectDir)) if (e.stage === "calibrate" && (e.target ?? target) === target) add(e.id, "missing test owed a run");
+  for (const e of openMissingTests(projectDir)) if (e.stage === "calibrate" && (e.target ?? target) === target) add(e.id, OWED_A_RUN);
   return out;
 }
 
@@ -555,7 +552,7 @@ function calibrationPlan(projectDir, ctx, target, onFile, inputs) {
 function planText(projectDir, ctx) {
   const target = calibrateTarget(ctx);
   if (ctx.skipSuite) return `calibrate ${target} --skip-suite: runs no tests; it applies the rulings that came back and asks the next question over the rows on file.`;
-  const onFile = resultsOnFile(projectDir, ctx.config, target);
+  const onFile = resultsOnFile(projectDir, target);
   const plan = calibrationPlan(projectDir, ctx, target, onFile, calibrationInputs(projectDir, ctx.config, target));
   const lines = [`calibrate ${target}: what the next run would measure. Nothing is run or written.`, describePlan(plan)];
   if (plan.mode !== "full" && plan.rerun.length) {
@@ -908,7 +905,7 @@ export const calibrate = {
       rows = previous?.rows ?? [];
       haltOnEnvironmentFault(projectDir, ctx, target, rows);
     } else {
-      onFile = resultsOnFile(projectDir, ctx.config, target);
+      onFile = resultsOnFile(projectDir, target);
       plan = calibrationPlan(projectDir, ctx, target, onFile, inputs);
       runId = runIdOf(nextDatedResultsName(dir, today));
       const files = plan.mode === "changed" ? plan.rerun.map((r) => r.file) : undefined;

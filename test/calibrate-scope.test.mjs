@@ -155,3 +155,28 @@ test("run ids order by day, then by the number a second run on the same day take
   const ids = ["2026-01-02", "2026-01-01-10", "2026-01-01-2", "2026-01-01"];
   assert.deepEqual([...ids].sort(compareRunIds), ["2026-01-01", "2026-01-01-2", "2026-01-01-10", "2026-01-02"]);
 });
+
+// A row closed as persona-unavailable (`docs/decisions/0068`) can never pass or fail on its
+// target, so a missing test owed a run for its criterion is no reason to run it again.
+test("a row closed as persona-unavailable is not re-run because a missing test is owed a run for it", () => {
+  const closed = row("R-1", "unbound", { ruled: "persona-unavailable" });
+  const p = plan([closed, row("R-2", "pass"), row("R-3", "unbound", { ruled: "persona-unavailable" })], {
+    owed: new Map([["R-1", ["missing test owed a run"]], ["R-2", ["missing test owed a run"]], ["R-3", ["missing test owed a run", "owed a redo"]]]),
+  });
+  assert.deepEqual(rerunIds(p), ["R-2", "R-3"]);
+  assert.deepEqual(reasonsOf(p, "R-3"), ["owed a redo"]);
+  assert.deepEqual(p.carry.map((r) => r.id), ["R-1"]);
+});
+
+// Results written before rows recorded what they ran with say nothing a plan can compare against,
+// so the first calibration after a project chooses `scope: changed` measures every row.
+test("the first calibration under scope: changed over results with no provenance is full, and says why", () => {
+  const bare = (id) => { const { measured_in: _m, contract_seed: _c, override: _o, harness: _h, ...r } = row(id, "pass"); return r; };
+  const legacy = { target: "old", rows: [bare("R-1"), bare("R-2")] };
+  const p = plan([], { previous: legacy, specs: [spec("R-1"), spec("R-2")] });
+  assert.equal(p.mode, "full");
+  assert.deepEqual(p.fullBecause, ["no row on file records the inputs it ran with, so the first calibration under policy.calibrate.scope: changed measures every row"]);
+  assert.equal(fullRunDue(CHANGED, legacy), p.fullBecause[0], "next gives the same reason");
+  assert.equal(fullRunDue({}, legacy), null, "under scope full every run is full already");
+  assert.equal(fullRunDue(CHANGED, { rows: [row("R-1", "pass")] }), null);
+});

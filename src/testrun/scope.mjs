@@ -18,7 +18,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../lib/git.mjs";
 import { calibrateFullEvery, calibrateScope } from "../config/policy.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
@@ -88,48 +87,25 @@ export function currentSpecs(projectDir) {
   return specFiles(projectDir).map((file) => ({ file, sha: testFingerprint(readFileSync(join(projectDir, file))) }));
 }
 
-// Results written before rows recorded their provenance are read as measured by the run that
-// wrote the newest dated results file, with the inputs at the commit that added it. Only a row
-// that already records its own test file's fingerprint and its adapter (`file_sha`, `adapter`) is
-// read this way; any other row has no provenance and is re-run. `null` when no commit on `rev`
-// added a dated file.
-export function legacyProvenance(projectDir, config, target, rev = "HEAD") {
-  let commit = "";
-  let name = "";
-  try {
-    commit = git(["log", "-1", "--first-parent", "--diff-filter=A", "--format=%H", rev, "--", `:(glob)tests/results/${target}/[0-9]*.json`], projectDir);
-    if (!commit) return null;
-    name = git(["show", "--diff-filter=A", "--name-only", "--format=", commit, "--", `tests/results/${target}/`], projectDir)
-      .split("\n").map((l) => l.trim()).filter((l) => /\/\d{4}-\d{2}-\d{2}(-\d+)?\.json$/.test(l)).sort().at(-1) ?? "";
-  } catch { return null; }
-  if (!name) return null;
-  let rulings = [];
-  try { rulings = parseYaml(git(["show", `${commit}:tests/results/${target}/applied.yaml`], projectDir))?.rulings ?? []; } catch { /* none on file */ }
-  const inputs = calibrationInputs(projectDir, config, target, commit);
-  return { run: runIdOf(name.split("/").at(-1)), inputs, rulings: Array.isArray(rulings) ? rulings : [] };
-}
-
-// `latest` with provenance filled in from `legacy` where it records none, as described above.
-export function withLegacyProvenance(latest, legacy) {
-  if (!latest || latest.run || !legacy) return latest;
-  const rows = (latest.rows ?? []).map((r) => {
-    if (r?.measured_in || !r?.file || !r.file_sha || !r.adapter) return r;
-    const { adapter: _a, ...inputs } = legacy.inputs;
-    const seen = rulingsSeen(legacy.rulings, r.id);
-    return { ...r, ...inputs, measured_in: legacy.run, ...(seen.length ? { rulings_seen: seen } : {}) };
-  });
-  return { ...latest, run: legacy.run, scope: "full", full_run: legacy.run, since_full: 0, rows };
-}
-
 // How many suite runs have gone by since the last full one, as `latest.json` records it.
 export const sinceFull = (latest) => (Number.isInteger(latest?.since_full) ? latest.since_full : 0);
 
-// Why the next calibration has to be full under `policy.calibrate.full_every`, or `null`. It is
-// never due under `scope: full`, where every calibration is full already.
+// Results with rows and not one recording what it ran with: written before rows recorded their
+// provenance, so there is nothing a plan can compare against.
+const unprovenanced = (latest) => {
+  const rows = (latest?.rows ?? []).filter((r) => r?.file);
+  return rows.length > 0 && !rows.some((r) => r.measured_in);
+};
+
+// Why the next calibration of a target has to be full, or `null`: results that record no
+// provenance, which the first calibration after a project chooses `scope: changed` meets once, or
+// `policy.calibrate.full_every`. Never under `scope: full`, where every calibration is full
+// already.
 export function fullRunDue(config, latest) {
-  if (calibrateScope(config) !== "changed") return null;
+  if (calibrateScope(config) !== "changed" || !latest) return null;
+  if (unprovenanced(latest)) return "no row on file records the inputs it ran with, so the first calibration under policy.calibrate.scope: changed measures every row";
   const n = calibrateFullEvery(config);
-  if (n === null || !latest) return null;
+  if (n === null) return null;
   const since = sinceFull(latest);
   if (since + 1 < n) return null;
   return `${since} scoped calibration${since === 1 ? "" : "s"} since the last full run${latest.full_run ? ` (${latest.full_run})` : ""}; policy.calibrate.full_every is ${n}`;
@@ -137,7 +113,13 @@ export function fullRunDue(config, latest) {
 
 const closed = (row) => row?.result === "pass" || Boolean(row?.ruled);
 
-// Why one row on file has to be re-run, or `[]` when it can be carried.
+// The reason a missing test owed a run by calibration gives.
+export const OWED_A_RUN = "missing test owed a run";
+
+// Why one row on file has to be re-run, or `[]` when it can be carried. A row closed as
+// `persona-unavailable` needs a persona the approved contract marks unavailable on the target, so
+// no run there can pass or fail it, and a missing test owed a run for it is no reason to run it
+// again (`docs/decisions/0068`).
 function rowReasons(row, sha, { inputs, stale, rulings, owed }) {
   const reasons = [];
   if (!row.measured_in || !row.file_sha) return ["no provenance"];
@@ -145,7 +127,7 @@ function rowReasons(row, sha, { inputs, stale, rulings, owed }) {
   if (environmentFault(row)) reasons.push("environment fault");
   if (!closed(row) && row.adapter !== inputs.adapter) reasons.push("adapter changed");
   if (row.id) {
-    reasons.push(...(owed.get(row.id) ?? []));
+    reasons.push(...(owed.get(row.id) ?? []).filter((why) => !(why === OWED_A_RUN && row.ruled === "persona-unavailable")));
     if (rulings(row.id).join("\n") !== (row.rulings_seen ?? []).join("\n")) reasons.push("ruled since measured");
     if ((row.result === "stale") !== stale.has(row.id)) reasons.push("staleness changed");
   }
@@ -165,7 +147,7 @@ function sharedChanges(rows, inputs) {
 
 // The plan for one calibration.
 //
-// `previous` is `latest.json` as it stands (with legacy provenance filled in), `specs` every spec
+// `previous` is `latest.json` as it stands, `specs` every spec
 // file on disk with its fingerprint, `inputs` what the rows share now, `stale` the criteria whose
 // test is stale now, `rulings(id)` the gates whose rulings name a criterion now, `owed` the open
 // owed work naming each criterion (`id -> [reason]`), `domain` a `--domain` narrowing and `force`
