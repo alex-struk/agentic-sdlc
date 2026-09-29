@@ -316,6 +316,16 @@
             "environment_faults": {
               "type": "integer",
               "minimum": 0
+            },
+            "scope": {
+              "enum": [
+                "full",
+                "changed"
+              ]
+            },
+            "full_every": {
+              "type": "integer",
+              "minimum": 1
             }
           }
         },

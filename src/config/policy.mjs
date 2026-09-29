@@ -47,6 +47,25 @@ export function calibrateEnvironmentFaults(config) {
   return config?.policy?.calibrate?.environment_faults ?? DEFAULT_CALIBRATE_ENVIRONMENT_FAULTS;
 }
 
+// Which rows a calibration re-runs: `full`, every row, or `changed`, only the rows whose inputs
+// changed since they were measured, carrying the rest (`docs/decisions/0072`). `full` by default,
+// so a project re-runs its whole suite every time until it chooses otherwise.
+export const CALIBRATE_SCOPES = Object.freeze(["full", "changed"]);
+export const DEFAULT_CALIBRATE_SCOPE = "full";
+
+export function calibrateScope(config) {
+  const v = config?.policy?.calibrate?.scope;
+  return CALIBRATE_SCOPES.includes(v) ? v : DEFAULT_CALIBRATE_SCOPE;
+}
+
+// Under `scope: changed`, how often a calibration of a target is full anyway: every n-th one, or
+// `null` when the project sets no cadence and a full run comes only when something else calls
+// for one.
+export function calibrateFullEvery(config) {
+  const n = config?.policy?.calibrate?.full_every;
+  return Number.isInteger(n) && n >= 1 ? n : null;
+}
+
 // How long one command an agent session runs may take before the session's own tooling stops
 // it, in minutes, by stage. It is long enough for the slowest thing a stage is asked to run for
 // itself — bringing the oracle up, which pulls images, installs and migrates — and a session

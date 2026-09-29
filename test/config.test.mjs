@@ -226,3 +226,26 @@ test("policy.next.calibrate_after is a positive whole number, and only where the
   const noCalibrate = check(set.replace("profile: rebuild", "profile: greenfield"));
   assert.ok(noCalibrate.messages.some((m) => /policy\.next\.calibrate_after is set, but the greenfield profile does not run calibrate/.test(m)), noCalibrate.messages.join("\n"));
 });
+
+// Which rows a calibration re-runs is a choice only a project that calibrates can make, and a
+// cadence of full runs means something only where runs can be scoped (`docs/decisions/0072`).
+test("policy.calibrate.scope is full or changed, and full_every applies only to a scoped calibration", () => {
+  assert.deepEqual(parseConfig(withPolicy(["calibrate: { scope: changed, full_every: 5 }"])).errors, []);
+  assert.deepEqual(parseConfig(withPolicy(["calibrate: { scope: full, environment_faults: 2 }"])).errors, []);
+  assert.ok(parseConfig(withPolicy(["calibrate: { scope: some }"])).errors.length > 0);
+  assert.ok(parseConfig(withPolicy(["calibrate: { full_every: 0 }"])).errors.length > 0);
+  assert.ok(parseConfig(withPolicy(["calibrate: { full_every: 1.5 }"])).errors.length > 0);
+
+  const d = mkdtempSync(join(tmpdir(), "sdlc-calibrate-scope-"));
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  const check = (text) => { writeFileSync(join(d, ".sdlc/config.yaml"), text); return checkConfig(d); };
+  const ok = check(withPolicy(["calibrate: { scope: changed, full_every: 5 }"]));
+  assert.equal(ok.ok, true, ok.messages.join("\n"));
+
+  const idle = check(withPolicy(["calibrate: { full_every: 5 }"]));
+  assert.equal(idle.ok, false);
+  assert.ok(idle.messages.some((m) => /policy\.calibrate\.full_every is set, but policy\.calibrate\.scope is full, so every calibration is full already/.test(m)), idle.messages.join("\n"));
+
+  const noCalibrate = check(withPolicy(["calibrate: { scope: changed }"]).replace("profile: rebuild", "profile: greenfield"));
+  assert.ok(noCalibrate.messages.some((m) => /policy\.calibrate\.scope is set, but the greenfield profile does not run calibrate/.test(m)), noCalibrate.messages.join("\n"));
+});

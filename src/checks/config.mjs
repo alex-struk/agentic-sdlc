@@ -53,6 +53,22 @@ function calibrateAfterMessages(config) {
   return [];
 }
 
+// Which rows a calibration re-runs applies to nothing in a project whose profile does not
+// calibrate, and a cadence of full runs applies to nothing while every run is full already
+// (`docs/decisions/0072`).
+function calibrateScopeMessages(config) {
+  const set = config?.policy?.calibrate ?? {};
+  const keys = ["scope", "full_every"].filter((k) => set[k] !== undefined);
+  if (!keys.length) return [];
+  let stages = [];
+  try { stages = stagesFor(config.profile); } catch { return []; }
+  if (!stages.includes("calibrate")) return keys.map((k) => `policy.calibrate.${k} is set, but the ${config.profile} profile does not run calibrate, so it applies to nothing`);
+  if (set.full_every !== undefined && set.scope !== "changed") {
+    return ["policy.calibrate.full_every is set, but policy.calibrate.scope is full, so every calibration is full already; set scope: changed or remove full_every"];
+  }
+  return [];
+}
+
 export function checkConfig(projectDir, ctx = {}) {
   const p = join(projectDir, ".sdlc", "config.yaml");
   if (!existsSync(p)) return { id: "config", ok: false, messages: [".sdlc/config.yaml is missing"], config: null };
@@ -66,7 +82,7 @@ export function checkConfigText(text) {
   const { config, errors } = parseConfig(text);
   const messages = [...errors];
   try { stagesFor(config?.profile); } catch (e) { messages.push(e.message); }
-  if (config) messages.push(...agentEntryMessages(config), ...calibrateAfterMessages(config));
+  if (config) messages.push(...agentEntryMessages(config), ...calibrateAfterMessages(config), ...calibrateScopeMessages(config));
   // A turn budget that the runner would ignore or silently reduce is worse than no budget
   // at all: it reads as a cap that a gate approved and a run honoured, and it is neither.
   // Refusing it here puts the failure in front of whoever proposes the number, rather than
