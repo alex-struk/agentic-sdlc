@@ -8,7 +8,7 @@
 // disabled. Nothing is fetched at run time: the stylesheet and the fonts are the project's
 // own files, so the site works from a local checkout exactly as it works when served.
 import { STATES } from "../spec/criteria.mjs";
-import { RESULT_VALUES, resultRows } from "./model.mjs";
+import { RESULT_VALUES, currentResultsLine, resultRows } from "./model.mjs";
 import { escapeHtml, markdownToHtml, inline } from "./md-to-html.mjs";
 import { stylesheet } from "./theme.mjs";
 import { TOKENS_SOURCE } from "./tokens.mjs";
@@ -491,9 +491,11 @@ function resultsPage(model) {
       <td>${e(String(f.at))}</td>
       ${f.counts.map((n, i) => `<td class="num">${n > 0 ? chip(`${n} ${RESULT_VALUES[i]}`, RESULT_VALUES[i]) : "0"}</td>`).join("")}
     </tr>`).join("");
+    const current = currentResultsLine(model.latest.get(target));
     return `<section>
       <h2>${e(target)}</h2>
       ${open ? `<p class="note">A calibration ruling is open: <a href="proposals/${e(open)}.html">${e(open)}</a>.</p>` : `<p>No calibration ruling is open.</p>`}
+      ${current ? `<p>${e(current)}</p>` : ""}
       <div class="scroll"><table>
         <thead><tr><th scope="col">Run</th><th scope="col">At</th>${RESULT_VALUES.map((v) => `<th scope="col" class="num">${e(v)}</th>`).join("")}</tr></thead>
         <tbody>${rows}</tbody></table></div>

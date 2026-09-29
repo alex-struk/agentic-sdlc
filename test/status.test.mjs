@@ -547,3 +547,23 @@ test("the gate legend explains the runner and the unknown seat when the log carr
   assert.match(legend, /no seat was held and nobody was asked/);
   assert.match(legend, /it is not read as a person/);
 });
+
+// A scoped calibration carries rows none of whose inputs changed (`docs/decisions/0072`). The
+// site says which rows the last run measured and which it carried, and from which run.
+test("the site shows which rows the last calibration measured and which it carried, and from which run", () => {
+  const d = testsAndCalibrationFixture();
+  const latest = JSON.parse(readFileSync(join(d, "tests/results/old/latest.json"), "utf8"));
+  latest.run = "2026-01-02";
+  latest.scope = "changed";
+  latest.rows[0] = { ...latest.rows[0], result: "fail", ruled: "defect-in-old", measured_in: "2026-01-01", carried: true };
+  latest.rows[1] = { ...latest.rows[1], measured_in: "2026-01-02" };
+  writeFileSync(join(d, "tests/results/old/latest.json"), `${JSON.stringify(latest, null, 2)}\n`);
+  buildSite(d);
+  const page = readFileSync(join(d, "site/criteria/a.md"), "utf8");
+  assert.match(page, /\| R-1\.1 \| acceptance\/a\/R-1\.1\.spec\.ts \| fail \(ruled: defect-in-old; carried from 2026-01-01\) \|/);
+  assert.match(page, /\| R-1\.2 \| not testable: no observable surface \| not-testable \|/);
+  const results = readFileSync(join(d, "site/results.md"), "utf8");
+  assert.match(results, /Current results: 1 row measured by 2026-01-02 \(a scoped run\), 1 carried \(1 from 2026-01-01\)\./);
+  const html = readFileSync(join(d, "site/results.html"), "utf8");
+  assert.match(html, /Current results: 1 row measured by 2026-01-02 \(a scoped run\), 1 carried \(1 from 2026-01-01\)\./);
+});

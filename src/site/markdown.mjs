@@ -3,7 +3,7 @@
 // styling, no navigation beyond links — because its job is to be greppable and to make
 // a change to the project visible as a change to a file.
 import { STATES } from "../spec/criteria.mjs";
-import { RESULT_VALUES, resultRows } from "./model.mjs";
+import { RESULT_VALUES, currentResultsLine, resultRows } from "./model.mjs";
 import { engineLabel, engineOf, seatWithEngine } from "../lib/engine.mjs";
 
 // A GitHub-flavoured Markdown table built from a column-array header and one array of
@@ -56,10 +56,12 @@ function testCell(cov, notTestableEntries, domain, id) {
 // appended when a calibration ruling already answered it, or blank when the target's
 // results carry no row for this criterion at all (never run against it, or a domain
 // nobody has derived tests for yet).
+// A row a scoped calibration carried says which run measured it.
 function targetCell(latest, id) {
   const row = resultRows(latest).find((r) => r?.id === id);
   if (!row) return "";
-  return row.ruled ? `${row.result} (ruled: ${row.ruled})` : row.result;
+  const notes = [row.ruled ? `ruled: ${row.ruled}` : null, row.carried ? `carried from ${row.measured_in ?? "an earlier run"}` : null].filter(Boolean);
+  return notes.length ? `${row.result} (${notes.join("; ")})` : row.result;
 }
 
 export function renderMarkdown(model) {
@@ -127,7 +129,8 @@ export function renderMarkdown(model) {
       const table = mdTable(["file", "at", ...RESULT_VALUES], model.resultFiles.get(target).map((e) => [e.file, e.at, ...e.counts]));
       const open = model.openCalibration.get(target);
       const proposalLine = open ? `Open calibration proposal: ${open}.` : "no calibration ruling open.";
-      return [`## ${target}`, "", table, "", proposalLine].join("\n");
+      const current = currentResultsLine(latest.get(target));
+      return [`## ${target}`, "", table, "", proposalLine, ...(current ? ["", current] : [])].join("\n");
     }), ""].join("\n\n");
 
   const journalMd = ["# Journal", "", ...model.journal.slice().reverse().flatMap((e) => {

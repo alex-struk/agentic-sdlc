@@ -98,6 +98,21 @@ export function resultRows(latest) {
   return Array.isArray(latest?.rows) ? latest.rows : [];
 }
 
+// How the rows of a target's `latest.json` came to be there: how many the last calibration
+// measured, and how many it carried from which earlier runs (`docs/decisions/0072`), as one
+// sentence. `null` for results that do not record the run that measured them.
+export function currentResultsLine(latest) {
+  if (!latest?.run) return null;
+  const rows = resultRows(latest);
+  const carried = rows.filter((r) => r?.carried);
+  const measured = rows.length - carried.length;
+  const how = latest.scope === "full" ? "a full run" : latest.scope === "domain" ? "a run narrowed to one domain" : "a scoped run";
+  const from = new Map();
+  for (const r of carried) from.set(r.measured_in ?? "an unrecorded run", (from.get(r.measured_in ?? "an unrecorded run") ?? 0) + 1);
+  const runs = [...from.entries()].sort((a, b) => String(b[0]).localeCompare(String(a[0]))).map(([id, n]) => `${n} from ${id}`).join(", ");
+  return `Current results: ${measured} row${measured === 1 ? "" : "s"} measured by ${latest.run} (${how}), ${carried.length} carried${carried.length ? ` (${runs})` : ""}.`;
+}
+
 export function collect(projectDir) {
   projectDir = resolve(projectDir);
   const { config: cfg, errors } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
