@@ -13,7 +13,8 @@ ruling. It does, still, leave a line in the run record the same way a stage does
 
 ## Inputs
 
-`sdlc oracle up|down|status [--target <t>]`, run from inside the project's working tree.
+`sdlc oracle up|down|status|reseed [--target <t>] [--configuration <name>]`, run from inside the
+project's working tree.
 `--target` defaults to `config.oracle.target` and is refused when given any other value — a
 project configures exactly one oracle target, so naming a different one is always a mistake
 rather than a choice between several.
@@ -117,7 +118,7 @@ and start again from nothing.
   database and any services already started are left running, and the failing file's own error is
   in the message — no later seed file is attempted.
 
-## `sdlc oracle reseed [--target <t>] [--instance <n>]`
+## `sdlc oracle reseed [--target <t>] [--instance <n> | --configuration <name>]`
 
 Puts the database back to what `tests/seed/*.sql` describes, without restarting anything: every
 table but the migration tool's own bookkeeping is emptied, then the same seed files `oracle up`
@@ -168,3 +169,51 @@ which is what a single oracle always did.
 This is the difference between a calibration that takes an hour and one that takes twenty minutes.
 The suite runs one test at a time against one copy because every test shares that copy's data; the
 only way to run more at once is to give each worker data of its own.
+
+## A copy in one of the contract's configurations
+
+Some behaviour depends on a setting the application reads once at start-up, such as a switch
+that turns every outgoing message off. No test can put a running application into it, so the
+contract names it as a configuration (`spec/contract/observables.yaml`, `configurations:`):
+
+```yaml
+configurations:
+  <name>:
+    for: [<criterion id>, ...]
+    select: <VARIABLE>=<value>     # one or more, space-separated, or a mapping
+    tag: "@<name>"
+```
+
+`select` is the environment the oracle is started with to be in the configuration, and each
+variable it names is one the Compose override interpolates (`${VARIABLE:-default}`), so that
+left unset the oracle runs with the default. `tag` is carried by every test written for the
+configuration. The other keys a contract writes under a configuration are for the test writer and
+the ruler; nothing here reads them.
+
+`sdlc oracle up --configuration <name>` starts a copy of the oracle in that configuration, beside
+whatever copies are already running: a compose project of its own
+(`sdlc-<project-name>-<target>-<name>`), with its own ports, database and mail catcher, migrated
+and seeded like any other copy, with the configuration's `select` over the environment every copy
+gets. Any container name the compose files pin is made that project's own, since the default copy
+is running beside it. The copy is recorded under `configurations.<name>` in
+`.sdlc/oracle-<target>.local.yaml`, with the environment it was started with; the default copies'
+record is left as it was.
+
+It is always started fresh. A copy of the same configuration already recorded is taken down first,
+database included, so what its tests find is the seed and nothing an earlier run left behind.
+
+`up --configuration` refuses a name the contract does not give, and a configuration whose `select`
+names a variable the override does not read: the copy that would start is the default oracle under
+another name, and its tests would fail for a reason that has nothing to do with the application. A
+variable mentioned only in a comment does not count. `oracle.env` still applies to the copy, and the
+configuration's own variables win over it.
+
+`reseed --configuration <name>` resets that copy alone, and it is the command `calibrate` gives the
+suite as the copy's reset. `down --configuration <name>` takes that copy down and removes its record,
+leaving the default copies running. A plain `down` takes down every copy the file records,
+configured ones included, so a run that stopped part-way leaves nothing behind that `down` does not
+reach. `status` lists the configured copies after the default ones.
+
+`calibrate` starts, uses and takes down a configuration's copy itself (`docs/stages/calibrate.md`,
+step 4). The reasons for a copy of its own rather than a restart of the default one are in
+`docs/decisions/0071-a-configuration-gets-its-own-oracle.md`.

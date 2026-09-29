@@ -36,6 +36,10 @@ What it reads:
   `generated_from` commit, which the results file records as the spec it ran against.
 - `tests/acceptance/` — the suite itself, and `not-testable.yaml`, whose entries become rows with no
   test of their own.
+- `spec/contract/observables.yaml`, `configurations:` — settings the target reads once at start-up,
+  each with the environment that starts the oracle in it (`select`) and the tag its tests carry
+  (`tag`), and the oracle's Compose override, which has to read each `select` variable
+  (`docs/stages/oracle.md`, "A copy in one of the contract's configurations").
 
 `--domain <d>` narrows the run to that domain's specs. A whole-suite calibration takes hours on a
 real project, which makes checking one fix an afternoon; scoped, it is minutes. The rows it
@@ -190,6 +194,20 @@ the runner's own process, never through a tool call.
    `SDLC_MAIL_API` set, and its JSON report is mapped onto rows. `SDLC_TEST_RUNNER=mock` reads canned
    rows from `<SDLC_MOCK_DIR>/calibrate.json` instead, for a caller with no browser in reach.
 
+   **A test written for one of the contract's configurations runs against a copy started in it.**
+   The ordinary run leaves out every test carrying a configuration's tag (Playwright's
+   `--grep-invert`). Then, for each configuration with a tagged test in this run's scope, one at a
+   time: a copy of the oracle is started in it beside the default copies (`sdlc oracle up
+   --configuration <name>`), only that tag's tests run against it (`--grep`), with `sdlc oracle
+   reseed --configuration <name>` as their reset, and the copy is taken down again, whether the run
+   succeeded or threw. The default copies are never restarted or reconfigured, so the oracle is left
+   as the run found it. The rows of every run are one result: a spec file some of whose tests are
+   tagged gets one row, worked out from every test any run reported for it (`combineRuns`). The
+   summary names which criteria ran against which configuration. A run that selected a tag and
+   reported no test at all, though a spec file carries the tag, is refused rather than leaving those
+   tests without a result (`docs/decisions/0071-a-configuration-gets-its-own-oracle.md`). Under
+   `SDLC_TEST_RUNNER=mock` the canned rows are selected by the tag in each spec file's text.
+
    **A target that was not usable halts the run here.** A row whose failing test reports that the
    harness could not reset the target to its seed, or that the browser could not connect to it
    (`ENVIRONMENT_FAULT_RE`, `src/testrun/results.mjs`), says what the machine did, not the
@@ -234,6 +252,11 @@ the runner's own process, never through a tool call.
     password, is refused, and every row comes back a failure that says nothing about the work.
     The message names the variable and never a value (`export SDLC_SANDBOX_PASSWORD before
     calibrating <target>`).
+  - `calibrate-configurations` — every configuration the contract names can be routed: it parses,
+    each variable its `select` names is one the oracle's Compose override reads, and some test under
+    `tests/acceptance/` carries its tag. Against a target other than the oracle, any configuration
+    at all is refused, since only the oracle is started by this pipeline and a configuration's tests
+    have no instance they are written for there. Skipped under `--skip-suite`, which runs nothing.
 - **Post-checks**, run against the working tree after `execute` returns:
   - `calibrate-results` — `tests/results/<t>/latest.json` exists, parses, and has one row for every
     accepted criterion of every domain that has at least one test file. A domain nobody has derived
@@ -408,6 +431,13 @@ not one.
   before anything is started or written.
 - **The oracle will not start**: `oracleUp` throws with the exit code's own reason (no compose file,
   no Docker Compose on the machine, a service that never answered), and nothing is written.
+- **A configuration cannot be routed** — a variable the override does not read, a tag no test
+  carries, a malformed entry, or a target other than the oracle: the `calibrate-configurations`
+  pre-check fails, naming the configuration, before anything is started or written. Running the
+  tagged tests against the default instance instead would record the default's behaviour as the
+  configuration's.
+- **A configuration's copy will not start**, or its run throws: the copy is taken down and the run
+  stops with the reason, as for the oracle itself; nothing is written.
 - **The suite produces no report**: `runSuite` throws naming the missing
   `tests/test-results/results.json` and the run's stderr — a Playwright invocation that failed before
   it could write one. Any ruling this run had already applied is left in the working tree, so the
