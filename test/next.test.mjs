@@ -787,6 +787,40 @@ test("policy.calibrate.full_every makes next name a full calibration when one is
   assert.equal(matchesNext(r, "calibrate", { target: "old", full: true }), true, "measuring more than next asked for needs no reason");
 });
 
+// A missing test owed a run by calibration, for a criterion whose row needs a persona the approved
+// contract marks unavailable, can never be answered by a run there (`docs/decisions/0068`), so it
+// is handed to a ruler rather than offered to calibrate for ever.
+test("a missing test owed a run on a row whose persona the contract marks unavailable waits on a ruler", (t) => {
+  const d = project(t, { extra: TARGETS });
+  specDone(d);
+  commit(d, {
+    "spec/contract/personas.yaml": stringifyYaml({ personas: [
+      { id: "second-staff", can: ["approve"], sign_in: { "session-route": { unavailable: "the target has one staff account" } } },
+    ] }),
+    ".sdlc/owed.yaml": stringifyYaml({ owed: [{ kind: "missing-test", item: "R-1.1", id: "R-1.1", version: 1, domain: "alpha", stage: "calibrate", target: "old", why: "a test for v1 exists and has not run", by: "runner", at: "2026-01-01T00:00:00.000Z" }] }),
+  });
+  const needsPersona = unboundRow("R-1.1", "alpha", { ruled: "persona-unavailable", tests: [{ title: "t", status: "failed", error: "Error: unbound: signIn.second-staff — the target has one staff account" }] });
+  calibratedWithUnbound(d, [needsPersona, { id: "R-2.1", result: "pass" }]);
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.stage === "calibrate"), r.ready.map((c) => c.command).join("\n"));
+  const w = r.waiting.find((x) => x.kind === "missing-test");
+  assert.equal(w.on, "a ruler");
+  assert.equal(w.name, "missing tests (calibrate)");
+  assert.match(w.why, /^1 missing test owed a run by calibrate on old, for a row needing a persona the approved contract marks unavailable there: R-1\.1; no run on old can pass or fail it$/);
+  assert.match(w.command, /^condition-withdrawn missing-test\/<id>: <why> on any ruling/);
+});
+
+test("the first calibration after policy.calibrate.scope: changed is full, and next says why", (t) => {
+  const d = project(t, { extra: TARGETS, policy: ["calibrate: { scope: changed }"] });
+  specDone(d);
+  adaptersBound(d, { old: bindingsFor("old", FULL), fresh: bindingsFor("new", FULL) });
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", rows: [{ id: "R-1.1", file: "tests/acceptance/alpha/R-1.1.spec.ts", result: "fail" }, { id: "R-2.1", result: "pass" }] }) });
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run calibrate --target old --full");
+  assert.match(r.next.why, /; a full run is due: no row on file records the inputs it ran with, so the first calibration under policy\.calibrate\.scope: changed measures every row$/);
+});
+
 test("which kind of ready work goes first is policy.next.order", (t) => {
   const d = project(t, { policy: ["next: { order: [sequence, owed, proposals] }"] });
   specDone(d);

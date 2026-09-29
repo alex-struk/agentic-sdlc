@@ -31,7 +31,7 @@ import { STAGES, stagesFor } from "../profiles.mjs";
 import { openAcross, readAt } from "../spec/owed.mjs";
 import { bindingGaps } from "../spec/surface.mjs";
 import { MISSING_TEST, openMissingTestsAt, retired } from "../spec/missing-tests.mjs";
-import { UNBOUND, legacyAdapter, openUnboundRows, personaUnavailable, targetIdentity, unavailablePersonas, unboundOwed } from "../spec/unbound.mjs";
+import { PERSONA_UNAVAILABLE, UNBOUND, legacyAdapter, openUnboundRows, personaUnavailable, targetIdentity, unavailablePersonas, unboundOwed } from "../spec/unbound.mjs";
 import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
 import { stallReason } from "./escalation.mjs";
@@ -520,6 +520,11 @@ function owedWork(record, inFlight, bindsNow) {
   };
   const summary = new Map();
   const unanswered = new Map();
+  // A row needing a persona the approved contract marks unavailable on its target, closed as
+  // `persona-unavailable` or about to be: no run there can pass or fail it (`docs/decisions/0068`).
+  const needsUnavailable = (target, id) => (record.unboundUnavailable ?? []).some((u) => u.target === target && u.id === id)
+    || (record.results.get(target)?.latest?.rows ?? []).some((r) => r?.id === id && r.ruled === PERSONA_UNAVAILABLE);
+  const noRunAnswers = new Map();
   for (const e of record.owed) {
     const k = `${e.kind}\u0000${e.stage}`;
     summary.set(k, { kind: e.kind, stage: e.stage, count: (summary.get(k)?.count ?? 0) + 1 });
@@ -561,7 +566,12 @@ function owedWork(record, inFlight, bindsNow) {
         if (e.kept?.by) w.by.add(e.kept.by);
         unanswered.set(key, w);
       } else if (e.stage === "derive-tests") group("derive-tests", { domain: e.domain ?? byId.get(e.id)?.domain ?? undefined, stale: true }, "missing test", "missing tests");
-      else if (e.stage === "calibrate") group("calibrate", { target: e.target ?? record.config?.oracle?.target ?? undefined }, "missing test owed a run", "missing tests owed a run");
+      else if (e.stage === "calibrate" && needsUnavailable(e.target ?? record.config?.oracle?.target, e.id)) {
+        // Owed a run by calibration on a row no run can close: handed to a ruler, like an item
+        // no run can answer, rather than offered to calibrate for ever.
+        const target = e.target ?? record.config?.oracle?.target;
+        noRunAnswers.set(target, [...(noRunAnswers.get(target) ?? []), e.id]);
+      } else if (e.stage === "calibrate") group("calibrate", { target: e.target ?? record.config?.oracle?.target ?? undefined }, "missing test owed a run", "missing tests owed a run");
       else if (e.stage !== "verify") {
         const s = SUBJECT_OF[e.stage];
         group(e.stage, s === "domain" && e.domain ? { domain: e.domain } : {}, "missing test", "missing tests");
@@ -626,7 +636,12 @@ function owedWork(record, inFlight, bindsNow) {
     const rerun = w.kept ? `, or sdlc run ${w.stage} --reason "<what has changed>"` : "";
     return { on: "a ruler", kind: MISSING_TEST, count: w.n, name: `missing tests (${w.stage})`, gate: null, why,
       command: `condition-withdrawn missing-test/<id>: <why> on any ruling${rerun} (sdlc checks lists each)` };
-  })];
+  }), ...[...noRunAnswers.entries()].map(([target, ids]) => ({
+    on: "a ruler", kind: MISSING_TEST, count: ids.length, name: "missing tests (calibrate)", gate: null,
+    why: `${plural(ids.length, "missing test")} owed a run by calibrate on ${target}, for ${ids.length === 1 ? "a row" : "rows"} needing a persona the approved contract marks unavailable there: `
+      + `${ids.join(", ")}; no run on ${target} can pass or fail ${ids.length === 1 ? "it" : "them"}`,
+    command: "condition-withdrawn missing-test/<id>: <why> on any ruling (sdlc checks lists each)",
+  }))];
   return { items, waiting, summary: [...summary.values()], stale: [...stale].map(([domain, ids]) => ({ domain, ids })), staleAdapters };
 }
 
