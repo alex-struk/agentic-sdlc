@@ -1657,3 +1657,182 @@ test("sdlc run calibrate: against a target other than the oracle, a configuratio
     restoreEgress(prevEgress);
   }
 });
+
+// --- a calibration re-runs only the rows whose inputs changed (docs/decisions/0072) ---
+
+function setCalibratePolicy(dir, value) {
+  const cfg = join(dir, ".sdlc", "config.yaml");
+  writeFileSync(cfg, readFileSync(cfg, "utf8").replace("  default_tier: STANDARD", `  default_tier: STANDARD\n  calibrate: ${value}`));
+  git(["add", "-A"], dir);
+  git([...COMMIT, "policy.calibrate (test)"], dir);
+}
+
+function touch(dir, rel, note = "edited") {
+  const abs = join(dir, rel);
+  writeFileSync(abs, `${readFileSync(abs, "utf8")}\n${rel.endsWith(".yaml") ? "#" : "//"} ${note}\n`);
+  git(["add", "-A"], dir);
+  // A spec file keeps its provenance only when the test writer's stage commits it.
+  git([...COMMIT, rel.startsWith("tests/acceptance/") ? `stage(derive-tests): ${rel} written again (test)` : `${rel} changed (test)`], dir);
+}
+
+function dated(dir, id) {
+  return JSON.parse(readFileSync(join(dir, `tests/results/old/${id}.json`), "utf8"));
+}
+
+test("under policy.calibrate.scope: changed, a calibration re-runs only the test that changed and carries the rest", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-scoped-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  setCalibratePolicy(dir, "{ scope: changed }");
+  calibrateEnv(MOCK_DIR);
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const first = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(first.ok, true, JSON.stringify(first.messages));
+    let results = latest(dir);
+    assert.deepEqual([results.run, results.scope, results.full_run, results.since_full], [today, "full", today, 0]);
+    const measured = rowFor(results, "R-1.2");
+    assert.equal(measured.measured_in, today);
+    for (const k of ["file_sha", "adapter", "contract_seed", "harness"]) assert.match(measured[k], /^[0-9a-f]{40}$/, k);
+    assert.equal(typeof measured.override, "string");
+    assert.equal(measured.carried, undefined);
+    assert.match(lastCalibrateText(dir), /Full run: all 2 test file\(s\) re-run \(no results on file\)\./);
+
+    touch(dir, "tests/acceptance/applications/R-1.1.spec.ts");
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+    results = latest(dir);
+    assert.deepEqual([results.run, results.scope, results.full_run, results.since_full], [`${today}-2`, "changed", today, 1]);
+    assert.equal(rowFor(results, "R-1.1").measured_in, `${today}-2`);
+    assert.equal(rowFor(results, "R-1.1").carried, undefined);
+    assert.equal(rowFor(results, "R-1.2").measured_in, today, "a carried row keeps the run that measured it");
+    assert.equal(rowFor(results, "R-1.2").carried, true);
+    assert.equal(rowFor(results, "R-1.2").result, "fail");
+    assert.equal(results.rows.length, 3, "latest.json still accounts for every criterion");
+    // The dated file is the record of what this run measured, and nothing else.
+    assert.deepEqual(dated(dir, `${today}-2`).rows.map((r) => r.id), ["R-1.1", "R-1.3"]);
+    const text = lastCalibrateText(dir);
+    assert.match(text, new RegExp(`1 of 2 re-run \\(1 test changed\\), 1 carried from ${today}\\.`));
+    assert.match(text, /No full run is scheduled \(policy\.calibrate\.full_every is unset\)/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("policy.calibrate.full_every makes every n-th calibration full, and --full forces one on the record", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-cadence-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  setCalibratePolicy(dir, "{ scope: changed, full_every: 2 }");
+  calibrateEnv(MOCK_DIR);
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    assert.equal((await runStage(dir, "calibrate", { target: "old" })).ok, true);
+    assert.equal((await runStage(dir, "calibrate", { target: "old" })).ok, true);
+    let results = latest(dir);
+    assert.equal(results.scope, "changed");
+    assert.ok(results.rows.filter((r) => r.file).every((r) => r.carried && r.measured_in === today));
+    assert.deepEqual(dated(dir, `${today}-2`).rows.map((r) => r.id), ["R-1.3"], "nothing re-run; only the not-testable row is written again");
+    assert.match(lastCalibrateText(dir), new RegExp(`0 of 2 re-run, 2 carried from ${today}\\.`));
+    assert.match(lastCalibrateText(dir), /The next calibration is full \(policy\.calibrate\.full_every: 2\)\./);
+
+    assert.equal((await runStage(dir, "calibrate", { target: "old" })).ok, true);
+    results = latest(dir);
+    assert.deepEqual([results.scope, results.full_run, results.since_full], ["full", `${today}-3`, 0]);
+    assert.ok(results.rows.every((r) => !r.carried));
+    assert.match(lastCalibrateText(dir), new RegExp(`Full run: all 2 test file\\(s\\) re-run \\(1 scoped calibration since the last full run \\(${today}\\); policy\\.calibrate\\.full_every is 2\\)\\.`));
+
+    const forced = await runStage(dir, "calibrate", { target: "old", full: true });
+    assert.equal(forced.ok, true, JSON.stringify(forced.messages));
+    assert.deepEqual(latest(dir).full_because, ["--full"]);
+    assert.match(lastCalibrateText(dir), /Full run: all 2 test file\(s\) re-run \(--full\)\./);
+    const runRecord = git(["log", "-1", "-p", "--format=", "--", ".sdlc/runs"], dir);
+    assert.match(runRecord, /calibrate old: a full run, forced with --full/);
+
+    for (const extra of [{ skipSuite: true }, { domain: "applications" }]) {
+      const refused = await runStage(dir, "calibrate", { target: "old", full: true, ...extra });
+      assert.equal(refused.ok, false);
+      assert.match(refused.messages.join("\n"), /--full/);
+    }
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a change to the contract makes a scoped calibration full", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-contract-full-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  setCalibratePolicy(dir, "{ scope: changed }");
+  calibrateEnv(MOCK_DIR);
+  try {
+    assert.equal((await runStage(dir, "calibrate", { target: "old" })).ok, true);
+    touch(dir, "spec/contract/observables.yaml", "a new observable");
+    const second = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(second.ok, true, JSON.stringify(second.messages));
+    assert.equal(latest(dir).scope, "full");
+    assert.match(lastCalibrateText(dir), /Full run: all 2 test file\(s\) re-run \(spec\/contract\/ or the seed changed since rows on file were measured\)\./);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("calibrate --dry-run says which tests the next calibration would re-run and which rows it would carry, and writes nothing", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-plan-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  setCalibratePolicy(dir, "{ scope: changed, full_every: 4 }");
+  calibrateEnv(MOCK_DIR);
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    assert.equal((await runStage(dir, "calibrate", { target: "old" })).ok, true);
+    touch(dir, "tests/acceptance/applications/R-1.2.spec.ts");
+    const head = git(["rev-parse", "HEAD"], dir);
+    const r = await runStage(dir, "calibrate", { target: "old", dryRun: true });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+    assert.match(r.text, new RegExp(`1 of 2 re-run \\(1 test changed\\), 1 carried from ${today}\\.`));
+    assert.match(r.text, /tests\/acceptance\/applications\/R-1\.2\.spec\.ts \(R-1\.2\): test changed/);
+    assert.match(r.text, /A full run is due after 3 more scoped calibrations/);
+    assert.equal(git(["rev-parse", "HEAD"], dir), head);
+    assert.equal(git(["status", "--porcelain"], dir), "");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a scoped calibration starts no copy of the oracle for a configuration none of whose tests changed", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-scoped-configuration-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  addConfiguration(dir);
+  setCalibratePolicy(dir, "{ scope: changed }");
+  const mockDir = mockRunnerDir("scoped-configuration", [PASSING_ROW, FAILING_ROW]);
+  calibrateEnv(mockDir);
+  const copyStarts = () => oracleCalls(mockDir).filter((c) => c.args[1] === "sdlc-permit-intake-old-maintenance_mode" && c.args.includes("up")).length;
+  try {
+    assert.equal((await runStage(dir, "calibrate", { target: "old" })).ok, true);
+    const started = copyStarts();
+    assert.ok(started > 0);
+    touch(dir, "tests/acceptance/applications/R-1.1.spec.ts");
+    assert.equal((await runStage(dir, "calibrate", { target: "old" })).ok, true);
+    assert.equal(copyStarts(), started, "R-1.2, the configuration's only test, is carried");
+    assert.equal(rowFor(latest(dir), "R-1.2").carried, true);
+
+    touch(dir, "tests/acceptance/applications/R-1.2.spec.ts");
+    assert.equal((await runStage(dir, "calibrate", { target: "old" })).ok, true);
+    assert.ok(copyStarts() > started, "a changed test of the configuration runs against its copy");
+    assert.equal(rowFor(latest(dir), "R-1.2").carried, undefined);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("the reviewer's and the product owner's pages mark a failing row carried from an earlier run", async () => {
+  const { calibratePage, triagePage } = await import("../src/stages/calibrate.mjs");
+  const carried = { ...FAILING_ROW, carried: true, measured_in: "2026-01-01-2" };
+  const fresh = { ...FAILING_ROW, id: "R-1.4", measured_in: "2026-01-03" };
+  for (const page of [triagePage("old", "http://x", [carried, fresh], [], new Map()), calibratePage("old", "http://x", [carried, fresh], new Map())]) {
+    assert.match(page, /### R-1\.2 · v1\n\n- carried from 2026-01-01-2: none of its inputs has changed since that run measured it/);
+    assert.equal(page.match(/carried from/g).length, 1, "a row this run measured is not marked");
+  }
+});

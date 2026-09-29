@@ -24,7 +24,10 @@ import { combineRuns, runSuite, sortRows } from "../testrun/playwright.mjs";
 import { taggedSpecFiles } from "../testrun/tags.mjs";
 import { environmentFaults } from "../testrun/results.mjs";
 import { calibrateEnvironmentFaults, owedLoopLimit } from "../config/policy.mjs";
-import { appendRun } from "../lib/runrecord.mjs";
+import { appendRun, deferRun } from "../lib/runrecord.mjs";
+import { calibrationInputs, currentSpecs, describePlan, fullRunCountdown, legacyProvenance, planCalibration, rulingsSeen, runIdOf, sinceFull, stampProvenance, withLegacyProvenance } from "../testrun/scope.mjs";
+import { isOpen, read as readOwed } from "../spec/owed.mjs";
+import { openMissingTests } from "../spec/missing-tests.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { propose } from "../commands/propose.mjs";
 
@@ -47,9 +50,14 @@ function resetCommandFor(config, target, instance, configuration) {
 //
 // A run that selected the tag and reported no test at all is refused: the tests the ordinary
 // run left out would otherwise have no result, and the reason would be lost.
-async function runInConfiguration(projectDir, ctx, target, configuration) {
+//
+// `domain` and `files` are the run's own selection (`docs/decisions/0072`): a scoped run runs a
+// configuration's tests only where it re-runs them, and starts no copy for one it carries.
+async function runInConfiguration(projectDir, ctx, target, configuration, { domain, files } = {}) {
+  const wanted = files === undefined ? null : new Set(files);
   const inScope = taggedSpecFiles(projectDir, configuration.tag)
-    .filter((f) => ctx.domain === undefined || f.split("/")[2] === ctx.domain);
+    .filter((f) => domain === undefined || f.split("/")[2] === domain)
+    .filter((f) => !wanted || wanted.has(f));
   if (!inScope.length) return null;
   // Taken down whatever happens, a start that failed part-way included, so the run leaves the
   // oracle as it found it.
@@ -57,7 +65,7 @@ async function runInConfiguration(projectDir, ctx, target, configuration) {
   try {
     const copy = await oracleUp(projectDir, { target, configuration: configuration.name, stage: "calibrate" });
     ({ rows } = runSuite({
-      projectDir, target, domain: ctx.domain, grep: configuration.tag,
+      projectDir, target, domain, files: wanted ? inScope : undefined, grep: configuration.tag,
       instances: [{ baseUrl: copy.base_url, mailApi: copy.mail_api ?? "", resetCommand: resetCommandFor(ctx.config, target, undefined, configuration.name) }],
     }));
   } catch (e) {
@@ -495,16 +503,71 @@ function nextDatedResultsName(dir, today) {
   return `${today}-${n}.json`;
 }
 
-// A scoped run's rows, laid over whatever the last full run recorded. Rows this run did not
-// produce are kept exactly as they were — including the `at` of the file they came from,
-// which is why the merged result is honest about being partly older: a row nobody re-ran
-// says what it said last time, and the dated file beside it records when that was.
-function mergeRows(projectDir, target, fresh) {
+// The rows this run measured, with the rows it carried laid beside them. A carried row is kept
+// exactly as it was, `measured_in` included, so the merged result says of every row which run
+// measured it. A row this run measured wins over a carried one for the same file or criterion.
+function withCarried(fresh, carry) {
+  const files = new Set(fresh.filter((r) => r.file).map((r) => r.file));
+  const ids = new Set(fresh.filter((r) => r.id).map((r) => r.id));
+  return sortRows([...fresh, ...carry.filter((r) => !(r.file && files.has(r.file)) && !(r.id && ids.has(r.id)))]);
+}
+
+// `latest.json` as a plan reads it: rows written before rows recorded their provenance are read
+// as measured by the run that wrote the newest dated results file (`src/testrun/scope.mjs`).
+function resultsOnFile(projectDir, config, target) {
   const { results } = readLatestResults(projectDir, target);
-  const previous = Array.isArray(results?.rows) ? results.rows : [];
-  const byId = new Map(previous.map((r) => [r?.id, r]));
-  for (const row of fresh) byId.set(row.id, row);
-  return sortRows([...byId.values()]);
+  if (!results || results.run) return results ?? null;
+  return withLegacyProvenance(results, legacyProvenance(projectDir, config, target));
+}
+
+// The open owed work naming each criterion, for this target: a rebind entry, a redo entry, and a
+// missing test owed a run by calibration. Each is a reason to look at the row again.
+function owedNaming(projectDir, target) {
+  const out = new Map();
+  const add = (id, why) => {
+    if (!id) return;
+    const list = out.get(id) ?? [];
+    if (!list.includes(why)) list.push(why);
+    out.set(id, list);
+  };
+  for (const e of readOwed(projectDir, "rebind").filter(isOpen)) if (e.target === target) add(e.id, "owed a rebind");
+  for (const e of readOwed(projectDir, "redo").filter(isOpen)) add(e.id, "owed a redo");
+  for (const e of openMissingTests(projectDir)) if (e.stage === "calibrate" && (e.target ?? target) === target) add(e.id, "missing test owed a run");
+  return out;
+}
+
+// Which spec files this calibration re-runs and which rows it carries
+// (`docs/decisions/0072-a-calibration-re-runs-what-changed.md`).
+function calibrationPlan(projectDir, ctx, target, onFile, inputs) {
+  const applied = readCalibrateApplied(projectDir, target);
+  return planCalibration({
+    config: ctx.config, previous: onFile, specs: currentSpecs(projectDir), inputs,
+    stale: new Set(checkTests(projectDir).stale),
+    rulings: (id) => rulingsSeen(applied.rulings, id),
+    owed: owedNaming(projectDir, target),
+    domain: ctx.domain, force: Boolean(ctx.full),
+  });
+}
+
+// What a dry run prints: the plan, file by file where it is scoped. Rulings a real run would
+// apply before planning are not applied here, so a ruling approved since the last run can add
+// rows to the real run's list.
+function planText(projectDir, ctx) {
+  const target = calibrateTarget(ctx);
+  if (ctx.skipSuite) return `calibrate ${target} --skip-suite: runs no tests; it applies the rulings that came back and asks the next question over the rows on file.`;
+  const onFile = resultsOnFile(projectDir, ctx.config, target);
+  const plan = calibrationPlan(projectDir, ctx, target, onFile, calibrationInputs(projectDir, ctx.config, target));
+  const lines = [`calibrate ${target}: what the next run would measure. Nothing is run or written.`, describePlan(plan)];
+  if (plan.mode !== "full" && plan.rerun.length) {
+    lines.push("Re-run:");
+    const shown = plan.rerun.slice(0, 50);
+    for (const r of shown) lines.push(`  ${r.file}${r.id ? ` (${r.id})` : ""}: ${r.reasons.join(", ")}`);
+    if (plan.rerun.length > shown.length) lines.push(`  and ${plan.rerun.length - shown.length} more`);
+  }
+  const countdown = fullRunCountdown(ctx.config, onFile);
+  if (countdown && plan.mode !== "full") lines.push(countdown);
+  lines.push("Approved rulings not yet applied are applied by the run before it plans, and can add rows to it.");
+  return lines.join("\n");
 }
 
 // `--domain` is optional and narrows the suite to that domain. It has to name a domain the
@@ -544,6 +607,16 @@ function checkCalibrateConfigurations(projectDir, ctx) {
   const problems = configurationProblems(projectDir, ctx.config, configurations);
   if (problems.length) return { id, ok: false, messages: problems.map((p) => `calibrate: ${p}`) };
   ctx.calibrateConfigurations = configurations;
+  return { id, ok: true, messages: [] };
+}
+
+// `--full` runs every row, so it has nothing to add to a run that measures none and it cannot be
+// narrowed to a domain.
+function checkCalibrateFull(ctx) {
+  const id = "calibrate-full";
+  if (!ctx.full) return { id, ok: true, messages: [] };
+  if (ctx.skipSuite) return { id, ok: false, messages: ["calibrate: --full measures every row and --skip-suite measures none; give one"] };
+  if (ctx.domain !== undefined) return { id, ok: false, messages: ["calibrate: --full measures every row, so --domain has nothing to narrow"] };
   return { id, ok: true, messages: [] };
 }
 
@@ -636,7 +709,7 @@ const CALIBRATE_PAGE_CAP = 40;
 // lives is named, because the adapter is where the answer is visible. Unbound rows
 // `bind-adapter` has had its sends for come after the failures, with the adapter's own reasons
 // and when `oracle-cannot` is the answer.
-function triagePage(target, baseUrl, failing, unbound, byId) {
+export function triagePage(target, baseUrl, failing, unbound, byId) {
   const rows = [...failing, ...unbound];
   const shown = rows.slice(0, CALIBRATE_PAGE_CAP);
   const shownFailing = shown.filter((r) => r.result !== UNBOUND);
@@ -679,6 +752,9 @@ function failureSections(rows, byId) {
   for (const row of rows) {
     const c = byId.get(row.id);
     lines.push(`### ${row.id} · v${c?.version ?? row.version}`, "");
+    // A row a scoped calibration carried was not run again by it, and the ruler is told which
+    // run its failure is from (`docs/decisions/0072`).
+    if (row.carried) lines.push(`- carried from ${row.measured_in ?? "an earlier run"}: none of its inputs has changed since that run measured it`, "");
     if (c?.statement) lines.push(c.statement, "");
     if (c?.given) lines.push(`- given: ${c.given}`);
     if (c?.when) lines.push(`- when: ${c.when}`);
@@ -695,7 +771,7 @@ function failureSections(rows, byId) {
   return lines;
 }
 
-function calibratePage(target, baseUrl, rows, byId) {
+export function calibratePage(target, baseUrl, rows, byId) {
   const shown = rows.slice(0, CALIBRATE_PAGE_CAP);
   const lines = [
     `${rows.length} criterion(s) failed against the **${target}** target at ${baseUrl}, with no ruling yet.`,
@@ -758,7 +834,7 @@ function haltOnEnvironmentFault(projectDir, ctx, target, rows) {
 
 export const calibrate = {
   name: "calibrate",
-  title: (ctx) => (ctx?.target ? `calibrate against ${ctx.target}` : "calibrate"),
+  title: (ctx) => (ctx?.target ? `calibrate against ${ctx.target}${ctx.full ? " (--full)" : ""}` : "calibrate"),
   skill: skillPath("calibrate"),
   workspace: "project",
   gate: null,
@@ -816,36 +892,51 @@ export const calibrate = {
     const allRulings = { ...rulings, gateNames: [...rulings.gateNames, ...triage.gateNames] };
     if (!commitAppliedRulings(projectDir, allRulings, rulingPaths)) changed.push(...rulingPaths);
 
-    // 3. The suite itself, against the target. `--domain` narrows it to one domain, which
-    // turns an afternoon into minutes when what is being checked is one fix; the rows it
-    // returns are merged over the ones already on file, so `latest.json` stays a complete
+    // 3. The suite itself, against the target — every spec file, or only the ones the plan
+    // re-runs (`docs/decisions/0072`). `--domain` narrows it to one domain, which turns an
+    // afternoon into minutes when what is being checked is one fix. Rows a run does not
+    // re-run are carried from the run that measured them, so `latest.json` stays a complete
     // account of every criterion rather than becoming a partial one.
     let rows;
+    let plan = null;
+    let runId = null;
+    let onFile = null;
+    const inputs = calibrationInputs(projectDir, ctx.config, target);
     const configurationRuns = [];
+    const dir = calibrateResultsDir(projectDir, target);
     if (ctx.skipSuite) {
       rows = previous?.rows ?? [];
       haltOnEnvironmentFault(projectDir, ctx, target, rows);
     } else {
+      onFile = resultsOnFile(projectDir, ctx.config, target);
+      plan = calibrationPlan(projectDir, ctx, target, onFile, inputs);
+      runId = runIdOf(nextDatedResultsName(dir, today));
+      const files = plan.mode === "changed" ? plan.rerun.map((r) => r.file) : undefined;
+      const domain = plan.mode === "domain" ? ctx.domain : undefined;
       // Tests written for one of the contract's configurations are left out of the ordinary
       // run and run on their own against a copy of the oracle started in that configuration
       // (`docs/decisions/0071-a-configuration-gets-its-own-oracle.md`); their rows join the
       // rest in the one result.
       const configurations = ctx.calibrateConfigurations ?? [];
       const { rows: plain } = runSuite({
-        projectDir, target, baseUrl, mailApi, domain: ctx.domain,
+        projectDir, target, baseUrl, mailApi, domain, files,
         instances: calibrateInstances(projectDir, ctx.config, target),
         grepInvert: configurations.map((c) => c.tag),
       });
       for (const c of configurations) {
-        const run = await runInConfiguration(projectDir, ctx, target, c);
+        const run = await runInConfiguration(projectDir, ctx, target, c, { domain, files });
         if (run) configurationRuns.push(run);
       }
       const fresh = combineRuns(plain, ...configurationRuns.map((r) => r.rows));
       haltOnEnvironmentFault(projectDir, ctx, target, fresh);
-      // Each row that ran a spec file records the adapter it ran with, which is what an unbound
-      // row's owed binding is about; a row carried over keeps its own.
-      const stamped = fresh.map((row) => (row.file ? { ...row, adapter } : row));
-      rows = ctx.domain === undefined ? stamped : mergeRows(projectDir, target, stamped);
+      // Recorded with the stage's own line, once the suite has produced rows to record.
+      if (ctx.full) deferRun(projectDir, `calibrate ${target}: a full run, forced with --full`);
+      // Each row that ran a spec file records what it ran with: the adapter, which is also what
+      // an unbound row's owed binding is about, the inputs every row shares, the gates that had
+      // ruled on it, and this run. A row carried keeps its own.
+      const measuredWith = readCalibrateApplied(projectDir, target).rulings;
+      const stamped = fresh.map((row) => stampProvenance(row, { run: runId, inputs, rulings: row.id ? rulingsSeen(measuredWith, row.id) : [] }));
+      rows = plan.mode === "full" ? stamped : withCarried(stamped, plan.carry);
     }
 
     // 4. The result set: a dated file per run, and `latest.json` beside it for everything
@@ -861,24 +952,42 @@ export const calibrate = {
     // the contract marks unavailable is closed as `persona-unavailable`, citing the contract
     // approval that marks it, and worked out afresh on every run.
     const contract = approvedContract(projectDir);
-    const ruledRows = rows.map(({ ruled: _r, triage: _t, unavailable: _u, ...row }) => {
+    // The run whose measurement `latest.json` reports: this one, or under `--skip-suite` the one
+    // on file. A row another run measured is marked `carried`.
+    const current = ctx.skipSuite ? previous?.run : runId;
+    const ruledRows = rows.map(({ ruled: _r, triage: _t, unavailable: _u, carried: _c, ...row }) => {
       const version = row.id ? byId.get(row.id)?.version : undefined;
       const verb = row.id ? calibrateRuledVerb(applied.rulings, row.id, version) : null;
+      const carried = current && row.measured_in !== current ? { carried: true } : {};
       const personas = row.id && !verb ? personaUnavailable(row, unavailable) : null;
-      if (personas) return { ...row, ruled: PERSONA_UNAVAILABLE, unavailable: { personas, contract } };
+      if (personas) return { ...row, ruled: PERSONA_UNAVAILABLE, unavailable: { personas, contract }, ...carried };
       const sorted = row.id && !verb && calibrateTriagedForProduct(applied.rulings, row.id, version);
-      return { ...row, ...(verb ? { ruled: verb } : {}), ...(sorted ? { triage: "product-question" } : {}) };
+      return { ...row, ...(verb ? { ruled: verb } : {}), ...(sorted ? { triage: "product-question" } : {}), ...carried };
     });
-    const results = { target, base_url: configured, spec: generatedFrom, at: new Date().toISOString(), rows: ruledRows };
+    // Which run measured what `latest.json` reports, how it chose its rows, the last full run,
+    // how many scoped runs have followed it, and the inputs the rows shared. `--skip-suite`
+    // measures nothing and keeps what is on file.
+    const runFields = ctx.skipSuite
+      ? Object.fromEntries(["run", "scope", "full_because", "full_run", "since_full", "inputs"].filter((k) => previous?.[k] !== undefined).map((k) => [k, previous[k]]))
+      : {
+        run: runId, scope: plan.mode,
+        ...(plan.mode === "full" ? { full_because: plan.fullBecause } : {}),
+        full_run: plan.mode === "full" ? runId : onFile?.full_run ?? null,
+        since_full: plan.mode === "full" ? 0 : sinceFull(onFile) + 1,
+        inputs,
+      };
+    const results = { target, base_url: configured, spec: generatedFrom, at: new Date().toISOString(), ...runFields, rows: ruledRows };
     // Each row carries the acceptance test's own error, which is a reset command's or a
     // browser's stack trace and can name the file it was thrown from. This file is
     // committed to the project, so rule E-2's redaction applies to it as it does to every
     // other agent-produced text this pipeline commits (`src/lib/redact.mjs`).
-    const text = redactLocalPaths(`${JSON.stringify(results, null, 2)}\n`, projectDir);
-    const dir = calibrateResultsDir(projectDir, target);
+    const serialise = (doc) => redactLocalPaths(`${JSON.stringify(doc, null, 2)}\n`, projectDir);
     // A run that ran nothing writes no dated file: that file is the record of a suite having
-    // run, and a second one for the same results would read as a second run.
-    for (const name of ctx.skipSuite ? ["latest.json"] : [nextDatedResultsName(dir, today), "latest.json"]) {
+    // run, and a second one for the same results would read as a second run. The dated file
+    // holds the rows this run measured and no other; `latest.json` holds every row.
+    const writes = [["latest.json", serialise(results)]];
+    if (!ctx.skipSuite) writes.unshift([`${runId}.json`, serialise({ ...results, rows: ruledRows.filter((r) => r.measured_in === runId) })]);
+    for (const [name, text] of writes) {
       const rel = `tests/results/${target}/${name}`;
       writeText(join(projectDir, rel), text);
       changed.push(rel);
@@ -901,6 +1010,11 @@ export const calibrate = {
     for (const row of ruledRows) counts.set(row.result, (counts.get(row.result) ?? 0) + 1);
     const summary = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, n]) => `${n} ${k}`).join(", ");
     const lines = [`calibrate ${target}: ${ruledRows.length} row(s) — ${summary || "no rows"}.`];
+    if (plan) {
+      lines.push(describePlan(plan));
+      const countdown = fullRunCountdown(ctx.config, results);
+      if (countdown) lines.push(countdown);
+    }
     for (const run of configurationRuns) lines.push(`${run.ids.join(", ")} ran against a copy of the oracle started in configuration ${run.configuration.name}, taken down afterwards.`);
     const unruled = calibrateUnruledFailures(results);
     if (unruled.length) lines.push(`Failing with no ruling: ${unruled.map((r) => r.id).join(", ")}`);
@@ -937,6 +1051,10 @@ export const calibrate = {
   proposal() {
     return null;
   },
+  // What `sdlc run calibrate --dry-run` prints: the plan, read and not acted on.
+  dryRun(projectDir, ctx) {
+    return planText(projectDir, ctx);
+  },
   preChecks(projectDir, ctx) {
     // Resolved onto `ctx` here, the one hook that sees both the config and the real
     // project directory before anything else runs, so `execute`, `postChecks`, `title`
@@ -950,6 +1068,7 @@ export const calibrate = {
       checkSandboxPassword("calibrate", ctx, "calibrating"),
       checkCalibrateDomain(projectDir, ctx),
       checkCalibrateSkipSuite(projectDir, ctx),
+      checkCalibrateFull(ctx),
       checkCalibrateConfigurations(projectDir, ctx),
     ];
   },

@@ -24,7 +24,7 @@ export function tagPattern(tags) {
 }
 
 // Every spec file under `tests/acceptance/`, project-relative, in a stable order.
-function specFiles(projectDir) {
+export function specFiles(projectDir) {
   const root = join(projectDir, "tests", "acceptance");
   if (!existsSync(root)) return [];
   const out = [];

@@ -18,7 +18,7 @@ const HELP = `sdlc <command> [args] [--flags]
   rule <name> --settle             apply to main what an approved proposal settles about the missing tests its run was handed
   withdraw <name> --by <role> --reason "..."   set an open proposal aside without ruling on it; recorded, from either seat
   scrub [dir]                      redact a local home path from a tracked file the egress check flags, committed as the pipeline
-  run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--skip-suite] [--dry-run] [--reason "..."]
+  run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--skip-suite] [--full] [--dry-run] [--reason "..."]
                                    run one pipeline stage; --reason is required to run something other than what next names
   next [dir] [--json]              name the next stage to run and why, read from main (exit 0 run, 3 waiting on a person, 4 nothing left)
   resume [--again]                 continue an interrupted run

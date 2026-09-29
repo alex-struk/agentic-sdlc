@@ -128,7 +128,7 @@ function followUp(projectDir, stage, ctx, result) {
   return { ...result, proposal: opened };
 }
 
-export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, deviationReason } = {}) {
+export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, full = false, deviationReason } = {}) {
   assertSafeDeviationReason(deviationReason);
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
@@ -169,7 +169,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // every other reader of it already gets it.
   const contextReason = typeof deviationReason === "string" && deviationReason.trim()
     ? redactLocalPaths(deviationReason.trim(), projectDir) : undefined;
-  const ctx = { slice, domain, target, stale, config, revise, dryRun, skipSuite, projectDir,
+  const ctx = { slice, domain, target, stale, config, revise, dryRun, skipSuite, full, projectDir,
     ...(contextReason ? { deviationReason: contextReason } : {}) };
   // `stage.workspace` may be a plain string or a function of `config` — resolved once,
   // here, so every later use (`materialise`, the run-state a crashed session leaves for
@@ -265,8 +265,11 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   if (stage.agent === false) {
     if (dryRun) {
       console.log(`stage ${name}: agent: false — runs stage.execute(projectDir, ctx) directly, no agent session`);
+      // A stage that can say what its run would do, without doing it, says so here.
+      const text = stage.dryRun?.(projectDir, ctx);
+      if (text) console.log(text);
       assertDryRunUntouched();
-      return { ok: true, dryRun: true };
+      return { ok: true, dryRun: true, ...(text ? { text } : {}) };
     }
     // Awaited: `execute` is synchronous for `ratify` and returns a promise for
     // `calibrate`, which has to start the oracle and run a suite before it has anything
@@ -497,6 +500,7 @@ COMMANDS.run = async ({ pos, flags }) => {
     again: !!flags.again,
     revise: !!flags.revise,
     skipSuite: !!flags["skip-suite"],
+    full: !!flags.full,
   };
   const deviation = recordDeviation(process.cwd(), pos[0], opts, flags.reason);
   const runOpts = { ...opts, ...(deviation ? { deviationReason: deviation.reason } : {}) };
