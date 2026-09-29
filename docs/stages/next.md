@@ -16,14 +16,14 @@ whichever branch is checked out and whatever is uncommitted.
 
 | Read from `main` | What it contributes |
 |---|---|
-| `.sdlc/config.yaml` | the profile's stages, the domains in order, the oracle target, the gate seats, `policy.next.order`, `policy.next.calibrate_after` |
+| `.sdlc/config.yaml` | the profile's stages, the domains in order, the oracle target, the gate seats, `policy.next.order`, `policy.next.calibrate_after`, `policy.calibrate.scope` and `full_every` |
 | first-parent history of `main` since the oracle's suite last ran | with `policy.next.calibrate_after` set, the approved proposals merged since whose merge changes what calibration measures |
 | `.sdlc/gates/*.yaml` | which proposals have been ruled, and which lines of work are approved |
 | every `proposal/*` and `returned/*` branch, with its proposal page and gate file | open proposals, escalations and returns, and which proposal in a line of work is the newest |
 | the owed-work lists (`src/spec/owed.mjs`) | open conditions, requests, redos, rebinds, recoveries and any other kind; every rebind entry, closed ones too, counts a binding's sends |
 | `spec/criteria-index.json`, `spec/domains/<d>.md` | whether a domain is ratified, and each criterion's current version |
 | `tests/acceptance/<d>/*.spec.ts` headers | stale tests: a header version below the index's |
-| `tests/results/<t>/latest.json`, `applied.yaml`, `tests/adapters/<t>` | whether calibration is clean, the unbound rows, and whether an adapter has changed since a rebind was filed or an unbound row was found |
+| `tests/results/<t>/latest.json`, `applied.yaml`, `tests/adapters/<t>` | whether calibration is clean, whether any row was carried from an earlier run, how many scoped calibrations have followed the last full one, the unbound rows, and whether an adapter has changed since a rebind was filed or an unbound row was found |
 | `spec/contract/personas.yaml` | the personas the contract marks unavailable on each target's identity, whose unbound rows are owed to no binding run |
 | `spec/contract/surface.yaml`, `tests/adapters/<t>/bindings.yaml` | stale adapters: members the contract declares that a target's bindings do not name, or names they carry that it no longer declares |
 | `plan/tasks.md` | the slices, in build order |
@@ -85,6 +85,16 @@ rule still comes first. Its `why` names the proposals that made it due. Nothing 
 first calibration, which the sequence brings, or while a calibration or triage proposal for the
 oracle is open. Unset, nothing changes (`docs/decisions/0070-a-calibration-cadence.md`).
 
+**A full calibration.** Under `policy.calibrate.scope: changed` a calibration carries the rows
+none of whose inputs changed, marked `carried` in `latest.json`. Two things make `next` name
+`sdlc run calibrate --target <t> --full` instead. Every row passing or ruled with some of them
+carried does not close the Tests phase, because only a run that measured every row says a
+passing test still passes under the adapter the target has now; the sequence step is offered
+with `--full` and a `why` naming the runs the carried rows came from. And with
+`policy.calibrate.full_every: <n>` set, once `n - 1` scoped calibrations have followed the last
+full one, every offer of that target's calibration that runs the suite carries `--full`, its
+`why` ending `a full run is due: …` (`docs/decisions/0072-a-calibration-re-runs-what-changed.md`).
+
 **Missing tests.** An untestable record on `main` is owed a test whether or not an entry has been
 written for it yet (`docs/operating-model.md` §7): `next` reads the entries in `.sdlc/owed.yaml`
 and, beside them, an item for each record nothing accounts for, owed by the stage the record names
@@ -133,7 +143,7 @@ replaces `contract-v2`), since what it asked has been asked again.
 | 2 Tests | `contract` | a `contract-v<n>` proposal is approved |
 | | `bind-adapter --target <oracle>` | the `bind-adapter-<oracle>` line of work has an approval |
 | | `derive-tests --domain <d>` | the `derive-tests-<d>` line of work has an approval |
-| | `calibrate --target <oracle>` | every row of `tests/results/<oracle>/latest.json` is `pass`, `not-testable` or `attested`, or carries a ruling; an `unbound` row stays open until a binding reaches its test, calibration closes it as `persona-unavailable`, or the reviewer's triage rules it. Offered with `--skip-suite` when only such unbound rows keep it open |
+| | `calibrate --target <oracle>` | every row of `tests/results/<oracle>/latest.json` is `pass`, `not-testable` or `attested`, or carries a ruling, and no row is `carried` from an earlier run; an `unbound` row stays open until a binding reaches its test, calibration closes it as `persona-unavailable`, or the reviewer's triage rules it. Offered with `--skip-suite` when only such unbound rows keep it open, and with `--full` when only carried rows do |
 | 3 Design | `design --domain <d>` | the `design-<d>` line of work has an approval |
 | 4 Build | `plan` | the `plan` line of work has an approval |
 | | `build --slice <n>` | the `build-slice-<n>` line of work has an approval at G3 |
@@ -164,7 +174,7 @@ Nothing is written. The text output leads with the one command and why:
 next: sdlc run derive-tests --domain <d> --stale
   why: 2 tests to derive again (redo) in <d> owed by derive-tests
   rule: owed before sequence (policy.next.order: proposals, owed, sequence); within it, upstream stage first, then the project's domain order
-  phase: 2 Tests — exit: the contract approved, every domain's tests approved, and every calibration row pass or ruled
+  phase: 2 Tests — exit: the contract approved, every domain's tests approved, and every calibration row pass or ruled, all measured by the last run
 also ready:
   sdlc run contract — phase 2 Tests is not complete (...), and contract is next in it
 held:
@@ -193,7 +203,9 @@ and unbound bindings waiting on a ruler, each counted apart.
 
 `sdlc run <stage>` compares itself with what `next` names: the stage, and each of `--domain`,
 `--target` and `--slice` that `next` names, plus `--stale` and `--revise`. `--skip-suite` is not
-compared: a calibration that runs the suite does what one that skips it does, and more. A run that differs is
+compared: a calibration that runs the suite does what one that skips it does, and more. `--full`
+is compared one way only: a full calibration where `next` names a scoped one measures everything
+the scoped one would and is not a deviation, and a scoped one where `next` names `--full` is. A run that differs is
 refused unless `--reason "<why>"` is given, with a message naming what `next` names. With a
 reason, a line is appended to `.sdlc/runs/<day>.md` before the run starts and committed on its own
 as `run(<stage>): ran instead of what next named`:

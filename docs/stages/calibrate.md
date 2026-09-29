@@ -18,8 +18,8 @@ and the one judgement in the stage is asked at a gate rather than of an agent.
 
 ## Inputs
 
-`sdlc run calibrate [--target <t>]`, run from inside the project's working tree, with the acceptance
-suite and the target's adapter already merged onto `main`.
+`sdlc run calibrate [--target <t>] [--full]`, run from inside the project's working tree, with the
+acceptance suite and the target's adapter already merged onto `main`.
 
 `--target` defaults to `config.oracle.target`, since calibrating the rebuild against the application
 it replaces is what the stage exists for. `old` requires `config.oracle` (with `oracle.target: old`);
@@ -42,26 +42,39 @@ What it reads:
   (`docs/stages/oracle.md`, "A copy in one of the contract's configurations").
 
 `--domain <d>` narrows the run to that domain's specs. A whole-suite calibration takes hours on a
-real project, which makes checking one fix an afternoon; scoped, it is minutes. The rows it
-produces are laid over the ones already on file, so `latest.json` stays a complete account of every
-criterion rather than becoming a partial one — which is also why it refuses to run before a full
-calibration has happened at least once. A row nobody re-ran says what it said last time, and the
-dated file beside it records when that was.
+real project, which makes checking one fix an afternoon; scoped, it is minutes. The rows of every
+other domain are carried from the run that measured them, so `latest.json` stays a complete account
+of every criterion rather than becoming a partial one — which is also why it refuses to run before a
+full calibration has happened at least once. A row nobody re-ran says what it said last time, and
+its `measured_in` says which run that was.
+
+`policy.calibrate.scope: changed` has every calibration re-run only the rows whose inputs changed
+and carry the rest the same way (see "Which rows a run re-runs"). `--full` runs every row whatever
+the scope, and is recorded in the run record and on the result set (`full_because: ["--full"]`).
+It cannot be combined with `--domain` or `--skip-suite`. `sdlc run calibrate --dry-run` prints the
+plan, the spec files it would re-run with the reason for each and the rows it would carry, and runs
+and writes nothing.
 
 ## Outputs
 
-- **`tests/results/<t>/<YYYY-MM-DD>.json`** and **`tests/results/<t>/latest.json`**, the same content
-  written twice: the dated file is the record of a particular run, `latest.json` is what everything
-  that only wants the current state reads. A second run on a day that already has a record writes
+- **`tests/results/<t>/<YYYY-MM-DD>.json`** and **`tests/results/<t>/latest.json`**: the dated file is
+  the record of a particular run and holds only the rows that run measured, and `latest.json` is what
+  everything that only wants the current state reads, every row, measured now or carried from an
+  earlier run. After a full run the two hold the same rows. A second run on a day that already has a record writes
   `<YYYY-MM-DD>-2.json`, a third `-3.json`, and so on — each run against a live target is its own
   evidence of what that target did, not a correction of the last one, so no dated file is ever
   rewritten. `latest.json` is the one that is meant to be overwritten, and it is, every run.
 
-  Each file is `{ target, base_url, spec, at, rows }`, where `base_url` is the target's **configured**
+  Each file is `{ target, base_url, spec, at, run, scope, full_because?, full_run, since_full, inputs, rows }`, where `base_url` is the target's **configured**
   URL (`config.oracle.base_url` for `old`, `config.targets.<t>.base_url` otherwise) rather than the
   one this run actually pointed at — `oracle up` binds whatever port was free on the machine it ran
   on, and a committed file recording that would be one laptop's accident in shared history. `spec` is
-  the criteria index's `generated_from` commit, and `rows` is one entry per criterion:
+  the criteria index's `generated_from` commit. `run` is the id of the run that measured, its dated
+  file's name without `.json` (`2026-01-01`, `2026-01-01-2`); `scope` is how it chose its rows,
+  `full`, `changed` or `domain`, and `full_because` why a full one was full; `full_run` is the id of
+  the last full run and `since_full` how many suite runs have followed it; `inputs` are the adapter,
+  contract-and-seed, override and harness hashes the run's rows shared (below). A `--skip-suite` run
+  keeps all of these as they were. `rows` is one entry per criterion:
 
   | field | meaning |
   | --- | --- |
@@ -74,6 +87,11 @@ dated file beside it records when that was.
   | `unavailable` | on a row ruled `persona-unavailable`: `{ personas, contract }`, the personas its tests needed and the approved `contract-v<n>` proposal that marks them unavailable |
   | `triage` | `product-question` on a row the reviewer has passed on to the product owner and nobody has ruled on yet |
   | `adapter` | the tree of `tests/adapters/<t>` the row's tests ran with, on every row that ran a spec file; a row carried over from an earlier run keeps its own |
+  | `file_sha` | git's object id for the spec file as the suite ran it |
+  | `contract_seed`, `override`, `harness` | what the row ran with besides its test and adapter: one hash over the trees of `spec/contract/` and the oracle's seed, the blob of the oracle's Compose override (empty where there is none), and one hash over the harness (`tests/fixtures/`, `tests/generated/`, `tests/playwright.config.ts`, `tests/package.json`, `tests/package-lock.json`, `tests/tsconfig.json`) |
+  | `measured_in` | the `run` that measured the row; a carried row keeps the one that measured it. A row with no spec file records only this |
+  | `rulings_seen` | the gates in `applied.yaml` whose rulings named the criterion when the row was measured, present only when there were any |
+  | `carried` | `true` on a row in `latest.json` that the last run did not measure; absent otherwise |
   | `error` | why the row is `fail` when no individual test in it carries a failure message of its own — present only then. `no result recorded` (every test in the file was skipped, or it ran none); `<path>: spec file not found on disk` (the suite's own report names the file but it is missing from disk); or the provenance header's own parse error (the header could not be read at all). The last two also leave `id` and `version` null, since neither the filename nor a missing header can say which criterion the row is for. |
 
   `unbound` is a failure whose every message begins `unbound:` — the adapter says the surface member
@@ -189,14 +207,18 @@ the runner's own process, never through a tool call.
    registry, the target gone mid-run), and a throw leaves whatever is in the working tree behind:
    committing first means a failure leaves a clean tree with the applied rulings safe, and the next
    run reads `applied.yaml` and applies nothing twice. A pass that wrote nothing commits nothing.
-4. **Run the suite** (`runSuite`, `src/testrun/playwright.mjs`): the harness's dependencies and
+4. **Run the suite** (`runSuite`, `src/testrun/playwright.mjs`) — every spec file, the spec files of
+   `--domain`, or under `policy.calibrate.scope: changed` the spec files the plan re-runs (see "Which
+   rows a run re-runs"); a plan that re-runs none starts nothing. The harness's dependencies and
    browser are installed if missing, Playwright runs with `SDLC_TARGET`, `SDLC_TARGET_URL` and
    `SDLC_MAIL_API` set, and its JSON report is mapped onto rows. `SDLC_TEST_RUNNER=mock` reads canned
    rows from `<SDLC_MOCK_DIR>/calibrate.json` instead, for a caller with no browser in reach.
 
    **A test written for one of the contract's configurations runs against a copy started in it.**
    The ordinary run leaves out every test carrying a configuration's tag (Playwright's
-   `--grep-invert`). Then, for each configuration with a tagged test in this run's scope, one at a
+   `--grep-invert`). Then, for each configuration with a tagged test in this run's scope — a scoped
+   run's scope being the spec files it re-runs, so a configuration none of whose tests it re-runs
+   starts no copy — one at a
    time: a copy of the oracle is started in it beside the default copies (`sdlc oracle up
    --configuration <name>`), only that tag's tests run against it (`--grep`), with `sdlc oracle
    reseed --configuration <name>` as their reset, and the copy is taken down again, whether the run
@@ -225,8 +247,10 @@ the runner's own process, never through a tool call.
    day already has one) and `latest.json` — marking each row `ruled` where an applied ruling covers
    that id at its current version, and `persona-unavailable` where no ruling does and the row needs
    a persona the contract marks unavailable on the target.
-   Each row that names a spec file carries `file_sha`, git's object id for that file as the suite
-   ran it, and a row carried over from an earlier run keeps its own.
+   Each row this run measured records what it ran with (`file_sha`, `adapter`, `contract_seed`,
+   `override`, `harness`, `rulings_seen`) and `measured_in`; a row carried over from an earlier run
+   keeps its own, and is marked `carried` in `latest.json`. The dated file holds only the rows this
+   run measured.
    Then the missing tests (`docs/operating-model.md` §7): an open item whose test these rows show
    ran at the criterion's current version — `pass` or `fail`, from the spec file as it now stands,
    not ruled `test-wrong` or `spec-wrong`, and not a failure whose test never reached the target
@@ -240,6 +264,47 @@ the runner's own process, never through a tool call.
    criteria filed, the rows closed as `persona-unavailable`, and the rows going to the reviewer's
    triage.
 6. **Return the summary and every path written.**
+
+## Which rows a run re-runs
+
+The oracle is the old application, and it does not change, so a row's result can only change when
+something it ran with does. Under `policy.calibrate.scope: full`, the default, every calibration
+runs every row. Under `changed`, a calibration re-runs a row when:
+
+- its spec file is new, or its `file_sha` differs from the file on disk (`test changed`);
+- it records no provenance (`no provenance`);
+- its test failed because the target could not be reset or reached (`environment fault`,
+  `docs/decisions/0058-a-row-the-machine-failed-is-no-test-run.md`);
+- it is neither passing nor ruled, and the adapter differs from the one it ran with (`adapter
+  changed`);
+- an open rebind entry for this target, an open redo entry, or an open missing test owed a run by
+  calibration names its criterion (`owed a rebind`, `owed a redo`, `missing test owed a run`);
+- the gates whose rulings name its criterion in `applied.yaml` differ from its `rulings_seen`
+  (`ruled since measured`);
+- its test has become stale since, or stopped being stale (`staleness changed`).
+
+Every other row is carried. A passing or ruled row whose only changed input is the adapter is
+carried: an adapter change is usually a binding fix for a few members, and re-running every row
+for it would make the scope pointless in the phase it is for. A passing test that an unrelated
+adapter change broke is found by the next full run.
+
+A calibration runs every row instead when `--full` is given, when there are no results on file,
+when the contract and seed, the oracle's Compose override or the harness differ from what the rows
+on file ran with (every row shares them), when `policy.calibrate.full_every` says one is due, or
+when every row would be re-run anyway. `--domain` re-runs its domain's rows and carries every other
+row, whatever changed. A row whose spec file is gone is dropped, as a full run would drop it, and
+the not-testable rows are read again from `tests/acceptance/not-testable.yaml` on every run.
+
+Results written before rows recorded their provenance are read as measured by the run that wrote
+the newest dated file, with the contract, seed, override, harness and applied rulings as they were
+at the commit that added it, for every row that already records its `file_sha` and `adapter`. A
+row carried into a results file by an earlier `--domain` run is attributed to that later run too.
+
+The summary says `N of M re-run (reasons), K carried from <run>`, or `Full run: all M test file(s)
+re-run (why)`, and under `scope: changed` how many scoped runs are left before `full_every` makes
+one full. The reviewer's and the product owner's pages mark a carried failing row `carried from
+<run>`, and the state site marks carried rows on each domain's criteria page and says, per target,
+how many rows the last run measured and how many it carried from which runs.
 
 ## Checks that block
 
@@ -257,6 +322,8 @@ the runner's own process, never through a tool call.
     `tests/acceptance/` carries its tag. Against a target other than the oracle, any configuration
     at all is refused, since only the oracle is started by this pipeline and a configuration's tests
     have no instance they are written for there. Skipped under `--skip-suite`, which runs nothing.
+  - `calibrate-full` — `--full` is given with neither `--skip-suite`, which measures nothing, nor
+    `--domain`, which a run of every row has nothing to narrow.
 - **Post-checks**, run against the working tree after `execute` returns:
   - `calibrate-results` — `tests/results/<t>/latest.json` exists, parses, and has one row for every
     accepted criterion of every domain that has at least one test file. A domain nobody has derived
@@ -282,6 +349,11 @@ the reviewer rules it at triage (see "Unbound rows the binding cannot close"). T
 over runs rather than within one — a run that finds unruled failures or unbound rows still exits
 0, having written the results, opened the proposal that asks about them and filed the unbound rows
 for `bind-adapter`. The loop is closed when a run finds every row pass or ruled, and opens nothing.
+
+No row may be `carried` either. A scoped calibration carries passing rows across adapter changes,
+so rows that all pass or are ruled close the phase only when the last run measured every one of
+them; when carried rows are all that keeps it open, `sdlc next` names `calibrate --target <t>
+--full` (`docs/stages/next.md`).
 
 Any pre-check or post-check failure exits 1 and prints the failing check's messages;
 `stage(calibrate): post-checks failed` is committed with only the journal and run record staged, and
@@ -420,7 +492,8 @@ answers are applied. Two things make that safe.
 
 Unlike `ratify`, `calibrate` never reports itself as a no-op: every run writes a result set, and the
 dated file plus `latest.json` are a fresh record of a fresh run even when the rows are identical to
-last time's. That is the point of the file — it is evidence of what the target did today, not a
+last time's, and even when a scoped run re-ran nothing and its dated file holds only the
+not-testable rows. That is the point of the file — it is evidence of what the target did today, not a
 derived artifact that should be stable. Two runs on the same day therefore leave two dated files,
 not one.
 

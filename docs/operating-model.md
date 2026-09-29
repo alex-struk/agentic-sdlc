@@ -184,7 +184,7 @@ work before what the owing stage produces is escalated (section 6), how many rep
 turns a stage gets after a failed post-check, which tiers force an escalation and which block an
 unverified test (both always including CRITICAL), whether G3 may approve a build on criteria
 nobody asserted and whether it may approve one while a criterion it claims is owed a test, each stage's turn ceiling (`policy.turns`), which kind of ready work `next`
-takes first (`policy.next.order`) and whether it names a calibration on a cadence (`policy.next.calibrate_after`), whether a record file changed outside a pipeline commit warns or
+takes first (`policy.next.order`) and whether it names a calibration on a cadence (`policy.next.calibrate_after`), whether a calibration re-runs every row or only the rows whose inputs changed, and how often a scoped one is full anyway (`policy.calibrate.scope`, `policy.calibrate.full_every`), whether a record file changed outside a pipeline commit warns or
 fails (`policy.checks.hand_edits`), and which egress rules the egress check applies. Keys the schema accepts and nothing reads (`policy.triage`, `policy.rungs`) are
 marked reserved, and `sdlc checks` says so when they are set. Verify refuses to run when G3
 names no escalation target, ratify refuses to run past its follow-up limit when G1 names
@@ -358,6 +358,11 @@ owes, stale tests, stale adapters, open and escalated proposals, and the plan's 
   approved proposals have changed what calibration measures since the oracle's suite last ran,
   `next` names a calibration before owed and sequence work. Unset, calibration runs only when the
   sequence or owed work calls for it.
+- A project can have calibration re-run only the rows whose inputs changed
+  (`policy.calibrate.scope: changed`), since the oracle does not change and a row's result can
+  only move when something it ran with does. Every n-th calibration is then full
+  (`policy.calibrate.full_every`), and the Tests phase closes only on a run that measured every
+  row, so `next` names `sdlc run calibrate --target <t> --full` when either is what is missing.
 - Where nothing can run without a person, it says so, names who the work waits on, and exits
   differently from when something can run.
 - Running something other than what `next` named is allowed and recorded: `sdlc run` needs
