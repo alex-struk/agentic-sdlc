@@ -16,6 +16,7 @@ import { readText } from "../lib/fsx.mjs";
 import { checkTests, loadIndex, readHeader, readWholeNotTestable } from "../checks/tests.mjs";
 import { compareIds } from "../spec/criteria.mjs";
 import { testFingerprint } from "./results.mjs";
+import { tagPattern, taggedSpecFiles } from "./tags.mjs";
 
 // A failing test's error message is how an unbound adapter member is told apart from a
 // real defect: `bind-adapter` throws `Error("unbound: <page>.<member> — <reason>")` from
@@ -104,6 +105,19 @@ function specOutcomes(spec) {
   });
 }
 
+// What one spec file's tests add up to. A spec whose every result is `skipped` (or that
+// recorded no result at all) never ran the criterion's assertions, so it has not passed —
+// reported as a failure rather than silently defaulting to `pass` for lack of any failing
+// entry to point at.
+function classify(tests) {
+  const neverRan = tests.length === 0 || tests.every((t) => t.status === "skipped");
+  const failing = tests.filter((t) => t.status === "failed" || t.status === "timedOut" || t.status === "interrupted");
+  if (neverRan) return { result: "fail", error: "no result recorded" };
+  if (failing.length === 0) return { result: "pass" };
+  if (failing.every((t) => t.error && UNBOUND_RE.test(t.error))) return { result: "unbound" };
+  return { result: "fail" };
+}
+
 // Groups a Playwright JSON report's specs by file and turns each group into one row: the
 // criterion id and version come from the spec file's own header (`readHeader`, shared with
 // `checkTests`), not the filename, so a mismatched filename is still reported the same way
@@ -134,22 +148,7 @@ function buildRows(report, projectDir, staleIds) {
       continue;
     }
 
-    // A spec whose every result is `skipped` (or that recorded no result at all) never ran
-    // the criterion's assertions, so it has not passed — reported as a failure rather than
-    // silently defaulting to `pass` for lack of any failing entry to point at.
-    const neverRan = tests.length === 0 || tests.every((t) => t.status === "skipped");
-    const failing = tests.filter((t) => t.status === "failed" || t.status === "timedOut" || t.status === "interrupted");
-    let result, rowError;
-    if (neverRan) {
-      result = "fail";
-      rowError = "no result recorded";
-    } else if (failing.length === 0) {
-      result = "pass";
-    } else if (failing.every((t) => t.error && UNBOUND_RE.test(t.error))) {
-      result = "unbound";
-    } else {
-      result = "fail";
-    }
+    let { result, error: rowError } = classify(tests);
     if (staleIds.has(header.id)) result = "stale";
 
     const row = { id: header.id, version: header.version, domain, file: relFile, result, tests };
@@ -236,6 +235,43 @@ function withFingerprint(projectDir, row) {
   return existsSync(abs) ? { ...row, file_sha: testFingerprint(readFileSync(abs)) } : row;
 }
 
+// The rows of several runs of the suite as one result. A spec file can hold tests for more
+// than one configuration of the target, so each run can report part of one file: its row is
+// worked out again from every test any run reported for it, exactly as one run reporting all
+// of them would have. A test found stale is stale whichever run saw it. Rows with no file —
+// not-testable entries, which every run reads off the same file — are kept once.
+export function combineRuns(...runs) {
+  const byKey = new Map();
+  for (const row of runs.flat()) {
+    const key = row.file ? `file:${row.file}` : `id:${row.id}`;
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, row); continue; }
+    // A row with no file stands for the same entry in every run, and a row with no id is a
+    // header that did not parse, which reads the same whichever run hit it.
+    if (!row.file || !prev.id) continue;
+    const tests = [...(prev.tests ?? []), ...(row.tests ?? [])];
+    const { result, error } = classify(tests);
+    const { error: _e, ...rest } = prev;
+    byKey.set(key, {
+      ...rest, tests,
+      result: prev.result === "stale" || row.result === "stale" ? "stale" : result,
+      ...(error ? { error } : {}),
+    });
+  }
+  return sortRows([...byKey.values()]);
+}
+
+// Which of `rows` (or project-relative spec paths) a run selecting by `grep` and leaving out
+// `grepInvert` reaches, answered from the tags in each spec file's text. Used only where
+// Playwright does not do the selecting itself: under the mock runner, and for a target with no
+// adapter, which is answered without a run.
+function tagSelection(projectDir, grep, grepInvert) {
+  if (!grep && !grepInvert?.length) return () => true;
+  const wanted = grep ? new Set(taggedSpecFiles(projectDir, grep)) : null;
+  const left = new Set((grepInvert ?? []).flatMap((t) => taggedSpecFiles(projectDir, t)));
+  return (file) => (wanted ? wanted.has(file) : true) && !left.has(file);
+}
+
 // Runs the acceptance suite against `target` at `baseUrl` and maps the report to one row
 // per criterion. `opts.exec` defaults to a real synchronous subprocess (`defaultExec`);
 // a test passes a recording stand-in instead, so nothing here ever needs a real `npm`,
@@ -257,7 +293,11 @@ function suiteRows(opts) {
   // `instances` are the independent copies of the target the suite may spread across: each
   // has its own address, its own mail catcher and its own reset, so two tests running at
   // once never share data. One copy is the ordinary case and behaves exactly as before.
-  const { projectDir, target, baseUrl, mailApi, domain, files, resetCommand, instances, env = {}, exec = defaultExec } = opts;
+  // `grep` is one tag: only the tests carrying it run. `grepInvert` is a list of tags: every
+  // test carrying any of them is left out. A test written for a configuration of the target
+  // that is read at start-up carries that configuration's tag, and runs only against an
+  // instance started that way (`docs/decisions/0071-a-configuration-gets-its-own-oracle.md`).
+  const { projectDir, target, baseUrl, mailApi, domain, files, resetCommand, instances, grep, grepInvert, env = {}, exec = defaultExec } = opts;
   const copies = instances?.length ? instances : [{ baseUrl, mailApi, resetCommand }];
 
   // The stale set and the not-testable rows both come from the project's real files
@@ -270,7 +310,9 @@ function suiteRows(opts) {
       staleIds.has(r.id) ? { ...r, result: "stale" } : r);
     const wanted = files === undefined ? null : new Set(files);
     const byFile = wanted ? mockRows.filter((r) => wanted.has(r.file)) : mockRows;
-    const scoped = domain === undefined ? byFile : byFile.filter((r) => r.domain === domain);
+    const selected = tagSelection(projectDir, grep, grepInvert);
+    const scoped = (domain === undefined ? byFile : byFile.filter((r) => r.domain === domain))
+      .filter((r) => !r.file || selected(r.file));
     return { rows: sortRows([...scoped, ...notTestableRows(projectDir, domain)]), raw: null, ok: true };
   }
 
@@ -299,7 +341,8 @@ function suiteRows(opts) {
   const adapterEntry = join(projectDir, "tests", "adapters", target, "index.ts");
   if (!existsSync(adapterEntry)) {
     const reason = `unbound: tests/adapters/${target}/index.ts does not exist, so nothing on ${target} can be driven yet`;
-    const specs = (files ?? listSpecFiles(projectDir, domain)).map((relFile) => {
+    const selected = tagSelection(projectDir, grep, grepInvert);
+    const specs = (files ?? listSpecFiles(projectDir, domain)).filter(selected).map((relFile) => {
       const header = readHeader(join(projectDir, relFile), relFile);
       return {
         id: header.id, version: header.version,
@@ -349,9 +392,13 @@ function suiteRows(opts) {
   // of its criteria would report on work nobody claimed.
   const filter = files !== undefined ? files.map((f) => f.replace(/^tests\//, ""))
     : domain === undefined ? [] : [`acceptance/${domain}/`];
+  const tagArgs = [
+    ...(grep ? ["--grep", tagPattern([grep])] : []),
+    ...(grepInvert?.length ? ["--grep-invert", tagPattern(grepInvert)] : []),
+  ];
   const run = exec(
     "npx",
-    ["--prefix", "tests", "playwright", "test", "--reporter=json", "--config=tests/playwright.config.ts", ...filter],
+    ["--prefix", "tests", "playwright", "test", "--reporter=json", "--config=tests/playwright.config.ts", ...tagArgs, ...filter],
     { cwd: projectDir, env: runEnv },
   );
 

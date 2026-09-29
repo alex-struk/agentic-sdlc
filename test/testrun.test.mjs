@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/lib/git.mjs";
 import { writeText } from "../src/lib/fsx.mjs";
-import { runSuite } from "../src/testrun/playwright.mjs";
+import { runSuite, combineRuns } from "../src/testrun/playwright.mjs";
+import { taggedSpecFiles, tagPattern } from "../src/testrun/tags.mjs";
 
 // Every target these tests run against has an adapter on disk. A target with none is a
 // case of its own, exercised below: `runSuite` answers it without a run, because with the
@@ -543,4 +544,97 @@ test("runSuite: a target that has an adapter is still run", () => {
   const exec = (cmd, args) => { calls.push(args); return { status: 0, stdout: '{"suites":[]}', stderr: "" }; };
   runSuite({ projectDir: d, target: "new", baseUrl: "http://x", exec });
   assert.ok(calls.some((a) => a.includes("playwright")), "the suite runs when there is something to drive");
+});
+
+// ---- tests that need a differently configured target ----
+
+// A test written for a configuration the target reads once at start-up carries that
+// configuration's tag, and the tag is how a run picks it out or leaves it out. The rest of the
+// suite runs with every such tag left out, and each configuration's tests run on their own.
+test("runSuite: grepInvert leaves every tagged test out of the run, and grep runs only one tag's", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  writeReport(d, [fileSuite("opportunities", "R-1.1.spec.ts", "views a listing", "passed")]);
+
+  const plain = [];
+  withBrowsersPath(true, () => runSuite({
+    projectDir: d, target: "old", baseUrl: "http://x", grepInvert: ["@maintenance_mode", "@read.only"], exec: recordingExec(plain),
+  }));
+  const plainArgs = plain.find((c) => c.args.includes("playwright")).args;
+  const invert = plainArgs[plainArgs.indexOf("--grep-invert") + 1];
+  assert.equal(invert, tagPattern(["@maintenance_mode", "@read.only"]));
+  assert.ok(!plainArgs.includes("--grep"));
+
+  const tagged = [];
+  withBrowsersPath(true, () => runSuite({
+    projectDir: d, target: "old", baseUrl: "http://x", grep: "@maintenance_mode", exec: recordingExec(tagged),
+  }));
+  const taggedArgs = tagged.find((c) => c.args.includes("playwright")).args;
+  assert.equal(taggedArgs[taggedArgs.indexOf("--grep") + 1], tagPattern(["@maintenance_mode"]));
+  assert.ok(!taggedArgs.includes("--grep-invert"));
+
+  const none = [];
+  withBrowsersPath(true, () => runSuite({ projectDir: d, target: "old", baseUrl: "http://x", grepInvert: [], exec: recordingExec(none) }));
+  assert.ok(!none.find((c) => c.args.includes("playwright")).args.includes("--grep-invert"), "no tags, no filter");
+});
+
+// The pattern matches the tag and not a longer tag it is the start of, since Playwright
+// matches it anywhere in a test's title and tags.
+test("tagPattern matches a whole tag only", () => {
+  const re = new RegExp(tagPattern(["@maintenance_mode"]));
+  assert.ok(re.test("R-1.1 shows the notice @maintenance_mode"));
+  assert.ok(!re.test("R-1.1 shows the notice @maintenance_mode_extended"));
+  assert.ok(!re.test("R-1.1 shows the notice @maintenance"));
+  const two = new RegExp(tagPattern(["@a.b", "@c"]));
+  assert.ok(two.test("x @c") && two.test("x @a.b") && !two.test("x @aXb"));
+});
+
+test("taggedSpecFiles finds the spec files that carry a tag, and no file that only starts with it", () => {
+  const d = project();
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", `${specHeader("R-1.1", 1)}test("x", { tag: "@maintenance_mode" }, async () => {});\n`);
+  write(d, "tests/acceptance/opportunities/R-1.2.spec.ts", `${specHeader("R-1.2", 1)}test("x", { tag: "@maintenance_mode_extended" }, async () => {});\n`);
+  write(d, "tests/acceptance/content/R-7.1.spec.ts", `${specHeader("R-7.1", 1)}test("x", async () => {});\n`);
+  assert.deepEqual(taggedSpecFiles(d, "@maintenance_mode"), ["tests/acceptance/opportunities/R-1.1.spec.ts"]);
+  assert.deepEqual(taggedSpecFiles(d, "@absent"), []);
+});
+
+test("runSuite: the mock runner honours grep and grepInvert by the tag in each spec file", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1"), accepted("R-1.2")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  write(d, "tests/acceptance/opportunities/R-1.2.spec.ts", `${specHeader("R-1.2", 1)}test("x", { tag: "@maintenance_mode" }, async () => {});\n`);
+  const mockDir = mkdtempSync(join(tmpdir(), "sdlc-testrun-mock-"));
+  const row = (id) => ({ id, version: 1, domain: "opportunities", file: `tests/acceptance/opportunities/${id}.spec.ts`, result: "pass", tests: [{ title: "x", status: "passed" }] });
+  writeFileSync(join(mockDir, "calibrate.json"), JSON.stringify({ rows: [row("R-1.1"), row("R-1.2")] }));
+  process.env.SDLC_TEST_RUNNER = "mock"; process.env.SDLC_MOCK_DIR = mockDir;
+  try {
+    const plain = runSuite({ projectDir: d, target: "old", baseUrl: "http://x", grepInvert: ["@maintenance_mode"] });
+    assert.deepEqual(plain.rows.map((r) => r.id), ["R-1.1"]);
+    const tagged = runSuite({ projectDir: d, target: "old", baseUrl: "http://x", grep: "@maintenance_mode" });
+    assert.deepEqual(tagged.rows.map((r) => r.id), ["R-1.2"]);
+  } finally {
+    delete process.env.SDLC_TEST_RUNNER; delete process.env.SDLC_MOCK_DIR;
+  }
+});
+
+// A spec file can hold tagged and untagged tests, so two runs can each report part of one
+// file. Its row is worked out from all of its tests, as one run would have.
+test("combineRuns: rows for one file from two runs are one row over both runs' tests", () => {
+  const file = "tests/acceptance/opportunities/R-1.1.spec.ts";
+  const base = { id: "R-1.1", version: 1, domain: "opportunities", file };
+  const passed = { ...base, result: "pass", tests: [{ title: "a", status: "passed" }] };
+  const failed = { ...base, result: "fail", tests: [{ title: "b", status: "failed", error: "expected 0" }] };
+  const nt = { id: "R-1.3", version: 1, domain: "opportunities", file: null, result: "not-testable", tests: [] };
+  const other = { id: "R-1.2", version: 1, domain: "opportunities", file: "tests/acceptance/opportunities/R-1.2.spec.ts", result: "pass", tests: [{ title: "c", status: "passed" }] };
+
+  const rows = combineRuns([passed, other, nt], [failed, nt]);
+  assert.deepEqual(rows.map((r) => [r.id, r.result]), [["R-1.1", "fail"], ["R-1.2", "pass"], ["R-1.3", "not-testable"]]);
+  assert.deepEqual(rows[0].tests.map((t) => t.title), ["a", "b"]);
+
+  const stale = combineRuns([{ ...passed, result: "stale" }], [{ ...passed, tests: [{ title: "d", status: "passed" }] }]);
+  assert.equal(stale[0].result, "stale", "a stale test is stale whichever run saw it");
+
+  const unbound = combineRuns([passed], [{ ...base, result: "unbound", tests: [{ title: "e", status: "failed", error: "Error: unbound: page.member — none" }] }]);
+  assert.equal(unbound[0].result, "unbound");
 });
