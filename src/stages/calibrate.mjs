@@ -18,8 +18,10 @@ import { syncMissingTests } from "../spec/missing-tests.mjs";
 import { PERSONA_UNAVAILABLE, UNBOUND, legacyAdapter, personaUnavailable, syncUnbound, unavailableOn, unboundSpent } from "../spec/unbound.mjs";
 import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
-import { oracleUp, instancesOf } from "../commands/oracle.mjs";
-import { runSuite, sortRows } from "../testrun/playwright.mjs";
+import { oracleUp, oracleConfigurationDown, instancesOf } from "../commands/oracle.mjs";
+import { configurationProblems, readConfigurations } from "../oracle/configurations.mjs";
+import { combineRuns, runSuite, sortRows } from "../testrun/playwright.mjs";
+import { taggedSpecFiles } from "../testrun/tags.mjs";
 import { environmentFaults } from "../testrun/results.mjs";
 import { calibrateEnvironmentFaults, owedLoopLimit } from "../config/policy.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
@@ -30,10 +32,44 @@ import { propose } from "../commands/propose.mjs";
 // the target this pipeline knows how to rebuild, through the same seed it started from. A
 // target with no configured database has nothing to reset and gets no command, so its suite
 // runs as it always did.
-function resetCommandFor(config, target, instance) {
+// A copy started in one of the contract's configurations is reset by the configuration's name.
+function resetCommandFor(config, target, instance, configuration) {
   if (target !== config?.oracle?.target || !config?.oracle?.db) return undefined;
   const bin = resolvePath(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs");
-  return `node ${JSON.stringify(bin)} oracle reseed --target ${target} --instance ${instance}`;
+  const which = configuration === undefined ? `--instance ${instance}` : `--configuration ${configuration}`;
+  return `node ${JSON.stringify(bin)} oracle reseed --target ${target} ${which}`;
+}
+
+// The tests written for one of the contract's configurations, run against a copy of the oracle
+// started in it, and that copy taken down again. The default copies are not touched, so the
+// oracle is left as the run found it. `null` when no test carrying the configuration's tag is
+// in this run's scope, in which case nothing is started.
+//
+// A run that selected the tag and reported no test at all is refused: the tests the ordinary
+// run left out would otherwise have no result, and the reason would be lost.
+async function runInConfiguration(projectDir, ctx, target, configuration) {
+  const inScope = taggedSpecFiles(projectDir, configuration.tag)
+    .filter((f) => ctx.domain === undefined || f.split("/")[2] === ctx.domain);
+  if (!inScope.length) return null;
+  // Taken down whatever happens, a start that failed part-way included, so the run leaves the
+  // oracle as it found it.
+  let rows;
+  try {
+    const copy = await oracleUp(projectDir, { target, configuration: configuration.name, stage: "calibrate" });
+    ({ rows } = runSuite({
+      projectDir, target, domain: ctx.domain, grep: configuration.tag,
+      instances: [{ baseUrl: copy.base_url, mailApi: copy.mail_api ?? "", resetCommand: resetCommandFor(ctx.config, target, undefined, configuration.name) }],
+    }));
+  } catch (e) {
+    try { await oracleConfigurationDown(projectDir, { target, configuration: configuration.name, stage: "calibrate" }); } catch { /* the suite's own failure is the one to report */ }
+    throw e;
+  }
+  await oracleConfigurationDown(projectDir, { target, configuration: configuration.name, stage: "calibrate" });
+  const ran = rows.filter((r) => r.file);
+  if (!ran.length) {
+    throw new Error(`calibrate ${target}: ${inScope.join(", ")} carry ${configuration.tag}, and the run selecting it against the copy started in configuration ${configuration.name} reported no test. Check that the tag is on the test itself (Playwright's tag option or the test's title), not only in the file's text.`);
+  }
+  return { configuration, rows, ids: ran.map((r) => r.id ?? r.file) };
 }
 
 // The copies of the target the suite may spread across, each with the address, mail catcher
@@ -486,6 +522,31 @@ function checkCalibrateSkipSuite(projectDir, ctx) {
   return { id, ok: true, messages: [] };
 }
 
+// The contract's configurations a run has to route, recorded on `ctx` for `execute`. Each has to
+// be one the oracle can be started in and one some test is written for; and only the oracle is
+// started by this pipeline, so against any other target a configuration's tests have no
+// instance they are written for. Refused before anything runs, rather than recorded as the
+// result of running them against the wrong one.
+function checkCalibrateConfigurations(projectDir, ctx) {
+  const id = "calibrate-configurations";
+  ctx.calibrateConfigurations = [];
+  if (ctx.skipSuite || !ctx.target) return { id, ok: true, messages: [] };
+  const { configurations, errors } = readConfigurations(projectDir);
+  if (errors.length) return { id, ok: false, messages: errors.map((e) => `calibrate: ${e}`) };
+  if (!configurations.length) return { id, ok: true, messages: [] };
+  const oracle = ctx.config?.oracle?.target;
+  if (ctx.target !== oracle) {
+    return {
+      id, ok: false,
+      messages: configurations.map((c) => `calibrate ${ctx.target}: configurations.${c.name} is selected by starting the oracle with ${Object.keys(c.env).join(", ")}, and ${ctx.target} is not the oracle${oracle ? ` (${oracle})` : ""}, so nothing here can start it in that configuration; its tests (${c.tag}) have no instance they are written for`),
+    };
+  }
+  const problems = configurationProblems(projectDir, ctx.config, configurations);
+  if (problems.length) return { id, ok: false, messages: problems.map((p) => `calibrate: ${p}`) };
+  ctx.calibrateConfigurations = configurations;
+  return { id, ok: true, messages: [] };
+}
+
 function checkCalibrateDomain(projectDir, ctx) {
   const id = "calibrate-domain";
   if (ctx.domain === undefined) return { id, ok: true, messages: [] };
@@ -760,14 +821,26 @@ export const calibrate = {
     // returns are merged over the ones already on file, so `latest.json` stays a complete
     // account of every criterion rather than becoming a partial one.
     let rows;
+    const configurationRuns = [];
     if (ctx.skipSuite) {
       rows = previous?.rows ?? [];
       haltOnEnvironmentFault(projectDir, ctx, target, rows);
     } else {
-      const { rows: fresh } = runSuite({
+      // Tests written for one of the contract's configurations are left out of the ordinary
+      // run and run on their own against a copy of the oracle started in that configuration
+      // (`docs/decisions/0071-a-configuration-gets-its-own-oracle.md`); their rows join the
+      // rest in the one result.
+      const configurations = ctx.calibrateConfigurations ?? [];
+      const { rows: plain } = runSuite({
         projectDir, target, baseUrl, mailApi, domain: ctx.domain,
         instances: calibrateInstances(projectDir, ctx.config, target),
+        grepInvert: configurations.map((c) => c.tag),
       });
+      for (const c of configurations) {
+        const run = await runInConfiguration(projectDir, ctx, target, c);
+        if (run) configurationRuns.push(run);
+      }
+      const fresh = combineRuns(plain, ...configurationRuns.map((r) => r.rows));
       haltOnEnvironmentFault(projectDir, ctx, target, fresh);
       // Each row that ran a spec file records the adapter it ran with, which is what an unbound
       // row's owed binding is about; a row carried over keeps its own.
@@ -828,6 +901,7 @@ export const calibrate = {
     for (const row of ruledRows) counts.set(row.result, (counts.get(row.result) ?? 0) + 1);
     const summary = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([k, n]) => `${n} ${k}`).join(", ");
     const lines = [`calibrate ${target}: ${ruledRows.length} row(s) — ${summary || "no rows"}.`];
+    for (const run of configurationRuns) lines.push(`${run.ids.join(", ")} ran against a copy of the oracle started in configuration ${run.configuration.name}, taken down afterwards.`);
     const unruled = calibrateUnruledFailures(results);
     if (unruled.length) lines.push(`Failing with no ruling: ${unruled.map((r) => r.id).join(", ")}`);
     const ruled = ruledRows.filter((r) => r.ruled && r.ruled !== PERSONA_UNAVAILABLE);
@@ -876,6 +950,7 @@ export const calibrate = {
       checkSandboxPassword("calibrate", ctx, "calibrating"),
       checkCalibrateDomain(projectDir, ctx),
       checkCalibrateSkipSuite(projectDir, ctx),
+      checkCalibrateConfigurations(projectDir, ctx),
     ];
   },
   postChecks(projectDir, ctx) {

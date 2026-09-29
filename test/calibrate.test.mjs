@@ -1535,3 +1535,125 @@ test("an unbound row needing a persona the approved contract marks unavailable i
     restoreEgress(prevEgress);
   }
 });
+
+// --- a configuration the target reads at start-up ---
+
+// The contract names a configuration by the variable the oracle override reads for it and the
+// tag its tests carry; R-1.2's test is written for it. Committed the way each part would reach
+// `main`: the contract and override through a contract approval, the tag through derive-tests.
+function addConfiguration(dir, { override = 'services:\n  app:\n    environment: !override\n      MAINTENANCE: "${SDLC_ORACLE_MAINTENANCE:-0}"\n', tag = "@maintenance_mode" } = {}) {
+  const obs = join(dir, "spec", "contract", "observables.yaml");
+  writeFileSync(obs, `${readFileSync(obs, "utf8")}configurations:
+  maintenance_mode:
+    for: [R-1.2]
+    select: SDLC_ORACLE_MAINTENANCE=1
+    tag: "@maintenance_mode"
+`);
+  mkdirSync(join(dir, ".sdlc", "oracle"), { recursive: true });
+  writeFileSync(join(dir, ".sdlc", "oracle", "compose.yml"), override);
+  mkdirSync(join(dir, "sources", "old"), { recursive: true });
+  writeFileSync(join(dir, "sources", "old", "docker-compose.yml"), "services: {}\n");
+  git(["add", "-f", "spec/contract/observables.yaml", ".sdlc/oracle/compose.yml", "sources/old/docker-compose.yml"], dir);
+  git([...COMMIT, "a configuration read at start-up (test)"], dir);
+  const spec = join(dir, "tests", "acceptance", "applications", "R-1.2.spec.ts");
+  writeFileSync(spec, `${readFileSync(spec, "utf8")}\n// selected by ${tag}\n`);
+  git(["add", "-A"], dir);
+  git([...COMMIT, "stage(derive-tests): R-1.2 is written for maintenance_mode (test)"], dir);
+}
+
+function oracleCalls(mockDir) {
+  const p = join(mockDir, "oracle-calls.json");
+  return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : [];
+}
+
+test("sdlc run calibrate: a configuration's tests run against a copy of the oracle started in it, and the copy is taken down after", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-configuration-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  addConfiguration(dir);
+  const mockDir = mockRunnerDir("configuration", [PASSING_ROW, FAILING_ROW]);
+  calibrateEnv(mockDir);
+  try {
+    const r = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(r.ok, true, JSON.stringify(r.messages));
+
+    // Every row is in the one result set: R-1.1 from the ordinary run, R-1.2 from the run
+    // against the configured copy, R-1.3 read off not-testable.yaml.
+    const results = latest(dir);
+    assert.deepEqual(results.rows.map((row) => [row.id, row.result]), [["R-1.1", "pass"], ["R-1.2", "fail"], ["R-1.3", "not-testable"]]);
+    // Once: the ordinary run left it out. Run in both, its row would carry its test twice.
+    assert.equal(rowFor(results, "R-1.2").tests.length, 1);
+
+    const project = "sdlc-permit-intake-old-maintenance_mode";
+    const calls = oracleCalls(mockDir).filter((c) => c.args[1] === project);
+    const shapes = calls.map((c) => c.args.slice(6).join(" "));
+    assert.ok(shapes.some((s) => s.startsWith("up -d --build")), shapes.join(" | "));
+    assert.ok(calls.filter((c) => c.args.includes("up")).every((c) => c.env.SDLC_ORACLE_MAINTENANCE === "1"),
+      "the copy is started with the configuration's variable");
+    assert.equal(shapes[shapes.length - 1], "down -v", "and taken down once its tests have run");
+    assert.ok(oracleCalls(mockDir).every((c) => c.args[1] === project || c.env.SDLC_ORACLE_MAINTENANCE === undefined),
+      "nothing else is started with it");
+
+    // The default copy's record is as it was, and no configured copy is left recorded.
+    const local = parseYaml(readFileSync(join(dir, ".sdlc", "oracle-old.local.yaml"), "utf8"));
+    assert.equal(local.compose_project, "sdlc-permit-intake-old");
+    assert.equal(local.configurations, undefined);
+
+    assert.match(lastCalibrateText(dir), /R-1\.2 ran against a copy of the oracle started in configuration maintenance_mode/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+// Either mistake leaves a configuration's tests with nowhere right to run: a variable the
+// override never reads starts the default oracle under another name, and a tag no test carries
+// selects nothing. The run is refused before any suite starts, rather than recording the
+// results of the wrong instance.
+test("sdlc run calibrate: a configuration the override does not read, or whose tag no test carries, is refused before anything runs", async () => {
+  for (const [label, opts, said] of [
+    ["unread", { override: "services:\n  app:\n    environment:\n      OTHER: \"${SDLC_OTHER:-0}\"\n" }, /SDLC_ORACLE_MAINTENANCE.*does not read/],
+    ["untagged", { tag: "@maintenance_mod" }, /no test under tests\/acceptance\/ carries its tag @maintenance_mode/],
+  ]) {
+    const tmp = mkdtempSync(join(tmpdir(), `sdlc-calibrate-configuration-${label}-`));
+    const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+    addConfiguration(dir, opts);
+    const mockDir = mockRunnerDir(label, [PASSING_ROW, FAILING_ROW]);
+    calibrateEnv(mockDir);
+    try {
+      const r = await runStage(dir, "calibrate", { target: "old" });
+      assert.equal(r.ok, false, label);
+      assert.ok(r.messages.some((m) => said.test(m)), `${label}: ${r.messages.join(" | ")}`);
+      assert.ok(!existsSync(join(dir, "tests/results/old/latest.json")), `${label}: no suite ran`);
+      assert.deepEqual(oracleCalls(mockDir), [], `${label}: nothing was started`);
+    } finally {
+      clearCalibrateEnv();
+      restoreEgress(prevEgress);
+    }
+  }
+});
+
+// Only the oracle is started by this pipeline, so only the oracle can be started in a
+// configuration. Against any other target the configuration's tests have no instance they are
+// written for, and the run says so instead of running them against the one it has.
+test("sdlc run calibrate: against a target other than the oracle, a configuration with tests is refused", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-configuration-other-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  addConfiguration(dir);
+  const cfgPath = join(dir, ".sdlc", "config.yaml");
+  const cfg = parseYaml(readFileSync(cfgPath, "utf8"));
+  cfg.targets = { ...(cfg.targets ?? {}), staging: { base_url: "http://localhost:4100", identity: "sandbox-idp" } };
+  writeFileSync(cfgPath, stringifyYaml(cfg));
+  git(["add", "-A"], dir);
+  git([...COMMIT, "a staging target (test)"], dir);
+  const mockDir = mockRunnerDir("other", [PASSING_ROW, FAILING_ROW]);
+  calibrateEnv(mockDir);
+  try {
+    const r = await runStage(dir, "calibrate", { target: "staging" });
+    assert.equal(r.ok, false);
+    assert.ok(r.messages.some((m) => /maintenance_mode/.test(m) && /staging/.test(m)), r.messages.join(" | "));
+    assert.ok(!existsSync(join(dir, "tests/results/staging/latest.json")));
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
