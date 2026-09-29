@@ -740,6 +740,53 @@ test("with policy.next.calibrate_after unset, or no calibration yet, nothing fal
   assert.ok(!whatNext(never).ready.some((c) => c.kind === "calibration"), "the sequence brings the first calibration");
 });
 
+// Under `policy.calibrate.scope: changed` a calibration carries rows none of whose inputs changed
+// (`docs/decisions/0072`). The Tests phase closes only on a run that measured every row, and
+// `policy.calibrate.full_every` makes every n-th calibration full.
+function scopedResults(d, rows, more = {}) {
+  adaptersBound(d, { old: bindingsFor("old", FULL), fresh: bindingsFor("new", FULL) });
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", run: "2026-01-02", scope: "changed", full_run: "2026-01-01", since_full: 1, ...more, rows }) }, "stage(calibrate): calibrate against old");
+}
+
+test("the Tests phase stays open while a row is carried, and next names a full calibration to close it", (t) => {
+  const d = project(t, { extra: TARGETS, policy: ["calibrate: { scope: changed }"] });
+  specDone(d);
+  scopedResults(d, [
+    { id: "R-1.1", result: "pass", measured_in: "2026-01-02" },
+    { id: "R-2.1", result: "fail", ruled: "defect-in-old", measured_in: "2026-01-01", carried: true },
+  ]);
+  const r = whatNext(d);
+  assert.equal(r.phase.number, 2);
+  assert.equal(r.next.command, "sdlc run calibrate --target old --full");
+  assert.equal(r.next.kind, "sequence");
+  assert.match(r.next.why, /every row passes or is ruled, but 1 row was carried from an earlier run \(2026-01-01\) rather than measured by the last one; the Tests phase closes only on a run that measures every row$/);
+  assert.equal(matchesNext(r, "calibrate", { target: "old" }), false, "a scoped run is not the full run next names");
+  assert.equal(matchesNext(r, "calibrate", { target: "old", full: true }), true);
+
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", run: "2026-01-03", scope: "full", full_run: "2026-01-03", since_full: 0, rows: [
+    { id: "R-1.1", result: "pass", measured_in: "2026-01-03" }, { id: "R-2.1", result: "fail", ruled: "defect-in-old", measured_in: "2026-01-03" },
+  ] }) }, "stage(calibrate): calibrate against old");
+  assert.equal(whatNext(d).phase.number, 3, "a full run with every row closed ends the phase");
+});
+
+test("policy.calibrate.full_every makes next name a full calibration when one is due, and --full is never a deviation", (t) => {
+  const d = project(t, { extra: TARGETS, policy: ["calibrate: { scope: changed, full_every: 2 }"] });
+  specDone(d);
+  scopedResults(d, [{ id: "R-1.1", result: "pass", measured_in: "2026-01-01" }, { id: "R-2.1", result: "fail", measured_in: "2026-01-02" }], { since_full: 1 });
+  let r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run calibrate --target old --full");
+  assert.match(r.next.why, /; a full run is due: 1 scoped calibration since the last full run \(2026-01-01\); policy\.calibrate\.full_every is 2$/);
+
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", run: "2026-01-02", scope: "full", full_run: "2026-01-02", since_full: 0, rows: [
+    { id: "R-1.1", result: "pass", measured_in: "2026-01-02" }, { id: "R-2.1", result: "fail", measured_in: "2026-01-02" },
+  ] }) }, "stage(calibrate): calibrate against old");
+  r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run calibrate --target old");
+  assert.equal(matchesNext(r, "calibrate", { target: "old" }), true);
+  assert.equal(matchesNext(r, "calibrate", { target: "old", full: true }), true, "measuring more than next asked for needs no reason");
+});
+
 test("which kind of ready work goes first is policy.next.order", (t) => {
   const d = project(t, { policy: ["next: { order: [sequence, owed, proposals] }"] });
   specDone(d);

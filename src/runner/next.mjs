@@ -36,11 +36,12 @@ import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
 import { stallReason } from "./escalation.mjs";
 import { buildVerifiedOnBranch, simulatedRole } from "../commands/rule.mjs";
+import { compareRunIds, fullRunDue } from "../testrun/scope.mjs";
 
 // The phases the sequence moves through, each with the exit criterion that closes it.
 export const PHASES = Object.freeze([
   { number: 1, name: "Spec", exit: "every domain ratified, with no criterion still inferred or open" },
-  { number: 2, name: "Tests", exit: "the contract approved, every domain's tests approved, and every calibration row pass or ruled" },
+  { number: 2, name: "Tests", exit: "the contract approved, every domain's tests approved, and every calibration row pass or ruled, all measured by the last run" },
   { number: 3, name: "Design", exit: "every domain's catalogue approved" },
   { number: 4, name: "Build", exit: "the plan approved and every slice approved at G3" },
   { number: 5, name: "Operate", exit: "the rebuilt application deployed and operated" },
@@ -276,7 +277,7 @@ export function runCommand(stage, args = {}) {
     if (args[k] === undefined || args[k] === null) return SUBJECT_OF[stage] === k ? `--${k} <${k}>` : null;
     return `--${k} ${args[k]}`;
   };
-  return ["sdlc run", stage, flag("domain"), flag("target"), flag("slice"), args.stale ? "--stale" : null, args.revise ? "--revise" : null, args.skipSuite ? "--skip-suite" : null]
+  return ["sdlc run", stage, flag("domain"), flag("target"), flag("slice"), args.stale ? "--stale" : null, args.revise ? "--revise" : null, args.skipSuite ? "--skip-suite" : null, args.full ? "--full" : null]
     .filter(Boolean).join(" ");
 }
 
@@ -319,10 +320,26 @@ function ratified(record, domain) {
 
 const closesCalibration = (r) => ["pass", "not-testable", "attested"].includes(r?.result) || Boolean(r?.ruled);
 
+// A row a scoped calibration carried was measured by an earlier run than the last one, so rows
+// that all pass or are ruled close the phase only when none is carried: only a run that measured
+// every row says a passing test is still passing under the adapter it has now
+// (`docs/decisions/0072`).
 function calibrated(record, target) {
   const rows = record.results.get(target)?.latest?.rows;
   if (!Array.isArray(rows)) return false;
-  return rows.every(closesCalibration);
+  return rows.every(closesCalibration) && !rows.some((r) => r?.carried);
+}
+
+// Why a target's calibration is next with `--full`, or `null`: when every row passes or is ruled
+// and all that keeps it open is rows carried from an earlier run.
+function calibrationNeedsFullRun(record, target) {
+  const rows = record.results.get(target)?.latest?.rows;
+  if (!Array.isArray(rows) || !rows.every(closesCalibration)) return null;
+  const carried = rows.filter((r) => r?.carried);
+  if (!carried.length) return null;
+  const runs = [...new Set(carried.map((r) => r.measured_in ?? "an unrecorded run"))].sort(compareRunIds);
+  return `every row passes or is ruled, but ${plural(carried.length, "row was", "rows were")} carried from an earlier run (${runs.join(", ")}) `
+    + "rather than measured by the last one; the Tests phase closes only on a run that measures every row";
 }
 
 // Why a target's calibration is next with `--skip-suite`, or `null`: when all that keeps it
@@ -760,9 +777,11 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     if (!STAGES_BY_NAME[s.stage]?.implemented) { blocked ??= `the next stage in the sequence, ${s.stage}, is not implemented in this pipeline yet`; continue; }
     const where = s.args.domain ? ` for ${s.args.domain}` : s.args.target ? ` for target ${s.args.target}` : s.args.slice !== undefined ? ` for slice ${s.args.slice}` : "";
     const settles = s.stage === "calibrate" ? calibrationSettlesWithoutSuite(record, s.args.target) : null;
-    const args = settles ? { ...s.args, skipSuite: true } : s.args;
+    const full = s.stage === "calibrate" && !settles ? calibrationNeedsFullRun(record, s.args.target) : null;
+    const args = settles ? { ...s.args, skipSuite: true } : full ? { ...s.args, full: true } : s.args;
+    const because = settles ?? full;
     sequence.push({ kind: "sequence", stage: s.stage, args, command: runCommand(s.stage, args),
-      why: `phase ${phase.number} ${phase.name} is not complete (exit: ${phase.exit}), and ${s.stage}${where} is next in it${settles ? `: ${settles}` : ""}` });
+      why: `phase ${phase.number} ${phase.name} is not complete (exit: ${phase.exit}), and ${s.stage}${where} is next in it${because ? `: ${because}` : ""}` });
   }
 
   const byKind = {
@@ -784,6 +803,15 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     const at = ready.findIndex((c) => c.kind === "owed" || c.kind === "sequence");
     ready.splice(at === -1 ? ready.length : at, 0, { ...due,
       rule: `a calibration is due (policy.next.calibrate_after: ${calibrateAfter(record.config)}), and goes before owed and sequence work; proposals keep their place (policy.next.order: ${order.join(", ")})` });
+  }
+  // A calibration that runs the suite is full when `policy.calibrate.full_every` says one is due,
+  // however it came to be offered (`docs/decisions/0072`).
+  for (const [i, c] of ready.entries()) {
+    if (c.stage !== "calibrate" || c.args?.skipSuite || c.args?.full) continue;
+    const dueFull = fullRunDue(record.config, record.results.get(c.args?.target)?.latest);
+    if (!dueFull) continue;
+    const args = { ...c.args, full: true };
+    ready[i] = { ...c, args, command: runCommand("calibrate", args), why: `${c.why}; a full run is due: ${dueFull}` };
   }
   const next = ready[0] ?? null;
   const waiting = [...props.waiting, ...owed.waiting];
@@ -879,6 +907,9 @@ export function matchesNext(r, stage, inv = {}) {
     if (want === undefined || want === null) continue;
     if (String(want) !== String(inv[k] ?? "")) return false;
   }
+  // A full calibration measures everything a scoped one would, so `--full` is never a deviation;
+  // a scoped run where next names a full one is.
+  if (c.args?.full && !inv.full) return false;
   return Boolean(c.args?.stale) === Boolean(inv.stale) && Boolean(c.args?.revise) === Boolean(inv.revise);
 }
 
