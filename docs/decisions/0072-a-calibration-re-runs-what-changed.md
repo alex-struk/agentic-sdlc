@@ -36,7 +36,9 @@ target could not be reset or reached (`docs/decisions/0058`); when it is neither
 and the adapter changed; when an open rebind entry for the target, an open redo entry or an open
 missing test owed a run by calibration names it; when the gates that have ruled on it differ from
 the ones it recorded; and when its test has become stale or stopped being stale. Every other row
-is carried. Configuration runs (`docs/decisions/0071`) follow the same rule for their tagged tests,
+is carried. A missing test owed a run is no reason to re-run a row closed as `persona-unavailable`
+(`docs/decisions/0068`): it needs a persona the approved contract marks unavailable on the target,
+so no run there can pass or fail it. Configuration runs (`docs/decisions/0071`) follow the same rule for their tagged tests,
 and a configuration none of whose tests is re-run starts no copy of the oracle.
 
 **A passing row whose only changed input is the adapter is carried.** An adapter change is usually
@@ -48,6 +50,20 @@ adapter change is caught by the next full run, which the two guards below bring.
 the harness. So do `--full`, having no results on file, and a plan that would re-run every row
 anyway. `scope` defaults to `full`, today's behaviour, so a project is unchanged until it opts in
 at G-POL.
+
+**The first calibration after a project opts in is full.** Results written before rows recorded
+their provenance give a plan nothing to compare against, so while no row on file records what it
+ran with, the plan runs every row and `next` names `--full`, each saying so. It costs one full run,
+once, and no row is carried on inputs somebody inferred.
+
+**A missing test owed a run on a row nobody can run is handed to a ruler.** Calibration owes a run
+to a missing test whose test exists and has not produced a pass or a fail. On a row needing a
+persona the approved contract marks unavailable, no run ever will. `next` lists such an item under
+`waiting on a person`, as waiting on a ruler, naming the target and the criteria, rather than
+offering a calibration for it; `condition-withdrawn missing-test/<id>: <why>` on any ruling closes
+it. This is read from the row, the way 0068 reads which unbound rows are owed to nobody, so nothing
+new is written, and the item is offered to calibration again if a later contract makes the persona
+available.
 
 **Two guards bring the full run.** `policy.calibrate.full_every: <n>` makes every n-th calibration
 of a target full: after a full run, `n - 1` scoped runs follow. `next` names
@@ -64,7 +80,9 @@ one needs no `--reason`; a scoped run where `next` names a full one does.
 run was full, and how many scoped runs are left before one is full. The reviewer's and the product
 owner's pages mark a carried failing row with the run it came from. The state site marks carried
 rows on each domain's criteria page and says how many rows the last run measured and carried.
-`sdlc run calibrate --dry-run` prints the plan and writes nothing.
+`sdlc run calibrate --dry-run` prints the plan and writes nothing. It plans before applying the
+rulings approved since the last run, which the run itself applies first, so the run can re-run a
+few rows the dry run did not list.
 
 ## Where the design needed a detail the code decides
 
@@ -85,12 +103,6 @@ be carried from a run older than the latest full one. The guard is read as: no r
 earlier run. That is what makes a passing row carried across an adapter change get measured before
 the phase closes. It holds under `scope: full` too, so after a `--domain` run, which carries every
 other domain's rows, the phase closes on the next full calibration.
-
-**Results written before provenance are read, not discarded.** A row that already records its
-`file_sha` and `adapter` is read as measured by the run that wrote the newest dated file, with the
-shared inputs and applied rulings as they were at the commit that added it. That saves a project
-the first full run after opting in. A row carried into a results file by an earlier `--domain` run
-is attributed to that later run too, so a contract change between the two runs is not seen for it.
 
 ## Alternatives
 

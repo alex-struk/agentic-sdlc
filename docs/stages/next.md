@@ -93,12 +93,18 @@ passing test still passes under the adapter the target has now; the sequence ste
 with `--full` and a `why` naming the runs the carried rows came from. And with
 `policy.calibrate.full_every: <n>` set, once `n - 1` scoped calibrations have followed the last
 full one, every offer of that target's calibration that runs the suite carries `--full`, its
-`why` ending `a full run is due: …` (`docs/decisions/0072-a-calibration-re-runs-what-changed.md`).
+`why` ending `a full run is due: …`. The same happens, once, when no row on file records the
+inputs it ran with: the first calibration after a project chooses `scope: changed` is full
+(`docs/decisions/0072-a-calibration-re-runs-what-changed.md`).
 
 **Missing tests.** An untestable record on `main` is owed a test whether or not an entry has been
 written for it yet (`docs/operating-model.md` §7): `next` reads the entries in `.sdlc/owed.yaml`
 and, beside them, an item for each record nothing accounts for, owed by the stage the record names
-or by `contract`. The `owed:` line counts them by owing stage (`69 missing-test (contract)`).
+or by `contract`. The `owed:` line counts them by owing stage (`69 missing-test (contract)`). One
+owed a run by calibration, for a criterion whose row needs a persona the approved contract marks
+unavailable on the target, is not offered to `calibrate`, since no run there can pass or fail it:
+it is listed under `waiting on a person` as waiting on a ruler, one line per target naming the
+criteria, and `condition-withdrawn missing-test/<id>: <why>` on any ruling closes it.
 
 **Unbound rows.** A calibration row the adapter reported unbound is owed to `bind-adapter` for
 its target, whether or not an entry has been written for it yet: `next` reads the rebind entries

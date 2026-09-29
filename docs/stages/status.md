@@ -98,12 +98,15 @@ every `.sdlc/proposals/*.md`, every `.sdlc/runs/*.md`, `tests/acceptance/<domain
 - `site/runs.md`: the concatenation of every run-record file, in reverse filename order (most recent day first).
 - `site/results.md`: one `## <target>` section per target directory under `tests/results/`, each
   with a table of every dated results file in it (`<date>.json`, `<date>-2.json`, …; `latest.json`
-  and `applied.yaml` are not rows here — the first duplicates the newest dated file, the second is
-  calibration's own bookkeeping) — file name, the run's `at`, and a count per `result` value
+  and `applied.yaml` are not rows here — the first is the current state, the newest dated file's
+  rows with any rows carried from earlier runs, the second is calibration's own bookkeeping) — file name, the run's `at`, and a count per `result` value
   (`pass`, `fail`, `unbound`, `stale`, `not-testable`, `attested`) — one column per value a row can
   hold, so no row lands outside every column — sorted newest `at` first, followed by a
   line naming the open calibration proposal for that target (`followUpState(projectDir,
-  "calibrate-<target>")`) or, when none is open, "no calibration ruling open." A project with no
+  "calibrate-<target>")`) or, when none is open, "no calibration ruling open.", and, for results
+  that record the run that measured them, a line saying how many of `latest.json`'s rows that run
+  measured and how many it carried from which earlier runs (`docs/decisions/0072`). A domain's
+  criteria page marks a carried row's result `carried from <run>`. A project with no
   `tests/results/` directory at all gets a page saying there are no results yet, instead of an
   empty page with no sections.
 

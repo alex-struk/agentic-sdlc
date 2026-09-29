@@ -278,7 +278,10 @@ runs every row. Under `changed`, a calibration re-runs a row when:
 - it is neither passing nor ruled, and the adapter differs from the one it ran with (`adapter
   changed`);
 - an open rebind entry for this target, an open redo entry, or an open missing test owed a run by
-  calibration names its criterion (`owed a rebind`, `owed a redo`, `missing test owed a run`);
+  calibration names its criterion (`owed a rebind`, `owed a redo`, `missing test owed a run`),
+  except that a missing test owed a run is no reason to re-run a row closed as
+  `persona-unavailable`: no run on the target can pass or fail it, and `sdlc next` hands the item
+  to a ruler (`docs/stages/next.md`);
 - the gates whose rulings name its criterion in `applied.yaml` differ from its `rulings_seen`
   (`ruled since measured`);
 - its test has become stale since, or stopped being stale (`staleness changed`).
@@ -295,10 +298,14 @@ when every row would be re-run anyway. `--domain` re-runs its domain's rows and 
 row, whatever changed. A row whose spec file is gone is dropped, as a full run would drop it, and
 the not-testable rows are read again from `tests/acceptance/not-testable.yaml` on every run.
 
-Results written before rows recorded their provenance are read as measured by the run that wrote
-the newest dated file, with the contract, seed, override, harness and applied rulings as they were
-at the commit that added it, for every row that already records its `file_sha` and `adapter`. A
-row carried into a results file by an earlier `--domain` run is attributed to that later run too.
+Results written before rows recorded their provenance give a plan nothing to compare against.
+While no row on file records what it ran with, the first calibration under `scope: changed` runs
+every row, and says so; `sdlc next` names it with `--full`. Every run after it has provenance to
+read.
+
+`--dry-run` plans over the rulings already applied. A real run applies the rulings approved since
+the last run first and plans after, so a ruling that has come back since can add rows to the real
+run's list that the dry run did not show.
 
 The summary says `N of M re-run (reasons), K carried from <run>`, or `Full run: all M test file(s)
 re-run (why)`, and under `scope: changed` how many scoped runs are left before `full_every` makes

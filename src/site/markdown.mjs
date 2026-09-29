@@ -119,8 +119,9 @@ export function renderMarkdown(model) {
   const runsMd = ["# Run log", "", ...model.runs.map((r) => r.text)].join("\n");
 
   // One section per target: every dated results file `calibrate` wrote against it
-  // (`latest.json` and `applied.yaml` excluded — the first is a duplicate of the newest
-  // dated file, and the second is calibration's own bookkeeping, not a run record),
+  // (`latest.json` and `applied.yaml` excluded — the first is the current state, the newest
+  // dated file's rows with any carried from earlier runs, and the second is calibration's own
+  // bookkeeping, not a run record),
   // newest first, plus whether a calibration ruling is still open for that target. No
   // targets at all — a project that has never run `calibrate` — gets a page saying so
   // rather than an empty "## " heading with nothing under it.
