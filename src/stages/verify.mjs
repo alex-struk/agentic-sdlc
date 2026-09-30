@@ -171,11 +171,24 @@ function adapterExists(projectDir, target) {
   return existsSync(join(projectDir, "tests", "adapters", target, "index.ts"));
 }
 
+// A failure as the builder is given it: the error's first line, and after it the lines that
+// say what the running application did — the value an assertion received, or the element that
+// took a click meant for another. The builder never sees the test (`build.mjs`), so without
+// these a condition reads `expect(received).toBeFalsy()` and names nothing it can find in the
+// application. The runner's colour codes are dropped; the test's locators and call log are not
+// carried, since they describe the test rather than the application.
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+const APPLICATION_LINE_RE = /^(Received:|Received string:|Received value:|Expected:)|intercepts pointer events/;
+const MAX_FAILURE_TEXT = 400;
+
 function firstError(r) {
   if (r.result === "missing") return "no acceptance test ran for this criterion";
   if (r.result === "stale") return "its test was written for an older version of the criterion";
   const t = (r.tests ?? []).find((x) => x.error);
-  return (t?.error ?? "failed").split("\n")[0].trim();
+  const lines = (t?.error ?? "failed").replace(ANSI_RE, "").split("\n").map((l) => l.trim().replace(/^- /, ""));
+  const said = [...new Set(lines.slice(1).filter((l) => APPLICATION_LINE_RE.test(l)))];
+  const text = [lines[0], ...said].join(" — ");
+  return text.length > MAX_FAILURE_TEXT ? `${text.slice(0, MAX_FAILURE_TEXT - 1)}…` : text;
 }
 
 // An open build proposal is one with no gate file on its branch yet: not ruled, not

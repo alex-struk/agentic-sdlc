@@ -354,6 +354,23 @@ for (const [by, expected] of [["tech-lead", "return"], ["agent:tech-lead", "esca
   });
 }
 
+// The builder never sees the test, so a condition has to carry what the application did.
+test("a return's condition says what the application did, without the runner's colour codes", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [
+    row("R-4.1", "fail", "Error: \x1b[2mexpect(\x1b[22m\x1b[31mreceived\x1b[39m\x1b[2m).\x1b[22mtoBeFalsy\x1b[2m()\x1b[22m\n\nReceived: \x1b[31m\"Page not found\"\x1b[39m\n    at x"),
+    row("R-4.2", "fail", "TimeoutError: locator.setChecked: Timeout 15000ms exceeded.\nCall log:\n  - waiting for getByRole('checkbox')\n    - <div class=\"checkbox\"></div> intercepts pointer events\n    - <div class=\"checkbox\"></div> intercepts pointer events"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.deepEqual(gate.conditions, [
+    "R-4.1: Error: expect(received).toBeFalsy() — Received: \"Page not found\"",
+    "R-4.2: TimeoutError: locator.setChecked: Timeout 15000ms exceeded. — <div class=\"checkbox\"></div> intercepts pointer events",
+  ]);
+});
+
 // The real chain a fixture cannot fabricate its way around: verify writes `return` onto
 // `proposal/build-slice-<n>`, `build --revise`'s own pre-check reads that return and (via
 // `recordReturnOnMain`) renames the branch to `returned/build-slice-<n>` and copies the
