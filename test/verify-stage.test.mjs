@@ -117,6 +117,25 @@ function mockSuite(t, rows) {
   t.after(() => { delete process.env.SDLC_TEST_RUNNER; delete process.env.SDLC_MOCK_DIR; });
 }
 
+// The new target's adapter, committed on main, and its tree: the adapter a row verify
+// records was found under.
+function commitAdapter(d) {
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  mkdirSync(join(d, "tests", "adapters", "new"), { recursive: true });
+  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = {};\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "adapter"]);
+  return execFileSync("git", ["rev-parse", "main:tests/adapters/new"], { cwd: d, encoding: "utf8" }).trim();
+}
+
+// `bind-adapter --target new` already sent for `id` as often as policy.loops.rebind allows
+// (two by default), under the adapter on main now.
+function spendBinding(d, id, adapter) {
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const sent = (n) => `  - { id: ${id}, target: new, why: "unbound: a.b — gone", found: unbound, adapter: ${adapter}, by: "runner:verify", at: "2026-01-0${n}T00:00:00.000Z", closed: { outcome: met, why: "sent", at: "2026-01-0${n}T00:00:00.000Z" } }\n`;
+  writeFileSync(join(d, "tests", "adapters", "rebind.yaml"), `rebind:\n${sent(1)}${sent(2)}`);
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "spent"]);
+}
+
 const ctxFor = (d) => ({ slice: 1, config: parseYaml(readFileSync(join(d, ".sdlc", "config.yaml"), "utf8")), sandbox: { up: async () => ({ ok: true, baseUrl: "http://localhost:8080" }), down: () => ({ ok: true }) } });
 const onBranch = (d, path) => execFileSync("git", ["show", `proposal/build-slice-1:${path}`], { cwd: d, encoding: "utf8" });
 
@@ -816,15 +835,13 @@ test("sdlc run verify still reports ok and exits 0 on a slice that passes", asyn
 });
 
 // An unbound verdict has two causes that call for opposite remedies, and the five-step
-// bind sequence is the right answer to only one of them. Printed over the other, it asks
-// for half an hour of sandbox, adapter and ruling that drives the same application again
-// and writes the same reasons back.
-test("an unbound slice whose adapter is already in place is not told to bind again", async (t) => {
+// bind sequence is the right answer to only one of them. Once the binding has been sent
+// for a row as often as policy.loops.rebind allows, printing it again asks for half an hour
+// of sandbox, adapter and ruling that drives the same application again and writes the
+// same reasons back.
+test("an unbound slice whose binding has been sent its limit is not told to bind again", async (t) => {
   const d = buildProject(t);
-  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
-  mkdirSync(join(d, "tests", "adapters", "new"), { recursive: true });
-  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = {};\n");
-  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "adapter"]);
+  spendBinding(d, "R-4.2", commitAdapter(d));
   mockSuite(t, [
     row("R-4.1", "pass"),
     row("R-4.2", "unbound", "Error: unbound: opportunities.withdraw — no control on the page withdraws a published opportunity\n    at Object.withdraw"),
@@ -848,10 +865,7 @@ test("an unbound slice whose adapter is already in place is not told to bind aga
 // rebuilding nor re-scoping the slice is the remedy.
 test("an unbound slice is offered the exit for a test that reaches past its criterion", async (t) => {
   const d = buildProject(t);
-  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
-  mkdirSync(join(d, "tests", "adapters", "new"), { recursive: true });
-  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = {};\n");
-  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "adapter"]);
+  spendBinding(d, "R-4.2", commitAdapter(d));
   mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: a.b — no control on the page does this")]);
   const ctx = ctxFor(d);
   verify.preChecks(d, ctx);
@@ -866,10 +880,7 @@ test("an unbound slice is offered the exit for a test that reaches past its crit
 // builds, and the plan is what says so.
 test("an unbound slice is offered the exit that reaches the plan", async (t) => {
   const d = buildProject(t);
-  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
-  mkdirSync(join(d, "tests", "adapters", "new"), { recursive: true });
-  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = {};\n");
-  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "adapter"]);
+  spendBinding(d, "R-4.2", commitAdapter(d));
   mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: a.b — no control on the page does this")]);
   const ctx = ctxFor(d);
   verify.preChecks(d, ctx);
@@ -917,4 +928,185 @@ test("neither the result file nor the gate file verify writes names this machine
     assert.ok(!text.includes(d), `${path} still carries the project's absolute path`);
   }
   assert.match(onBranch(d, "tests/results/new/slice-1.json"), /~\/tools\/node_modules\/playwright/);
+});
+
+// ── what the builder is not answerable for ──────────────────────────────────────────────
+
+const MAIL_UNSET = "Error: SDLC_MAIL_API is not set; a test that uses the `mail` fixture needs a mail catcher target";
+
+function withMailApi(d, url = "http://localhost:8025") {
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const p = join(d, ".sdlc", "config.yaml");
+  writeFileSync(p, readFileSync(p, "utf8").replace("identity: sandbox-idp }", `identity: sandbox-idp, mail_api: "${url}" }`));
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "mail"]);
+}
+
+// The suite is handed the target's mail catcher the way calibrate hands it the oracle's: every
+// test that reads a message the application sent reads it there.
+test("verify hands the suite the new target's mail catcher", async (t) => {
+  const d = buildProject(t);
+  withMailApi(d);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  const ctx = ctxFor(d);
+  let seen;
+  ctx.runSuite = (opts) => { seen = opts; return runSuite(opts); };
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  assert.equal(seen.mailApi, "http://localhost:8025");
+});
+
+// A target that declares no mail catcher cannot run a test that reads one. The harness says
+// so in its own words, and the builder can do nothing about a line in .sdlc/config.yaml.
+test("a test stopped for want of a mail catcher is an environment gap, not a return", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "fail", MAIL_UNSET)]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.ok(!existsSync(join(d, ".sdlc", "gates", "build-slice-1.yaml")));
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"), "nothing is recorded against the build");
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "environment");
+  assert.deepEqual(result.environment.map((e) => e.id), ["R-4.2"]);
+  assert.match(result.environment[0].reason, /mail catcher/);
+  assert.match(r.notPassed, /^not verified — 1 of 2 criteria could not be tested in this environment$/);
+  assert.match(r.text, /targets\.new\.mail_api/);
+  assert.doesNotMatch(r.text, /build --slice 1 --revise/);
+  assert.equal(buildVerified(d, "build-slice-1").ok, false, "an environment gap is not a pass either");
+});
+
+test("a real failure beside an environment gap is returned alone", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "fail", "Error: expected heading \"Sign in\""), row("R-4.2", "fail", MAIL_UNSET)]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.equal(gate.verdict, "return");
+  assert.deepEqual(gate.conditions, ["R-4.1: Error: expected heading \"Sign in\""]);
+  assert.match(r.notPassed, /^returned — 1 of 2 criteria fail against the application$/);
+  assert.match(r.text, /R-4\.2/, "the gap is still named, apart from the failure");
+});
+
+// A slice returned three times because its target had no mail catcher has not failed three
+// builds; those returns say nothing about the application and do not bring it closer to a
+// person.
+test("an earlier return whose every condition was an environment gap does not count toward escalation", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  for (const k of [2, 3]) {
+    run(["checkout", "-q", "-b", `proposal/build-slice-1-${k}`, "proposal/build-slice-1"]);
+    run(["checkout", "-q", "main"]);
+  }
+  for (const name of ["build-slice-1", "build-slice-1-2"]) {
+    run(["checkout", "-q", `proposal/${name}`]);
+    mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+    writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), `gate: G3\nverdict: return\nby: runner:verify\nheld_by: runner\nconditions:\n  - "R-4.2: ${MAIL_UNSET.replace(/`/g, "`")}"\n`);
+    run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
+    run(["checkout", "-q", "main"]);
+  }
+  mockSuite(t, [row("R-4.1", "fail", "Error: still wrong"), row("R-4.2", "pass")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(execFileSync("git", ["show", "proposal/build-slice-1-3:.sdlc/gates/build-slice-1-3.yaml"], { cwd: d, encoding: "utf8" }));
+  assert.equal(gate.verdict, "return", "the first failure the builder is answerable for is the first strike");
+});
+
+// A test written for a configuration the target reads at start-up runs only against an
+// instance started in it (0071), and verify has no way to start the sandbox in one.
+test("a test written for a configuration is left out of the run and reported as an environment gap", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  mkdirSync(join(d, "spec", "contract"), { recursive: true });
+  writeFileSync(join(d, "spec", "contract", "observables.yaml"), "configurations:\n  quiet:\n    select: QUIET=1\n    tag: \"@quiet\"\n");
+  writeFileSync(join(d, "tests", "acceptance", "users", "R-4.2.spec.ts"), "test(\"x\", { tag: \"@quiet\" }, async () => {});\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "configuration"]);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "fail", "Error: a message was sent")]);
+  const ctx = ctxFor(d);
+  let seen;
+  ctx.runSuite = (opts) => { seen = opts; return runSuite(opts); };
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.deepEqual(seen.grepInvert, ["@quiet"]);
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"), "nothing is recorded against the build");
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "environment");
+  assert.deepEqual(result.environment.map((e) => e.id), ["R-4.2"]);
+  assert.match(result.environment[0].reason, /configuration quiet/);
+  assert.match(r.text, /cannot start the new target in a configuration/);
+});
+
+// ── an unbound row is the adapter's ──────────────────────────────────────────────────────
+
+// An adapter bound before the application it drives existed names whatever it found then. A
+// row it reports unbound is the binding's gap, and a binding run against the application on
+// this branch is what can close it: the row is owed to bind-adapter --target new, filed on
+// main where `next` and the binding run read owed work, and the slice is verified again once
+// the binding is ruled.
+test("an unbound row on the new target is owed to bind-adapter, filed on main, and the build is not returned", async (t) => {
+  const d = buildProject(t);
+  const adapter = commitAdapter(d);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: signIn.applicant — the sign-in screen offers no \"Applicant\" link")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.equal(execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: d, encoding: "utf8" }).trim(), "main");
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"), "nothing is recorded against the build");
+  const owed = parseYaml(readFileSync(join(d, "tests", "adapters", "rebind.yaml"), "utf8")).rebind;
+  assert.equal(owed.length, 1);
+  assert.deepEqual([owed[0].id, owed[0].target, owed[0].found, owed[0].adapter, owed[0].slice, owed[0].by],
+    ["R-4.2", "new", "unbound", adapter, 1, "runner:verify"]);
+  assert.match(owed[0].why, /signIn\.applicant/);
+  assert.match(r.notPassed, /^unbound — 1 of 2 criteria could not be exercised at all; owed to bind-adapter --target new$/);
+  assert.match(r.text, /sdlc sandbox up --target new --from proposal\/build-slice-1/);
+  assert.match(r.text, /sdlc run bind-adapter --target new/);
+  assert.match(r.text, /sdlc run verify --slice 1/);
+  assert.doesNotMatch(r.text, /build --slice 1 --revise/);
+});
+
+test("unbound rows beside a real failure are still owed to bind-adapter, and are not conditions of the return", async (t) => {
+  const d = buildProject(t);
+  commitAdapter(d);
+  mockSuite(t, [row("R-4.1", "fail", "Error: expected heading"), row("R-4.2", "unbound", "Error: unbound: a.b — gone")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.deepEqual(gate.conditions, ["R-4.1: Error: expected heading"]);
+  assert.deepEqual(parseYaml(readFileSync(join(d, "tests", "adapters", "rebind.yaml"), "utf8")).rebind.map((e) => e.id), ["R-4.2"]);
+  assert.match(r.text, /owed to bind-adapter --target new.*R-4\.2: a\.b — gone/s);
+});
+
+test("the next verify of the slice closes what the binding answered", async (t) => {
+  const d = buildProject(t);
+  commitAdapter(d);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: a.b — gone")]);
+  let ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  // The owed entry reaches main with the run, and a binding run is ruled onto main.
+  writeFileSync(join(d, "tests", "adapters", "new", "index.ts"), "export const surface = { bound: true };\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "rebound"]);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "pass")]);
+  ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.text, /verified/);
+  const [e] = parseYaml(readFileSync(join(d, "tests", "adapters", "rebind.yaml"), "utf8")).rebind;
+  assert.equal(e.closed.outcome, "met");
+});
+
+// A build ruler reads the verdict's meaning off the evidence section, and an environment gap
+// has to read as what it is: nothing established, and nothing the build did.
+test("the ruler is told what an environment verdict means and which criteria it covers", async () => {
+  const { formatVerifyEvidence } = await import("../src/runner/verify-evidence.mjs");
+  const text = formatVerifyEvidence({ slice: 1, result: {
+    verdict: "environment", proposal: "build-slice-1", app_tree: "abcdef0",
+    environment: [{ id: "R-4.2", reason: "its test reads a mail catcher, and targets.new.mail_api names none for this target to hand it" }],
+    rows: [row("R-4.1", "pass"), row("R-4.2", "fail", MAIL_UNSET)],
+  } });
+  assert.match(text, /Verdict: \*\*environment\*\* — .*could not be tested in this environment/);
+  assert.match(text, /R-4\.2 — not tested in this environment: its test reads a mail catcher/);
 });

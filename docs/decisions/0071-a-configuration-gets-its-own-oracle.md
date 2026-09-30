@@ -67,9 +67,9 @@ runner is shared, so leaving tagged tests out of that run would be one argument.
 starts the sandbox in a configuration. `select` names a variable the oracle's override reads, and
 the builder's compose file has no contract to read the same one. Routing verify needs that
 contract first: the stack profile or the build skill telling the builder to read each
-configuration's variable, and the sandbox starting a second project with it. Until then, a slice
-claiming a configuration's criterion runs that test against the default sandbox and fails there,
-and the failure is the verify ruler's to read.
+configuration's variable, and the sandbox starting a second project with it. Until then, verify leaves
+those tests out of its run and reports their criteria as not tested in this environment, rather
+than as failures of the build (`docs/decisions/0075-what-a-verify-charges-to-the-build.md`).
 
 ## Alternatives
 

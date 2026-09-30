@@ -81,6 +81,22 @@ export const ENVIRONMENT_FAULT_RE = /could not reset the target|net::ERR_(?:CONN
 
 const FAILED_STATUSES = new Set(["failed", "timedOut", "interrupted"]);
 
+// The harness's own words for a test that reads a mail catcher run against a target that
+// declares none (`templates/project/tests/fixtures/mail.ts`). The test stopped before it
+// asked the application anything, and what is missing is a line in `.sdlc/config.yaml`
+// (`targets.<t>.mail_api`), which no build writes.
+export const MAIL_CATCHER_UNSET_RE = /SDLC_MAIL_API is not set/;
+
+// Why a failed row is the environment's rather than the application's, or `null`: every one of
+// its failing tests stopped at the mail fixture for want of a mail catcher. A row with any
+// other failure is a failure, whatever else it carries (`docs/decisions/0075`).
+export function environmentGap(row, target = "new") {
+  if (row?.result !== "fail") return null;
+  const failing = (row.tests ?? []).filter((t) => FAILED_STATUSES.has(t?.status));
+  if (!failing.length || !failing.every((t) => MAIL_CATCHER_UNSET_RE.test(String(t?.error ?? "")))) return null;
+  return `its test reads a mail catcher, and targets.${target}.mail_api names none for this target to hand it`;
+}
+
 // The first of a row's failing tests whose error is the machine's, or `null`.
 export function environmentFault(row) {
   if (row?.result !== "fail") return null;

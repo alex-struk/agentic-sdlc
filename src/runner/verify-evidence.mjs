@@ -61,6 +61,7 @@ const VERDICT_MEANING = {
   "pass-unasserted": "nothing the slice claims failed, and the criteria marked below as never asserted were not put to the application at all — nothing is established about those, in either direction.",
   fail: "a criterion the slice claims was exercised and not met.",
   unbound: "the adapter could not bind something a test calls, so nothing was established about the criteria below marked `unbound` — in either direction.",
+  environment: "a criterion the slice claims could not be tested in this environment — its test reads a mail catcher the target declares none of, or is written for a configuration verify cannot start the target in. Nothing was established about those criteria in either direction, and none of it is the build's.",
 };
 
 // The section a build ruling is given, bounded by construction: a line per criterion that
@@ -83,8 +84,12 @@ export function formatVerifyEvidence({ result, slice, branchAppTree }) {
   // criterion nobody ever asserted are different questions for the ruler, and a single
   // "did not pass" count answers neither of them.
   const unasserted = rows.filter(isNotAsserted);
-  const notPassed = rows.filter((r) => r.result !== "pass" && !isNotAsserted(r));
-  const passed = rows.filter((r) => r.result === "pass");
+  // A criterion the environment could not test is named as that, with the reason verify
+  // recorded, whatever its row's own result says: the row is what the harness reported, and
+  // the gap is why that says nothing about the application.
+  const gaps = new Map((Array.isArray(result.environment) ? result.environment : []).map((g) => [g.id, g.reason]));
+  const notPassed = rows.filter((r) => r.result !== "pass" && !isNotAsserted(r) && !gaps.has(r.id));
+  const passed = rows.filter((r) => r.result === "pass" && !gaps.has(r.id));
   const lines = [...head,
     `Verdict: **${result.verdict}** — ${VERDICT_MEANING[result.verdict] ?? "see the rows below."}`,
     `Recorded by \`verify\` for proposal ${result.proposal}, against application tree ${String(result.app_tree ?? "").slice(0, 7)}, at ${result.at ?? "an unrecorded time"}.`,
@@ -93,7 +98,7 @@ export function formatVerifyEvidence({ result, slice, branchAppTree }) {
     lines.push(`The application on this branch (tree ${branchAppTree.slice(0, 7)}) has changed since this result was recorded, so it is evidence about code that is no longer here.`);
   }
   if (result.not_verified) lines.push(`No test ran: ${result.not_verified}`);
-  lines.push("", `${rows.length} criteria claimed by the slice: ${passed.length} pass, ${notPassed.length} did not pass, ${unasserted.length} never asserted against the application.`, "");
+  lines.push("", `${rows.length} criteria claimed by the slice: ${passed.length} pass, ${notPassed.length} did not pass, ${unasserted.length} never asserted against the application${gaps.size ? `, ${gaps.size} not tested in this environment` : ""}.`, "");
 
   for (const r of notPassed.slice(0, REASON_ROWS)) {
     const reason = rowReason(r);
@@ -102,6 +107,7 @@ export function formatVerifyEvidence({ result, slice, branchAppTree }) {
   if (notPassed.length > REASON_ROWS) {
     lines.push(`- and ${notPassed.length - REASON_ROWS} further criteria that did not pass: ${notPassed.slice(REASON_ROWS).map((r) => r.id).join(", ")}. Read them in \`${rel}\` on the branch.`);
   }
+  for (const [id, reason] of gaps) lines.push(`- ${id} — not tested in this environment: ${cut(reason)}`);
   // Named whatever the verdict is: a slice can fail on one criterion and have another
   // nobody asserted, and the second is invisible in a list of failures.
   for (const r of unasserted.slice(0, REASON_ROWS)) {

@@ -38,6 +38,14 @@ The run also reads the open entries for its target on `tests/adapters/rebind.yam
   `policy.loops.rebind` allows is not handed at all: it waits on a ruler
   (`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`).
 
+  On the new target, which has no calibration, the entries come from a verify of a build slice:
+  each carries the slice (`slice: <n>`) and `by: runner:verify`, and quotes the reason the adapter
+  gave against the application that slice's open build proposal carries. That application is on
+  the proposal's branch alone until it is ruled, so the run binds against it started from there —
+  `sdlc sandbox up --target new --from proposal/<name>` first, which `sdlc next` names beside the
+  offer — and the next `verify --slice <n>` is what closes each row the binding reached
+  (`docs/decisions/0075-what-a-verify-charges-to-the-build.md`).
+
 `calibrate` closes both kinds once it has run against an adapter that changed since.
 
 The run also compares the target's `tests/adapters/<t>/bindings.yaml`, where one exists, with

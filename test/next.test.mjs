@@ -893,3 +893,57 @@ test("policy.next.order names each kind of work once", async () => {
   assert.notDeepEqual(parseConfig(config({ policy: ["next: { order: [owed, sequence] }"] })).errors, []);
   assert.notDeepEqual(parseConfig(config({ policy: ["next: { order: [owed, sequence, later] }"] })).errors, []);
 });
+
+// ── a build verify found what the builder is not answerable for ──────────────────────────
+
+const NEW_TARGET = ["targets:", "  new: { base_url: \"http://localhost:8080\", identity: sandbox-idp }"];
+
+// A build proposal for slice 1 whose verify result, on its own branch, is `result`.
+function verifiedBuild(d, result) {
+  approved(d, ["intent-thing"], "G0");
+  approved(d, ["plan"], "G2");
+  commit(d, { "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1, R-1.2\n", "app/index.ts": "export {};\n", "tests/adapters/new/index.ts": "export default 1;\n" });
+  git(d, ["checkout", "-q", "-b", "proposal/build-slice-1"]);
+  commit(d, { ".sdlc/proposals/build-slice-1.md": "---\ngate: G3\nquestion: \"q\"\nrecommendation: \"r\"\n---\n", "app/index.ts": "export const a = 1;\n" }, "propose(G3): build-slice-1");
+  const appTree = git(d, ["rev-parse", "HEAD:app"]);
+  commit(d, { "tests/results/new/slice-1.json": JSON.stringify({ slice: 1, proposal: "build-slice-1", app_tree: appTree, rows: [], ...result }) }, "verify(slice 1)");
+  git(d, ["checkout", "-q", "main"]);
+  return git(d, ["rev-parse", "main:tests/adapters/new"]);
+}
+
+test("a build whose verify found only unbound rows owed to the binding is not ruled; the binding is offered", (t) => {
+  const d = project(t, { profile: "feature", extra: NEW_TARGET });
+  const adapter = verifiedBuild(d, { verdict: "unbound", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [{ id: "R-1.2", target: "new", why: "unbound: signIn.applicant — no link", found: "unbound", adapter, slice: 1, by: "runner:verify", at: "2026-01-01T00:00:00.000Z" }] }) }, "run(verify)");
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run bind-adapter --target new");
+  assert.ok(!r.ready.some((c) => c.command.startsWith("sdlc rule build-slice-1")), "the build is not ruled for the adapter's gap");
+  assert.match(r.next.why, /sandbox up --target new --from proposal\/build-slice-1/, "the binding needs the application the proposal carries");
+});
+
+test("once a binding is ruled onto main, the slice it was owed for is verified again", (t) => {
+  const d = project(t, { profile: "feature", extra: NEW_TARGET });
+  const adapter = verifiedBuild(d, { verdict: "unbound", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [{ id: "R-1.2", target: "new", why: "unbound: signIn.applicant — no link", found: "unbound", adapter, slice: 1, by: "runner:verify", at: "2026-01-01T00:00:00.000Z" }] }) }, "run(verify)");
+  commit(d, { "tests/adapters/new/index.ts": "export default 2;\n" }, "merge bind-adapter-new");
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run verify --slice 1");
+  assert.match(r.next.why, /^1 unbound row to check again now that its adapter has changed for slice 1 owed by verify$/);
+  assert.ok(!r.ready.some((c) => c.stage === "calibrate"), "the new target's rows are verify's, not a calibration's");
+  assert.ok(!r.ready.some((c) => c.command.startsWith("sdlc rule build-slice-1")));
+});
+
+test("a build whose verify could not test a criterion in this environment waits on a person, then is verified again", (t) => {
+  const d = project(t, { profile: "feature", extra: NEW_TARGET });
+  verifiedBuild(d, { verdict: "environment", environment: [{ id: "R-1.1", reason: "its test reads a mail catcher, and targets.new.mail_api names none for this target to hand it" }] });
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.command.startsWith("sdlc rule build-slice-1")), "not ruled for a gap the builder cannot close");
+  const w = r.waiting.find((x) => x.name === "build-slice-1");
+  assert.equal(w.on, "lead", "G3's escalation target");
+  assert.match(w.why, /could not be tested in this environment: R-1\.1/);
+  assert.match(w.command, /targets\.new\.mail_api/);
+
+  commit(d, { ".sdlc/config.yaml": config({ profile: "feature", extra: ["targets:", "  new: { base_url: \"http://localhost:8080\", identity: sandbox-idp, mail_api: \"http://localhost:8025\" }"] }) }, "policy: mail catcher");
+  const again = whatNext(d);
+  assert.equal(again.next.command, "sdlc run verify --slice 1");
+});

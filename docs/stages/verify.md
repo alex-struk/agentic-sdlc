@@ -30,6 +30,14 @@ asks for happens at the gate it is returned to, not here.
 - `policy.loops.verify_returns`, the return limit, three when the key is absent.
 - The slice's own text and claimed criteria, from `plan/tasks.md`.
 - `tests/acceptance/<domain>/<id>.spec.ts` for each criterion the slice claims.
+- `targets.new.mail_api`, the address the new target's mail catcher answers its API on. It is
+  handed to the suite as `SDLC_MAIL_API`, the way `calibrate` hands on the oracle's. A target
+  that declares none gives the suite none.
+- `spec/contract/observables.yaml`'s `configurations:`, for the tags of tests written for a
+  configuration the target reads at start-up
+  (`docs/decisions/0071-a-configuration-gets-its-own-oracle.md`).
+- `tests/adapters/rebind.yaml` on `main`, and `policy.loops.rebind`, for the unbound rows a binding
+  run is owed for (`src/spec/unbound.mjs`).
 
 ## What `execute` does, in order
 
@@ -50,24 +58,34 @@ asks for happens at the gate it is returned to, not here.
    reseeded. A sandbox that will not start ends the run there. Which way it ends depends on the
    `cause` the result carries: `application` returns the build proposal, `environment` halts with
    nothing recorded — see "A sandbox that will not start" below.
-4. **Run the acceptance suite** for the slice's spec files against the running sandbox, then keep
-   only the rows for criteria the slice actually claims. A slice with no spec files at all runs
+4. **Run the acceptance suite** for the slice's spec files against the running sandbox, with the
+   target's mail catcher as `SDLC_MAIL_API` and every configuration's tag left out
+   (`--grep-invert`), then keep only the rows for criteria the slice actually claims. Nothing
+   starts the sandbox in a configuration, so a test written for one would run against the default
+   and fail there. A slice with no spec files at all runs
    nothing: an empty file list means "nothing to run", not "no filter", so a slice whose criteria
    are all not-testable — or whose tests have not been derived yet — never costs a full suite run.
 5. **Classify the result** (`verifyVerdict`): every claimed criterion is looked up by id.
    - `unbound` — every criterion whose adapter binding does not exist on `new` is set aside
      separately.
+   - An environment gap — a criterion this environment could not test — is set aside with its
+     reason. That is a criterion whose every failing test stopped at the mail fixture for want of
+     a mail catcher (`SDLC_MAIL_API is not set`), and a criterion whose test is written for a
+     configuration, left out of the run in step 4.
    - `not-testable` and `attested` — the two results that settle a criterion without the
      application being asked anything (`src/testrun/results.mjs`) — are set aside as never
      asserted, with the reason each carries.
    - Anything else that is not `pass` — a `fail`, a `stale` test, or a criterion missing from the
      run altogether — counts as failing.
-   - The verdict is `fail` if anything failed, `unbound` if nothing failed but something is
-     unbound, `pass-unasserted` if nothing failed and something was never asserted, and `pass`
-     only where every criterion the slice claims was put to the application and met.
+   - The verdict is `fail` if anything failed, `environment` if nothing failed but something
+     could not be tested here, `unbound` if nothing else stands but something is unbound,
+     `pass-unasserted` if nothing failed and something was never asserted, and `pass` only where
+     every criterion the slice claims was put to the application and met.
 6. **Write the result file**, `tests/results/new/slice-<n>.json` —
    `{ slice, proposal, app_tree, at, verdict, rows }`, plus `unasserted` — one
-   `{ id, result, reason }` per criterion nobody asserted — whenever there is one.
+   `{ id, result, reason }` per criterion nobody asserted — whenever there is one, `environment`
+   and `unbound` — one `{ id, reason }` per criterion of each — whenever there is one, and
+   `adapter`, the tree of `tests/adapters/new` the suite drove with.
    `app_tree` is the commit the branch's `app/`
    tree hashes to, which is what `buildVerified` compares against later, so a ruling cannot be given
    on the strength of verify evidence about a version of the application the proposal no longer
@@ -81,14 +99,38 @@ asks for happens at the gate it is returned to, not here.
    `escalate_to` set to whoever `policy.gates.G3.escalate_to` names, naming that the failures
    below may not even be the application's to fix. Only verify's own returns
    (`by: runner:verify`) count toward the limit, across every cause verify returns a build for;
-   a reviewer's return of the same proposal does not.
-8. **On `unbound`, report and stop.** Nothing is written to a gate file. What is printed depends
-   on whether `tests/adapters/new/index.ts` exists.
+   a reviewer's return of the same proposal does not, and neither does a return whose every
+   condition is an environment gap. The conditions are the failures alone: an environment gap or
+   an unbound row beside them is named in what is printed and never made a condition.
+8. **On `environment`, report and stop.** Nothing is written to a gate file and nothing counts
+   toward the return limit: nothing the builder can change would test these criteria. What is
+   printed names each criterion with its reason. A missing mail catcher is one line of
+   configuration — `targets.new.mail_api`, the address the application's own compose file
+   publishes its mail catcher's API on — after which the slice is verified again. A test written
+   for a configuration waits on G3's ruler, since verify cannot start the new target in one.
+9. **On `unbound`, report and stop.** Nothing is written to a gate file. What is printed depends
+   on whether `tests/adapters/new/index.ts` exists and, where it does, on whether a binding run is
+   still owed for the rows.
 
-   With an adapter in place, it ran and reported the surface these criteria need as absent, so
-   binding again would drive the same application and write the same reasons. Each adapter's own
-   reason is quoted — it is the only place in the pipeline that reason is written down — and three
-   exits are offered, and all three are rulings: return the build proposal at G3 with those reasons
+   With an adapter in place, every unbound row among the slice's criteria is settled on `main`,
+   once the tree is back there, against the rebind entries in `tests/adapters/rebind.yaml`, by
+   the same rules a calibration settles the oracle's (`src/spec/unbound.mjs`): a row is filed for
+   `bind-adapter --target new`, stamped `by: runner:verify` and with the slice, while the binding
+   has been sent for it fewer times than `policy.loops.rebind` allows; an entry for one of the
+   slice's criteria found under an adapter that has since changed lapses, and one whose row the
+   adapter now reaches is closed. Nothing about another slice's criteria is touched. The rows are
+   filed whatever the verdict, so an unbound row beside a failure is owed to the binding as well.
+
+   An adapter written before the slice built what its tests need — bound against the application
+   it replaces, or an earlier cut of this one — names what it found then, so a row it reports
+   unbound is the binding's gap and not the build's. Where the binding is owed, what is printed is
+   the adapter's reasons and the whole sequence binding against this proposal takes (below),
+   ending with the verify that closes each row the new binding reaches.
+
+   Where the binding has been sent as often as `policy.loops.rebind` allows, or the row needs a
+   persona the approved contract marks unavailable, binding again would drive the same application
+   and write the same reasons. Each adapter's own reason is quoted — it is the only place in the
+   pipeline that reason is written down — and three exits are offered, and all three are rulings: return the build proposal at G3 with those reasons
    as the conditions, so `build --slice <n> --revise` takes them on; return it with
    `addressed-to plan: <why>` among the conditions, if the surface belongs to a later slice, so
    `plan --revise` cuts what the slice claims again and the architect rules the result; or, where a
@@ -96,8 +138,8 @@ asks for happens at the gate it is returned to, not here.
    `test-overreaches <ID>: <why>` among the conditions (`docs/stages/rule.md`, "A test that reaches
    past its criterion" and "A condition whose work belongs to another stage").
 
-   With no adapter, what is printed is the whole sequence binding takes, with the proposal branch's
-   name filled in:
+   With no adapter, or with a binding owed, what is printed is the whole sequence binding takes,
+   with the proposal branch's name filled in:
 
    ```
    sdlc sandbox up --target new --from proposal/<name>
@@ -111,14 +153,15 @@ asks for happens at the gate it is returned to, not here.
    `bind-adapter` refuses a target that is not answering, so `bind-adapter` named on its own is a
    step that cannot run. The last line picks the ruled adapter up because of step 2 above
    (`docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md`).
-9. **On `pass`, report ready for G3.** Nothing else is written; the reviewer can now rule the build
+10. **On `pass`, report ready for G3.** Nothing else is written; the reviewer can now rule the build
    proposal. On `pass-unasserted` the same is true of the route, and what is printed says how many
    of the slice's claimed criteria were asserted and met, names the ones that were never asserted
    at all, and quotes the reason recorded for each. The sentence reserved for `pass` — every
    claimed criterion passes against the application — is printed only where that is true of every
    row.
-10. **Commit the result** — and the gate file, on a `fail` — onto the proposal branch, then tear the
-   sandbox down and check back out to the branch verify started from.
+11. **Commit the result** — and the gate file, on a `fail` — onto the proposal branch, then tear the
+   sandbox down and check back out to the branch verify started from. The rebind entries of step
+   9 are written there, on `main`, and committed with the run's own record.
 
 Teardown happens whatever the outcome, and it is teardown only: an exception on its way out of the
 stage is never swallowed. A verify run that throws part-way through fails the whole `sdlc run`
@@ -134,12 +177,14 @@ the proposal branch.
 - A merge commit on the proposal's branch, whenever `main` has moved since the branch was cut.
 - A run-record line, on every attempt — including one that failed part-way and one that left the
   branch dirty.
-- Nothing on the owed list. A row showing a missing test's test ran is evidence the G3 approval of
+- On `main`, `tests/adapters/rebind.yaml` entries for the slice's unbound rows, filed, lapsed or
+  closed as step 9 says.
+- Nothing else on the owed list. A row showing a missing test's test ran is evidence the G3 approval of
   the slice reads: that approval closes the item, citing the row (`docs/stages/rule.md`, "A test a
   criterion is owed"). A criterion recorded untestable is a `not-testable` row here as it always
   is, and while its missing test is open G3 does not approve the slice unless the ruling withdraws
   it (`policy.gates.G3.block_on_missing_tests`). An `attested` row closes nothing.
-- No gate of its own on `pass`, `pass-unasserted` or `unbound`: nothing is asked of a person until
+- No gate of its own on `pass`, `pass-unasserted`, `environment` or `unbound`: nothing is asked of a person until
   either the reviewer rules the proposal, or the escalation at the return limit reaches G3's
   `escalate_to`.
 
@@ -151,8 +196,10 @@ the proposal branch.
 | `pass-unasserted` | Ready for G3, saying which criteria were never asserted against the application and why. Whether the slice may be approved on that footing is the reviewer's, and the ruling prompt carries the same rows and reasons, unless the project's `policy.gates.G3.approve_unasserted` is false, in which case neither seat may approve it. | None. |
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
+| `environment` | Nothing the builder can change. A missing mail catcher: set `targets.new.mail_api`, then verify again. A configuration's test: G3's ruler decides. Not counted toward the return limit. | None. |
 | `unbound`, no adapter for `new` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |
-| `unbound`, adapter in place | A person's choice of three: return at G3 with the adapter's reasons as conditions and `build --revise`; return with `addressed-to plan: <why>` and `plan --revise`; or return with `test-overreaches <ID>: <why>` and `derive-tests --domain <d> --stale`. | None. |
+| `unbound`, adapter in place, binding owed | The rows are filed for `bind-adapter --target new` on `main`, and the same binding sequence is printed. The verify after it closes what the binding reached. | None. |
+| `unbound`, adapter in place, binding sent its limit | A person's choice of three: return at G3 with the adapter's reasons as conditions and `build --revise`; return with `addressed-to plan: <why>` and `plan --revise`; or return with `test-overreaches <ID>: <why>` and `derive-tests --domain <d> --stale`. | None. |
 | the sandbox did not start, `cause: application` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
 | the sandbox did not start, `cause: application` (3rd return running) | Escalated — the compose file, the stack profile or the machine can each be the cause, and a fourth build would not find out which. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
 | the sandbox did not start, `cause: environment` | Nothing ran. The run fails; fix the machine and run verify again. | None. |
@@ -198,6 +245,18 @@ the attempts the slice has before a person is asked.
 A sandbox return counts toward the return limit alongside a criteria return, so the one that
 reaches it escalates. An environment halt writes no gate file and cannot count.
 `docs/decisions/0017-a-sandbox-that-is-not-up.md` has the reasoning.
+
+## What `next` does with it
+
+`sdlc next` reads the result off the proposal branch (`src/runner/next.mjs`). A build whose verdict
+is `unbound`, while a rebind entry filed by its slice's verify is open, is not offered for ruling: the
+binding is offered instead, as `sdlc run bind-adapter --target new`, with the `sandbox up --from`
+step it needs named beside it. Once a binding is ruled onto `main`, the adapter has changed under
+the entry and `sdlc run verify --slice <n>` is offered, not a calibration. A build whose verdict is
+`environment` waits on G3's `escalate_to`, naming the criteria; where every gap was the mail catcher
+and `targets.new.mail_api` is now set on `main`, verify is offered again. Past the rebind limit an
+`unbound` build is ruled as any build that did not pass
+(`docs/decisions/0075-what-a-verify-charges-to-the-build.md`).
 
 ## Failure modes
 

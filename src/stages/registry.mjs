@@ -1996,13 +1996,14 @@ function bindAdapterCalibrationFindings(ctx) {
   ].filter(Boolean).join("\n\n") || null;
 }
 
-// The criteria a calibration could not test because this adapter reported what their tests
-// needed as unbound, each with the adapter's own reason. Nobody has judged these: the reason is
-// the adapter's, and the run is asked to look again rather than told the control exists.
+// The criteria a calibration, or a verify of a build slice, could not test because this adapter
+// reported what their tests needed as unbound, each with the adapter's own reason. Nobody has
+// judged these: the reason is the adapter's, and the run is asked to look again rather than
+// told the control exists.
 function bindAdapterUnboundFindings(entries, lines) {
   if (!entries.length) return null;
   return [
-    `A calibration run could not test these criteria, because this adapter reported unbound what their tests needed. Each line quotes the adapter's own reason:`,
+    `A calibration or a verify run could not test these criteria, because this adapter reported unbound what their tests needed. Each line quotes the adapter's own reason:`,
     lines(entries),
     `Look for each one again on the running application — under a different label, behind a step or a sign-in, on a page reached another way, as another persona — and bind it where the application offers it. Where it really does not, leave it unbound and say in the reason what you did to look.`,
   ].join("\n\n");

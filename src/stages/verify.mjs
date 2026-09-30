@@ -9,7 +9,7 @@
 // limit (`policy.loops.verify_returns`, three by default) escalates to G3's escalation
 // target instead: a slice that fails that many builds running is usually failing for a
 // reason another build will not fix (spec §7.1).
-import { join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
@@ -22,32 +22,108 @@ import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./slices.mjs";
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
 import { ADDRESSED_CONDITION_FORM, OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
-import { isNotAsserted, notAssertedEntries } from "../testrun/results.mjs";
-import { verifyReturnLimit } from "../config/policy.mjs";
+import { isNotAsserted, notAssertedEntries, environmentGap, MAIL_CATCHER_UNSET_RE } from "../testrun/results.mjs";
+import { verifyReturnLimit, owedLoopLimit } from "../config/policy.mjs";
+import { readConfigurations } from "../oracle/configurations.mjs";
+import { taggedSpecFiles } from "../testrun/tags.mjs";
+import { adapterAt, syncUnbound, unavailableOn, personaUnavailable } from "../spec/unbound.mjs";
+import { isOpen, read as readOwed } from "../spec/owed.mjs";
 
-// Four outcomes, because a slice's claims come apart four ways and a reader has to be able
-// to tell them apart. `fail` and `unbound` are what they were. `pass` is reserved for the
-// slice whose every claimed criterion was put to the running application and met — the one
-// outcome the trailer's universal is true of. `pass-unasserted` is the slice where nothing
-// failed and something was never asserted against the application at all: a `not-testable`
-// criterion the contract surface offers no way to exercise, or an `attested` one somebody
-// vouched for in place of a test. That slice reaches its gate exactly as it did before,
-// and it says what it is on the way (`docs/decisions/0033-a-criterion-nobody-asserted.md`).
-export function verifyVerdict(rows, criteria) {
+// Five outcomes, because a slice's claims come apart five ways and a reader has to be able
+// to tell them apart. `fail` is a criterion exercised against the application and not met,
+// and it is the only one the builder is answerable for. `environment` is a criterion this
+// environment could not test at all: its test reads a mail catcher the target does not
+// declare, or it is written for a configuration verify cannot start the target in
+// (`configured`, criterion to reason). `unbound` is a criterion the adapter could not drive.
+// `pass` is reserved for the slice whose every claimed criterion was put to the running
+// application and met — the one outcome the trailer's universal is true of.
+// `pass-unasserted` is the slice where nothing failed and something was never asserted
+// against the application at all: a `not-testable` criterion the contract surface offers no
+// way to exercise, or an `attested` one somebody vouched for in place of a test. That slice
+// reaches its gate exactly as it did before, and it says what it is on the way
+// (`docs/decisions/0033-a-criterion-nobody-asserted.md`, `0075`).
+export function verifyVerdict(rows, criteria, { configured = new Map() } = {}) {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const failing = [];
   const unbound = [];
+  const environment = [];
   for (const id of criteria) {
     const r = byId.get(id);
-    if (!r) failing.push({ id, result: "missing", tests: [] });
-    else if (r.result === "unbound") unbound.push(id);
-    else if (!isNotAsserted(r) && r.result !== "pass") failing.push(r);
+    const configuration = configured.get(id);
+    if (!r) {
+      if (configuration) environment.push({ id, reason: configuration });
+      else failing.push({ id, result: "missing", tests: [] });
+    } else if (r.result === "unbound") unbound.push(id);
+    else if (isNotAsserted(r)) continue;
+    else if (r.result === "pass") {
+      // The tests in the file that were not written for the configuration passed; the ones
+      // that were never ran.
+      if (configuration) environment.push({ id, reason: configuration });
+    } else {
+      const gap = environmentGap(r);
+      if (gap) environment.push({ id, reason: gap });
+      else failing.push(r);
+    }
   }
   const unasserted = notAssertedEntries(rows, criteria);
   const verdict = failing.length ? "fail"
-    : unbound.length ? "unbound"
-      : unasserted.length ? "pass-unasserted" : "pass";
-  return { verdict, failing, unbound, unasserted };
+    : environment.length ? "environment"
+      : unbound.length ? "unbound"
+        : unasserted.length ? "pass-unasserted" : "pass";
+  return { verdict, failing, unbound, environment, unasserted };
+}
+
+// The criteria among `files` whose tests are written for one of the contract's
+// configurations, each with why verify leaves them out, and the tags that leave them out.
+// A configuration's tests run only against an instance started in it, and nothing starts the
+// new target's sandbox in one (`docs/decisions/0071-a-configuration-gets-its-own-oracle.md`),
+// so the ordinary run leaves them out and the criteria are reported as untested here rather
+// than as failures of the build.
+export function configuredCriteria(projectDir, files) {
+  const { configurations } = readConfigurations(projectDir);
+  const wanted = new Set(files);
+  const configured = new Map();
+  for (const c of configurations) {
+    for (const f of taggedSpecFiles(projectDir, c.tag)) {
+      if (!wanted.has(f)) continue;
+      configured.set(basename(f).replace(/\.spec\.ts$/, ""),
+        `its test is written for configuration ${c.name} (${c.tag}), which the target reads at start-up, and verify cannot start the new target in a configuration`);
+    }
+  }
+  return { configured, tags: configurations.map((c) => c.tag) };
+}
+
+// What a slice is told about the criteria this environment could not test. None of it is
+// the builder's, so none of it is a condition of a return, and the remedy is named by
+// cause: a mail catcher is one line of configuration, and a configuration is a ruler's call.
+function environmentLines(slice, environment) {
+  if (!environment.length) return [];
+  const mail = environment.some((e) => /mail catcher/.test(e.reason));
+  const configuration = environment.some((e) => /configuration/.test(e.reason));
+  return [
+    `${environment.length} of the criteria this slice claims could not be tested in this environment, which is not the build's to fix; nothing about ${environment.length === 1 ? "it" : "them"} is recorded against the build or counted toward the verify return limit:`,
+    ...environment.map((e) => `  ${e.id}: ${e.reason}`),
+    ...(mail ? [`A test that reads a mail catcher needs targets.new.mail_api in .sdlc/config.yaml: the address the application's own compose file publishes its mail catcher's API on. Set it, then sdlc run verify --slice ${slice}.`] : []),
+    ...(configuration ? ["A test written for a configuration runs only against an instance started in it, and verify cannot start the new target in a configuration (docs/decisions/0071-a-configuration-gets-its-own-oracle.md). Whether the slice can be ruled without it is the G3 ruler's to decide."] : []),
+  ];
+}
+
+// What a slice is told about the unbound rows a binding run is owed for. The adapter may have
+// been bound before this slice built what the tests need — against the application it
+// replaces, or an earlier cut of this one — so a binding run against the application this
+// proposal carries is what can close them, and the verify after it says whether it did.
+function owedBindingLines(slice, branch, owed, claimed) {
+  return [
+    `${owed.length} ${owed.length === 1 ? "criterion" : "criteria"} could not be exercised because the adapter reports what ${owed.length === 1 ? "its test needs" : "their tests need"} as unbound. That is the adapter's gap, not the build's, so ${owed.length === 1 ? "it is" : "each is"} owed to bind-adapter --target new (tests/adapters/rebind.yaml) and nothing about ${owed.length === 1 ? "it" : "them"} is recorded against the build:`,
+    ...unboundReasons(claimed, owed).map(({ id, reason }) => `  ${id}: ${reason}`),
+    `The application the binding needs is on ${branch} and nowhere else until that proposal is ruled, so bind against it from there. From main, with a clean tree:`,
+    `  1. sdlc sandbox up --target new --from ${branch}`,
+    "  2. sdlc run bind-adapter --target new",
+    "  3. rule the bind-adapter proposal at G3, which puts the adapter on main",
+    `  4. sdlc sandbox down --target new --from ${branch}`,
+    `  5. sdlc run verify --slice ${slice}`,
+    "Step 5 closes each row the new binding reaches. A row still unbound is sent to the binding again until policy.loops.rebind is spent, and then comes to this proposal's ruler.",
+  ];
 }
 
 const plural = (n, one, many) => (n === 1 ? one : many);
@@ -158,12 +234,22 @@ function verifyReturnGate(projectDir, name) {
 // How many times this slice's build has already been returned by verify itself —
 // `by: "runner:verify"` is what tells its own return apart from a reviewer's, whose
 // return must never count toward this escalation threshold.
+//
+// A return whose every condition is an environment gap — a test stopped for want of a mail
+// catcher — is not counted either. It says nothing about the application, and a slice sent
+// back for it has not failed a build (`docs/decisions/0075`).
 function returnsByVerify(projectDir, slice) {
   let count = 0;
   for (const name of buildProposalFamily(projectDir, slice)) {
-    if (verifyReturnGate(projectDir, name)?.by === "runner:verify") count += 1;
+    const gate = verifyReturnGate(projectDir, name);
+    if (gate?.by === "runner:verify" && !environmentOnly(gate)) count += 1;
   }
   return count;
+}
+
+function environmentOnly(gate) {
+  const conditions = Array.isArray(gate?.conditions) ? gate.conditions : [];
+  return conditions.length > 0 && conditions.every((c) => MAIL_CATCHER_UNSET_RE.test(String(c)));
 }
 
 // What this run established about the application on this branch, written where
@@ -172,7 +258,7 @@ function returnsByVerify(projectDir, slice) {
 // the routes where no test ran: currency is judged by `app_tree`, so a run that left this
 // file alone would leave an earlier `pass` on the same tree standing and the proposal
 // rulable as approved. `not_verified` says, for a reader, why there are no rows.
-function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], notVerified = "" }) {
+function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "" }) {
   const resultRel = `tests/results/new/slice-${slice}.json`;
   mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
   // Each row carries the acceptance test's own error text, which is a browser's or a
@@ -186,6 +272,13 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted 
     // only inside the rows: a reader deciding what the verdict means should not have to
     // reconstruct it by sorting the rows for itself.
     ...(unasserted.length ? { unasserted } : {}),
+    // The criteria this environment could not test, and the ones the adapter could not
+    // drive, each apart from the failures: neither is the builder's, and `next` routes each
+    // by its own list (`docs/decisions/0075`). `adapter` is the tree of tests/adapters/new
+    // the suite ran with.
+    ...(environment.length ? { environment } : {}),
+    ...(unbound.length ? { unbound } : {}),
+    ...(adapter ? { adapter } : {}),
     ...(notVerified ? { not_verified: notVerified } : {}),
     rows,
   }, null, 2)}\n`, projectDir));
@@ -319,6 +412,11 @@ export const verify = {
     // then say what the run actually left behind. Rethrown either way: nothing that went
     // wrong here is swallowed.
     let failure;
+    // What the suite found about the adapter, carried off the branch to be filed on main, and
+    // how the run's account changes once it is known which unbound rows a binding run is
+    // owed for.
+    let binding = null;
+    let describeUnbound = null;
     try {
       // The branch was cut from `main` when the slice was built, and `main` has moved
       // since: an adapter ruled at G3 in the meantime is on `main` and nowhere else, and
@@ -378,13 +476,28 @@ export const verify = {
           ? `verify slice ${slice.number}: the sandbox did not start after ${limit} builds; escalated to ${escalateTo}.`
           : `verify slice ${slice.number}: returned — the sandbox did not start, so nothing was verified. ${(started.messages[0] ?? "").split("\n")[0]} Next: sdlc run build --slice ${slice.number} --revise`;
       } else {
-        const { rows } = runSuite({
-          projectDir, target: "new", baseUrl: targetSettings(config, "new").baseUrl,
-          files: specFilesFor(projectDir, slice.criteria), resetCommand: resetCommandFor(projectDir, config, "new"),
+        const settings = targetSettings(config, "new");
+        const files = specFilesFor(projectDir, slice.criteria);
+        const { configured, tags } = configuredCriteria(projectDir, files);
+        const { rows } = (ctx.runSuite ?? runSuite)({
+          projectDir, target: "new", baseUrl: settings.baseUrl, mailApi: settings.mailApi,
+          files, resetCommand: resetCommandFor(projectDir, config, "new"),
+          ...(tags.length ? { grepInvert: tags } : {}),
         });
-        const claimed = rows.filter((r) => slice.criteria.includes(r.id));
-        const v = verifyVerdict(claimed, slice.criteria);
-        const paths = [writeVerifyResult(projectDir, { slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted })];
+        // The adapter the suite drove with, recorded on the result and on every rebind entry
+        // this run files, so the verify after a binding run can tell the rows it reaches.
+        const adapter = adapterExists(projectDir, "new") ? adapterAt(projectDir, "new", "HEAD") : "";
+        const claimed = rows.filter((r) => slice.criteria.includes(r.id)).map((r) => (adapter && r.file ? { ...r, adapter } : r));
+        const v = verifyVerdict(claimed, slice.criteria, { configured });
+        const unboundListed = unboundReasons(claimed, v.unbound);
+        const paths = [writeVerifyResult(projectDir, {
+          slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted,
+          environment: v.environment, unbound: unboundListed, adapter,
+        })];
+        // Filed on main once the tree is back there, below: owed work is read off main by
+        // `next` and by the binding run, and this branch reaches main only when it is ruled.
+        if (adapter) binding = { rows: claimed, adapter, ids: slice.criteria };
+        const envLines = environmentLines(slice.number, v.environment);
         if (v.verdict === "fail") {
           const { escalate, gateRel } = writeVerifyReturn(projectDir, {
             name, slice: slice.number, limit, escalateTo,
@@ -396,19 +509,37 @@ export const verify = {
           notPassed = escalate
             ? `escalated to ${escalateTo} — ${v.failing.length} of ${slice.criteria.length} criteria still fail after ${limit} builds`
             : `returned — ${v.failing.length} of ${slice.criteria.length} criteria fail against the application`;
-          text = escalate
-            ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${limit} builds; escalated to ${escalateTo}.`
-            : `verify slice ${slice.number}: returned — ${v.failing.map((r) => r.id).join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`;
+          text = [
+            escalate
+              ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${limit} builds; escalated to ${escalateTo}.`
+              : `verify slice ${slice.number}: returned — ${v.failing.map((r) => r.id).join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`,
+            ...envLines,
+          ].join("\n");
+          // Told after the binding is filed, where the lines about it are added.
+          describeUnbound = (owed) => (owed.length ? [text, ...owedBindingLines(slice.number, branch, owed, claimed)].join("\n") : text);
+        } else if (v.verdict === "environment") {
+          notPassed = `not verified — ${v.environment.length} of ${slice.criteria.length} criteria could not be tested in this environment`;
+          text = [
+            `verify slice ${slice.number}: not verified — ${v.environment.map((e) => e.id).join(", ")} could not be tested in this environment.`,
+            ...envLines,
+            "Nothing was written to the gate file: nothing the builder can change would test them.",
+          ].join("\n");
+          describeUnbound = (owed) => {
+            if (owed.length) notPassed += `; ${owed.length} unbound, owed to bind-adapter --target new`;
+            return owed.length ? [text, ...owedBindingLines(slice.number, branch, owed, claimed)].join("\n") : text;
+          };
         } else if (v.verdict === "unbound") {
           const head = `verify slice ${slice.number}: ${v.unbound.length} of the ${slice.criteria.length} criteria this slice claims could not be exercised at all — ${v.unbound.join(", ")}.`;
           notPassed = `unbound — ${v.unbound.length} of ${slice.criteria.length} criteria could not be exercised at all`;
-          text = adapterExists(projectDir, "new")
+          text = adapter
             // The adapter is in place, it drove the application, and it reported the
-            // surface these criteria need as absent. Re-binding is the one remedy that
-            // cannot change that: it would drive the same application again and write the
-            // same reasons. So the reasons are quoted, because they are the evidence, and
-            // what they name is a question about what this slice builds, about what it was
-            // asked to build, or about what was asked of it on the criterion's behalf.
+            // surface these criteria need as absent. Where a binding run is still owed for
+            // them, that is the next step (`owedBindingLines`, set below once the entries
+            // are filed). Where the binding has been sent as often as policy.loops.rebind
+            // allows, binding again would drive the same application and write the same
+            // reasons, so the reasons are quoted, because they are the evidence, and what
+            // they name is a question about what this slice builds, about what it was asked
+            // to build, or about what was asked of it on the criterion's behalf.
             //
             // The third exit is there because the message this verdict produces is accurate
             // and names the wrong culprit whenever the test is the thing that over-reached:
@@ -419,8 +550,8 @@ export const verify = {
             ? [
               head,
               "tests/adapters/new/index.ts is in place and was exercised. It reports each of these as part of the surface the application does not provide:",
-              ...unboundReasons(claimed, v.unbound).map(({ id, reason }) => `  ${id}: ${reason}`),
-              "Binding again would drive the same application and write the same reasons, so that is not the next step. The question is whether the application is missing something it was asked for, whether this slice was asked for too much, or whether a test is asking for something its criterion never did — and the choice is a person's:",
+              ...unboundListed.map(({ id, reason }) => `  ${id}: ${reason}`),
+              `bind-adapter --target new has been sent for ${v.unbound.length === 1 ? "it" : "them"} as often as policy.loops.rebind allows, or ${v.unbound.length === 1 ? "it needs" : "they need"} a persona the approved contract marks unavailable, so binding again is not the next step. The question is whether the application is missing something it was asked for, whether this slice was asked for too much, or whether a test is asking for something its criterion never did — and the choice is a person's:`,
               `  - rule ${name} at G3 with those reasons as the conditions, which returns it and lets sdlc run build --slice ${slice.number} --revise take them on;`,
               `  - or, if that surface belongs to a later slice, return ${name} with \`${ADDRESSED_CONDITION_FORM}\` among the conditions — the stage is plan, and the reason says which criterion slice ${slice.number} claims that nothing it builds demonstrates. That files a request the planner reads: sdlc run plan --revise cuts what the slice claims in plan/tasks.md again, with your reason in front of it, and the architect rules the result at the plan's own gate. The request itself changes nothing;`,
               `  - or, where a criterion is right and the test derived from it reaches past it — the test drives a capability the criterion never asks for, which is why there is nothing to bind — return ${name} with \`${OVERREACH_CONDITION_FORM}\` among the conditions. That files the criterion for re-derivation and carries your reason to the writer: sdlc run derive-tests --domain <the criterion's domain> --stale then writes that one test again. It verifies nothing — the criterion stays unverified until a regenerated test binds and passes.`,
@@ -444,6 +575,11 @@ export const verify = {
               `  5. sdlc run verify --slice ${slice.number}`,
               `Step 5 picks the ruled adapter up: verify merges main into ${branch} before it runs the suite, so the branch carries whatever was ruled onto main after it was cut.`,
             ].join("\n");
+          describeUnbound = (owed) => {
+            if (!owed.length) return text;
+            notPassed += "; owed to bind-adapter --target new";
+            return [head, ...owedBindingLines(slice.number, branch, owed, claimed)].join("\n");
+          };
         } else if (v.verdict === "pass-unasserted") {
           // Nothing failed, and the slice is not a slice whose claims were all asserted.
           // No gate file is written and nothing about what may be ruled changes: this is
@@ -473,6 +609,24 @@ export const verify = {
       dirty = Boolean(leaveBranch(projectDir, start));
       if (dirty) {
         text = `verify slice ${slice.number}: the working tree was left dirty on ${branch} after a failure; HEAD is still on ${branch}. Inspect and clean it before running verify again.`;
+      } else if (!failure && binding) {
+        // On main now. The rows this run put to the target are settled against the rebind
+        // entries there: an unbound row is filed for bind-adapter --target new while the
+        // binding has been sent fewer times than policy.loops.rebind allows, and an entry
+        // for one of this slice's criteria whose row the binding now reaches is closed
+        // (`src/spec/unbound.mjs`). The file is left for the run's own commit on main.
+        try {
+          const unavailable = unavailableOn(projectDir, "new", config);
+          syncUnbound(projectDir, "new", {
+            rows: binding.rows, adapter: binding.adapter, ids: binding.ids, limit: owedLoopLimit(config, "rebind"),
+            unavailable, by: "runner:verify", stamp: { slice: slice.number },
+          });
+          const open = new Set(readOwed(projectDir, "rebind").filter((e) => isOpen(e) && e.target === "new").map((e) => e.id));
+          const owed = binding.rows
+            .filter((r) => r.result === "unbound" && binding.ids.includes(r.id) && open.has(r.id) && !personaUnavailable(r, unavailable))
+            .map((r) => r.id);
+          if (describeUnbound) text = describeUnbound(owed);
+        } catch (err) { failure = err; }
       }
       // Every attempt says what became of it, including the ones that failed: a run with
       // no line in the record is indistinguishable from a run nobody made.

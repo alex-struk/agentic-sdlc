@@ -36,6 +36,7 @@ import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
 import { stallReason } from "./escalation.mjs";
 import { buildVerifiedOnBranch, simulatedRole } from "../commands/rule.mjs";
+import { readVerifyResult } from "./verify-evidence.mjs";
 import { compareRunIds, fullRunDue } from "../testrun/scope.mjs";
 import { standingRuling } from "../testrun/results.mjs";
 
@@ -433,6 +434,43 @@ function heldBy(record, name, stage) {
   return null;
 }
 
+// What an open build proposal whose verify did not pass waits on instead of a ruling, or
+// `null` where its verify found something the builder is answerable for, or where nothing
+// else can answer what it found.
+//
+// Unbound rows are the adapter's while bind-adapter --target new is still owed for them: the
+// build waits on the binding, which `owedWork` offers, and on the verify after it. Once the
+// binding has been sent as often as policy.loops.rebind allows, nothing is owed and the build
+// is ruled as any other that did not pass. A criterion the environment could not test waits
+// on whoever G3 escalates to, unless the configuration it lacked is now on main, and then
+// the slice is verified again.
+function notTheBuilders(projectDir, record, p, slice) {
+  const result = readVerifyResult(projectDir, p.branch, slice);
+  if (result?.verdict !== "environment" && result?.verdict !== "unbound") return null;
+  const bindingOwed = record.owed.some((e) => e.kind === "rebind" && e.target === "new" && Number(e.slice) === Number(slice));
+  if (result.verdict === "unbound") return bindingOwed ? {} : null;
+  const gaps = Array.isArray(result.environment) ? result.environment : [];
+  const mailOnly = gaps.length > 0 && gaps.every((g) => /mail catcher/.test(String(g?.reason ?? "")));
+  const verify = runCommand("verify", { slice });
+  if (mailOnly && record.config?.targets?.new?.mail_api) {
+    return { ready: { kind: "proposals", stage: "verify", args: { slice }, command: verify, name: p.name,
+      why: `${p.name}'s verify could not test ${gaps.map((g) => g.id).join(", ")} for want of a mail catcher, and targets.new.mail_api now names one; it is verified again` } };
+  }
+  const on = record.config?.policy?.gates?.G3?.escalate_to ?? "a person";
+  return { waiting: { on, name: p.name, gate: "G3",
+    why: `${gaps.length} of the criteria slice ${slice} claims could not be tested in this environment: ${gaps.map((g) => g.id).join(", ")}; none of it is the build's, so ${p.name} is not ruled for it`,
+    command: mailOnly
+      ? `set targets.new.mail_api in .sdlc/config.yaml to the address the application's compose file publishes its mail catcher's API on, then ${verify}`
+      : `${personCommand(p.name, on)} (verify cannot start the new target in a configuration; the reasons are in tests/results/new/slice-${slice}.json on ${p.branch})` } };
+}
+
+// The newest open build proposal for `slice`, or `null`.
+function openBuildFor(record, slice) {
+  const open = record.proposals.filter((p) => !p.merged && p.gateText == null && routeOf(p.name, record.config)?.stage === "build"
+    && Number(routeOf(p.name, record.config)?.slice) === Number(slice));
+  return open.sort((a, b) => lineage(b.name).n - lineage(a.name).n)[0] ?? null;
+}
+
 // Every proposal branch not yet merged, sorted into what a seat played by an agent can rule
 // now, what waits on a person, what has been returned for its stage to revise, and what is
 // returned and held until what its ruling asked of another stage is approved.
@@ -467,6 +505,16 @@ function proposalState(projectDir, record) {
         if (!verified.ok && !verified.notPassed) {
           ready.push({ kind: "proposals", stage: "verify", args: { slice: route.slice }, command: runCommand("verify", { slice: route.slice }), name: p.name,
             why: `${p.name} is open at ${code ?? "G3"} and has no verify result for the application it carries; it is verified before it is ruled` });
+          continue;
+        }
+        // A verify that found nothing the builder is answerable for — criteria this
+        // environment could not test, rows the adapter could not drive — is not a build to
+        // rule: it waits on the configuration, or on the binding run it is owed, and is
+        // verified again after (`docs/decisions/0075`).
+        const gap = verified.notPassed ? notTheBuilders(projectDir, record, p, route.slice) : null;
+        if (gap) {
+          if (gap.ready) ready.push(gap.ready);
+          if (gap.waiting) waiting.push(gap.waiting);
           continue;
         }
         if (verified.notPassed && holder?.startsWith("agent:")) {
@@ -526,11 +574,12 @@ function owedWork(record, inFlight, bindsNow) {
   const byId = new Map((record.index?.criteria ?? []).map((c) => [c.id, c]));
   const groups = new Map();
   const groupKey = (stage, args) => `${stage}\u0000${JSON.stringify(args)}`;
-  const group = (stage, args, one, many, n = 1) => {
+  const group = (stage, args, one, many, n = 1, note = null) => {
     const key = groupKey(stage, args);
-    if (!groups.has(key)) groups.set(key, { stage, args, parts: new Map() });
+    if (!groups.has(key)) groups.set(key, { stage, args, parts: new Map(), notes: new Set() });
     const parts = groups.get(key).parts;
     parts.set(one, { many, n: (parts.get(one)?.n ?? 0) + n });
+    if (note) groups.get(key).notes.add(note);
   };
   const summary = new Map();
   const unanswered = new Map();
@@ -562,7 +611,18 @@ function owedWork(record, inFlight, bindsNow) {
       const ruling = (r?.applied?.rulings ?? []).filter((x) => x?.verb === "adapter-wrong" && x.id === e.id).at(-1);
       const about = e.adapter || ruling?.adapter;
       const unbound = e.found === UNBOUND;
-      if (about && r?.adapter && about !== r.adapter) {
+      // An entry a verify filed is about the rows one slice's tests reported unbound on the
+      // new target, which no calibration measures: the binding runs against the application
+      // the slice's open build proposal carries, and the verify of that slice is what checks
+      // it again (`docs/decisions/0075`).
+      const slice = e.slice ?? null;
+      if (slice !== null && about && r?.adapter && about !== r.adapter) {
+        group("verify", { slice }, "unbound row to check again now that its adapter has changed", "unbound rows to check again now that their adapter has changed");
+      } else if (slice !== null) {
+        const build = openBuildFor(record, slice);
+        group("bind-adapter", { target: e.target }, "binding the adapter reports unbound", "bindings the adapter reports unbound", 1,
+          build ? `the application it binds against is on ${build.branch} alone, so sdlc sandbox up --target ${e.target} --from ${build.branch} first` : null);
+      } else if (about && r?.adapter && about !== r.adapter) {
         if (unbound) group("calibrate", { target: e.target }, "unbound row to check again now that its adapter has changed", "unbound rows to check again now that their adapter has changed");
         else group("calibrate", { target: e.target }, "binding to check again now that its adapter has changed (rebind)", "bindings to check again now that their adapter has changed (rebind)");
       } else if (unbound) group("bind-adapter", { target: e.target }, "binding the adapter reports unbound", "bindings the adapter reports unbound");
@@ -625,8 +685,9 @@ function owedWork(record, inFlight, bindsNow) {
   for (const g of groups.values()) {
     if (inFlight.has(subjectKey(g.stage, g.args))) continue;
     const detail = [...g.parts].map(([one, { many, n }]) => plural(n, one, many)).join(", ");
-    const where = g.args.domain ? ` in ${g.args.domain}` : g.args.target ? ` for target ${g.args.target}` : "";
-    items.push({ kind: "owed", stage: g.stage, args: g.args, command: runCommand(g.stage, g.args), why: `${detail}${where} owed by ${g.stage}` });
+    const where = g.args.domain ? ` in ${g.args.domain}` : g.args.target ? ` for target ${g.args.target}` : g.args.slice !== undefined ? ` for slice ${g.args.slice}` : "";
+    const notes = [...g.notes].join("; ");
+    items.push({ kind: "owed", stage: g.stage, args: g.args, command: runCommand(g.stage, g.args), why: `${detail}${where} owed by ${g.stage}${notes ? `; ${notes}` : ""}` });
   }
   const spentBy = new Map();
   for (const s of record.unboundSpent ?? []) {
