@@ -303,6 +303,18 @@ test("criteria page marks a target result ruled when the row carries a ruling ve
   assert.match(page, /\| R-1\.1 \| acceptance\/a\/R-1\.1\.spec\.ts \| pass \(ruled: defect-in-old\) \|/);
 });
 
+// A spec-wrong ruling is about the test written before its criterion was rewritten
+// (`docs/decisions/0073`), so a row of a test derived for the criterion as it stands shows none.
+test("criteria page shows no spec-wrong ruling on a row of the test derived for the criterion as it stands", () => {
+  const d = testsAndCalibrationFixture();
+  const latest = JSON.parse(readFileSync(join(d, "tests/results/old/latest.json"), "utf8"));
+  latest.rows[0].ruled = "spec-wrong";
+  writeFileSync(join(d, "tests/results/old/latest.json"), `${JSON.stringify(latest, null, 2)}\n`);
+  buildSite(d);
+  const page = readFileSync(join(d, "site/criteria/a.md"), "utf8");
+  assert.match(page, /\| R-1\.1 \| acceptance\/a\/R-1\.1\.spec\.ts \| pass \|/);
+});
+
 // A criterion nobody asserted against the target is still a row in the file. Counted in no
 // column it leaves the page's own arithmetic short, and the only place that says the row
 // exists at all is the file the page was built from.

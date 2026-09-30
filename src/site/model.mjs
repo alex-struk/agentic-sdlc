@@ -11,7 +11,7 @@ import { readJournal } from "../runner/journal.mjs";
 import { STATES, orderDomains } from "../spec/criteria.mjs";
 import { coverage, readNotTestable } from "../checks/tests.mjs";
 import { followUpState } from "../stages/shared.mjs";
-import { RESULT_VALUES } from "../testrun/results.mjs";
+import { RESULT_VALUES, standingRuling } from "../testrun/results.mjs";
 import { SEAT_AGENT, SEAT_HUMAN, SEAT_RUNNER, SEAT_UNKNOWN, seatKind } from "../lib/seat.mjs";
 
 // Every value a results row's `result` field can hold, in the fixed order the board and
@@ -160,7 +160,17 @@ export function collect(projectDir) {
   // the target list rather than hard-coded to `old`, so a later `new` target grows the
   // board a column with no code change here.
   const targets = resultTargets(projectDir);
-  const latest = new Map(targets.map((t) => [t, readResultsFile(join(projectDir, "tests", "results", t, "latest.json"))]));
+  // A row shows the ruling it carries only while that ruling still applies to it at the
+  // criterion's version now (`standingRuling`, `docs/decisions/0073`).
+  const versions = new Map(criteria.map((c) => [c.id, c.version]));
+  const unmarkLapsed = (doc) => (Array.isArray(doc?.rows)
+    ? { ...doc, rows: doc.rows.map((r) => {
+      if (!r?.ruled || standingRuling(r, versions.get(r.id))) return r;
+      const { ruled: _lapsed, ...rest } = r;
+      return rest;
+    }) }
+    : doc);
+  const latest = new Map(targets.map((t) => [t, unmarkLapsed(readResultsFile(join(projectDir, "tests", "results", t, "latest.json")))]));
   const resultFiles = new Map(targets.map((target) => {
     const dir = join(projectDir, "tests", "results", target);
     const files = readdirSync(dir).filter((f) => /^\d{4}-\d{2}-\d{2}(-\d+)?\.json$/.test(f));

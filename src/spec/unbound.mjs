@@ -51,6 +51,7 @@ import { git, gitOk } from "../lib/git.mjs";
 import { owedLoopLimit } from "../config/policy.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { close, isOpen, open, read, sends } from "./owed.mjs";
+import { standingRuling } from "../testrun/results.mjs";
 
 export const UNBOUND = "unbound";
 export const PERSONA_UNAVAILABLE = "persona-unavailable";
@@ -63,9 +64,11 @@ const SIGN_IN_LINE = /^unbound: signIn\.(\S+)(?:\s|$)/;
 
 const itemOf = (target, id) => `${target}:${id}`;
 
-// The rows no ruling covers whose every failing test the adapter reported unbound.
-export function openUnboundRows(results) {
-  return (Array.isArray(results?.rows) ? results.rows : []).filter((r) => r?.result === UNBOUND && r.id && !r.ruled);
+// The rows no ruling covers whose every failing test the adapter reported unbound. `version`
+// gives a criterion's version now, for a reader of rows an earlier calibration marked
+// (`standingRuling`); rows a calibration has just marked need none.
+export function openUnboundRows(results, version = () => undefined) {
+  return (Array.isArray(results?.rows) ? results.rows : []).filter((r) => r?.result === UNBOUND && r.id && !standingRuling(r, version(r.id)));
 }
 
 // The adapter's own reasons on a row, each distinct message once, in the order the tests gave

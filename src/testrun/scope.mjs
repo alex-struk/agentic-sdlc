@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { git, gitOk } from "../lib/git.mjs";
 import { calibrateFullEvery, calibrateScope } from "../config/policy.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
-import { environmentFault, testFingerprint } from "./results.mjs";
+import { environmentFault, standingRuling, testFingerprint } from "./results.mjs";
 import { specFiles } from "./tags.mjs";
 
 // The harness every test runs in: its fixtures, its configuration and its dependencies, and the
@@ -111,7 +111,9 @@ export function fullRunDue(config, latest) {
   return `${since} scoped calibration${since === 1 ? "" : "s"} since the last full run${latest.full_run ? ` (${latest.full_run})` : ""}; policy.calibrate.full_every is ${n}`;
 }
 
-const closed = (row) => row?.result === "pass" || Boolean(row?.ruled);
+// Passing, or carrying a ruling that still applies to it at the criterion's version now
+// (`standingRuling`).
+const closed = (row, version) => row?.result === "pass" || Boolean(standingRuling(row, version));
 
 // The reason a missing test owed a run by calibration gives.
 export const OWED_A_RUN = "missing test owed a run";
@@ -120,12 +122,12 @@ export const OWED_A_RUN = "missing test owed a run";
 // `persona-unavailable` needs a persona the approved contract marks unavailable on the target, so
 // no run there can pass or fail it, and a missing test owed a run for it is no reason to run it
 // again (`docs/decisions/0068`).
-function rowReasons(row, sha, { inputs, stale, rulings, owed }) {
+function rowReasons(row, sha, { inputs, stale, rulings, owed, versions }) {
   const reasons = [];
   if (!row.measured_in || !row.file_sha) return ["no provenance"];
   if (row.file_sha !== sha) reasons.push("test changed");
   if (environmentFault(row)) reasons.push("environment fault");
-  if (!closed(row) && row.adapter !== inputs.adapter) reasons.push("adapter changed");
+  if (!closed(row, versions.get(row.id)) && row.adapter !== inputs.adapter) reasons.push("adapter changed");
   if (row.id) {
     reasons.push(...(owed.get(row.id) ?? []).filter((why) => !(why === OWED_A_RUN && row.ruled === "persona-unavailable")));
     if (rulings(row.id).join("\n") !== (row.rulings_seen ?? []).join("\n")) reasons.push("ruled since measured");
@@ -150,13 +152,13 @@ function sharedChanges(rows, inputs) {
 // `previous` is `latest.json` as it stands, `specs` every spec
 // file on disk with its fingerprint, `inputs` what the rows share now, `stale` the criteria whose
 // test is stale now, `rulings(id)` the gates whose rulings name a criterion now, `owed` the open
-// owed work naming each criterion (`id -> [reason]`), `domain` a `--domain` narrowing and `force`
-// `--full`.
+// owed work naming each criterion (`id -> [reason]`), `versions` each criterion's version now,
+// `domain` a `--domain` narrowing and `force` `--full`.
 //
 // Returns `{ mode, fullBecause, rerun, carry, total }`: `mode` is `full`, `changed` or `domain`;
 // `rerun` the spec files to run, each `{ file, id, reasons }`; `carry` the rows on file kept as
 // they are; `total` how many spec files there are.
-export function planCalibration({ config, previous, specs, inputs, stale = new Set(), rulings = () => [], owed = new Map(), domain, force = false }) {
+export function planCalibration({ config, previous, specs, inputs, stale = new Set(), rulings = () => [], owed = new Map(), versions = new Map(), domain, force = false }) {
   const rows = Array.isArray(previous?.rows) ? previous.rows : [];
   const byFile = new Map(rows.filter((r) => r?.file).map((r) => [r.file, r]));
   const total = specs.length;
@@ -191,7 +193,7 @@ export function planCalibration({ config, previous, specs, inputs, stale = new S
   const carry = [];
   for (const s of specs) {
     const r = byFile.get(s.file);
-    const reasons = r ? rowReasons(r, s.sha, { inputs, stale, rulings, owed }) : ["new test"];
+    const reasons = r ? rowReasons(r, s.sha, { inputs, stale, rulings, owed, versions }) : ["new test"];
     if (reasons.length) rerun.push({ file: s.file, id: r?.id ?? null, reasons });
     else carry.push(r);
   }

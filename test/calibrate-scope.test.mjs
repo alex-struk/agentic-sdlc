@@ -61,6 +61,17 @@ test("a changed adapter re-runs the rows it could close, and carries the ones al
   assert.deepEqual(p.carry.map((r) => r.id), ["R-1", "R-4"]);
 });
 
+// A spec-wrong mark is a ruling about the test written before the correction
+// (`docs/decisions/0073`), so a failing row of the test derived for the corrected criterion is
+// one a changed adapter could close.
+test("a changed adapter re-runs a failing row whose spec-wrong ruling was about an earlier version of its test", () => {
+  const rows = [row("R-1", "fail", { version: 2, ruled: "spec-wrong" }), row("R-2", "stale", { ruled: "spec-wrong" })];
+  const p = plan(rows, { inputs: { ...INPUTS, adapter: "a2" }, stale: new Set(["R-2"]), versions: new Map([["R-1", 2], ["R-2", 2]]) });
+  assert.deepEqual(rerunIds(p), ["R-1"]);
+  assert.deepEqual(reasonsOf(p, "R-1"), ["adapter changed"]);
+  assert.deepEqual(p.carry.map((r) => r.id), ["R-2"], "the test written before the correction is still disowned");
+});
+
 test("a new test, a row with no provenance and a row the machine failed are always re-run", () => {
   const envFault = row("R-2", "fail", { tests: [{ title: "t", status: "failed", error: "Error: could not reset the target" }] });
   const { measured_in: _m, ...bare } = row("R-3", "pass");

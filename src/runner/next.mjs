@@ -37,6 +37,7 @@ import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/regist
 import { stallReason } from "./escalation.mjs";
 import { buildVerifiedOnBranch, simulatedRole } from "../commands/rule.mjs";
 import { compareRunIds, fullRunDue } from "../testrun/scope.mjs";
+import { standingRuling } from "../testrun/results.mjs";
 
 // The phases the sequence moves through, each with the exit criterion that closes it.
 export const PHASES = Object.freeze([
@@ -249,7 +250,7 @@ export function readRecord(projectDir, rev = "main") {
   const personas = yamlOf(objects.get(at("spec/contract/personas.yaml")));
   for (const t of targets) {
     const r = results.get(t);
-    const rows = openUnboundRows(r.latest);
+    const rows = openUnboundRows(r.latest, criterionVersion(index));
     if (!rows.length) continue;
     const unavailable = unavailablePersonas(personas, targetIdentity(config, t));
     const fallback = rows.some((row) => row.adapter === undefined) ? legacyAdapter(projectDir, t, rev) : "";
@@ -318,7 +319,19 @@ function ratified(record, domain) {
   return (record.domainIds.get(domain) ?? []).every((id) => inIndex.has(id));
 }
 
-const closesCalibration = (r) => ["pass", "not-testable", "attested"].includes(r?.result) || Boolean(r?.ruled);
+// Each criterion's version as the index holds it, for reading whether a row's ruling still applies
+// to it (`standingRuling`, `docs/decisions/0073`).
+function criterionVersion(index) {
+  const versions = new Map((index?.criteria ?? []).map((c) => [c.id, c.version]));
+  return (id) => versions.get(id);
+}
+
+// Whether a row closes its calibration: it passes, asserts nothing, or carries a ruling that still
+// applies to it.
+const closesCalibration = (record) => {
+  const version = criterionVersion(record.index);
+  return (r) => ["pass", "not-testable", "attested"].includes(r?.result) || Boolean(standingRuling(r, version(r?.id)));
+};
 
 // A row a scoped calibration carried was measured by an earlier run than the last one, so rows
 // that all pass or are ruled close the phase only when none is carried: only a run that measured
@@ -327,14 +340,14 @@ const closesCalibration = (r) => ["pass", "not-testable", "attested"].includes(r
 function calibrated(record, target) {
   const rows = record.results.get(target)?.latest?.rows;
   if (!Array.isArray(rows)) return false;
-  return rows.every(closesCalibration) && !rows.some((r) => r?.carried);
+  return rows.every(closesCalibration(record)) && !rows.some((r) => r?.carried);
 }
 
 // Why a target's calibration is next with `--full`, or `null`: when every row passes or is ruled
 // and all that keeps it open is rows carried from an earlier run.
 function calibrationNeedsFullRun(record, target) {
   const rows = record.results.get(target)?.latest?.rows;
-  if (!Array.isArray(rows) || !rows.every(closesCalibration)) return null;
+  if (!Array.isArray(rows) || !rows.every(closesCalibration(record))) return null;
   const carried = rows.filter((r) => r?.carried);
   if (!carried.length) return null;
   const runs = [...new Set(carried.map((r) => r.measured_in ?? "an unrecorded run"))].sort(compareRunIds);
@@ -352,7 +365,8 @@ function calibrationSettlesWithoutSuite(record, target) {
   const triage = (record.unboundTriage ?? []).filter((s) => s.target === target);
   const unavailable = (record.unboundUnavailable ?? []).filter((s) => s.target === target);
   const settles = new Set([...triage, ...unavailable].map((s) => s.id));
-  const open = rows.filter((r) => !closesCalibration(r));
+  const closes = closesCalibration(record);
+  const open = rows.filter((r) => !closes(r));
   if (!open.length || !open.every((r) => r?.result === UNBOUND && settles.has(r.id))) return null;
   const ids = (list) => { const all = list.map((s) => s.id); return all.length > 10 ? `${all.slice(0, 10).join(", ")} and ${all.length - 10} more` : all.join(", "); };
   const said = [];

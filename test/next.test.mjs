@@ -770,6 +770,22 @@ test("the Tests phase stays open while a row is carried, and next names a full c
   assert.equal(whatNext(d).phase.number, 3, "a full run with every row closed ends the phase");
 });
 
+// A spec-wrong ruling is about the test written before the criterion was corrected
+// (`docs/decisions/0073`): a row of the test derived for the criterion as it stands is a result
+// nobody has ruled on, whatever mark an earlier calibration left on it.
+test("a failing row whose spec-wrong ruling was about an earlier version of its test does not close the Tests phase", (t) => {
+  const d = project(t, { extra: TARGETS });
+  specDone(d);
+  const full = (rows) => commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", run: "2026-01-03", scope: "full", full_run: "2026-01-03", since_full: 0, rows }) }, "stage(calibrate): calibrate against old");
+  adaptersBound(d, { old: bindingsFor("old", FULL), fresh: bindingsFor("new", FULL) });
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  commit(d, { "spec/criteria-index.json": index([["R-1.1", "alpha"], ["R-2.1", "beta", 2]]) }, "stage(calibrate): apply rulings");
+  full([{ id: "R-1.1", version: 1, result: "pass" }, { id: "R-2.1", version: 1, result: "stale", ruled: "spec-wrong" }]);
+  assert.equal(whatNext(d).phase.number, 3, "the ruling stands on the test written before the correction");
+  full([{ id: "R-1.1", version: 1, result: "pass" }, { id: "R-2.1", version: 2, result: "fail", ruled: "spec-wrong" }]);
+  assert.equal(whatNext(d).phase.number, 2, "a failure of the test derived for v2 is nobody's ruling yet");
+});
+
 test("policy.calibrate.full_every makes next name a full calibration when one is due, and --full is never a deviation", (t) => {
   const d = project(t, { extra: TARGETS, policy: ["calibrate: { scope: changed, full_every: 2 }"] });
   specDone(d);
