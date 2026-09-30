@@ -191,6 +191,16 @@ function preflight(projectDir, config) {
   return 0;
 }
 
+// How long one of the calls that build, migrate or start the oracle may run, in minutes. A
+// first build pulls images and installs dependencies and can take a quarter of an hour; a
+// call still running at twice that is hung — a migration one-off stuck in its package
+// install is the case seen — and is stopped so `oracle up` fails instead of waiting forever.
+export const DEFAULT_ORACLE_UP_MINUTES = 30;
+
+export function oracleUpMinutes(config) {
+  return config?.oracle?.up_minutes ?? DEFAULT_ORACLE_UP_MINUTES;
+}
+
 // Starts one copy of the oracle as compose project `project`, on ports chosen now, with
 // `extraEnv` over the environment every copy gets, and answers what `oracle-<target>.local.yaml`
 // records for it. `nameArgs` is the container-name override a copy needs when another copy
@@ -204,8 +214,9 @@ async function startCopy(projectDir, config, { project, extraEnv = {}, names }) 
   const mailApi = `http://localhost:${ports.mail_api}`;
   const opts = { cwd: projectDir, env: { ...composeEnv(config, ports), ...extraEnv } };
   const base = [...baseArgs(config, project), ...names(opts)];
+  const bounded = { ...opts, timeoutMs: oracleUpMinutes(config) * 60_000 };
 
-  compose([...base, "up", "-d", "--build", ...upServices(config, base, opts)], opts);
+  compose([...base, "up", "-d", "--build", ...upServices(config, base, opts)], bounded);
 
   // Nothing to wait for without a configured database — a project can run an oracle with
   // no database at all (a static site, say), and `db` is optional for exactly that
@@ -216,14 +227,14 @@ async function startCopy(projectDir, config, { project, extraEnv = {}, names }) 
   // a one-off compose service without the pipeline knowing that database's connection
   // details (the service manages its own), so this runs whenever `migrate_service` is
   // configured — after the db wait above when there is one, but not gated on it.
-  if (config.oracle.migrate_service) compose([...base, "run", "--rm", config.oracle.migrate_service], opts);
+  if (config.oracle.migrate_service) compose([...base, "run", "--rm", config.oracle.migrate_service], bounded);
 
   // Seeding, unlike migration, genuinely needs `db`: `loadSeed` connects with `psql`
   // using `db.user`/`db.database`, which only exist when `db` is configured. The caller
   // warns about seed files with nowhere to go.
   if (config.oracle.db) loadSeed(projectDir, config, base, opts);
 
-  compose([...base, "up", "-d", config.oracle.service ?? "app"], opts);
+  compose([...base, "up", "-d", config.oracle.service ?? "app"], bounded);
   await waitForHttp(`${baseUrl}/`, 180000);
   return { base_url: baseUrl, mail_api: mailApi, ports, compose_project: project };
 }

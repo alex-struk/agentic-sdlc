@@ -116,6 +116,11 @@
         "migrate_service": {
           "type": "string"
         },
+        "up_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1440
+        },
         "db": {
           "type": "object",
           "additionalProperties": false,

@@ -334,6 +334,49 @@ test("compose: a docker whose output is larger than the old 1 MiB default is rea
   }
 });
 
+test("compose: a call given a time limit is stopped at it, and the failure says so", () => {
+  // A stand-in `docker` that never finishes — what a migration one-off stuck in its package
+  // install looks like from the outside.
+  const binDir = mkdtempSync(join(tmpdir(), "sdlc-hung-docker-"));
+  writeFileSync(join(binDir, "docker"), "#!/usr/bin/env node\nsetTimeout(() => {}, 60000);\n");
+  chmodSync(join(binDir, "docker"), 0o755);
+  const prevPath = process.env.PATH;
+  const prevOracle = process.env.SDLC_ORACLE;
+  delete process.env.SDLC_ORACLE;
+  process.env.PATH = `${binDir}:${prevPath}`;
+  try {
+    const started = Date.now();
+    assert.throws(() => compose(["-p", "proj", "-f", "docker-compose.yml", "ps", "--format", "json"], { cwd: binDir, timeoutMs: 300 }),
+      /timed out after 300ms/);
+    assert.ok(Date.now() - started < 30000, "the call was stopped at its limit");
+  } finally {
+    process.env.PATH = prevPath;
+    if (prevOracle === undefined) delete process.env.SDLC_ORACLE;
+    else process.env.SDLC_ORACLE = prevOracle;
+  }
+});
+
+test("compose options: a time limit is passed to the child process, and none is set without one", () => {
+  const args = ["-p", "proj", "run", "--rm", "migrate"];
+  assert.equal(composeOptions(args, { cwd: "/x", timeoutMs: 5000 }).timeout, 5000);
+  assert.equal(composeOptions(args, { cwd: "/x" }).timeout, undefined);
+});
+
+test("oracle up: the calls that build, migrate and start are bounded by oracle.up_minutes, 30 by default", async () => {
+  for (const [config, minutes] of [[CONFIG, 30], [CONFIG.replace("  migrate_service: migrate\n", "  migrate_service: migrate\n  up_minutes: 12\n"), 12]]) {
+    const tmp = mkdtempSync(join(tmpdir(), "sdlc-oracle-limit-"));
+    const dir = makeMicroProject(tmp, config);
+    await withMock(null, async (mockDir) => {
+      assert.equal(await runOracle(dir, "up", {}), 0);
+      const calls = readCalls(mockDir);
+      const bounded = calls.filter((c) => c.timeoutMs).map((c) => c.args.slice(6).join(" "));
+      assert.deepEqual(bounded, ["up -d --build db mailpit", "run --rm migrate", "up -d app"]);
+      for (const c of calls.filter((x) => x.timeoutMs)) assert.equal(c.timeoutMs, minutes * 60_000);
+    });
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // --- which services come up, and in what order ---
 
 test("oracle up: with no oracle.up configured, the services come from compose config --services minus the app and migration services", async () => {

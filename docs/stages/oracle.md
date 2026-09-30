@@ -84,6 +84,11 @@ file.
   `service`/`user`/`database` to connect; seed files present without `oracle.db` produce a
   warning, not a failure. The application has to answer any HTTP status at `<base_url>/` within
   180 seconds before `up` reports success. Either timeout fails the command.
+- The three compose calls that build, migrate and start (`up -d --build`, `run --rm
+  <migrate_service>`, `up -d <service>`) are each stopped at `oracle.up_minutes`, 30 minutes by
+  default, and `up` fails saying which call timed out. A call still running then is hung — a
+  migration one-off stuck in its package install is the case seen — and waiting longer would hold
+  whatever called `up`, a person, a stage or `sdlc drive`, with no end.
 - Every seed `*.sql` file is loaded with `psql -v ON_ERROR_STOP=1`, so a broken seed file fails
   the load (and so the whole `up`) instead of applying partway and reporting success.
 - `up` and `run` inherit the terminal's own stdout and stderr, so a container build scrolls past

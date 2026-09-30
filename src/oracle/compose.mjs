@@ -16,7 +16,7 @@ function mockDir() {
 // made without a real Docker daemon anywhere in reach. `input` (the path of a file piped
 // to stdin) and `stdin` (text piped to it) are recorded as fields of their own rather than
 // folded into `args`, since neither was ever part of the compose command line.
-function recordMockCall(args, env, input, stdin) {
+function recordMockCall(args, env, input, stdin, timeoutMs) {
   const p = join(mockDir(), "oracle-calls.json");
   const calls = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : [];
   // Only `SDLC_*` keys are recorded: everything else in a caller's `env` is either
@@ -27,6 +27,7 @@ function recordMockCall(args, env, input, stdin) {
   const call = { args, env: sdlcEnv };
   if (input) call.input = input;
   if (stdin !== undefined) call.stdin = stdin;
+  if (timeoutMs) call.timeoutMs = timeoutMs;
   calls.push(call);
   writeFileSync(p, JSON.stringify(calls, null, 2));
 }
@@ -70,7 +71,8 @@ function composeSubcommand(args) {
 
 // The child-process options one `docker compose` call runs with. Exported so a test can
 // assert on the buffer and the stream wiring without a Docker daemon anywhere in reach.
-export function composeOptions(args, { cwd, env = {}, input, stdin } = {}) {
+// `timeoutMs`, when given, is how long the call may run before it is stopped.
+export function composeOptions(args, { cwd, env = {}, input, stdin, timeoutMs } = {}) {
   const streaming = STREAMING.has(composeSubcommand(args));
   return {
     cwd,
@@ -78,8 +80,11 @@ export function composeOptions(args, { cwd, env = {}, input, stdin } = {}) {
     encoding: "utf8",
     maxBuffer: MAX_BUFFER,
     stdio: [input || stdin !== undefined ? "pipe" : "ignore", streaming ? "inherit" : "pipe", streaming ? "inherit" : "pipe"],
+    ...(timeoutMs ? { timeout: timeoutMs } : {}),
   };
 }
+
+const inWords = (ms) => (ms % 60_000 === 0 ? `${ms / 60_000} minute${ms === 60_000 ? "" : "s"}` : `${ms}ms`);
 
 // Runs `docker compose <args>` synchronously, in `cwd`, with `env` merged over the
 // ambient environment. `input` is a path to a file whose contents are piped to the
@@ -93,9 +98,9 @@ export function composeOptions(args, { cwd, env = {}, input, stdin } = {}) {
 // whatever `SDLC_MOCK_DIR/oracle-ps.json` holds — a test's way of saying a container is
 // already running — and `config --services`, which answers with
 // `SDLC_MOCK_DIR/oracle-services.txt`; either is `""` when its file is not present.
-export function compose(args, { cwd, env = {}, input, stdin } = {}) {
+export function compose(args, { cwd, env = {}, input, stdin, timeoutMs } = {}) {
   if (process.env.SDLC_ORACLE === "mock") {
-    recordMockCall(args, env, input, stdin);
+    recordMockCall(args, env, input, stdin, timeoutMs);
     // `args[0]` is never "ps" here — every real call carries the `-p <project> -f ...`
     // prefix first — so this looks for the subcommand anywhere in the array rather than
     // assuming a position.
@@ -113,11 +118,16 @@ export function compose(args, { cwd, env = {}, input, stdin } = {}) {
     return "";
   }
   try {
-    const opts = composeOptions(args, { cwd, env, input, stdin });
+    const opts = composeOptions(args, { cwd, env, input, stdin, timeoutMs });
     if (input) opts.input = readFileSync(input, "utf8");
     else if (stdin !== undefined) opts.input = stdin;
     return execFileSync("docker", ["compose", ...args], opts);
   } catch (e) {
+    // Stopped at its limit rather than failed: the child was killed, and whatever it printed
+    // before that is not the reason it ended.
+    if (timeoutMs && (e.code === "ETIMEDOUT" || e.signal === "SIGTERM")) {
+      throw new Error(`docker compose ${args.join(" ")} timed out after ${inWords(timeoutMs)} and was stopped`);
+    }
     // A streaming call's stderr went straight to the terminal, so there is nothing on
     // the error to quote and the message stands on its own; a captured call's stderr is
     // the whole account of the failure and is quoted.
