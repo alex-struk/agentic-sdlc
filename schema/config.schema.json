@@ -571,6 +571,10 @@
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9_-]*$"
         },
+        "mail_api": {
+          "type": "string",
+          "format": "uri"
+        },
         "depends_on": {
           "type": "object",
           "minProperties": 1,

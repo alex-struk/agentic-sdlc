@@ -132,10 +132,13 @@ function calibrateIndex(projectDir) {
 // the project's own config names for the target, and that is the one the committed
 // results file records, so a result set says which target it ran against rather than
 // which port one laptop happened to get.
-async function calibrateEndpoint(projectDir, ctx, target) {
+//
+// The mail catcher follows the same split: the oracle's is the one `oracle up` started, and
+// any other target's is the one its own config names (`targets.<t>.mail_api`), or none.
+export async function calibrateEndpoint(projectDir, ctx, target) {
   if (target !== "old") {
     const configured = ctx.config?.targets?.[target]?.base_url ?? "";
-    return { baseUrl: configured, mailApi: "", configured };
+    return { baseUrl: configured, mailApi: ctx.config?.targets?.[target]?.mail_api ?? "", configured };
   }
   if (process.env.SDLC_ORACLE !== "mock") await oracleUp(projectDir, { target, stage: "calibrate" });
   const local = readLocal(projectDir, target);

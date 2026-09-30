@@ -22,7 +22,7 @@ const DEP_CONFIG = { project: { name: "mkt" }, targets: { new: { ...CONFIG.targe
 
 test("a target's sandbox settings default to the stack's compose file and seed service", () => {
   assert.deepEqual(targetSettings(CONFIG, "new"), {
-    baseUrl: "http://localhost:8080", identity: "sandbox-idp", dependsOn: {},
+    baseUrl: "http://localhost:8080", identity: "sandbox-idp", dependsOn: {}, mailApi: "",
     compose: "app/compose/compose.yaml", seedService: "seed", project: "sdlc-mkt-new",
   });
   const custom = { ...CONFIG, targets: { new: { ...CONFIG.targets.new, compose: "ops/dev.yaml", seed_service: "load" } } };
@@ -619,6 +619,44 @@ test("the config schema accepts the addresses a target declares it depends on, a
   assert.deepEqual(parseConfig(cfg(`{ identity: "${IDP_URL}" }`)).errors, []);
   assert.match(parseConfig(cfg(`{ Identity: "${IDP_URL}" }`)).errors.join(" "), /depends_on/, "a dependency is named the way every other name in this file is");
   assert.match(parseConfig(cfg("{ identity: 7 }")).errors.join(" "), /must be string/);
+});
+
+// A target's mail catcher is where every test that reads a message the application sent
+// reads it. Declared on the target, it reaches the suite as SDLC_MAIL_API and is waited for
+// like any other address the target is not usable without.
+const MAIL_URL = "http://localhost:8025";
+const MAIL_CONFIG = { project: { name: "mkt" }, targets: { new: { ...DEP_CONFIG.targets.new, mail_api: MAIL_URL } } };
+
+test("the config schema accepts a target's mail catcher address and refuses one that is not a URL", () => {
+  const cfg = (mail) => `pipeline: { repo: a, ref: main }\nprofile: greenfield\nstack: openshift-ts\nproject: { name: p, domains: [a] }\n`
+    + `targets:\n  new: { base_url: "http://localhost:8080", identity: sandbox-idp, mail_api: ${mail} }\n`
+    + `policy:\n  gates:\n    G0: { holder: tech-lead }\n    G1: { holder: tech-lead }\n    G-DESIGN: { holder: tech-lead }\n    G2: { holder: tech-lead }\n    G3: { holder: tech-lead }\n    G-POL: { holder: tech-lead }\n  default_tier: STANDARD\nskills: { packs: [] }\negress: { rules: [E-2] }\n`;
+  assert.deepEqual(parseConfig(cfg(`"${MAIL_URL}"`)).errors, []);
+  assert.match(parseConfig(cfg("7")).errors.join(" "), /mail_api/);
+  assert.match(parseConfig(cfg("not a url")).errors.join(" "), /mail_api/);
+  assert.equal(targetSettings(MAIL_CONFIG, "new").mailApi, MAIL_URL);
+});
+
+test("up waits for the target's mail catcher after the addresses it depends on", async (t) => {
+  const d = project(t);
+  const asked = [];
+  const { exec } = recorder({ "ps --all": { status: 0, stdout: psLines([{ Service: "web", State: "running" }]), stderr: "" } });
+  const health = async (url) => { asked.push(url); return true; };
+  assert.equal((await sandboxUp(d, MAIL_CONFIG, "new", { exec, health, sleep: noSleep })).ok, true);
+  assert.deepEqual(asked, ["http://localhost:8080", IDP_URL, MAIL_URL]);
+});
+
+test("a mail catcher that never answers is a sandbox that is not up, and a mail catcher on a port nothing publishes is the configuration's", async (t) => {
+  const d = project(t);
+  const { calls, exec } = recorder({
+    "ps --all": { status: 0, stdout: psLines([upRow("web", 8080), upRow("idp", 8081)]), stderr: "" },
+    "config --format json": { status: 0, stdout: COMPOSE_CONFIG, stderr: "" },
+  });
+  const r = await sandboxUp(d, MAIL_CONFIG, "new", { exec, health: async (url) => url !== MAIL_URL, sleep: noSleep, portFree: freePorts });
+  assert.equal(r.ok, false);
+  assert.equal(r.cause, "environment", "the fixture's compose file publishes no 8025, so the address is the configuration's");
+  assert.match(r.messages.join("\n"), /targets\.new\.mail_api names an address this project does not serve/);
+  assert.ok(!calls.some((c) => c.includes("run --rm seed")));
 });
 
 // Most of what `ps` can report about a container while the project is coming up is a state

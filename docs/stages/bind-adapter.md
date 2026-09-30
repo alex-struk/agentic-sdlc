@@ -121,8 +121,9 @@ browser rather than a script the session runs itself, and why the server is pinn
 tracked: `docs/decisions/0006-contract-stage-and-oracle.md`.
 
 `stage.env` carries three variables into the session, none of them printed by a dry run except by
-name: `SDLC_TARGET_URL` (the target's base URL), `SDLC_MAIL_API` (its mail catcher, `old` only —
-empty for every other target), and `SDLC_SANDBOX_PASSWORD` (the well-known sandbox password used to
+name: `SDLC_TARGET_URL` (the target's base URL), `SDLC_MAIL_API` (its mail catcher: the one
+`oracle up` started for `old`, and `targets.<t>.mail_api` for any other target — empty where that
+names none), and `SDLC_SANDBOX_PASSWORD` (the well-known sandbox password used to
 sign in through a `sandbox-idp` identity, taken straight from the operator's own environment, empty
 when unset). This is the first stage whose `env` actually carries something worth keeping off a
 dry run's screen.

@@ -158,8 +158,10 @@ function watchTick(projectDir, s, exec) {
 }
 
 // The addresses `up` waits for, in the order it waits for them: the target's own base URL,
-// then each address it declares under `targets.<t>.depends_on`, named. A target that
-// declares none waits for exactly what it waited for before.
+// then each address it declares under `targets.<t>.depends_on`, named, then its mail
+// catcher (`targets.<t>.mail_api`). `key` is where each is written in `.sdlc/config.yaml`,
+// which is what a refusal names when the address is the configuration's. A target that
+// declares none waits for its base URL alone.
 //
 // A front door that answers is not a usable sandbox on its own. Where a target signs
 // people in through an identity provider of its own, nothing behind that provider can be
@@ -167,7 +169,11 @@ function watchTick(projectDir, s, exec) {
 // all, while the web tier in front of it serves normally throughout
 // (docs/decisions/0018-a-sandbox-is-ready-when-what-it-serves-through-answers.md).
 function readiness(s) {
-  return [{ name: "", url: s.baseUrl }, ...Object.entries(s.dependsOn ?? {}).map(([name, url]) => ({ name, url }))];
+  return [
+    { name: "", url: s.baseUrl },
+    ...Object.entries(s.dependsOn ?? {}).map(([name, url]) => ({ name, url, key: `depends_on.${name}` })),
+    ...(s.mailApi ? [{ name: "mail catcher", url: s.mailApi, key: "mail_api" }] : []),
+  ];
 }
 
 const notRunning = (bad) => (bad.length === 1 ? "a service of this project is not running" : `${bad.length} services of this project are not running`);
@@ -275,7 +281,7 @@ export async function sandboxUp(projectDir, config, target, { exec = defaultExec
     return failed(causeOf(bad), [`docker compose up failed:\n${tail(up)}`, ...bad.map(describe)], bad);
   }
   const tick = watchTick(projectDir, s, exec);
-  for (const { name, url } of readiness(s)) {
+  for (const { name, url, key } of readiness(s)) {
     const answer = await health(url, tick);
     if (answer === true) continue;
     const waiting = name ? ` while waiting for its ${name} dependency at ${url}` : "";
@@ -297,7 +303,7 @@ export async function sandboxUp(projectDir, config, target, { exec = defaultExec
       const published = [...unserved.ports].sort((a, b) => a - b).join(", ");
       return failed(ENVIRONMENT, [
         `the sandbox is not up: nothing answered at ${url}, and no service in ${s.compose} publishes port ${unserved.port} — the ports it publishes are ${published}.`,
-        `targets.${target}.depends_on.${name} names an address this project does not serve. Nothing is recorded against the build: that address is in .sdlc/config.yaml, which no build writes.`,
+        `targets.${target}.${key} names an address this project does not serve. Nothing is recorded against the build: that address is in .sdlc/config.yaml, which no build writes.`,
       ]);
     }
     const ps = psRows(projectDir, s, exec);

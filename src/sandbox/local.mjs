@@ -19,6 +19,10 @@ export function targetSettings(config, target) {
     // The addresses this target is not usable without, named. Empty for a target that
     // declares none, which is every target that predates the key.
     dependsOn: t.depends_on ?? {},
+    // Where this target's mail catcher answers its API: the address the acceptance suite
+    // reads every message the application sent from (`SDLC_MAIL_API`), and one more address
+    // `sandbox up` waits for. Empty for a target that declares none.
+    mailApi: t.mail_api ?? "",
     compose: t.compose ?? DEFAULT_COMPOSE,
     seedService: t.seed_service ?? DEFAULT_SEED_SERVICE,
     project: `sdlc-${config.project.name}-${target}`,

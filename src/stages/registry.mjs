@@ -1774,8 +1774,9 @@ const deriveTests = {
 // for them to read back — the same pattern `derive-tests` stashes its own resolved
 // criteria in. `old`'s base URL and mail API only exist once `sdlc oracle up` has
 // actually started it and written `.sdlc/oracle-old.local.yaml` (`readLocal`,
-// `src/oracle/ports.mjs`); every other target's base URL is whatever its own config
-// entry names, and carries no mail catcher of its own to observe email through.
+// `src/oracle/ports.mjs`); every other target's base URL and mail catcher are whatever its
+// own config entry names (`targets.<t>.base_url`, `targets.<t>.mail_api`), and a target
+// that names no mail catcher has none to observe email through.
 function resolveBindAdapterTarget(projectDir, ctx) {
   const t = ctx.target;
   if (t === "old") {
@@ -1786,7 +1787,7 @@ function resolveBindAdapterTarget(projectDir, ctx) {
   } else {
     const target = ctx.config?.targets?.[t];
     ctx.bindAdapterBaseUrl = target?.base_url;
-    ctx.bindAdapterMailApi = "";
+    ctx.bindAdapterMailApi = target?.mail_api ?? "";
     ctx.bindAdapterIdentity = target?.identity;
   }
 }
