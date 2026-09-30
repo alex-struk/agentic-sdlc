@@ -1992,6 +1992,18 @@ export async function rulePending(projectDir) {
   return results;
 }
 
+// An agent's ruling, printed the way `sdlc rule <name> --by agent:<persona>` prints it. Shared
+// with `sdlc drive`, which runs the same ruling in-process.
+export async function ruleByAgentReported(projectDir, name, persona) {
+  const r = await ruleByAgent(projectDir, name, { persona });
+  console.log(formatRuling(projectDir, name, {
+    gate: r.gate, verdict: r.escalated ? "escalate" : r.verdict,
+    conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
+    opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed, clauses: r.clauses,
+  }));
+  return r;
+}
+
 COMMANDS.rule = async (args) => {
   try {
     return await ruleCli(args);
@@ -2027,12 +2039,7 @@ async function ruleCli({ pos, flags }) {
     // alongside an `agent:` holder is refused rather than quietly dispatched to the
     // agent path with the typed verdict discarded.
     if (pos[1]) throw new Error("an agent holder rules through its own turn; omit the verdict, or rule as a human role");
-    const r = await ruleByAgent(process.cwd(), pos[0], { persona: flags.by.slice("agent:".length) });
-    console.log(formatRuling(process.cwd(), pos[0], {
-      gate: r.gate, verdict: r.escalated ? "escalate" : r.verdict,
-      conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
-      opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed, clauses: r.clauses,
-    }));
+    await ruleByAgentReported(process.cwd(), pos[0], flags.by.slice("agent:".length));
     return 0;
   }
   // `--condition` may be given more than once, and each occurrence is one condition line.

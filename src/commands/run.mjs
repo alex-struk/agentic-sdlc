@@ -513,9 +513,20 @@ COMMANDS.run = async ({ pos, flags }) => {
 };
 
 async function runCli(pos, opts) {
-  const r = await runStage(process.cwd(), pos[0], opts);
+  return (await runReported(process.cwd(), pos[0], opts)).code;
+}
+
+// One stage run, printed and given its exit code the way `sdlc run` prints it, with the
+// stage's result alongside so a caller running it in-process (`sdlc drive`) can tell a run
+// that failed from one that recorded an outcome that did not pass, which share exit 1.
+export async function runReported(projectDir, name, opts) {
+  const r = await runStage(projectDir, name, opts);
+  return { code: reportRun(name, r), result: r };
+}
+
+function reportRun(name, r) {
   if (r.dryRun) return 0;
-  if (!r.ok) { console.error(`run ${pos[0]}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }
+  if (!r.ok) { console.error(`run ${name}: failed\n  ${(r.messages ?? []).join("\n  ")}`); return 1; }
   if (r.text) console.log(r.text);
   // A run can be recorded correctly and still not have passed, and the two must not read
   // alike. `run verify: ok` over a slice whose criteria were never exercised is the one
@@ -523,10 +534,10 @@ async function runCli(pos, opts) {
   // as success, and the exit code said the same thing — the defect decisions 0012 and
   // 0017 each fixed one instance of. The trailer names the verdict instead, and the exit
   // is non-zero.
-  if (r.notPassed) { console.error(`run ${pos[0]}: ${r.notPassed}`); return 1; }
+  if (r.notPassed) { console.error(`run ${name}: ${r.notPassed}`); return 1; }
   // A proposal the runner escalated as it opened it is waiting on the escalation target, not
   // the gate holder, and the line says so.
   const escalated = r.proposal?.escalatedTo ? `, escalated to ${r.proposal.escalatedTo}: owed work was sent back past its limit` : "";
-  console.log(`run ${pos[0]}: ok${r.proposal ? ` (opened ${r.proposal.branch}${escalated})` : ""}`);
+  console.log(`run ${name}: ok${r.proposal ? ` (opened ${r.proposal.branch}${escalated})` : ""}`);
   return 0;
 }
