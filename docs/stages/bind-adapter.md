@@ -159,7 +159,16 @@ password from `process.env.SDLC_SANDBOX_PASSWORD` at run time
     `.sdlc/oracle-old.local.yaml`, failing `bind-adapter: the old target is not up; run sdlc oracle
     up first` when that file does not exist; for any other target, `targets.<t>.base_url`. The
     probe itself is a plain "does anything answer at all" check — any HTTP status counts — with a
-    5s timeout, and is skipped entirely under `SDLC_ORACLE=mock`.
+    5s timeout, and is skipped entirely under `SDLC_ORACLE=mock`. Any target other than the
+    oracle's is also refused when the copy of the oracle `oracle up` recorded is on its address's
+    port, since what answers there then is the old application. Either refusal of such a target
+    reads `bind-adapter: the <t> target's sandbox is not up — <finding>; run sdlc sandbox up
+    --target <t> --from <branch> first`, where the branch is the newest open build proposal of the
+    slice the run's rebind entries name (an entry naming no slice belongs to the slice claiming its
+    criterion; with no entries, every slice in `plan/tasks.md` is a candidate). With no open build
+    proposal among them, or one for more than one slice, the refusal says so and names no branch.
+    `sdlc drive` acts on the refusal that names one
+    (`docs/decisions/0078-drive-starts-the-new-sandbox-for-a-rebind.md`).
 - **Post-checks**, run against the working tree after the agent session ends, in order:
   - `checkSeparation` (`src/checks/separation.mjs`): the adapter asserts nothing, defines no
     `test()`, and imports nothing from `tests/acceptance/` or `app/`.

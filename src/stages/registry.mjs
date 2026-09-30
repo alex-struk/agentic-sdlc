@@ -29,6 +29,8 @@ import { bindingGaps, loadContract, writeGenerated } from "../spec/surface.mjs";
 import { checkGenerated } from "../checks/generated.mjs";
 import { turnsFor } from "../runner/executor.mjs";
 import { readLocal } from "../oracle/ports.mjs";
+import { instancesOf } from "../commands/oracle.mjs";
+import { bindingBranch } from "./slices.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
 import { propose } from "../commands/propose.mjs";
 import { escalateOnBranch } from "../runner/escalation.mjs";
@@ -1809,6 +1811,37 @@ function probeHttp(url) {
   }
 }
 
+// The port of `url`, the scheme's own where it names none, or `null` for no URL at all.
+function portOfUrl(url) {
+  try {
+    const u = new URL(url);
+    return Number(u.port || (u.protocol === "https:" ? 443 : 80));
+  } catch { return null; }
+}
+
+// The oracle's copy that answers at `url`, as `oracle up` recorded it, or `null`. A rebuilt
+// target's sandbox publishes on a port fixed in `targets.<t>.base_url`, and `oracle up`
+// keeps the port `oracle.base_url` names whenever it is free, so a project can give both
+// the same one: whichever started first holds it. Only one of them answers there, and a
+// probe cannot tell which.
+export function oracleAnswering(local, url) {
+  const want = portOfUrl(url);
+  if (!want) return null;
+  const copies = [...instancesOf(local), ...Object.values(local?.configurations ?? {})];
+  return copies.find((c) => c?.ports?.app === want || portOfUrl(c?.base_url) === want) ?? null;
+}
+
+// Why a rebuilt target's sandbox is not the application a binding can run against, and the
+// command that starts the right one. `branch` is `bindingBranch`'s answer. The refusal ends
+// `run sdlc sandbox up --target <t> --from <branch> first` whenever the branch is known,
+// which is the sentence `sdlc drive` recognises and acts on (`docs/decisions/0078`).
+export function sandboxNotUp(target, found, { branch, why }) {
+  const head = `bind-adapter: the ${target} target's sandbox is not up — ${found}`;
+  return branch
+    ? `${head}; run sdlc sandbox up --target ${target} --from ${branch} first`
+    : `${head}, and there is no one branch to start it from: ${why}. Start the application to bind against with sdlc sandbox up --target ${target} --from <branch>, then run this again`;
+}
+
 // The target must actually be reachable before an agent turn spends a session walking
 // it with a browser. `--target old` fails by name ("run sdlc oracle up first") when
 // nothing has started it yet; any other target already had its shape checked by
@@ -1816,7 +1849,11 @@ function probeHttp(url) {
 // rather than repeating that check's own message. `SDLC_ORACLE=mock` — the same escape
 // hatch every other oracle-facing call in this pipeline uses (`src/oracle/compose.mjs`)
 // — skips the real network probe entirely, since a mock run has no server to answer it.
-function checkBindAdapterTargetUp(ctx) {
+//
+// A rebuilt target is refused as not up on two findings: nothing answers at its address, or
+// the oracle does, which would have the session bind the old application under the new
+// target's name. Either refusal names the build proposal to start the sandbox from.
+function checkBindAdapterTargetUp(projectDir, ctx) {
   const id = "bind-adapter-target-up";
   if (!ctx.target) return { id, ok: true, messages: [] };
   if (ctx.target === "old" && ctx.config?.oracle?.target !== "old") return { id, ok: true, messages: [] };
@@ -1828,8 +1865,17 @@ function checkBindAdapterTargetUp(ctx) {
   }
   if (process.env.SDLC_ORACLE === "mock") return { id, ok: true, messages: [] };
   const baseUrl = ctx.bindAdapterBaseUrl.replace(/\/$/, "");
-  if (!probeHttp(`${baseUrl}/`))
-    return { id, ok: false, messages: [`bind-adapter: ${baseUrl}/ did not answer`] };
+  const rebuilt = ctx.target !== "old";
+  const oracleTarget = ctx.config?.oracle?.target;
+  const oracle = rebuilt && oracleTarget ? oracleAnswering(readLocal(projectDir, oracleTarget), baseUrl) : null;
+  if (oracle) {
+    return { id, ok: false, messages: [sandboxNotUp(ctx.target, `what answers at ${baseUrl}/ is the oracle, which sdlc oracle up started there, and binding against it would bind the old application`, bindingBranch(projectDir, ctx.bindAdapterRebind))] };
+  }
+  if (!probeHttp(`${baseUrl}/`)) {
+    return { id, ok: false, messages: [rebuilt
+      ? sandboxNotUp(ctx.target, `nothing answered at ${baseUrl}/`, bindingBranch(projectDir, ctx.bindAdapterRebind))
+      : `bind-adapter: ${baseUrl}/ did not answer`] };
+  }
   return { id, ok: true, messages: [] };
 }
 
@@ -2159,7 +2205,7 @@ const bindAdapter = {
     return [
       checkTargetOption("bind-adapter", ctx),
       checkSandboxPassword("bind-adapter", ctx, "binding against"),
-      checkBindAdapterTargetUp(ctx),
+      checkBindAdapterTargetUp(projectDir, ctx),
       checkBindAdapterRevisionSource(projectDir, ctx),
     ];
   },

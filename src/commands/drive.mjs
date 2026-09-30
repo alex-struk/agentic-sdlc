@@ -12,7 +12,10 @@ import { whatNext } from "../runner/next.mjs";
 import { drive, classifyStep, progressMark, DEFAULT_MAX_STEPS, DRIVE_EXIT } from "../runner/drive.mjs";
 import { runReported } from "./run.mjs";
 import { ruleByAgentReported } from "./rule.mjs";
-import { runOracle } from "./oracle.mjs";
+import { runOracle, instancesOf } from "./oracle.mjs";
+import { runSandbox } from "./sandbox.mjs";
+import { loadConfig } from "../config/load.mjs";
+import { readLocal } from "../oracle/ports.mjs";
 import { COMMANDS } from "../cli.mjs";
 
 // The operator's view of a loop that may run for hours: what it is doing and since when.
@@ -92,6 +95,23 @@ async function oracle(projectDir, sub) {
   return { ok: !error && value === 0, output: error ? [...output, error.message] : output };
 }
 
+// Whether `oracle up` has recorded a copy of the oracle as running, a configuration's
+// included: the file it writes is what `oracle down` reads to take them down.
+function oracleUp(projectDir) {
+  try {
+    const target = loadConfig(join(projectDir, ".sdlc", "config.yaml")).config?.oracle?.target;
+    const local = target ? readLocal(projectDir, target) : null;
+    return instancesOf(local).length > 0 || Object.keys(local?.configurations ?? {}).length > 0;
+  } catch { return false; }
+}
+
+// `sdlc sandbox up|down --target <t> --from <branch>`, through the function the command
+// calls. What it prints is already redacted of the sandbox password (`src/commands/sandbox.mjs`).
+async function sandbox(projectDir, sub, { target, from }) {
+  const { value, error, output } = await captured(() => runSandbox(projectDir, sub, { target, from }));
+  return { ok: !error && value === 0, output: error ? [...output, error.message] : output };
+}
+
 // A line the loop writes about a step waits in the ignored pending record and is written by
 // the step's own commit, ahead of the step's own line, the way a command a stage runs is
 // recorded (`deferRun`). A stop is committed on its own, on `main` and only from a clean
@@ -118,6 +138,8 @@ export function defaultDeps() {
     checkoutMain: (dir) => git(["checkout", "-q", "main"], dir),
     execute,
     oracle,
+    oracleUp,
+    sandbox,
     mark: progressMark,
     record,
     heartbeat: (dir, beat) => writeText(join(dir, HEARTBEAT), stringify({ ...beat, pid: process.pid, updated: new Date().toISOString() })),

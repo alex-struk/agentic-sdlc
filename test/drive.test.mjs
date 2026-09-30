@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { drive, classifyStep, targetTrouble, DRIVE_EXIT } from "../src/runner/drive.mjs";
+import { drive, classifyStep, targetTrouble, sandboxTrouble, DRIVE_EXIT } from "../src/runner/drive.mjs";
 import { AUTH_ADVICE } from "../src/runner/executor.mjs";
 
 // A `next` answer naming one command, the shape `whatNext` returns.
@@ -18,15 +18,21 @@ const WAITING = { state: "waiting", next: null, ready: [], held: [],
 // A fake world: `answers` is what `next` says on each read (the last one repeats), `steps` is
 // what each execution returns in order (the last one repeats). Everything drive does is
 // written down so a test can assert on it.
-function world({ answers, steps = [{ ok: true }], oracle = [], marks = null, tree = null } = {}) {
-  const calls = { next: 0, executed: [], oracle: [], steps: [], stops: [], recoveries: [], beats: [], printed: [] };
+function world({ answers, steps = [{ ok: true }], oracle = [], oracleUp = false, sandbox = {}, marks = null, tree = null } = {}) {
+  const calls = { next: 0, executed: [], oracle: [], sandbox: [], order: [], steps: [], stops: [], recoveries: [], beats: [], printed: [] };
   let s = 0;
   let o = 0;
   const deps = {
     readNext: () => { const a = answers[Math.min(calls.next, answers.length - 1)]; calls.next++; if (a instanceof Error) throw a; return a; },
     tree: () => (tree ? tree(calls) : { clean: true, dirty: [], branch: "main" }),
-    execute: async (_dir, item) => { calls.executed.push(item.command); return steps[Math.min(s++, steps.length - 1)]; },
-    oracle: async (_dir, sub) => { calls.oracle.push(sub); return oracle[Math.min(o++, oracle.length - 1)] ?? { ok: true, output: [] }; },
+    execute: async (_dir, item) => { calls.executed.push(item.command); calls.order.push("step"); return steps[Math.min(s++, steps.length - 1)]; },
+    oracle: async (_dir, sub) => { calls.oracle.push(sub); calls.order.push(`oracle ${sub}`); return oracle[Math.min(o++, oracle.length - 1)] ?? { ok: true, output: [] }; },
+    oracleUp: () => oracleUp,
+    sandbox: async (_dir, sub, { target, from }) => {
+      calls.sandbox.push(`${sub} --target ${target} --from ${from}`);
+      calls.order.push(`sandbox ${sub}`);
+      return sandbox[sub] ?? { ok: true, output: [] };
+    },
     mark: (_dir, item) => (marks ? marks(calls, item) : { n: calls.executed.length, why: item.why }),
     record: {
       step: (_dir, line) => calls.steps.push(line),
@@ -170,6 +176,115 @@ test("an unusable target is restarted: taken down before it is brought up", asyn
   const r = await drive("/p", { deps });
   assert.equal(r.code, 0);
   assert.deepEqual(calls.oracle, ["down", "up"]);
+});
+
+const NEW_NOT_UP = "bind-adapter: the new target's sandbox is not up — nothing answered at http://localhost:4300/; run sdlc sandbox up --target new --from proposal/build-slice-3-2 first";
+const ORACLE_ON_NEW = "bind-adapter: the new target's sandbox is not up — what answers at http://localhost:4300/ is the oracle, which sdlc oracle up started there, and binding against it would bind the old application; run sdlc sandbox up --target new --from proposal/build-slice-3-2 first";
+
+test("a new target whose sandbox is not up is started from the branch the step named, the step run once more, and the sandbox taken down", async () => {
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "new" }), IDLE],
+    steps: [{ ok: false, messages: [NEW_NOT_UP] }, { ok: true }],
+  });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 0);
+  assert.deepEqual(calls.sandbox, ["up --target new --from proposal/build-slice-3-2", "down --target new --from proposal/build-slice-3-2"]);
+  assert.deepEqual(calls.order, ["step", "sandbox up", "step", "sandbox down"]);
+  assert.deepEqual(calls.oracle, [], "an oracle that is not up is not taken down");
+  assert.equal(calls.executed.length, 2);
+  const recorded = calls.recoveries.join("\n");
+  assert.match(recorded, /sdlc sandbox up --target new --from proposal\/build-slice-3-2/);
+  assert.match(recorded, /sdlc sandbox down --target new --from proposal\/build-slice-3-2/);
+});
+
+test("the oracle is taken down before the new target's sandbox is started, when it is up", async () => {
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "new" }), IDLE],
+    steps: [{ ok: false, messages: [ORACLE_ON_NEW] }, { ok: true }],
+    oracleUp: true,
+  });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 0);
+  assert.deepEqual(calls.order, ["step", "oracle down", "sandbox up", "step", "sandbox down"]);
+  assert.match(calls.recoveries[0], /oracle down/);
+});
+
+test("the new target's sandbox is taken down after a retry that fails, and the failure stops the loop with 1", async () => {
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "new" })],
+    steps: [{ ok: false, messages: [NEW_NOT_UP] }, { ok: false, messages: ["post-checks failed: tests/adapters/new/bindings.yaml is missing"] }],
+  });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 1);
+  assert.deepEqual(calls.order, ["step", "sandbox up", "step", "sandbox down"]);
+  assert.match(calls.stops[0], /step 1 \(`sdlc run bind-adapter --target new`\) failed/);
+  assert.match(calls.printed.join("\n"), /bindings\.yaml is missing/);
+});
+
+test("a new target's sandbox that cannot be started stops with 1, without running the step again, and is still taken down", async () => {
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "new" })],
+    steps: [{ ok: false, messages: [NEW_NOT_UP] }],
+    sandbox: { up: { ok: false, output: ["the sandbox is not up: a service of this project is not running", "keycloak exited (1)."] } },
+  });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 1);
+  assert.equal(calls.executed.length, 1);
+  assert.deepEqual(calls.order, ["step", "sandbox up", "sandbox down"]);
+  assert.match(calls.stops[0], /found the new target's sandbox not up, and it could not be started from proposal\/build-slice-3-2/);
+  assert.match(calls.printed.join("\n"), /keycloak exited/);
+});
+
+test("a new target's sandbox that cannot be taken down after the step stops with 1 and says how to take it down", async () => {
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "new" }), IDLE],
+    steps: [{ ok: false, messages: [NEW_NOT_UP] }, { ok: true }],
+    sandbox: { down: { ok: false, output: ["sandbox down: HEAD could not be put back on main"] } },
+  });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 1);
+  assert.equal(calls.executed.length, 2);
+  assert.match(calls.stops[0], /could not be taken down afterwards; take it down by hand: sdlc sandbox down --target new --from proposal\/build-slice-3-2/);
+});
+
+test("a binding that names no branch to start the sandbox from is not recovered: it stops with 1 and says why", async () => {
+  const text = "bind-adapter: the new target's sandbox is not up — nothing answered at http://localhost:4300/, and there is no one branch to start it from: no open build proposal for slice 3. Start the application to bind against with sdlc sandbox up --target new --from <branch>, then run this again";
+  const { deps, calls } = world({ answers: [runItem("bind-adapter", { target: "new" })], steps: [{ ok: false, messages: [text] }] });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 1);
+  assert.deepEqual(calls.sandbox, []);
+  assert.deepEqual(calls.oracle, []);
+  assert.match(calls.printed.join("\n"), /no open build proposal for slice 3/);
+});
+
+test("a sandbox that could not start on a port the oracle holds: the oracle is taken down and the step run once more", async () => {
+  const text = "verify slice 2: the sandbox did not start, so nothing was verified.\nthe sandbox was not started: app/compose.yaml publishes a host port this machine is already using — port 4300, held by docker-proxy.";
+  const { deps, calls } = world({ answers: [runItem("verify", { slice: 2 }), IDLE], steps: [{ ok: false, messages: [text] }, { ok: true }], oracleUp: true });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 0);
+  assert.deepEqual(calls.order, ["step", "oracle down", "step"]);
+  assert.deepEqual(calls.sandbox, []);
+});
+
+test("a sandbox that could not start on a held port while the oracle is not up is a failure", async () => {
+  const text = "the sandbox was not started: app/compose.yaml publishes a host port this machine is already using — port 4300, held by node.";
+  const { deps, calls } = world({ answers: [runItem("verify", { slice: 2 })], steps: [{ ok: false, messages: [text] }] });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 1);
+  assert.deepEqual(calls.oracle, []);
+  assert.equal(calls.executed.length, 1);
+});
+
+test("the old target's recovery does not touch the new target's sandbox", async () => {
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "old" }), IDLE],
+    steps: [{ ok: false, messages: ["bind-adapter: the old target is not up; run sdlc oracle up first"] }, { ok: true }],
+    oracleUp: true,
+  });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 0);
+  assert.deepEqual(calls.order, ["step", "oracle up", "step"]);
+  assert.deepEqual(calls.sandbox, []);
 });
 
 test("no progress: the same command named again with nothing it could change changed stops with 6", async () => {
@@ -326,4 +441,14 @@ test("targetTrouble tells a target that is not up from one that is up and unusab
   assert.equal(targetTrouble("calibrate old: halted, environment fault — the target could not be reset or reached for 3 of 3 row(s)"), "unusable");
   assert.equal(targetTrouble("post-checks failed: app/PROBE.md is missing"), null);
   assert.equal(targetTrouble(""), null);
+});
+
+test("sandboxTrouble reads the branch a binding named, a port the sandbox could not have, and nothing else", () => {
+  assert.deepEqual(sandboxTrouble(NEW_NOT_UP), { kind: "start", target: "new", from: "proposal/build-slice-3-2" });
+  assert.deepEqual(sandboxTrouble(ORACLE_ON_NEW), { kind: "start", target: "new", from: "proposal/build-slice-3-2" });
+  assert.deepEqual(sandboxTrouble("the sandbox was not started: app/compose.yaml publishes 2 host ports this machine is already using — port 4300; port 8025."), { kind: "ports" });
+  assert.equal(sandboxTrouble("bind-adapter: the new target's sandbox is not up — nothing answered at http://localhost:4300/, and there is no one branch to start it from: no open build proposal for slice 3. Start the application to bind against with sdlc sandbox up --target new --from <branch>, then run this again"), null);
+  assert.equal(sandboxTrouble("the application it binds against is on proposal/build-slice-3 alone, so sdlc sandbox up --target new --from proposal/build-slice-3 first"), null, "next's own advice is not a refusal");
+  assert.equal(sandboxTrouble("bind-adapter: the old target is not up; run sdlc oracle up first"), null);
+  assert.equal(sandboxTrouble(""), null);
 });

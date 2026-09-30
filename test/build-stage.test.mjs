@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { readSlice, buildProposals, specFilesFor } from "../src/stages/slices.mjs";
+import { readSlice, buildProposals, bindingBranch, specFilesFor } from "../src/stages/slices.mjs";
 import { MODES } from "../src/runner/workspace.mjs";
 import { build, checkBuildScope, appCheck } from "../src/stages/build.mjs";
 
@@ -46,6 +46,41 @@ test("a slice's proposals are listed newest first", (t) => {
   run(["init", "-q", "-b", "main"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "--allow-empty", "-m", "x"]);
   for (const b of ["build-slice-1", "build-slice-1-2", "build-slice-1-3", "build-slice-12"]) run(["branch", `proposal/${b}`]);
   assert.deepEqual(buildProposals(d, 1), ["build-slice-1-3", "build-slice-1-2", "build-slice-1"]);
+});
+
+// A repository with `proposal/<name>` for each name, and a gate file on each of `ruled`.
+function withProposals(t, names, ruled = []) {
+  const d = project(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const commit = (m) => run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "--allow-empty", "-m", m]);
+  run(["init", "-q", "-b", "main"]); run(["add", "-A"]); commit("x");
+  for (const b of names) {
+    run(["branch", `proposal/${b}`]);
+    if (!ruled.includes(b)) continue;
+    run(["checkout", "-q", `proposal/${b}`]);
+    mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+    writeFileSync(join(d, ".sdlc", "gates", `${b}.yaml`), "verdict: return\n");
+    run(["add", "-A"]); commit("ruled");
+    run(["checkout", "-q", "main"]);
+  }
+  return d;
+}
+
+test("a binding of the new target runs against the newest open build proposal of the slice its entries name", (t) => {
+  const d = withProposals(t, ["build-slice-1", "build-slice-1-2", "build-slice-2"], ["build-slice-1"]);
+  assert.deepEqual(bindingBranch(d, [{ id: "R-4.1", slice: 1 }]), { branch: "proposal/build-slice-1-2" });
+  // An entry that names no slice belongs to the slice that claims its criterion.
+  assert.deepEqual(bindingBranch(d, [{ id: "R-1.1" }]), { branch: "proposal/build-slice-2" });
+});
+
+test("a binding of the new target with no one branch to start from says why", (t) => {
+  const d = withProposals(t, ["build-slice-1", "build-slice-2"], ["build-slice-1"]);
+  assert.match(bindingBranch(d, [{ id: "R-4.1", slice: 1 }]).why, /no open build proposal for slice 1/);
+  assert.match(bindingBranch(d, [{ id: "R-9.9" }]).why, /no slice in plan\/tasks\.md claims/);
+  const both = withProposals(t, ["build-slice-1", "build-slice-2"]);
+  assert.match(bindingBranch(both, [{ id: "R-4.1", slice: 1 }, { id: "R-1.1", slice: 2 }]).why, /slices 1, 2 each have an open build proposal/);
+  // With nothing owed, the one open build proposal in the plan is the application to bind.
+  assert.deepEqual(bindingBranch(d, []), { branch: "proposal/build-slice-2" });
 });
 
 test("the spec files for a slice's criteria are found wherever their domain keeps them", (t) => {

@@ -16,7 +16,7 @@ import { runStage } from "../src/commands/run.mjs";
 import { resume } from "../src/commands/resume.mjs";
 import { rule, settleApproved } from "../src/commands/rule.mjs";
 import { propose } from "../src/commands/propose.mjs";
-import { stageFor, recordReturnOnMain } from "../src/stages/registry.mjs";
+import { stageFor, recordReturnOnMain, oracleAnswering, sandboxNotUp } from "../src/stages/registry.mjs";
 import { writeLocal } from "../src/oracle/ports.mjs";
 import { writeGenerated } from "../src/spec/surface.mjs";
 import { checkGenerated } from "../src/checks/generated.mjs";
@@ -1567,6 +1567,17 @@ test("sdlc run bind-adapter --target old: probe fails promptly when no server li
   } finally {
     restoreEgress(prevEgress);
   }
+});
+
+test("bind-adapter --target new: the oracle answering at the new target's address is a sandbox that is not up", () => {
+  const local = { target: "old", base_url: "http://localhost:4300", ports: { app: 4300, db: 5500, mail_api: 8025 }, compose_project: "sdlc-p-old" };
+  assert.equal(oracleAnswering(local, "http://localhost:4300")?.compose_project, "sdlc-p-old");
+  assert.equal(oracleAnswering({ ...local, base_url: "http://localhost:3100", ports: { app: 3100 } }, "http://localhost:4300"), null);
+  assert.equal(oracleAnswering(null, "http://localhost:4300"), null);
+  assert.equal(sandboxNotUp("new", "nothing answered at http://localhost:4300/", { branch: "proposal/build-slice-3" }),
+    "bind-adapter: the new target's sandbox is not up — nothing answered at http://localhost:4300/; run sdlc sandbox up --target new --from proposal/build-slice-3 first");
+  assert.match(sandboxNotUp("new", "nothing answered at http://localhost:4300/", { why: "no open build proposal for slice 3" }),
+    /there is no one branch to start it from: no open build proposal for slice 3\. Start the application to bind against with sdlc sandbox up --target new --from <branch>/);
 });
 
 test("sdlc run bind-adapter --target old: a sandbox-idp target with no sandbox password is refused before any agent turn", async () => {

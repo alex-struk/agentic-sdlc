@@ -19,7 +19,7 @@ import { appendRun } from "../lib/runrecord.mjs";
 import { runSuite } from "../testrun/playwright.mjs";
 import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
-import { readSlice, buildProposals, buildProposalBase, specFilesFor } from "./slices.mjs";
+import { readSlice, buildProposals, buildProposalBase, openBuildProposal, specFilesFor } from "./slices.mjs";
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
 import { ADDRESSED_CONDITION_FORM, OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
 import { isNotAsserted, notAssertedEntries, environmentGap, MAIL_CATCHER_UNSET_RE } from "../testrun/results.mjs";
@@ -189,13 +189,6 @@ function firstError(r) {
   const said = [...new Set(lines.slice(1).filter((l) => APPLICATION_LINE_RE.test(l)))];
   const text = [lines[0], ...said].join(" — ");
   return text.length > MAX_FAILURE_TEXT ? `${text.slice(0, MAX_FAILURE_TEXT - 1)}…` : text;
-}
-
-// An open build proposal is one with no gate file on its branch yet: not ruled, not
-// returned, not escalated. The newest is the one a revision produced last.
-function openBuildProposal(projectDir, slice) {
-  return buildProposals(projectDir, slice)
-    .find((name) => !gitOk(["cat-file", "-e", `proposal/${name}:.sdlc/gates/${name}.yaml`], projectDir)) ?? null;
 }
 
 // Every proposal name this slice's build has ever gone under — wherever its gate file

@@ -74,8 +74,8 @@ command is named the loop stops rather than run it again. Other steps in between
 record count: the comparison is with the last run of the same command, and anything that changed
 since, by whichever step, makes the mark differ.
 
-**Recovery.** One kind, attempted at most once per step, each action on the run record before it
-is taken:
+**Recovery.** Two kinds, the oracle and the new target's sandbox, attempted at most once per step,
+each action on the run record before it is taken:
 
 - **The oracle is not up.** A step that says so (`run sdlc oracle up first`, `oracle up failed`) is
   answered by `sdlc oracle up`, then the step is run once more.
@@ -87,6 +87,24 @@ is taken:
   could not be reset or reached`) is answered by taking the oracle down and bringing it up, since
   `oracle up` alone finds the containers running and changes nothing, then the step is run once
   more.
+
+- **The new target's sandbox is not up.** A binding that says so names the build proposal to start
+  it from (`the new target's sandbox is not up — …; run sdlc sandbox up --target new --from
+  proposal/build-slice-<n>[-k] first`, `docs/stages/bind-adapter.md`). The oracle is taken down
+  first when `oracle up` has a copy of it recorded as running, since the two publish on this
+  machine's ports and can share one; then `sdlc sandbox up --target new --from <branch>`, the step
+  once more, and `sdlc sandbox down --target new --from <branch>` whatever became of the start or
+  the step. A sandbox that does not start stops the loop with 1 and the tail of its output, and is
+  still taken down. A sandbox that cannot be taken down stops the loop with 1 and the command to
+  take it down by hand. A refusal that names no branch — no open build proposal, or more than one
+  slice's — is a stop (`docs/decisions/0078-drive-starts-the-new-sandbox-for-a-rebind.md`).
+- **A sandbox could not start on a port the oracle holds.** A step whose sandbox was refused a
+  host port this machine already holds (`the sandbox was not started: … publishes a host port this
+  machine is already using`), while the oracle is up, is answered by `sdlc oracle down` and run
+  once more. With the oracle not up, a held port is something else's and a stop.
+
+`SDLC_SANDBOX_PASSWORD` reaches `sandbox up` and the step from the loop's own environment. It is
+passed in no argument and written into no record line.
 
 A step that fails again after its recovery stops the loop with 1. A step that recorded an outcome
 that did not pass — a verify that returned a build — is not a failure: the record moved, and the
@@ -100,6 +118,7 @@ through the run record's redaction like every other line:
 ```
 - 10:02:11 drive: step 3: `sdlc run bind-adapter --target <t>` — phase 2 Tests is not complete (…), and bind-adapter for target <t> is next in it
 - 10:02:12 drive: step 3 recovery: the oracle was not up; bringing it up (sdlc oracle up), then running the step once more
+- 11:14:03 drive: step 9 recovery: the new target's sandbox was not up; starting it from proposal/build-slice-2 (sdlc sandbox up --target new --from proposal/build-slice-2), running the step once more, and taking it down after (sdlc sandbox down --target new --from proposal/build-slice-2)
 - 10:31:40 drive: stopped after 7 steps — waiting on a person: <role>: <proposal>
 ```
 
@@ -168,6 +187,8 @@ person looks first: running it again unchanged reaches the same stop.
 - A stage that fails for a reason that is really the oracle's but says so in words the recovery
   does not recognise is stopped on as a failure, and a person runs `sdlc oracle up` and starts the
   loop again.
+- A new target's sandbox already running from a different build proposal answers the binding's
+  probe, and the binding runs against it. The loop starts a sandbox only on a binding's refusal.
 - Output a child process writes straight to the terminal — a compose build — is shown but is not
   part of the tail printed on a stop; the stage's own account of its failure is.
 - A process killed without warning leaves a heartbeat that says `running`; `--status` reads the
