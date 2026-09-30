@@ -73,6 +73,18 @@ handed every domain's needs. Work that rests on contract never holds it, so cont
 while something else can run, whatever `policy.next.order` says
 (`docs/decisions/0069-contract-waits-for-the-test-writer.md`).
 
+**An adapter is ruled before it is measured with.** A verify runs a slice's tests against the new
+target through the adapter on `main`, and a calibration runs the suite against its target through
+that target's adapter on `main`. While a `bind-adapter-<t>-*` proposal is open, every ready item
+that measures with `t`'s adapter — `sdlc run verify --slice <n>` for the new target, and `sdlc run
+calibrate --target <t>` however it came to be offered — comes after that proposal's ruling. Where
+an agent can rule it now, the ruling is moved to just ahead of the first such item, whatever kind
+either is, and its `rule` names the step it goes before; everything else keeps its place. Where
+it waits on a person, each such item is listed under `held:` with the proposal it waits for, and
+is offered again once that proposal is ruled. An open adapter proposal for one target holds
+nothing that measures with another
+(`docs/decisions/0079-an-adapter-is-ruled-before-it-is-measured-with.md`).
+
 **A calibration cadence.** With `policy.next.calibrate_after: <n>` set (`docs/config.md`), a
 calibration of the oracle's target falls due once `n` approved proposals that change what it
 measures have merged into `main` since its suite last ran. A proposal counts when the merge that
@@ -198,7 +210,7 @@ an adapter is stale.
 
 `--json` prints the same as one object: `state` (`run`, `waiting` or `idle`), `next` (the chosen
 item, with `kind` — `proposals`, `owed`, `sequence`, or `calibration` for a calibration the cadence made due — `stage`, `args`, `command`, `why` and `rule`), `ready` (every ready item in
-order, `next` first), `held` (each held revision, and a contract run held for the test writer with the runs held behind it, each with `command`, `why` and, for a revision, `name`), `waiting`, `owed` (open entries counted by kind and stage), `stale` (by
+order, `next` first), `held` (each held revision, a contract run held for the test writer with the runs held behind it, and each verify or calibration held for an adapter proposal a person holds, each with `command`, `why` and, for a revision or a verify, `name`), `waiting`, `owed` (open entries counted by kind and stage), `stale` (by
 domain), `staleAdapters` (by target: the `missing` and `extra` names, whether it is `offered`,
 and what it `waits` for when it is not), `phase`, `complete`, `blocked` and `order`.
 

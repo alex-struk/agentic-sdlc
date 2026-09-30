@@ -947,3 +947,89 @@ test("a build whose verify could not test a criterion in this environment waits 
   const again = whatNext(d);
   assert.equal(again.next.command, "sdlc run verify --slice 1");
 });
+
+// ── an adapter is ruled before it is measured with ────────────────────────────────────────
+
+// A verify runs the slice's tests against the new target with the adapter on `main`, and a
+// calibration runs the suite against its target with that target's adapter. An open proposal for
+// that adapter is ruled first, so neither measures with the adapter it is about to replace
+// (`docs/decisions/0079`).
+
+// The tip of `branch` moved later than anything else, so the oldest-first order would put the
+// proposal on it after every other.
+function newest(d, branch) {
+  git(d, ["checkout", "-q", branch]);
+  execFileSync("git", [...AS_PIPELINE, "commit", "-q", "--allow-empty", "-m", "later"], {
+    cwd: d, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, GIT_COMMITTER_DATE: "2099-01-01T00:00:00Z", GIT_AUTHOR_DATE: "2099-01-01T00:00:00Z" },
+  });
+  git(d, ["checkout", "-q", "main"]);
+}
+
+const TWO_TARGETS = ["targets:", "  new: { base_url: \"http://localhost:8080\", identity: sandbox-idp }", "  other: { base_url: \"http://localhost:8081\", identity: sandbox-idp }"];
+
+// A build proposal for slice 1 with no verify result, and an open proposal for `target`'s adapter
+// whose branch is newer than the build's.
+function buildAndAdapter(d, target) {
+  approved(d, ["intent-thing"], "G0");
+  approved(d, ["plan"], "G2");
+  commit(d, { "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1\n", "app/index.ts": "export {};\n" });
+  proposal(d, "build-slice-1", "G3", { files: { "app/index.ts": "export const a = 1;\n" } });
+  proposal(d, `bind-adapter-${target}-2`, "G-BIND", { files: { [`tests/adapters/${target}/index.ts`]: "export default 2;\n" } });
+  newest(d, `proposal/bind-adapter-${target}-2`);
+}
+
+test("an open proposal for the new target's adapter is ruled before a build is verified with it", (t) => {
+  const d = project(t, { profile: "feature", extra: TWO_TARGETS, gates: { "G-BIND": { holder: "agent:reviewer", escalate_to: "lead" } } });
+  buildAndAdapter(d, "new");
+  const r = whatNext(d);
+  assert.deepEqual(r.ready.map((c) => c.command), ["sdlc rule bind-adapter-new-2 --by agent:reviewer", "sdlc run verify --slice 1"]);
+  assert.match(r.next.rule, /^an open proposal for target new's adapter is ruled before sdlc run verify --slice 1, which measures with that adapter, whatever policy\.next\.order puts first \(docs\/decisions\/0079\)$/);
+  assert.match(r.ready[1].rule, /oldest proposal first/, "the verify keeps its own rule");
+  assert.deepEqual(r.held, []);
+});
+
+test("an adapter proposal a person holds holds the verify that would measure with it, and only on its target", (t) => {
+  const d = project(t, { profile: "feature", extra: TWO_TARGETS, gates: { "G-BIND": { holder: "owner" } } });
+  buildAndAdapter(d, "new");
+  const r = whatNext(d);
+  assert.equal(r.state, "waiting");
+  assert.equal(r.next, null);
+  assert.ok(!r.ready.some((c) => c.stage === "verify"), "not verified with the adapter the proposal replaces");
+  const h = r.held.find((c) => c.stage === "verify");
+  assert.equal(h.command, "sdlc run verify --slice 1");
+  assert.match(h.why, /; held until bind-adapter-new-2, a proposal for target new's adapter open at G-BIND and waiting on owner, is ruled, since this run measures with that adapter$/);
+  assert.ok(r.waiting.some((w) => w.name === "bind-adapter-new-2" && w.on === "owner"));
+  assert.match(formatNext(r), /^held:\n {2}sdlc run verify --slice 1 — /m);
+
+  const other = project(t, { profile: "feature", extra: TWO_TARGETS, gates: { "G-BIND": { holder: "owner" } } });
+  buildAndAdapter(other, "other");
+  const o = whatNext(other);
+  assert.equal(o.next.command, "sdlc run verify --slice 1", "another target's adapter changes nothing verify measures with");
+  assert.deepEqual(o.held, []);
+});
+
+// Phase 2 with the oracle's adapter bound and every domain's tests approved, calibration not yet
+// run, and a second proposal for the oracle's adapter open.
+function calibrationAndAdapter(t, opts) {
+  const d = project(t, { extra: TARGETS, ...opts });
+  specDone(d);
+  adaptersBound(d, { old: bindingsFor("old", FULL), fresh: bindingsFor("new", FULL) });
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  proposal(d, "bind-adapter-old-2", "G-BIND", { files: { "tests/adapters/old/index.ts": "export default 2;\n" } });
+  return d;
+}
+
+test("an open proposal for the oracle's adapter is ruled before a calibration, whatever policy.next.order says", (t) => {
+  const d = calibrationAndAdapter(t, { policy: ["next: { order: [sequence, owed, proposals] }"], gates: { "G-BIND": { holder: "agent:reviewer", escalate_to: "lead" } } });
+  const r = whatNext(d);
+  assert.deepEqual(r.ready.map((c) => c.command), ["sdlc rule bind-adapter-old-2 --by agent:reviewer", "sdlc run calibrate --target old"]);
+  assert.match(r.next.rule, /^an open proposal for target old's adapter is ruled before sdlc run calibrate --target old, which measures with that adapter/);
+});
+
+test("an adapter proposal a person holds holds the calibration of its target", (t) => {
+  const d = calibrationAndAdapter(t, { gates: { "G-BIND": { holder: "owner" } } });
+  const r = whatNext(d);
+  assert.equal(r.state, "waiting");
+  assert.ok(!r.ready.some((c) => c.stage === "calibrate"));
+  assert.match(r.held.find((c) => c.stage === "calibrate").why, /held until bind-adapter-old-2, a proposal for target old's adapter open at G-BIND and waiting on owner, is ruled/);
+});

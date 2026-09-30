@@ -259,7 +259,10 @@ the entry and `sdlc run verify --slice <n>` is offered, not a calibration. A bui
 `environment` waits on G3's `escalate_to`, naming the criteria; where every gap was the mail catcher
 and `targets.new.mail_api` is now set on `main`, verify is offered again. Past the rebind limit an
 `unbound` build is ruled as any build that did not pass
-(`docs/decisions/0075-what-a-verify-charges-to-the-build.md`).
+(`docs/decisions/0075-what-a-verify-charges-to-the-build.md`). While a proposal for the new target's
+adapter is open, a verify is not offered ahead of it: its ruling comes first, and where a person
+holds it the verify is held until it is ruled
+(`docs/decisions/0079-an-adapter-is-ruled-before-it-is-measured-with.md`).
 
 ## Failure modes
 

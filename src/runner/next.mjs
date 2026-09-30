@@ -15,10 +15,11 @@
 //              exit criterion is not met, and within it the sequence's own order
 //
 // Which kind goes first when more than one is ready is not in the record, and is
-// `policy.next.order`. Two rules cut across the kinds: the contract run that answers owed work
+// `policy.next.order`. Three rules cut across the kinds: the contract run that answers owed work
 // waits while the test writer has ready work that does not rest on it (`docs/decisions/0069`),
-// and a calibration `policy.next.calibrate_after` makes due goes before owed and sequence work
-// (`docs/decisions/0070`). Work that only a person can move — a proposal at a seat a person
+// a calibration `policy.next.calibrate_after` makes due goes before owed and sequence work
+// (`docs/decisions/0070`), and an open proposal for a target's adapter is ruled before a verify
+// or calibration that measures with that adapter (`docs/decisions/0079`). Work that only a person can move — a proposal at a seat a person
 // holds, an escalation to a person, an escalation that reached the role that raised it — is
 // reported as waiting and never offered as something to run.
 import { execFileSync } from "node:child_process";
@@ -847,6 +848,65 @@ function bindsNowFor(record, phaseNumber) {
   return (t) => has.has("bind-adapter") && (t === oracle || phaseNumber === null || phaseNumber >= BUILD.number);
 }
 
+// The target whose adapter a ready item's run measures with, or `null` for a run that measures
+// nothing. A verify runs a slice's tests against the new target with the adapter `main` holds,
+// merged into the build branch; a calibration runs the suite against its own target.
+const MEASURES_WITH = {
+  verify: () => "new",
+  calibrate: (args) => args?.target ?? null,
+};
+
+function measuresWith(c) {
+  if (c.stage === "rule") return null;
+  return MEASURES_WITH[c.stage]?.(c.args) ?? null;
+}
+
+// An open adapter proposal is ruled before a step that measures with the adapter it changes
+// (`docs/decisions/0079`). A run of the suite on target T while a proposal for T's adapter is
+// open measures with the adapter that proposal is about to replace. So where an agent can rule
+// that proposal now, its ruling is moved ahead of the first ready item that measures with T,
+// whatever kind of work either is; where it waits on a person, every item that measures with T
+// is held until it is ruled. Everything else keeps the place the order gave it.
+function adapterBeforeMeasure(record, ready, waiting) {
+  const adapterOf = (c) => {
+    if (!c?.name) return null;
+    const route = routeOf(c.name, record.config);
+    return route?.stage === "bind-adapter" ? route.target ?? null : null;
+  };
+  const rulings = new Map();
+  for (const c of ready) {
+    const t = c.stage === "rule" ? adapterOf(c) : null;
+    if (t && !rulings.has(t)) rulings.set(t, c);
+  }
+  const waits = new Map();
+  for (const w of waiting) {
+    const t = adapterOf(w);
+    if (t && !waits.has(t)) waits.set(t, w);
+  }
+  if (!rulings.size && !waits.size) return { ready, held: [] };
+  const out = [];
+  const held = [];
+  const placed = new Set();
+  for (const c of ready) {
+    if (placed.has(c)) continue;
+    placed.add(c);
+    const t = measuresWith(c);
+    const ruling = t ? rulings.get(t) : undefined;
+    if (ruling && !placed.has(ruling)) {
+      placed.add(ruling);
+      out.push({ ...ruling,
+        rule: `an open proposal for target ${t}'s adapter is ruled before ${c.command}, which measures with that adapter, whatever policy.next.order puts first (docs/decisions/0079)` });
+    }
+    const wait = !ruling && t ? waits.get(t) : undefined;
+    if (wait) {
+      held.push({ ...c, why: `${c.why}; held until ${wait.name}, a proposal for target ${t}'s adapter open at ${wait.gate ?? "its gate"} and waiting on ${wait.on}, is ruled, since this run measures with that adapter` });
+      continue;
+    }
+    out.push(c);
+  }
+  return { ready: out, held };
+}
+
 // What runs next, and why, from the record on `rev`.
 export function whatNext(projectDir, { rev = "main" } = {}) {
   const record = readRecord(projectDir, rev);
@@ -888,7 +948,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     byKind.owed = byKind.owed.filter((c) => !same(c));
     byKind.sequence = byKind.sequence.filter((c) => !same(c));
   }
-  const ready = order.flatMap((kind) => (byKind[kind] ?? []).map((c) => ({ ...c, rule: ruleFor(kind, order, byKind) })));
+  let ready = order.flatMap((kind) => (byKind[kind] ?? []).map((c) => ({ ...c, rule: ruleFor(kind, order, byKind) })));
   if (due) {
     const at = ready.findIndex((c) => c.kind === "owed" || c.kind === "sequence");
     ready.splice(at === -1 ? ready.length : at, 0, { ...due,
@@ -903,6 +963,9 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     const args = { ...c.args, full: true };
     ready[i] = { ...c, args, command: runCommand("calibrate", args), why: `${c.why}; a full run is due: ${dueFull}` };
   }
+  const adapterFirst = adapterBeforeMeasure(record, ready, props.waiting);
+  ready = adapterFirst.ready;
+  held.push(...adapterFirst.held);
   const next = ready[0] ?? null;
   const waiting = [...props.waiting, ...owed.waiting];
   const state = next ? "run" : waiting.length ? "waiting" : "idle";
