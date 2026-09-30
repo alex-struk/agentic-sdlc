@@ -29,6 +29,11 @@ Verify names the environment gap ahead of an unbound row, so the verdict alone d
 the adapter failed to drive something; the check reads the result's `unbound` list and refuses,
 naming those criteria.
 
+`next` still routes an `environment` verdict to whoever G3 escalates to rather than to the agent
+holding G3 (`docs/decisions/0075`): the gap may be a configuration only a person can set, and
+accepting a criterion as untested is that person's decision. What changes is that the person's
+`approve` is now recorded.
+
 ## Consequences
 
 - A slice whose only gap is a configuration verify cannot start is approved in one ruling, with

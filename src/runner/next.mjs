@@ -495,8 +495,10 @@ function proposalState(projectDir, record) {
         // A verify that found nothing the builder is answerable for — criteria this
         // environment could not test, rows the adapter could not drive — is not a build to
         // rule: it waits on the configuration, or on the binding run it is owed, and is
-        // verified again after (`docs/decisions/0075`).
-        const gap = verified.notPassed ? notTheBuilders(projectDir, record, p, route.slice) : null;
+        // verified again after (`docs/decisions/0075`). An environment verdict is approvable
+        // (`docs/decisions/0082`) and still waits here: whether a gap the environment left is
+        // acceptable, or a configuration a person can set, is that person's to decide.
+        const gap = notTheBuilders(projectDir, record, p, route.slice);
         if (gap) {
           if (gap.ready) ready.push(gap.ready);
           if (gap.waiting) waiting.push(gap.waiting);
