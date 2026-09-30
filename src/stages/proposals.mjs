@@ -11,6 +11,7 @@ import { escapeRe } from "./shared.mjs";
 import { conditionsAreExecutable, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { openFor, openOn, owedPath, settle } from "../spec/owed.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
+import { requestSubject } from "../runner/routes.mjs";
 
 // One sentence off the front of `text`, plus whatever is left after it. The terminator
 // has to be followed by whitespace or the end of the string, so a dot inside a filename
@@ -300,8 +301,8 @@ export function revisionLine(projectDir, { name, tip, base, sameLine = () => tru
 // than what is asked of it with nothing to say so. They are not taken up: a request is
 // spent by the run that answers it, and nothing here can tell an ask the return already
 // covers from one about something else entirely.
-export function withOpenRequests(projectDir, stage, revision) {
-  const openRequests = openFor(projectDir, stage, { kinds: ["request"] });
+export function withOpenRequests(projectDir, stage, revision, on = null) {
+  const openRequests = openRequestsOn(projectDir, stage, on);
   return openRequests.length ? { ...revision, openRequests } : revision;
 }
 
@@ -346,6 +347,18 @@ export function owedConditionsNote(ctx) {
   ].join("\n\n");
 }
 
+// The open requests addressed to `stage`, narrowed to one subject where `on` names one (see
+// `revisionRound`).
+function openRequestsOn(projectDir, stage, on) {
+  const open = openFor(projectDir, stage, { kinds: ["request"] });
+  const want = Object.entries(on?.subject ?? {}).filter(([, v]) => v !== undefined && v !== null);
+  if (!want.length) return open;
+  return open.filter((r) => {
+    const about = requestSubject(r, on.config);
+    return !about || want.every(([k, v]) => about[k] === undefined || String(about[k]) === String(v));
+  });
+}
+
 // The requests addressed to one stage that nothing has taken up, as the round a `--revise`
 // run answers: all of them, oldest first, with the ones a single ruling filed kept together.
 //
@@ -355,9 +368,15 @@ export function owedConditionsNote(ctx) {
 // neither. Between groups the order is the order they were filed in, because a request older
 // than another was asked about an artifact that has since been approved again, and reading it
 // first is what puts the two in the sequence they happened.
-export function revisionRound(projectDir, stage) {
+//
+// `on` narrows the round to one subject, for a stage whose run is about one target, domain or
+// slice: `{ subject: { target: "new" }, config }`. A request is in it when what it is about
+// (`requestSubject`) is that subject, or when nothing says what it is about — the person who
+// named the subject on the command line has said which, and a request no run could otherwise
+// take up would stay open for ever (`docs/decisions/0081`).
+export function revisionRound(projectDir, stage, on = null) {
   const groups = new Map();
-  for (const r of openFor(projectDir, stage, { kinds: ["request"] })) {
+  for (const r of openRequestsOn(projectDir, stage, on)) {
     const key = `${r.from ?? ""}\u0000${r.gate ?? ""}\u0000${r.by ?? ""}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(r);
@@ -384,8 +403,8 @@ export function revisionRound(projectDir, stage) {
 // This reads and writes nothing. The round is spent where the run delivers
 // (`settleRequestedRevision`), so a run refused by a later check, one whose agent turn was
 // lost and one that was never started all leave every request exactly where they found it.
-export function requestedRevision(projectDir, stage) {
-  const requests = revisionRound(projectDir, stage);
+export function requestedRevision(projectDir, stage, on = null) {
+  const requests = revisionRound(projectDir, stage, on);
   if (!requests.length) return null;
   return { name: null, branch: null, requests, rationale: "", conditions: [], addressedElsewhere: [] };
 }

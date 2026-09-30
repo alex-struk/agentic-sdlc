@@ -1991,13 +1991,13 @@ function checkBindAdapterRevisionSource(projectDir, ctx, { record = true } = {})
   if (!ctx.revise || !ctx.target) return { id, ok: true, messages: [] };
   const found = findReturnedBindAdapterRuling(projectDir, ctx.target);
   if (!found) {
-    const requested = requestedRevision(projectDir, "bind-adapter");
+    const requested = requestedRevision(projectDir, "bind-adapter", { subject: { target: ctx.target }, config: ctx.config });
     if (!requested) return { id, ok: false, messages: [`bind-adapter --revise: no returned ruling for ${ctx.target} to revise from`] };
     ctx.revision = requested;
     return { id, ok: true, messages: [] };
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
-  ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "bind-adapter", { ...found, branchCommit }), proposalFamily(found.name));
+  ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "bind-adapter", { ...found, branchCommit }, { subject: { target: ctx.target }, config: ctx.config }), proposalFamily(found.name));
   if (!ctx.dryRun && record) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
   return { id, ok: true, messages: [] };
 }

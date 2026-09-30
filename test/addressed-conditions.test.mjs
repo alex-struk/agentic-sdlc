@@ -258,6 +258,28 @@ test("a human ruling that returns a proposal files the request and the ruler's o
   assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "proposal/build-slice-2");
 });
 
+// A stage that runs on one target is asked on the target the ruled proposal is about, so the
+// run that takes the request up can be named in full (`docs/decisions/0081`). A build is on
+// the new target; a stage that runs on nothing in particular records nothing.
+test("a request addressed to a stage that runs on a target records the target the ruled proposal is on", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-target-"));
+  const { dir, prevEgress } = await ready(tmp);
+  t.after(() => restoreEgress(prevEgress));
+
+  openProposal(dir, "build-slice-2");
+  const bind = "the surface's signOut() clears cookies and opens '/', so the signed-out message reads the home page";
+  const r = rule(dir, "build-slice-2", "return", {
+    by: "tech-lead",
+    note: "the adapter reads the wrong screen; the plan asked the slice for something it cannot show",
+    conditions: [MINE, `addressed-to bind-adapter: ${bind}`, CONDITION],
+  });
+  assert.deepEqual(r.addressed, ["bind-adapter", "plan"]);
+  assert.deepEqual(requestsOnMain(dir).map(withoutTime), [
+    { stage: "bind-adapter", target: "new", why: bind, from: "build-slice-2", gate: "G3", by: "tech-lead" },
+    { stage: "plan", why: WHY, from: "build-slice-2", gate: "G3", by: "tech-lead" },
+  ]);
+});
+
 test("an agent in the same seat files the same request", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "sdlc-addressed-agent-"));
   const { dir, prevEgress } = await ready(tmp);

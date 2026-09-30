@@ -161,6 +161,39 @@ test("bind-adapter --revise refused on a pre-check ahead of it leaves the return
   assert.equal(git("branch", "--list", "returned/bind-adapter-new-2").trim(), "returned/bind-adapter-new-2", "recorded once the run can go ahead");
 });
 
+// A request is about one target's adapter, so `--target T --revise` takes up T's and leaves
+// another target's alone; one nothing places on a target is taken by whichever target the
+// person names (`docs/decisions/0081`).
+test("bind-adapter --revise from requests takes up the ones about its own target", (t) => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-bind-requests-"));
+  t.after(() => rmSync(d, { recursive: true, force: true }));
+  const git = (...a) => execFileSync("git", a, { cwd: d, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git("init", "-q", "-b", "main");
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  const request = (why, from, extra = "") => `  - stage: bind-adapter\n    why: ${JSON.stringify(why)}\n    from: ${from}\n    gate: G3\n    by: agent:reviewer\n    at: 2026-01-01T00:00:00.000Z\n${extra}`;
+  writeFileSync(join(d, ".sdlc", "revision-requests.yaml"), `requests:\n${[
+    request("recorded on new", "plan-2", "    target: new\n"),
+    request("from the build", "build-slice-2-11"),
+    request("from the other adapter", "bind-adapter-other-3"),
+    request("the reason names tests/adapters/other/index.ts:4", "plan-2"),
+    request("nothing places this one", "plan-2"),
+  ].join("")}`);
+  git("add", "-A"); git("-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "filed");
+  const prev = process.env.SDLC_ORACLE;
+  process.env.SDLC_ORACLE = "mock";
+  t.after(() => { if (prev === undefined) delete process.env.SDLC_ORACLE; else process.env.SDLC_ORACLE = prev; });
+  const config = { targets: { new: { base_url: "http://127.0.0.1:1", identity: "none" }, other: { base_url: "http://127.0.0.1:2", identity: "none" } } };
+  const round = (target) => {
+    const ctx = { target, revise: true, dryRun: true, config };
+    const source = stageFor("bind-adapter").preChecks(d, ctx).find((r) => r.id === "bind-adapter-revise-source");
+    assert.ok(source.ok, JSON.stringify(source));
+    return ctx.revision.requests.map((r) => r.why);
+  };
+  // One ruling's requests are kept together, as a round always keeps them (`revisionRound`).
+  assert.deepEqual(round("new"), ["recorded on new", "nothing places this one", "from the build"]);
+  assert.deepEqual(round("other"), ["from the other adapter", "the reason names tests/adapters/other/index.ts:4", "nothing places this one"]);
+});
+
 test("a revising adapter is told to change only what the conditions name", () => {
   const stage = stageFor("bind-adapter");
   const ctx = {

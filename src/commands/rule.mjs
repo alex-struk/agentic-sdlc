@@ -26,6 +26,7 @@ import { STAGES_BY_NAME, addressableStages, proposalFamily, requestTakenBy, stag
 import { COMMANDS } from "../cli.mjs";
 import { printNextBlock } from "./next.mjs";
 import { routeOf } from "../runner/next.mjs";
+import { requestSubject } from "../runner/routes.mjs";
 import { heldByFor } from "../lib/seat.mjs";
 import { approvesUnasserted, blocksOnMissingTests, escalateTiers } from "../config/policy.mjs";
 import { proposedPolicyChange } from "../runner/ruling-config.mjs";
@@ -624,9 +625,14 @@ function fileAddressedRequests(projectDir, { name, gate, by, conditions, at = ne
   try {
     const entries = [];
     const unroutable = [];
+    const config = configOnMain(projectDir);
     for (const a of asked) {
       if (!can.has(a.stage)) { unroutable.push(a.stage); continue; }
-      entries.push({ stage: a.stage, why: a.text, from: name, gate, by, at });
+      // The domain, target or slice the addressed stage is to run on, where the ruled
+      // proposal or the reason says (`requestSubject`), so the run that takes the request up
+      // is named in full (`docs/decisions/0081`).
+      const subject = requestSubject({ stage: a.stage, from: name, why: a.text }, config) ?? {};
+      entries.push({ stage: a.stage, ...subject, why: a.text, from: name, gate, by, at });
     }
     const { path, added } = openOwed(projectDir, "request", entries);
     const addressed = added.map((e) => e.stage);
@@ -638,6 +644,13 @@ function fileAddressedRequests(projectDir, { name, gate, by, conditions, at = ne
   } finally {
     if (branch !== "main") git(["checkout", "-q", branch], projectDir);
   }
+}
+
+// The project's configuration as `main` holds it, or `null` where it cannot be read. Only the
+// targets and domains it lists are wanted, and a request is filed without a subject rather
+// than not at all when they cannot be had.
+function configOnMain(projectDir) {
+  try { return loadConfig(join(projectDir, ".sdlc", "config.yaml")).config ?? null; } catch { return null; }
 }
 
 // The command that takes up a request addressed to `stage`, as the ruler is told it.

@@ -41,6 +41,9 @@ import { buildVerifiedOnBranch, simulatedRole } from "../commands/rule.mjs";
 import { readVerifyResult } from "./verify-evidence.mjs";
 import { compareRunIds, fullRunDue } from "../testrun/scope.mjs";
 import { standingRuling } from "../testrun/results.mjs";
+import { BUILD_TARGET, SUBJECT_OF, requestSubject, routeOf } from "./routes.mjs";
+
+export { routeOf };
 
 // The phases the sequence moves through, each with the exit criterion that closes it.
 export const PHASES = Object.freeze([
@@ -50,25 +53,6 @@ export const PHASES = Object.freeze([
   { number: 4, name: "Build", exit: "the plan approved and every slice approved at G3" },
   { number: 5, name: "Operate", exit: "the rebuilt application deployed and operated" },
 ]);
-
-// How a proposal's name maps to the stage that produced it and what it is about. Longer
-// prefixes first, so a family whose name begins with another's is read as its own.
-const ROUTES = [
-  { prefix: "intent-", stage: "intent" },
-  { prefix: "archaeology-", stage: "archaeology", subject: "domain" },
-  { prefix: "ratify-", stage: "ratify", subject: "domain" },
-  { prefix: "contract-v", stage: "contract" },
-  { prefix: "derive-tests-", stage: "derive-tests", subject: "domain" },
-  { prefix: "bind-adapter-", stage: "bind-adapter", subject: "target" },
-  { prefix: "calibrate-triage-", stage: "calibrate", subject: "target" },
-  { prefix: "calibrate-", stage: "calibrate", subject: "target" },
-  { prefix: "design-", stage: "design", subject: "domain" },
-  { prefix: "build-slice-", stage: "build", subject: "slice" },
-  { prefix: "plan", stage: "plan", exact: /^plan(?:-\d+)?$/ },
-];
-
-// The flag each stage needs to say what it runs on.
-const SUBJECT_OF = { archaeology: "domain", ratify: "domain", "derive-tests": "domain", design: "domain", "bind-adapter": "target", calibrate: "target", build: "slice", verify: "slice" };
 
 // Stages whose returned proposal, and whose requests, are taken up by `--revise`. Any other
 // stage takes both up by being run again.
@@ -144,28 +128,6 @@ export function lineage(name) {
   }
   const m = /^(.*?)-v?(\d+)$/.exec(name);
   return m ? { family: m[1], n: Number(m[2]) } : { family: name, n: 1 };
-}
-
-// The stage a proposal came from and what it is about, or `null` for a proposal no stage
-// opens (one made with `sdlc propose`).
-export function routeOf(name, config) {
-  const domains = config?.project?.domains ?? [];
-  const targets = [config?.oracle?.target, ...Object.keys(config?.targets ?? {})].filter(Boolean);
-  for (const r of ROUTES) {
-    if (r.exact ? !r.exact.test(name) : !name.startsWith(r.prefix)) continue;
-    const rest = name.slice(r.prefix.length);
-    if (!r.subject) return { stage: r.stage };
-    if (r.subject === "slice") {
-      const m = /^(\d+)(?:-\d+)?$/.exec(rest);
-      return m ? { stage: r.stage, slice: Number(m[1]) } : null;
-    }
-    const list = r.subject === "domain" ? domains : targets;
-    const hit = list.filter((x) => rest === x || rest.startsWith(`${x}-`)).sort((a, b) => b.length - a.length)[0];
-    const route = { stage: r.stage, [r.subject]: hit ?? null };
-    if (r.stage === "derive-tests" && hit && /^-stale-\d+$/.test(rest.slice(hit.length))) route.stale = true;
-    return route;
-  }
-  return null;
 }
 
 // Where a target's bindings on `rev` disagree with the contract on `rev`, by name, or `null`
@@ -429,7 +391,13 @@ function heldBy(record, name, stage) {
   };
   for (const q of record.requests ?? []) {
     if (q.from !== name || q.stage === stage) continue;
-    if (!q.closed) return `${name} asked ${q.stage} for work this revision rests on, not yet answered (${runCommand(q.stage, revises(q.stage) ? { revise: true } : {})})`;
+    if (!q.closed) {
+      const subject = requestSubject(q, record.config);
+      const answers = subject
+        ? runCommand(q.stage, { ...subject, ...(revises(q.stage) ? { revise: true } : {}) })
+        : `which waits on a ruler: nothing says which ${SUBJECT_OF[q.stage]} ${q.stage} is to run on`;
+      return `${name} asked ${q.stage} for work this revision rests on, not yet answered (${answers})`;
+    }
     const by = q.closed.proposal;
     if (by && !approved(by)) return `${name} asked ${q.stage} for work this revision rests on, answered by ${by}, which is not yet approved`;
   }
@@ -449,7 +417,7 @@ function heldBy(record, name, stage) {
 function notTheBuilders(projectDir, record, p, slice) {
   const result = readVerifyResult(projectDir, p.branch, slice);
   if (result?.verdict !== "environment" && result?.verdict !== "unbound") return null;
-  const bindingOwed = record.owed.some((e) => e.kind === "rebind" && e.target === "new" && Number(e.slice) === Number(slice));
+  const bindingOwed = record.owed.some((e) => e.kind === "rebind" && e.target === BUILD_TARGET && Number(e.slice) === Number(slice));
   if (result.verdict === "unbound") return bindingOwed ? {} : null;
   const gaps = Array.isArray(result.environment) ? result.environment : [];
   const mailOnly = gaps.length > 0 && gaps.every((g) => /mail catcher/.test(String(g?.reason ?? "")));
@@ -605,13 +573,21 @@ function owedWork(record, inFlight, bindsNow) {
   const needsUnavailable = (target, id) => (record.unboundUnavailable ?? []).some((u) => u.target === target && u.id === id)
     || (record.results.get(target)?.latest?.rows ?? []).some((r) => r?.id === id && r.ruled === PERSONA_UNAVAILABLE);
   const noRunAnswers = new Map();
+  const unplaced = new Map();
   for (const e of record.owed) {
     const k = `${e.kind}\u0000${e.stage}`;
     summary.set(k, { kind: e.kind, stage: e.stage, count: (summary.get(k)?.count ?? 0) + 1 });
     if (e.kind === "condition") continue;
     if (e.kind === "request") {
-      const s = SUBJECT_OF[e.stage];
-      group(e.stage, { ...(s ? { [s]: e[s] ?? undefined } : {}), ...(revises(e.stage) ? { revise: true } : {}) }, "revision request", "revision requests");
+      // Run on the subject the request records, or the one its source names
+      // (`requestSubject`). One whose stage needs a subject and that names none is not
+      // offered with a placeholder in its place: it waits on a ruler (`docs/decisions/0081`).
+      const subject = requestSubject(e, record.config);
+      if (!subject) {
+        unplaced.set(e.stage, [...(unplaced.get(e.stage) ?? []), e]);
+        continue;
+      }
+      group(e.stage, { ...subject, ...(revises(e.stage) ? { revise: true } : {}) }, "revision request", "revision requests");
     } else if (e.kind === "redo") {
       // A criterion another has since superseded, or made obsolete, is derived no test
       // (`acceptedCriteria`), so a `--stale` run never takes this entry up: offering one
@@ -733,7 +709,14 @@ function owedWork(record, inFlight, bindsNow) {
     why: `${plural(ids.length, "missing test")} owed a run by calibrate on ${target}, for ${ids.length === 1 ? "a row" : "rows"} needing a persona the approved contract marks unavailable there: `
       + `${ids.join(", ")}; no run on ${target} can pass or fail ${ids.length === 1 ? "it" : "them"}`,
     command: "condition-withdrawn missing-test/<id>: <why> on any ruling (sdlc checks lists each)",
-  }))];
+  })), ...[...unplaced.entries()].map(([stage, list]) => {
+    const s = SUBJECT_OF[stage];
+    const from = [...new Set(list.map((e) => e.from).filter(Boolean))];
+    return { on: "a ruler", kind: "request", count: list.length, name: `revision requests (${stage})`, gate: null,
+      why: `${plural(list.length, "revision request")} owed by ${stage}${from.length ? ` from ${from.join(", ")}` : ""} ${list.length === 1 ? "names" : "name"} no ${s}, `
+        + `and neither the proposal that asked nor the reason says which ${s} ${stage} is to run on`,
+      command: `${runCommand(stage, { [s]: `<${s}>`, ...(revises(stage) ? { revise: true } : {}) })}, naming the ${s} the request is about` };
+  })];
   return { items, waiting, summary: [...summary.values()], stale: [...stale].map(([domain, ids]) => ({ domain, ids })), staleAdapters };
 }
 
@@ -868,7 +851,7 @@ function bindsNowFor(record, phaseNumber) {
 // nothing. A verify runs a slice's tests against the new target with the adapter `main` holds,
 // merged into the build branch; a calibration runs the suite against its own target.
 const MEASURES_WITH = {
-  verify: () => "new",
+  verify: () => BUILD_TARGET,
   calibrate: (args) => args?.target ?? null,
 };
 
@@ -881,7 +864,7 @@ function measuresWith(c) {
 // anything itself: a build proposes an application that a verify of it then measures on the
 // new target.
 function leadsToMeasure(c) {
-  return c.stage === "build" ? "new" : null;
+  return c.stage === "build" ? BUILD_TARGET : null;
 }
 
 // An open adapter proposal is ruled before a step that measures with the adapter it changes
@@ -951,6 +934,23 @@ function adapterBeforeMeasure(record, ready, waiting) {
   return { ready: out, held };
 }
 
+// A command `next` offers to run is run as it stands — `sdlc drive` hands its arguments to the
+// stage — so it never carries a placeholder such as `--target <target>`: a stage handed one
+// refuses the run, and the drive stops on it. Whatever reached this point without a subject is
+// moved to waiting on a ruler, with its command kept for the person to complete
+// (`docs/decisions/0081`). Nothing should: every source names its subject or waits already.
+const PLACEHOLDER = /<[^<>\s]+>/;
+
+function runnableOnly(items, unnamed) {
+  const out = [];
+  for (const c of items) {
+    if (!PLACEHOLDER.test(c.command ?? "")) { out.push(c); continue; }
+    unnamed.push({ on: "a ruler", kind: c.kind, name: c.name ?? `${c.stage} run`, gate: null, command: c.command,
+      why: `${c.why}; next cannot say what ${c.stage} is to run on, so it is not offered as a run` });
+  }
+  return out;
+}
+
 // What runs next, and why, from the record on `rev`.
 export function whatNext(projectDir, { rev = "main" } = {}) {
   const record = readRecord(projectDir, rev);
@@ -983,7 +983,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     owed: ordered([...props.returned, ...owed.items], record),
     sequence,
   };
-  const held = [...props.held, ...holdContractForTestWriter(record, byKind)];
+  let held = [...props.held, ...holdContractForTestWriter(record, byKind)];
   // A calibration the cadence makes due goes before owed and sequence work, and replaces any
   // other offer of the same calibration; proposals keep the place the order gives them.
   const due = calibrationDue(projectDir, record, props.inFlight);
@@ -1010,8 +1010,11 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
   const adapterFirst = adapterBeforeMeasure(record, ready, props.waiting);
   ready = adapterFirst.ready;
   held.push(...adapterFirst.held);
+  const unnamed = [];
+  ready = runnableOnly(ready, unnamed);
+  held = runnableOnly(held, unnamed);
   const next = ready[0] ?? null;
-  const waiting = [...props.waiting, ...owed.waiting];
+  const waiting = [...props.waiting, ...owed.waiting, ...unnamed];
   const state = next ? "run" : waiting.length ? "waiting" : "idle";
   return {
     state,
@@ -1083,18 +1086,20 @@ export function formatNextShort(r) {
   const more = [];
   if (r.ready.length > 1) more.push(`${r.ready.length - 1} more ready`);
   if (r.held?.length) more.push(`${r.held.length} held`);
-  const proposals = r.waiting.filter((w) => w.kind !== MISSING_TEST && w.kind !== UNBOUND);
+  const proposals = r.waiting.filter((w) => w.kind !== MISSING_TEST && w.kind !== UNBOUND && w.kind !== "request");
+  const requests = r.waiting.filter((w) => w.kind === "request").reduce((n, w) => n + w.count, 0);
   const tests = r.waiting.filter((w) => w.kind === MISSING_TEST).reduce((n, w) => n + w.count, 0);
   const unbound = r.waiting.filter((w) => w.kind === UNBOUND).reduce((n, w) => n + w.count, 0);
   if (proposals.length) more.push(`${plural(proposals.length, "proposal")} waiting on a person`);
   if (tests) more.push(`${plural(tests, "missing test")} waiting on a ruler`);
   if (unbound) more.push(`${plural(unbound, "unbound binding")} waiting on a ruler`);
+  if (requests) more.push(`${plural(requests, "revision request")} waiting on a ruler`);
   if (more.length) lines.push(`  (${more.join(", ")}: sdlc next)`);
   return lines.join("\n");
 }
 
-// Whether a `sdlc run` invocation is the run `next` names. A subject `next` could not name
-// (`--domain <domain>` on a request that records none) matches any.
+// Whether a `sdlc run` invocation is the run `next` names. A subject the named run does not
+// carry matches any.
 export function matchesNext(r, stage, inv = {}) {
   const c = r?.next;
   if (!c || c.command.startsWith("sdlc rule")) return false;

@@ -38,7 +38,7 @@ first when more than one is ready is `policy.next.order` (`docs/config.md`), `pr
 | Kind | What is ready | Order within the kind |
 |---|---|---|
 | `proposals` | an open proposal whose holder is an agent (`sdlc rule <name> --by agent:<persona>`); an escalation to a role an agent plays, raised by someone else (`--by agent:<target>`); a build proposal with no verify result for the application it carries (`sdlc run verify --slice <n>`) | oldest proposal branch first |
-| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again), unless it is held (below); open requests (`--revise` for a stage that has it, otherwise the stage run again: `sdlc run contract`); redo entries and stale tests (`derive-tests --domain <d> --stale`, not offered while that domain's test proposal is returned, since its `--revise` takes up the entries its own line's rulings filed); rebind entries and unbound rows (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed or the row was found); stale adapters (`bind-adapter --target <t>`, one run with that target's rebinds); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target (the oracle's first), then slice; a contract run for owed work waits for the test writer (below) |
+| `owed` | a returned proposal (`--revise` for a stage that has it, otherwise the stage run again), unless it is held (below); open requests (`--revise` for a stage that has it, otherwise the stage run again: `sdlc run contract`; on the domain, target or slice the request is about, below); redo entries and stale tests (`derive-tests --domain <d> --stale`, not offered while that domain's test proposal is returned, since its `--revise` takes up the entries its own line's rulings filed); rebind entries and unbound rows (`bind-adapter --target <t>`, or `calibrate --target <t>` once the adapter has changed since the entry was filed or the row was found); stale adapters (`bind-adapter --target <t>`, one run with that target's rebinds); recovery entries (`archaeology --domain <d> --revise`); missing tests (`derive-tests --domain <d> --stale` when the writer owes one, `calibrate --target <t>` when one is owed a run, otherwise the owing stage, with `--domain` where it takes one); any other kind, by its owing stage | upstream stage first, then the configured domain order, then target (the oracle's first), then slice; a contract run for owed work waits for the test writer (below) |
 | `sequence` | the next stage the phases call for | the first phase whose exit criterion is not met; within it, the sequence's order |
 
 A condition is owed and listed, and is never a reason to start a run
@@ -59,6 +59,17 @@ proposal's ruling, then the revision. Held revisions are listed under `held:` wi
 request addressed to the returned proposal's own stage holds nothing: the revision answers it. A
 request taken before the proposal that took it was recorded (`taken_by`) names none, and is read
 as answered (`docs/decisions/0050-a-request-reaches-a-stage-that-takes-it-up.md`).
+
+**A request is run on what it is about.** A request addressed to a stage that runs on a domain,
+target or slice is offered with that subject: the one the request records, which a ruling records
+when it files the request; otherwise the one the proposal that asked names when it is about the
+same kind of thing (`bind-adapter-<t>-*`, `calibrate-<t>-*` and `calibrate-triage-<t>-*` name a
+target, `derive-tests-<d>-*` and `design-<d>-*` a domain, `build-slice-<n>-*` a slice); otherwise,
+for a target, the build target when the proposal that asked is a build, and the one target whose
+adapter the reason names by its path (`tests/adapters/<t>/`). A request nothing places is not
+offered: it is listed under `waiting on a person` as waiting on a ruler, grouped by stage, with the
+run to complete by hand. No command `next` offers to run carries a placeholder
+(`docs/decisions/0081-a-revision-request-carries-its-target.md`).
 
 **Contract waits for the test writer.** What `contract` owes in the Tests phase is mostly filed by
 the rulings of `derive-tests` proposals, one domain at a time. The contract run that answers owed
@@ -275,5 +286,6 @@ neither changes a file, a ref or the index.
   warning-level config problem still gets an answer.
 - A proposal page with no `gate:` front matter is reported as waiting, since no seat can be found
   for it.
-- A request that records no domain, target or slice is offered with a placeholder
-  (`--domain <domain>`), and any value given for it matches.
+- A request whose stage runs on a domain, target or slice, and that neither records one nor comes
+  from a proposal or reason that names one, is waiting on a ruler rather than offered. A run of
+  that stage with the subject named by hand takes it up, whichever subject is named.

@@ -1104,3 +1104,104 @@ test("with the build returned by verify, the binding it is owed starts the sandb
   assert.equal(after.next.command, "sdlc run bind-adapter --target new");
   assert.match(after.next.why, /sandbox up --target new --from returned\/build-slice-1 first/);
 });
+
+// ── a revision request carries its target ─────────────────────────────────────────────────
+
+// A request addressed to a stage that runs on one target is run on the target it records, or
+// the one what asked for it names; one that names none waits on a ruler, and nothing `next`
+// offers to run carries a placeholder (`docs/decisions/0081`).
+
+// No command `next` offers to run — the next one, the others ready, the ones held — carries a
+// placeholder such as `<target>`: `sdlc drive` runs each as it stands.
+function assertRunnable(r) {
+  for (const c of [r.next, ...r.ready, ...r.held].filter(Boolean)) {
+    assert.doesNotMatch(c.command, /<[^<>\s]+>/, `${c.command} is offered to run with a placeholder in it`);
+  }
+}
+
+// A plan approved for slices 1 and 2, and the bind-adapter requests `requests` on main.
+function requestsForAdapter(d, requests) {
+  approved(d, ["intent-thing"], "G0");
+  approved(d, ["plan"], "G2");
+  commit(d, {
+    "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1\n\n### Slice 2 · Second\n- criteria: R-1.2\n",
+    "app/index.ts": "export {};\n",
+    ".sdlc/revision-requests.yaml": stringifyYaml({ requests: requests.map((q, i) => ({
+      stage: "bind-adapter", why: "bind signing out to /sign-out", from: "build-slice-2-11", gate: "G3", by: "agent:tech-lead", at: `2026-01-0${i + 1}T00:00:00.000Z`, ...q,
+    })) }),
+  });
+}
+
+test("a request to bind-adapter is run on the target it records", (t) => {
+  const d = project(t, { profile: "feature", extra: TWO_TARGETS });
+  requestsForAdapter(d, [{ target: "other" }]);
+  const r = whatNext(d);
+  assert.ok(r.ready.some((c) => c.command === "sdlc run bind-adapter --target other --revise"), JSON.stringify(r.ready.map((c) => c.command)));
+  assert.match(r.ready.find((c) => c.stage === "bind-adapter").why, /^1 revision request for target other owed by bind-adapter$/);
+  assertRunnable(r);
+});
+
+test("a request recording no target is run on the target its source names", (t) => {
+  const cases = [
+    ["build-slice-2-11", "bind signing out to /sign-out", "new"],
+    ["bind-adapter-other-4", "bind signing out to /sign-out", "other"],
+    ["calibrate-triage-other-2", "bind signing out to /sign-out", "other"],
+    ["plan-2", "the surface's signOut() (tests/adapters/other/index.ts:424) clears cookies", "other"],
+  ];
+  for (const [from, why, target] of cases) {
+    const d = project(t, { profile: "feature", extra: TWO_TARGETS });
+    requestsForAdapter(d, [{ from, why }]);
+    const r = whatNext(d);
+    assert.ok(r.ready.some((c) => c.command === `sdlc run bind-adapter --target ${target} --revise`), `${from}: ${JSON.stringify(r.ready.map((c) => c.command))}`);
+    assert.ok(!r.waiting.some((w) => w.kind === "request"), from);
+    assertRunnable(r);
+  }
+});
+
+// What `sdlc drive` stopped on: a build returned at G3 with three conditions addressed to
+// bind-adapter, filed before a request recorded its target.
+test("a build returned with conditions for bind-adapter is followed by the binding on the build's target, and its revision waits for it", (t) => {
+  const d = project(t, { profile: "feature", extra: TWO_TARGETS });
+  requestsForAdapter(d, [
+    { why: "signOut() at tests/adapters/new/index.ts:424 never opens /sign-out" },
+    { why: "signIn() starts with the same signOut()" },
+    { why: "userProfileSelf.statusBadge reads the line after 'Status'" },
+  ]);
+  proposal(d, "build-slice-2-11", "G3", { files: { "app/index.ts": "export const a = 2;\n" }, ruling: { verdict: "return", extra: { by: "agent:tech-lead" } } });
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run bind-adapter --target new --revise");
+  assert.match(r.next.why, /^3 revision requests for target new owed by bind-adapter/);
+  assert.match(r.held.find((h) => h.command === "sdlc run build --slice 2 --revise")?.why ?? "", /build-slice-2-11 asked bind-adapter for work this revision rests on, not yet answered \(sdlc run bind-adapter --target new --revise\)/);
+  assertRunnable(r);
+});
+
+test("a request to bind-adapter that names no target anywhere waits on a ruler, and is never offered with a placeholder", (t) => {
+  const d = project(t, { profile: "feature", extra: TWO_TARGETS });
+  requestsForAdapter(d, [{ from: "plan-2", why: "bind signing out to /sign-out" }, { from: "plan-2", why: "and read the status badge" }]);
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.stage === "bind-adapter"), JSON.stringify(r.ready.map((c) => c.command)));
+  const w = r.waiting.find((x) => x.kind === "request");
+  assert.equal(w.on, "a ruler");
+  assert.equal(w.count, 2);
+  assert.match(w.why, /^2 revision requests owed by bind-adapter from plan-2 name no target, and neither the proposal that asked nor the reason says which target bind-adapter is to run on$/);
+  assert.match(w.command, /^sdlc run bind-adapter --target <target> --revise, naming the target the request is about$/);
+  assert.match(formatNextShort(r), /2 revision requests waiting on a ruler/);
+  assert.doesNotMatch(formatNextShort(r), /proposal waiting on a person/);
+  assertRunnable(r);
+});
+
+test("a request to a stage that runs per domain is run in the domain its source names, or waits", (t) => {
+  const d = project(t);
+  specDone(d);
+  approved(d, ["contract-v1"]);
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  commit(d, { ".sdlc/revision-requests.yaml": stringifyYaml({ requests: [
+    { stage: "archaeology", why: "R-2.1 cites a line that does not exist", from: "derive-tests-beta-stale-1", gate: "G3", by: "agent:owner", at: "2026-01-02T00:00:00.000Z" },
+    { stage: "derive-tests", why: "a suite asserts a total no criterion states", from: "plan-2", gate: "G2", by: "agent:owner", at: "2026-01-03T00:00:00.000Z" },
+  ] }) });
+  const r = whatNext(d);
+  assert.ok(r.ready.some((c) => c.command === "sdlc run archaeology --domain beta --revise"), JSON.stringify(r.ready.map((c) => c.command)));
+  assert.ok(!r.ready.some((c) => c.stage === "derive-tests" && c.args?.revise));
+  assert.match(r.waiting.find((x) => x.kind === "request")?.why ?? "", /owed by derive-tests from plan-2 names no domain/);
+  assertRunnable(r);
+});

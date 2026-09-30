@@ -176,7 +176,9 @@ password from `process.env.SDLC_SANDBOX_PASSWORD` at run time
     (`docs/decisions/0078-drive-starts-the-new-sandbox-for-a-rebind.md`,
     `docs/decisions/0080-a-returned-adapter-is-revised-before-it-is-measured-with.md`).
   - With `--revise`, a returned `bind-adapter-<t>[-n]` proposal to revise from, newest first, or a
-    revision request addressed to bind-adapter. Finding the return spends nothing; recording it
+    revision request addressed to bind-adapter about `<t>`, or one nothing places on a target
+    (`docs/decisions/0081-a-revision-request-carries-its-target.md`). A request about another
+    target is left for that target's run. Finding the return spends nothing; recording it
     on `main` and renaming its branch to `returned/<name>` spends it, and happens only when every
     pre-check above passed. A run refused because the new target's sandbox was not up is run
     again once the sandbox is started, and revises the same return.
