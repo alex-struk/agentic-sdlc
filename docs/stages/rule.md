@@ -410,8 +410,8 @@ record the merge rewrote with a different owner moves to that owner; an item han
 that derivation was handed it (in its domain, and owed when its branch was cut); an item
 whose test now exists and has not run is handed to `calibrate` (a project that calibrates) or
 `verify`. An item whose test the merge shows ran — a result row for the criterion, at its current
-version, from the spec file as it now stands, `pass` or `fail`, not ruled `test-wrong` or
-`spec-wrong`, and not a `fail` whose test never reached the target (an environment fault, as
+version, from the spec file as it now stands, `pass` or `fail`, not carrying a `test-wrong` or
+`spec-wrong` ruling that applies to it (`docs/decisions/0073`), and not a `fail` whose test never reached the target (an environment fault, as
 calibrate classifies one) — is closed as met with that row as the evidence. An item the runner
 closed on a row that rule rejects, judged at the commit that recorded the closure by the rule as it
 now stands, is reopened, the closure kept under `reopened`, and goes where an open item goes. An

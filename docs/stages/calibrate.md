@@ -83,7 +83,7 @@ and writes nothing.
   | `result` | `pass`, `fail`, `unbound`, `stale`, `not-testable` or `attested` |
   | `reason` | why the application was never asked about this criterion, on a `not-testable` or `attested` row — the entry's own text, carried onto the row because the file it was written in is the only place it exists |
   | `tests` | one entry per `test()` in the file: title, status, and the failure message where there is one |
-  | `ruled` | the verb an applied ruling gave this criterion, present only when one has been; `persona-unavailable` on an unbound row closed by the contract (below) |
+  | `ruled` | the verb an applied ruling gave this criterion, present only while that ruling applies to the row (`applied.yaml`, below); `persona-unavailable` on an unbound row closed by the contract (below) |
   | `unavailable` | on a row ruled `persona-unavailable`: `{ personas, contract }`, the personas its tests needed and the approved `contract-v<n>` proposal that marks them unavailable |
   | `triage` | `product-question` on a row the reviewer has passed on to the product owner and nobody has ruled on yet |
   | `adapter` | the tree of `tests/adapters/<t>` the row's tests ran with, on every row that ran a spec file; a row carried over from an earlier run keeps its own |
@@ -102,12 +102,21 @@ and writes nothing.
   the target.
 
 - **`tests/results/<t>/applied.yaml`** — `{ applied: [<gate file names>], rulings: [{ id, version,
-  verb, gate, adapter?, why? }] }`, where `adapter` is the adapter an `adapter-wrong` verdict was
-  about and `why` the reviewer's reason on an `oracle-cannot` ruling. The first list is what makes the stage re-run safe: a ruling whose name is on it
-  is never applied a second time. The second is what puts `ruled` on a row, and it records the
-  version the criterion carried *after* the ruling was applied, so a criterion later moved on again
-  — by another calibration pass, or by re-running archaeology — comes back unruled and is asked
-  about afresh rather than resting on an answer given about a different statement.
+  verb, gate, adapter?, why?, file_sha? }] }`, where `adapter` is the adapter an `adapter-wrong`
+  verdict was about, `why` the reviewer's reason on an `oracle-cannot` ruling, and `file_sha` the
+  test file a `test-wrong` ruling or a `product-question` sorting judged. The first list is what
+  makes the stage re-run safe: a ruling whose name is on it is never applied a second time. The
+  second is what puts `ruled` on a row, and only while the ruling still applies to the row
+  (`docs/decisions/0073`). Each ruling records the version the criterion carried *after* it was
+  applied, so a criterion later moved on again — by another calibration pass, or by re-running
+  archaeology — comes back unruled and is asked about afresh rather than resting on an answer given
+  about a different statement. A `spec-wrong` ruling is about the test written before its rewrite:
+  it applies to a row whose test header names an earlier version than the one the rewrite
+  produced, and a row of the test derived for the corrected criterion is a result nobody has ruled
+  on — a pass or a fail there is evidence for a missing test, and a fail is sorted like any other.
+  A `test-wrong` ruling, and a `product-question` sorting, apply to a row of the test file they
+  judged, and a different test is sorted afresh. The other verbs are bound to the criterion's
+  version alone.
 
 - **`spec/domains/<d>.md`**, rewritten through the same serialiser `ratify` uses (preamble and all)
   when a ruling changed something in it: `defect-in-old` appends a note, `spec-wrong` replaces the
@@ -245,7 +254,7 @@ the runner's own process, never through a tool call.
 
 5. **Write the result set** — this run's own dated file (`<date>.json`, or `<date>-<n>.json` when the
    day already has one) and `latest.json` — marking each row `ruled` where an applied ruling covers
-   that id at its current version, and `persona-unavailable` where no ruling does and the row needs
+   that id at its current version and still applies to the row's test (above), and `persona-unavailable` where no ruling does and the row needs
    a persona the contract marks unavailable on the target.
    Each row this run measured records what it ran with (`file_sha`, `adapter`, `contract_seed`,
    `override`, `harness`, `rulings_seen`) and `measured_in`; a row carried over from an earlier run
@@ -253,7 +262,7 @@ the runner's own process, never through a tool call.
    run measured.
    Then the missing tests (`docs/operating-model.md` §7): an open item whose test these rows show
    ran at the criterion's current version — `pass` or `fail`, from the spec file as it now stands,
-   not ruled `test-wrong` or `spec-wrong`, and not a failure whose test never reached the target
+   not carrying a `test-wrong` or `spec-wrong` ruling that applies to it, and not a failure whose test never reached the target
    (step 4's environment fault, kept when the run is within the threshold) — is closed as met, the row cited as its evidence
    (`tests/results/<t>/latest.json: <id> v<n> <result>`) and the file's id recorded, and one whose
    test exists and has not run is owed by `calibrate` for this target. `.sdlc/owed.yaml` is committed

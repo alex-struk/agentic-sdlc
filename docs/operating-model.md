@@ -315,7 +315,9 @@ stateDiagram-v2
   `file_sha` is the file's git object id), closes it as met with the row cited as evidence — written
   by the calibration that ran it, or by the G3 approval of a slice whose verify ran it. A row ruled
   `test-wrong` or `spec-wrong` is a result of a test ruled not to test the criterion and closes
-  nothing, and neither does a `fail` row whose test never reached the application because the
+  nothing — a `spec-wrong` ruling being about the test written before the criterion's rewrite, never
+  one derived for the version it produced
+  (`docs/decisions/0073-a-ruling-applies-to-the-test-it-judged.md`) — and neither does a `fail` row whose test never reached the application because the
   target could not be reset or reached — the same environment fault a calibration halts on. A
   written assurance never closes it: `condition-met` on a missing test is refused, and an
   `attested` row closes nothing. An item the runner closed on a row this rule rejects, judged at the
