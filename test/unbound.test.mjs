@@ -280,3 +280,30 @@ test("a row needing an unavailable persona is owed to nobody, and never waits on
   assert.deepEqual(past.spent, []);
   assert.equal(PERSONA_UNAVAILABLE, "persona-unavailable");
 });
+
+// ── a verify of one slice ─────────────────────────────────────────────────────────────────
+
+// A verify runs the tests for the criteria one slice claims, so what it files and closes is
+// about those criteria alone: an entry another slice's verify filed stays as it is until that
+// slice is verified again, whatever the adapter has done since.
+test("a sync scoped to some criteria files and closes those alone, stamped by whoever ran it", (t) => {
+  const { d, commit } = project(t);
+  commit({ "tests/adapters/new/index.ts": "export default 1;\n" });
+  const A = execFileSync("git", ["rev-parse", "HEAD:tests/adapters/new"], { cwd: d, encoding: "utf8" }).trim();
+  syncUnbound(d, "new", { rows: [row("R-9.9", "unbound", { adapter: A })], adapter: A, limit: 2, ids: ["R-9.9"], by: "runner:verify", stamp: { slice: 7 } });
+  commit({ "tests/adapters/new/index.ts": "export default 2;\n" });
+  const B = execFileSync("git", ["rev-parse", "HEAD:tests/adapters/new"], { cwd: d, encoding: "utf8" }).trim();
+
+  const r = syncUnbound(d, "new", { rows: [row("R-1.1", "unbound", { adapter: B }), row("R-1.2", "pass", { adapter: B })], adapter: B, limit: 2, ids: ["R-1.1", "R-1.2"], by: "runner:verify", stamp: { slice: 1 } });
+  assert.deepEqual(r.opened, ["R-1.1"]);
+  assert.deepEqual(r.closed, [], "R-9.9 is another slice's, and nothing about it was run");
+  const byId = new Map(unboundEntries(d).map((x) => [x.id, x]));
+  assert.deepEqual([byId.get("R-1.1").by, byId.get("R-1.1").slice, byId.get("R-1.1").target, byId.get("R-1.1").adapter], ["runner:verify", 1, "new", B]);
+  assert.ok(isOpen(byId.get("R-9.9")));
+  assert.equal(byId.get("R-9.9").slice, 7);
+
+  // The slice is verified again under the adapter the binding run wrote, and R-1.1 passes.
+  const again = syncUnbound(d, "new", { rows: [row("R-1.1", "pass", { adapter: B })], adapter: B, limit: 2, ids: ["R-1.1", "R-1.2"], by: "runner:verify" });
+  assert.deepEqual(again.closed, ["R-1.1"]);
+  assert.equal(new Map(unboundEntries(d).map((x) => [x.id, x])).get("R-1.1").closed.outcome, "met");
+});

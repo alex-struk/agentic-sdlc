@@ -43,6 +43,12 @@
 // **Closing.** Calibration closes an entry whose row is no longer an open unbound row: as met
 // when the row now passes or fails (the adapter reaches what the test needs), and as withdrawn
 // when the row is ruled, is some other result, or is gone.
+//
+// **Rows a verify found.** The new target has no calibration. A verify of a build slice files
+// the unbound rows its suite found there the same way, scoped to the criteria the slice claims
+// and stamped with the slice, and the next verify of that slice closes them, lapses them or
+// sends them again; `sdlc next` routes an entry whose adapter has changed to that verify rather
+// than to a calibration (`docs/decisions/0075`).
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -227,15 +233,24 @@ export function unboundSpent(projectDir, target, config, rows) {
 //
 // A row needing a persona `unavailable` names is never filed: calibration closes it.
 //
+// `ids` scopes every step to those criteria, for a run that put only them to the target: a
+// verify runs the tests one slice claims, so an entry for any other criterion is left as it
+// is, lapsed adapter or not, until a run that covers it. `by` names the run, and `stamp` is
+// written on every entry it files — a verify's slice, which is what a reader routes the
+// entry's re-check to (`docs/decisions/0075`).
+//
 // Returns the path written (`null` when nothing changed) and the criteria opened and closed.
-export function syncUnbound(projectDir, target, { rows = [], adapter, fallback = "", limit, settle = true, unavailable = new Map(), at = new Date().toISOString() } = {}) {
+export function syncUnbound(projectDir, target, { rows = [], adapter, fallback = "", limit, settle = true, unavailable = new Map(), at = new Date().toISOString(), ids = null, by = BY, stamp: extra = {} } = {}) {
   const opened = [];
   const closed = [];
   let path = null;
   const wrote = (p) => { if (p) path = p; };
-  const unbound = openUnboundRows({ rows }).filter((row) => !personaUnavailable(row, unavailable));
+  const scope = ids ? new Set(ids) : null;
+  const inScope = (id) => !scope || scope.has(id);
+  const unbound = openUnboundRows({ rows }).filter((row) => inScope(row.id) && !personaUnavailable(row, unavailable));
   const foundUnder = (row) => row.adapter ?? fallback;
-  const stamp = { by: BY, at };
+  const stamp = { by, at };
+  const noun = by === BY ? "calibration" : by.replace(/^runner:/, "");
   // The reason is written into a committed file, so it is scrubbed of local paths here, where
   // it is written (`docs/decisions/0020`).
   const why = (row) => redactLocalPaths(unboundWhy(row), projectDir);
@@ -248,14 +263,14 @@ export function syncUnbound(projectDir, target, { rows = [], adapter, fallback =
     if (entries.some((e) => e.item === item && (isOpen(e) || (e.found === UNBOUND && e.adapter === found)))) return false;
     return sends(entries, item) < limit;
   });
-  const filed = open(projectDir, KIND, earlier.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter: foundUnder(row), ...stamp })));
+  const filed = open(projectDir, KIND, earlier.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter: foundUnder(row), ...extra, ...stamp })));
   wrote(filed.path);
   opened.push(...filed.added.map((e) => e.id));
 
-  const lapsed = read(projectDir, KIND).filter((e) => isOpen(e) && e.found === UNBOUND && e.target === target && e.adapter !== adapter);
+  const lapsed = read(projectDir, KIND).filter((e) => isOpen(e) && e.found === UNBOUND && e.target === target && e.adapter !== adapter && inScope(e.id));
   if (lapsed.length) {
-    const ids = new Set(lapsed.map((e) => e.id));
-    wrote(close(projectDir, KIND, (e) => e.found === UNBOUND && e.target === target && ids.has(e.id) && e.adapter !== adapter, {
+    const lapsedIds = new Set(lapsed.map((e) => e.id));
+    wrote(close(projectDir, KIND, (e) => e.found === UNBOUND && e.target === target && lapsedIds.has(e.id) && e.adapter !== adapter, {
       outcome: "met", why: `tests/adapters/${target} has changed since this was found`, ...stamp,
     }));
     closed.push(...lapsed.map((e) => e.id));
@@ -264,7 +279,7 @@ export function syncUnbound(projectDir, target, { rows = [], adapter, fallback =
 
   entries = read(projectDir, KIND);
   const fresh = unbound.filter((row) => foundUnder(row) === adapter && !entries.some((e) => isOpen(e) && e.item === itemOf(target, row.id)) && sends(entries, itemOf(target, row.id)) < limit);
-  const now = open(projectDir, KIND, fresh.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter, ...stamp })));
+  const now = open(projectDir, KIND, fresh.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter, ...extra, ...stamp })));
   wrote(now.path);
   opened.push(...now.added.map((e) => e.id));
 
@@ -272,11 +287,11 @@ export function syncUnbound(projectDir, target, { rows = [], adapter, fallback =
   const byId = new Map(rows.filter((r) => r?.id).map((r) => [r.id, r]));
   const closures = new Map();
   for (const e of read(projectDir, KIND)) {
-    if (!isOpen(e) || e.found !== UNBOUND || e.target !== target || e.adapter !== adapter || stillOwed.has(e.id)) continue;
+    if (!isOpen(e) || e.found !== UNBOUND || e.target !== target || e.adapter !== adapter || stillOwed.has(e.id) || !inScope(e.id)) continue;
     const row = byId.get(e.id);
     const closure = row && !row.ruled && (row.result === "pass" || row.result === "fail")
-      ? { outcome: "met", why: `the calibration row is ${row.result} under this adapter` }
-      : { outcome: "withdrawn", why: row?.ruled ? `the calibration row is ruled ${row.ruled}` : row ? `the calibration row is ${row.result}` : "the calibration has no row for it" };
+      ? { outcome: "met", why: `the ${noun} row is ${row.result} under this adapter` }
+      : { outcome: "withdrawn", why: row?.ruled ? `the ${noun} row is ruled ${row.ruled}` : row ? `the ${noun} row is ${row.result}` : `the ${noun} has no row for it` };
     const key = JSON.stringify(closure);
     if (!closures.has(key)) closures.set(key, { closure, ids: new Set() });
     closures.get(key).ids.add(e.id);
