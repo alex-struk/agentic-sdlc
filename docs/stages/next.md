@@ -4,7 +4,8 @@
 
 Name the next command to run, and the rule of the record that chose it, by reading the project's
 recorded state on `main`. It also lists what else is ready and what is waiting on a person. The
-operator still types the command; `next` decides which one.
+operator types the command, or `sdlc drive` runs it and reads `next` again until it stops at a
+person, a failure or a dead end (`docs/stages/drive.md`); either way `next` decides which one.
 
 ## Inputs
 

@@ -377,8 +377,17 @@ owes, stale tests, stale adapters, open and escalated proposals, and the plan's 
 It is triggered by a change of state, never by time: a stage finishing or a ruling being
 recorded.
 
+`sdlc drive` is that trigger for as long as an operator leaves it running (`docs/stages/drive.md`).
+It reads `next`, runs the command it names when the seat is an agent's or the step is the
+runner's own, and reads `next` again. It never types a person's verdict. It stops, with the
+reason on the run record and a distinct exit code, when nothing is left, when the work waits on a
+person, when a step fails with no known recovery, when the agent CLI's sign-in has expired, when
+`next` names a command again and nothing that command could change has changed since it last ran,
+and at a step limit. The one recovery it knows, bounded to one attempt per step, is an oracle that
+is not up: it brings it up and runs the step again.
+
 | Level | Behaviour |
 |---|---|
 | 1 | Every run and every ruling ends by printing what is next. The operator still types the command, but no longer chooses it. |
-| 2 | **Decided, not yet built.** A loop runs whatever is next, and stops by itself at a seat held by a person, a failure, or a dead end. Whether it continues unprompted is policy. |
+| 2 | `sdlc drive` runs whatever is next, and stops by itself at a seat held by a person, a failure, or a dead end. It continues until one of those or `--max-steps`, and the operator starting it is the only prompt (`docs/decisions/0074-a-loop-that-stops-at-a-person.md`). |
 | 3 | **Decided, not yet built.** With people in seats, a person's ruling (a pull-request approval) restarts the loop through the repository's workflow. |

@@ -63,6 +63,14 @@ move work there.
   chose it, read from `main`, with what else is ready and what waits on a person. Exits 0 when
   something can run, 3 when nothing can until a person acts, 4 when nothing is left
   (`docs/stages/next.md`). A `sdlc run` of anything else needs `--reason`, which is recorded.
+- `sdlc drive [dir] [--max-steps N] [--dry-run]` — run what `sdlc next` names, one step after
+  another, and stop by itself at a person's seat, a failure it has no recovery for, an expired
+  sign-in, a step that changed nothing, or the step limit (50 by default), each with its reason
+  on the run record. A target that is not up is brought up once per step. Exits 0 when nothing
+  is left, 1 on a failure, 2 when refused (a dirty tree, not on `main`, another drive running),
+  3 when waiting on a person, 5 on an expired sign-in, 6 on no progress and 7 at the step limit;
+  `--dry-run` prints what it would run and why and runs nothing, and `--status` says what a
+  running drive is doing (`docs/stages/drive.md`).
 - `sdlc resume [--again]` — continue a run an interrupted process left mid-stage, re-judging
   whatever the agent session left behind against the stage's post-checks.
 - `sdlc status [dir]` — regenerate the generated state site (`site/index.md`, `site/gates.md`,
