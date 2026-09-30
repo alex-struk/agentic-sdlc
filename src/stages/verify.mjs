@@ -238,13 +238,23 @@ function verifyReturnGate(projectDir, name) {
 // A return whose every condition is an environment gap — a test stopped for want of a mail
 // catcher — is not counted either. It says nothing about the application, and a slice sent
 // back for it has not failed a build (`docs/decisions/0075`).
+//
+// And the count starts again after a person's return. The limit exists to put a person in
+// front of a slice the loop is not closing; once one has read it and asked for another
+// build, the returns before that ruling have been answered. Only a person's ruling resets
+// it: an agent seat returning its own escalation would let the loop run without end
+// (`docs/decisions/0076`). The family's order is its proposal numbers, which only grow.
 function returnsByVerify(projectDir, slice) {
-  let count = 0;
-  for (const name of buildProposalFamily(projectDir, slice)) {
-    const gate = verifyReturnGate(projectDir, name);
-    if (gate?.by === "runner:verify" && !environmentOnly(gate)) count += 1;
-  }
-  return count;
+  const base = buildProposalBase(slice);
+  const seq = (name) => (name === base ? 1 : Number(name.slice(base.length + 1)));
+  const gates = [...buildProposalFamily(projectDir, slice)]
+    .map((name) => ({ n: seq(name), gate: verifyReturnGate(projectDir, name) }));
+  const since = Math.max(0, ...gates.filter(({ gate }) => gate?.verdict === "return" && byPerson(gate.by)).map(({ n }) => n));
+  return gates.filter(({ n, gate }) => n > since && gate?.by === "runner:verify" && !environmentOnly(gate)).length;
+}
+
+function byPerson(by) {
+  return typeof by === "string" && by !== "" && !by.startsWith("agent:") && !by.startsWith("runner");
 }
 
 function environmentOnly(gate) {

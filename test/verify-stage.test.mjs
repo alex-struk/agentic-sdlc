@@ -326,6 +326,34 @@ test("a return the reviewer wrote is not counted toward verify's escalation", as
   assert.match(r.text, /returned/);
 });
 
+// A person who returns an escalated slice has answered the escalation; the verify returns
+// before that ruling are not held against the build it asked for. An agent seat's return
+// does not reset the count, or the loop would never reach a person (`0076`).
+for (const [by, expected] of [["tech-lead", "return"], ["agent:tech-lead", "escalated"]]) {
+  test(`verify's return count ${expected === "return" ? "starts again after a person's" : "does not restart after an agent seat's"} return (${by})`, async (t) => {
+    const d = buildProject(t);
+    const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+    for (const k of [2, 3, 4]) {
+      run(["checkout", "-q", "-b", `proposal/build-slice-1-${k}`, "proposal/build-slice-1"]);
+      run(["checkout", "-q", "main"]);
+    }
+    for (const [name, who, verdict] of [["build-slice-1", "runner:verify", "return"], ["build-slice-1-2", "runner:verify", "return"], ["build-slice-1-3", by, "return"]]) {
+      run(["checkout", "-q", `proposal/${name}`]);
+      mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+      writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), `gate: G3\nverdict: ${verdict}\nby: ${who}\nheld_by: runner\n`);
+      run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
+      run(["checkout", "-q", "main"]);
+    }
+    mockSuite(t, [row("R-4.1", "fail", "Error: still wrong"), row("R-4.2", "pass")]);
+    const ctx = ctxFor(d);
+    verify.preChecks(d, ctx);
+    assert.equal(ctx.verifyProposal, "build-slice-1-4");
+    await verify.execute(d, ctx);
+    const gate = parseYaml(execFileSync("git", ["show", "proposal/build-slice-1-4:.sdlc/gates/build-slice-1-4.yaml"], { cwd: d, encoding: "utf8" }));
+    assert.equal(gate.verdict, expected);
+  });
+}
+
 // The real chain a fixture cannot fabricate its way around: verify writes `return` onto
 // `proposal/build-slice-<n>`, `build --revise`'s own pre-check reads that return and (via
 // `recordReturnOnMain`) renames the branch to `returned/build-slice-<n>` and copies the

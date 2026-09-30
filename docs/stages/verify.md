@@ -100,7 +100,10 @@ asks for happens at the gate it is returned to, not here.
    below may not even be the application's to fix. Only verify's own returns
    (`by: runner:verify`) count toward the limit, across every cause verify returns a build for;
    a reviewer's return of the same proposal does not, and neither does a return whose every
-   condition is an environment gap. The conditions are the failures alone: an environment gap or
+   condition is an environment gap. The count starts again after a person returns the slice: the
+   returns before that ruling are the ones the person answered, and only verify's returns on
+   later proposals count. An agent seat's return does not reset it
+   (`docs/decisions/0076-a-person-s-return-resets-the-verify-count.md`). The conditions are the failures alone: an environment gap or
    an unbound row beside them is named in what is printed and never made a condition.
 8. **On `environment`, report and stop.** Nothing is written to a gate file and nothing counts
    toward the return limit: nothing the builder can change would test these criteria. What is
