@@ -1980,7 +1980,13 @@ function bindAdapterRevisionCandidates(projectDir, target) {
 // in the pipeline. The returned branch's own commit is stashed on `ctx.revision` for
 // `runStage` to overlay the adapter from, so the revision starts from exactly what was
 // proposed rather than from whatever `main` still carries.
-function checkBindAdapterRevisionSource(projectDir, ctx) {
+//
+// Finding the return spends nothing; recording it on `main` spends it, since the branch is
+// then `returned/<name>` and a later search finds no return to revise from. So it is recorded
+// only when every pre-check ahead of this one passed (`record`): a run refused because the new
+// target's sandbox was not up is run again once `sdlc drive` or a person has started it, and
+// that run revises the same return (`docs/decisions/0080`).
+function checkBindAdapterRevisionSource(projectDir, ctx, { record = true } = {}) {
   const id = "bind-adapter-revise-source";
   if (!ctx.revise || !ctx.target) return { id, ok: true, messages: [] };
   const found = findReturnedBindAdapterRuling(projectDir, ctx.target);
@@ -1992,7 +1998,7 @@ function checkBindAdapterRevisionSource(projectDir, ctx) {
   }
   const branchCommit = git(["rev-parse", found.branch], projectDir);
   ctx.revision = withOwedConditions(projectDir, withOpenRequests(projectDir, "bind-adapter", { ...found, branchCommit }), proposalFamily(found.name));
-  if (!ctx.dryRun) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
+  if (!ctx.dryRun && record) recordReturnOnMain(projectDir, found, { gate: "G3", keepBranch: true });
   return { id, ok: true, messages: [] };
 }
 
@@ -2202,12 +2208,12 @@ const bindAdapter = {
       ? [...readOwed(projectDir, "rebind").filter((e) => isOpen(e) && e.target === ctx.target), ...unboundHanded(projectDir, ctx.target, ctx.config)]
       : [];
     ctx.bindAdapterGaps = ctx.target ? adapterContractGaps(projectDir, ctx.target) : null;
-    return [
+    const ahead = [
       checkTargetOption("bind-adapter", ctx),
       checkSandboxPassword("bind-adapter", ctx, "binding against"),
       checkBindAdapterTargetUp(projectDir, ctx),
-      checkBindAdapterRevisionSource(projectDir, ctx),
     ];
+    return [...ahead, checkBindAdapterRevisionSource(projectDir, ctx, { record: ahead.every((r) => r.ok) })];
   },
   postChecks(projectDir, ctx) {
     // Stashed the same way `contract` stashes its own version: the real `proposal(ctx)`

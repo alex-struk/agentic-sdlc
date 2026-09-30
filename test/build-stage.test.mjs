@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { readSlice, buildProposals, bindingBranch, specFilesFor } from "../src/stages/slices.mjs";
+import { readSlice, buildProposals, buildBranches, bindingBranch, specFilesFor } from "../src/stages/slices.mjs";
 import { MODES } from "../src/runner/workspace.mjs";
 import { build, checkBuildScope, appCheck } from "../src/stages/build.mjs";
 
@@ -48,20 +48,23 @@ test("a slice's proposals are listed newest first", (t) => {
   assert.deepEqual(buildProposals(d, 1), ["build-slice-1-3", "build-slice-1-2", "build-slice-1"]);
 });
 
-// A repository with `proposal/<name>` for each name, and a gate file on each of `ruled`.
-function withProposals(t, names, ruled = []) {
+// A repository with `proposal/<name>` for each name, and a gate file on each of `ruled`. A
+// name in `retired` is ruled and its branch renamed to `returned/<name>`, as a build
+// revision's pre-check leaves it.
+function withProposals(t, names, ruled = [], retired = []) {
   const d = project(t);
   const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
   const commit = (m) => run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "--allow-empty", "-m", m]);
   run(["init", "-q", "-b", "main"]); run(["add", "-A"]); commit("x");
   for (const b of names) {
     run(["branch", `proposal/${b}`]);
-    if (!ruled.includes(b)) continue;
+    if (!ruled.includes(b) && !retired.includes(b)) continue;
     run(["checkout", "-q", `proposal/${b}`]);
     mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
     writeFileSync(join(d, ".sdlc", "gates", `${b}.yaml`), "verdict: return\n");
     run(["add", "-A"]); commit("ruled");
     run(["checkout", "-q", "main"]);
+    if (retired.includes(b)) run(["branch", "-m", `proposal/${b}`, `returned/${b}`]);
   }
   return d;
 }
@@ -75,12 +78,43 @@ test("a binding of the new target runs against the newest open build proposal of
 
 test("a binding of the new target with no one branch to start from says why", (t) => {
   const d = withProposals(t, ["build-slice-1", "build-slice-2"], ["build-slice-1"]);
-  assert.match(bindingBranch(d, [{ id: "R-4.1", slice: 1 }]).why, /no open build proposal for slice 1/);
+  const none = withProposals(t, ["build-slice-2"]);
+  assert.match(bindingBranch(none, [{ id: "R-4.1", slice: 1 }]).why, /^no build proposal for slice 1$/);
   assert.match(bindingBranch(d, [{ id: "R-9.9" }]).why, /no slice in plan\/tasks\.md claims/);
+  const ruled = withProposals(t, ["build-slice-1", "build-slice-2"], ["build-slice-1", "build-slice-2"]);
+  assert.match(bindingBranch(ruled, [{ id: "R-4.1", slice: 1 }, { id: "R-1.1", slice: 2 }]).why,
+    /^no build proposal is open for slices 1, 2, and slices 1, 2 each have a ruled one \(proposal\/build-slice-1, proposal\/build-slice-2\); which of them to bind against is a person's call$/);
   const both = withProposals(t, ["build-slice-1", "build-slice-2"]);
   assert.match(bindingBranch(both, [{ id: "R-4.1", slice: 1 }, { id: "R-1.1", slice: 2 }]).why, /slices 1, 2 each have an open build proposal/);
   // With nothing owed, the one open build proposal in the plan is the application to bind.
   assert.deepEqual(bindingBranch(d, []), { branch: "proposal/build-slice-2" });
+});
+
+// A verify that returns a build leaves no build proposal open, and what it found unbound is
+// still about the application that build carries (`docs/decisions/0080`).
+test("a slice's build branches are read under proposal/ and returned/, newest first, with which is open", (t) => {
+  const d = withProposals(t, ["build-slice-1", "build-slice-1-2", "build-slice-1-3", "build-slice-12"], ["build-slice-1-2"], ["build-slice-1"]);
+  assert.deepEqual(buildBranches(d, 1), [
+    { branch: "proposal/build-slice-1-3", name: "build-slice-1-3", open: true },
+    { branch: "proposal/build-slice-1-2", name: "build-slice-1-2", open: false },
+    { branch: "returned/build-slice-1", name: "build-slice-1", open: false },
+  ]);
+});
+
+test("with no build proposal of its slice open, a binding runs against the newest whatever its state", (t) => {
+  // Returned by verify, and not yet renamed by build --revise.
+  const returned = withProposals(t, ["build-slice-1", "build-slice-1-2"], ["build-slice-1-2"], ["build-slice-1"]);
+  assert.deepEqual(bindingBranch(returned, [{ id: "R-4.1", slice: 1 }]), { branch: "proposal/build-slice-1-2" });
+  // Renamed to returned/<name> by build --revise's pre-check, newest by proposal number.
+  const retired = withProposals(t, ["build-slice-1-9", "build-slice-1-10"], [], ["build-slice-1-9", "build-slice-1-10"]);
+  assert.deepEqual(bindingBranch(retired, [{ id: "R-4.1", slice: 1 }]), { branch: "returned/build-slice-1-10" });
+  // An open proposal is preferred over a newer-numbered returned one.
+  const both = withProposals(t, ["build-slice-1-2", "build-slice-1-3"], [], ["build-slice-1-3"]);
+  assert.deepEqual(bindingBranch(both, [{ id: "R-4.1", slice: 1 }]), { branch: "proposal/build-slice-1-2" });
+  // With nothing owed — a revision whose entries are spent — the newest build of the slice
+  // furthest on in the plan that has one.
+  const plan = withProposals(t, ["build-slice-1", "build-slice-2-3", "build-slice-2-4"], [], ["build-slice-1", "build-slice-2-3", "build-slice-2-4"]);
+  assert.deepEqual(bindingBranch(plan, []), { branch: "returned/build-slice-2-4" });
 });
 
 test("the spec files for a slice's criteria are found wherever their domain keeps them", (t) => {

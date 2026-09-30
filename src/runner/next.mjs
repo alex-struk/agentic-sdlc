@@ -18,8 +18,9 @@
 // `policy.next.order`. Three rules cut across the kinds: the contract run that answers owed work
 // waits while the test writer has ready work that does not rest on it (`docs/decisions/0069`),
 // a calibration `policy.next.calibrate_after` makes due goes before owed and sequence work
-// (`docs/decisions/0070`), and an open proposal for a target's adapter is ruled before a verify
-// or calibration that measures with that adapter (`docs/decisions/0079`). Work that only a person can move — a proposal at a seat a person
+// (`docs/decisions/0070`), and an open proposal for a target's adapter is ruled, and a returned
+// one revised, before a verify or calibration that measures with that adapter
+// (`docs/decisions/0079`, `docs/decisions/0080`). Work that only a person can move — a proposal at a seat a person
 // holds, an escalation to a person, an escalation that reached the role that raised it — is
 // reported as waiting and never offered as something to run.
 import { execFileSync } from "node:child_process";
@@ -269,7 +270,7 @@ export function readRecord(projectDir, rev = "main") {
     ...proposalBranches.map((b) => b.slice("proposal/".length)),
     ...returnedBranches.map((b) => b.slice("returned/".length)),
   ];
-  return { rev, config, domains, targets, gates, proposals, names, index, tasks, domainIds, results, owed, unboundSpent, unboundTriage, unboundUnavailable, requests, headers: specHeaders(projectDir, rev) };
+  return { rev, config, domains, targets, gates, proposals, returnedBranches, names, index, tasks, domainIds, results, owed, unboundSpent, unboundTriage, unboundUnavailable, requests, headers: specHeaders(projectDir, rev) };
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────────────
@@ -472,6 +473,21 @@ function openBuildFor(record, slice) {
   return open.sort((a, b) => lineage(b.name).n - lineage(a.name).n)[0] ?? null;
 }
 
+// The build branch a binding of the new target for `slice` runs against: the newest open build
+// proposal, else the newest of the slice whatever its state, under `proposal/` or `returned/`
+// (`bindingBranch`, `src/stages/slices.mjs`; `docs/decisions/0080`). `null` where the slice
+// has none.
+function bindingBuildFor(record, slice) {
+  const open = openBuildFor(record, slice);
+  if (open) return open.branch;
+  const ofSlice = (name) => routeOf(name, record.config)?.stage === "build" && Number(routeOf(name, record.config)?.slice) === Number(slice);
+  const byName = new Map();
+  for (const b of record.returnedBranches ?? []) byName.set(b.slice("returned/".length), b);
+  for (const p of record.proposals) byName.set(p.name, p.branch);
+  const names = [...byName.keys()].filter(ofSlice).sort((a, b) => lineage(b).n - lineage(a).n);
+  return names.length ? byName.get(names[0]) : null;
+}
+
 // Every proposal branch not yet merged, sorted into what a seat played by an agent can rule
 // now, what waits on a person, what has been returned for its stage to revise, and what is
 // returned and held until what its ruling asked of another stage is approved.
@@ -620,9 +636,9 @@ function owedWork(record, inFlight, bindsNow) {
       if (slice !== null && about && r?.adapter && about !== r.adapter) {
         group("verify", { slice }, "unbound row to check again now that its adapter has changed", "unbound rows to check again now that their adapter has changed");
       } else if (slice !== null) {
-        const build = openBuildFor(record, slice);
+        const build = bindingBuildFor(record, slice);
         group("bind-adapter", { target: e.target }, "binding the adapter reports unbound", "bindings the adapter reports unbound", 1,
-          build ? `the application it binds against is on ${build.branch} alone, so sdlc sandbox up --target ${e.target} --from ${build.branch} first` : null);
+          build ? `the application it binds against is on ${build} alone, so sdlc sandbox up --target ${e.target} --from ${build} first` : null);
       } else if (about && r?.adapter && about !== r.adapter) {
         if (unbound) group("calibrate", { target: e.target }, "unbound row to check again now that its adapter has changed", "unbound rows to check again now that their adapter has changed");
         else group("calibrate", { target: e.target }, "binding to check again now that its adapter has changed (rebind)", "bindings to check again now that their adapter has changed (rebind)");
@@ -861,12 +877,27 @@ function measuresWith(c) {
   return MEASURES_WITH[c.stage]?.(c.args) ?? null;
 }
 
+// The target whose adapter a ready item's run will be measured with next, without measuring
+// anything itself: a build proposes an application that a verify of it then measures on the
+// new target.
+function leadsToMeasure(c) {
+  return c.stage === "build" ? "new" : null;
+}
+
 // An open adapter proposal is ruled before a step that measures with the adapter it changes
 // (`docs/decisions/0079`). A run of the suite on target T while a proposal for T's adapter is
 // open measures with the adapter that proposal is about to replace. So where an agent can rule
 // that proposal now, its ruling is moved ahead of the first ready item that measures with T,
 // whatever kind of work either is; where it waits on a person, every item that measures with T
 // is held until it is ruled. Everything else keeps the place the order gave it.
+//
+// A returned adapter proposal is revised before the same steps (`docs/decisions/0080`): a run
+// that measures with T while T's adapter is returned measures with the adapter a ruler has
+// just rejected. The revision, `bind-adapter --target T --revise`, is agent work, so it is
+// moved ahead of the first ready item that measures with T, and ahead of a build as well,
+// since the build's verify will measure with it. Its revision, once proposed, is an open
+// proposal and ruled under the rule above. A revision held on work its ruling asked of
+// another stage holds nothing: that work may itself need measuring.
 function adapterBeforeMeasure(record, ready, waiting) {
   const adapterOf = (c) => {
     if (!c?.name) return null;
@@ -883,7 +914,12 @@ function adapterBeforeMeasure(record, ready, waiting) {
     const t = adapterOf(w);
     if (t && !waits.has(t)) waits.set(t, w);
   }
-  if (!rulings.size && !waits.size) return { ready, held: [] };
+  const revisions = new Map();
+  for (const c of ready) {
+    const t = c.stage === "bind-adapter" && c.args?.revise ? c.args.target ?? null : null;
+    if (t && !revisions.has(t)) revisions.set(t, c);
+  }
+  if (!rulings.size && !waits.size && !revisions.size) return { ready, held: [] };
   const out = [];
   const held = [];
   const placed = new Set();
@@ -896,6 +932,14 @@ function adapterBeforeMeasure(record, ready, waiting) {
       placed.add(ruling);
       out.push({ ...ruling,
         rule: `an open proposal for target ${t}'s adapter is ruled before ${c.command}, which measures with that adapter, whatever policy.next.order puts first (docs/decisions/0079)` });
+    }
+    const ahead = t ?? leadsToMeasure(c);
+    const revision = ahead ? revisions.get(ahead) : undefined;
+    if (revision && revision !== c && !placed.has(revision)) {
+      placed.add(revision);
+      out.push({ ...revision, rule: t
+        ? `a returned proposal for target ${t}'s adapter is revised before ${c.command}, which measures with that adapter, whatever policy.next.order puts first (docs/decisions/0080)`
+        : `a returned proposal for target ${ahead}'s adapter is revised before ${c.command}, whose verify will measure with that adapter (docs/decisions/0080)` });
     }
     const wait = !ruling && t ? waits.get(t) : undefined;
     if (wait) {

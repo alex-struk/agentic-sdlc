@@ -165,10 +165,21 @@ password from `process.env.SDLC_SANDBOX_PASSWORD` at run time
     reads `bind-adapter: the <t> target's sandbox is not up — <finding>; run sdlc sandbox up
     --target <t> --from <branch> first`, where the branch is the newest open build proposal of the
     slice the run's rebind entries name (an entry naming no slice belongs to the slice claiming its
-    criterion; with no entries, every slice in `plan/tasks.md` is a candidate). With no open build
-    proposal among them, or one for more than one slice, the refusal says so and names no branch.
-    `sdlc drive` acts on the refusal that names one
-    (`docs/decisions/0078-drive-starts-the-new-sandbox-for-a-rebind.md`).
+    criterion; with no entries, every slice in `plan/tasks.md` is a candidate). Where none of them
+    has an open build proposal, a verify has returned the newest, and the branch is the newest
+    build proposal of that slice whatever its state, by proposal number: `proposal/<name>` while
+    it carries its return, `returned/<name>` once `build --revise` has renamed it. With no entries,
+    that is the newest build of the slice furthest on in the plan that has one. An open build
+    proposal for more than one slice, or none open and a ruled one for more than one of the slices
+    the entries name, is a person's call: the refusal says so and names no branch. `sdlc drive`
+    acts on the refusal that names one
+    (`docs/decisions/0078-drive-starts-the-new-sandbox-for-a-rebind.md`,
+    `docs/decisions/0080-a-returned-adapter-is-revised-before-it-is-measured-with.md`).
+  - With `--revise`, a returned `bind-adapter-<t>[-n]` proposal to revise from, newest first, or a
+    revision request addressed to bind-adapter. Finding the return spends nothing; recording it
+    on `main` and renaming its branch to `returned/<name>` spends it, and happens only when every
+    pre-check above passed. A run refused because the new target's sandbox was not up is run
+    again once the sandbox is started, and revises the same return.
 - **Post-checks**, run against the working tree after the agent session ends, in order:
   - `checkSeparation` (`src/checks/separation.mjs`): the adapter asserts nothing, defines no
     `test()`, and imports nothing from `tests/acceptance/` or `app/`.

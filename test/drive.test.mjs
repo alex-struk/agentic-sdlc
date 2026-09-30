@@ -197,6 +197,18 @@ test("a new target whose sandbox is not up is started from the branch the step n
   assert.match(recorded, /sdlc sandbox down --target new --from proposal\/build-slice-3-2/);
 });
 
+test("a revision whose sandbox is to start from a returned build passes that branch through unchanged", async () => {
+  const returned = "bind-adapter: the new target's sandbox is not up — nothing answered at http://localhost:4300/; run sdlc sandbox up --target new --from returned/build-slice-2-10 first";
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "new", revise: true }), IDLE],
+    steps: [{ ok: false, messages: [returned] }, { ok: true }],
+  });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 0);
+  assert.deepEqual(calls.sandbox, ["up --target new --from returned/build-slice-2-10", "down --target new --from returned/build-slice-2-10"]);
+  assert.deepEqual(calls.executed, ["sdlc run bind-adapter --target new --revise", "sdlc run bind-adapter --target new --revise"]);
+});
+
 test("the oracle is taken down before the new target's sandbox is started, when it is up", async () => {
   const { deps, calls } = world({
     answers: [runItem("bind-adapter", { target: "new" }), IDLE],
@@ -446,6 +458,8 @@ test("targetTrouble tells a target that is not up from one that is up and unusab
 test("sandboxTrouble reads the branch a binding named, a port the sandbox could not have, and nothing else", () => {
   assert.deepEqual(sandboxTrouble(NEW_NOT_UP), { kind: "start", target: "new", from: "proposal/build-slice-3-2" });
   assert.deepEqual(sandboxTrouble(ORACLE_ON_NEW), { kind: "start", target: "new", from: "proposal/build-slice-3-2" });
+  assert.deepEqual(sandboxTrouble(NEW_NOT_UP.replace("proposal/build-slice-3-2", "returned/build-slice-3-2")), { kind: "start", target: "new", from: "returned/build-slice-3-2" });
+  assert.equal(sandboxTrouble(NEW_NOT_UP.replace("proposal/build-slice-3-2", "main")), null, "only a proposal's branch, open or returned");
   assert.deepEqual(sandboxTrouble("the sandbox was not started: app/compose.yaml publishes 2 host ports this machine is already using — port 4300; port 8025."), { kind: "ports" });
   assert.equal(sandboxTrouble("bind-adapter: the new target's sandbox is not up — nothing answered at http://localhost:4300/, and there is no one branch to start it from: no open build proposal for slice 3. Start the application to bind against with sdlc sandbox up --target new --from <branch>, then run this again"), null);
   assert.equal(sandboxTrouble("the application it binds against is on proposal/build-slice-3 alone, so sdlc sandbox up --target new --from proposal/build-slice-3 first"), null, "next's own advice is not a refusal");

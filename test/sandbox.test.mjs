@@ -156,6 +156,19 @@ test("up --from builds the application a proposal branch carries and leaves HEAD
   assert.equal(existsSync(join(d, "app", "compose", "compose.yaml")), false);
 });
 
+// A build a verify returned is renamed `returned/<name>` by build --revise's pre-check, and a
+// binding owed for its rows still starts the application it carries (`docs/decisions/0080`).
+test("up and down --from start and stop the application a returned build's branch carries", async (t) => {
+  const d = branchProject(t);
+  execFileSync("git", ["branch", "-m", "proposal/build-slice-1", "returned/build-slice-1"], { cwd: d, stdio: "ignore" });
+  const { calls, exec } = recorder();
+  assert.equal(await runSandbox(d, "up", { target: "new", from: "returned/build-slice-1" }, { exec, health: async () => true }), 0);
+  assert.ok(calls.some((c) => /^docker compose -p sdlc-mkt-new -f app\/compose\/compose\.yaml up -d --build --wait/.test(c)), calls.join(" | "));
+  assert.equal(await runSandbox(d, "down", { target: "new", from: "returned/build-slice-1" }, { exec }), 0);
+  assert.match(calls.at(-1), /compose\.yaml down -v$/);
+  assert.equal(headOf(d), "main");
+});
+
 test("down --from reaches the same stack from main, after HEAD has been put back", async (t) => {
   const d = branchProject(t);
   const calls = [];

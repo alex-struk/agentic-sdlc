@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { STAGES } from "../src/profiles.mjs";
 import { stageFor, skillText, recommendationFrom } from "../src/stages/registry.mjs";
 import { skillPath, SKILLS_DIR } from "../src/stages/shared.mjs";
@@ -122,6 +123,42 @@ test("bind-adapter can revise a returned binding, overlaying its own target and 
   assert.ok(noReturn.some((r) => r.id === "bind-adapter-revise-source" && !r.ok));
   const ordinary = stage.preChecks(".", { target: "old", config: { targets: { old: {} } } });
   assert.ok(ordinary.every((r) => r.id !== "bind-adapter-revise-source" || r.ok));
+});
+
+// A revision refused because the new target's sandbox was not up is run again once it is
+// started, and must find the same return to revise (`docs/decisions/0080`).
+test("bind-adapter --revise refused on a pre-check ahead of it leaves the return where the next run finds it", (t) => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-bind-revise-"));
+  t.after(() => rmSync(d, { recursive: true, force: true }));
+  const git = (...a) => execFileSync("git", a, { cwd: d, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const commit = (m) => git("-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "--allow-empty", "-m", m);
+  git("init", "-q", "-b", "main"); commit("start");
+  git("checkout", "-q", "-b", "proposal/bind-adapter-new-2");
+  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+  mkdirSync(join(d, ".sdlc", "proposals"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "proposals", "bind-adapter-new-2.md"), "---\ngate: G3\n---\n");
+  writeFileSync(join(d, ".sdlc", "gates", "bind-adapter-new-2.yaml"), "gate: G3\nverdict: return\nby: agent:reviewer\nrationale: fix the form readings\n");
+  git("add", "-A"); commit("rule(G3): bind-adapter-new-2 return");
+  git("checkout", "-q", "main");
+  const prev = process.env.SDLC_ORACLE;
+  t.after(() => { if (prev === undefined) delete process.env.SDLC_ORACLE; else process.env.SDLC_ORACLE = prev; });
+  const stage = stageFor("bind-adapter");
+  const ctx = () => ({ target: "new", revise: true, config: { targets: { new: { base_url: "http://127.0.0.1:1", identity: "none" } } } });
+
+  delete process.env.SDLC_ORACLE;
+  const refused = stage.preChecks(d, ctx());
+  assert.ok(refused.some((r) => r.id === "bind-adapter-target-up" && !r.ok && /sandbox is not up/.test(r.messages[0])));
+  assert.ok(refused.find((r) => r.id === "bind-adapter-revise-source").ok);
+  assert.equal(git("branch", "--list", "proposal/bind-adapter-new-2"), "proposal/bind-adapter-new-2", "the return is still on its branch");
+  assert.equal(git("branch", "--list", "returned/*"), "");
+  assert.equal(git("log", "--format=%s", "main"), "start", "nothing is recorded on main");
+
+  process.env.SDLC_ORACLE = "mock";
+  const c = ctx();
+  const ran = stage.preChecks(d, c);
+  assert.ok(ran.every((r) => r.ok));
+  assert.equal(c.revision.name, "bind-adapter-new-2");
+  assert.equal(git("branch", "--list", "returned/bind-adapter-new-2").trim(), "returned/bind-adapter-new-2", "recorded once the run can go ahead");
 });
 
 test("a revising adapter is told to change only what the conditions name", () => {

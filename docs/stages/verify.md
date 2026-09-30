@@ -254,7 +254,10 @@ reaches it escalates. An environment halt writes no gate file and cannot count.
 `sdlc next` reads the result off the proposal branch (`src/runner/next.mjs`). A build whose verdict
 is `unbound`, while a rebind entry filed by its slice's verify is open, is not offered for ruling: the
 binding is offered instead, as `sdlc run bind-adapter --target new`, with the `sandbox up --from`
-step it needs named beside it. Once a binding is ruled onto `main`, the adapter has changed under
+step it needs named beside it. A build returned with failures beside its unbound rows leaves no
+build proposal open, and the `--from` named is then that build's own branch, `proposal/<name>` or
+`returned/<name>`, since its application is still the one the rows were found on
+(`docs/decisions/0080-a-returned-adapter-is-revised-before-it-is-measured-with.md`). Once a binding is ruled onto `main`, the adapter has changed under
 the entry and `sdlc run verify --slice <n>` is offered, not a calibration. A build whose verdict is
 `environment` waits on G3's `escalate_to`, naming the criteria; where every gap was the mail catcher
 and `targets.new.mail_api` is now set on `main`, verify is offered again. Past the rebind limit an

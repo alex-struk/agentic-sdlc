@@ -57,10 +57,12 @@ export function targetTrouble(text) {
 // it binds against, and named the build proposal to start it from, which is where the loop
 // starts it (`docs/decisions/0078`). `ports`: a sandbox could not start because this machine
 // already holds a port it publishes — the oracle's, when the oracle is up, which is what
-// taking it down answers.
+// taking it down answers. The branch is passed on as the step named it: an open build
+// proposal's `proposal/<name>`, or the newest ruled one's `proposal/<name>` or
+// `returned/<name>` when none is open (`docs/decisions/0080`).
 export function sandboxTrouble(text) {
   if (!text) return null;
-  const m = /sandbox is not up\b[^\n]*run sdlc sandbox up --target (\S+) --from (proposal\/\S+) first/.exec(text);
+  const m = /sandbox is not up\b[^\n]*run sdlc sandbox up --target (\S+) --from ((?:proposal|returned)\/\S+) first/.exec(text);
   if (m) return { kind: "start", target: m[1], from: m[2] };
   if (/the sandbox was not started: \S+ publishes (?:a host port|\d+ host ports) this machine is already using/.test(text)) return { kind: "ports" };
   return null;

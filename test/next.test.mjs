@@ -1033,3 +1033,74 @@ test("an adapter proposal a person holds holds the calibration of its target", (
   assert.ok(!r.ready.some((c) => c.stage === "calibrate"));
   assert.match(r.held.find((c) => c.stage === "calibrate").why, /held until bind-adapter-old-2, a proposal for target old's adapter open at G-BIND and waiting on owner, is ruled/);
 });
+
+// ── a returned adapter is revised before it is measured with ─────────────────────────────
+
+// A returned proposal for a target's adapter is revised before a verify or calibration that
+// measures with that adapter, and before a build whose verify will (`docs/decisions/0080`).
+
+// A build proposal for slice 1 with no verify result, and a proposal for `target`'s adapter
+// returned at G3 by the reviewer.
+function buildAndReturnedAdapter(d, target) {
+  approved(d, ["intent-thing"], "G0");
+  approved(d, ["plan"], "G2");
+  commit(d, { "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1\n", "app/index.ts": "export {};\n" });
+  proposal(d, "build-slice-1", "G3", { files: { "app/index.ts": "export const a = 1;\n" } });
+  proposal(d, `bind-adapter-${target}-2`, "G3", { files: { [`tests/adapters/${target}/index.ts`]: "export default 2;\n" }, ruling: { verdict: "return", extra: { by: "agent:reviewer" } } });
+}
+
+test("a returned proposal for the new target's adapter is revised before a build is verified with it", (t) => {
+  const d = project(t, { profile: "feature", extra: TWO_TARGETS });
+  buildAndReturnedAdapter(d, "new");
+  const r = whatNext(d);
+  assert.deepEqual(r.ready.map((c) => c.command), ["sdlc run bind-adapter --target new --revise", "sdlc run verify --slice 1"]);
+  assert.match(r.next.rule, /^a returned proposal for target new's adapter is revised before sdlc run verify --slice 1, which measures with that adapter, whatever policy\.next\.order puts first \(docs\/decisions\/0080\)$/);
+  assert.match(r.next.why, /bind-adapter-new-2 was returned at G3 by agent:reviewer/);
+  assert.deepEqual(r.held, []);
+
+  const other = project(t, { profile: "feature", extra: TWO_TARGETS });
+  buildAndReturnedAdapter(other, "other");
+  const o = whatNext(other);
+  assert.equal(o.next.command, "sdlc run verify --slice 1", "another target's adapter changes nothing verify measures with");
+});
+
+test("a returned adapter proposal is revised before a build, whose verify will measure with it", (t) => {
+  const d = project(t, { profile: "feature", extra: TWO_TARGETS, policy: ["next: { order: [sequence, owed, proposals] }"] });
+  approved(d, ["intent-thing"], "G0");
+  approved(d, ["plan"], "G2");
+  commit(d, { "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1\n", "app/index.ts": "export {};\n" });
+  proposal(d, "bind-adapter-new-2", "G3", { files: { "tests/adapters/new/index.ts": "export default 2;\n" }, ruling: { verdict: "return", extra: { by: "agent:reviewer" } } });
+  const r = whatNext(d);
+  assert.deepEqual(r.ready.map((c) => c.command), ["sdlc run bind-adapter --target new --revise", "sdlc run build --slice 1"]);
+  assert.match(r.next.rule, /^a returned proposal for target new's adapter is revised before sdlc run build --slice 1, whose verify will measure with that adapter \(docs\/decisions\/0080\)$/);
+});
+
+test("a returned proposal for the oracle's adapter is revised before a calibration, whatever policy.next.order says", (t) => {
+  const d = project(t, { extra: TARGETS, policy: ["next: { order: [sequence, owed, proposals] }"] });
+  specDone(d);
+  adaptersBound(d, { old: bindingsFor("old", FULL), fresh: bindingsFor("new", FULL) });
+  approved(d, ["derive-tests-alpha", "derive-tests-beta"], "G3");
+  proposal(d, "bind-adapter-old-2", "G3", { files: { "tests/adapters/old/index.ts": "export default 2;\n" }, ruling: { verdict: "return", extra: { by: "agent:reviewer" } } });
+  const r = whatNext(d);
+  assert.deepEqual(r.ready.slice(0, 2).map((c) => c.command), ["sdlc run bind-adapter --target old --revise", "sdlc run calibrate --target old"]);
+  assert.match(r.next.rule, /^a returned proposal for target old's adapter is revised before sdlc run calibrate --target old, which measures with that adapter/);
+});
+
+test("with the build returned by verify, the binding it is owed starts the sandbox from the returned build", (t) => {
+  const d = project(t, { profile: "feature", extra: NEW_TARGET });
+  const adapter = verifiedBuild(d, { verdict: "return", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });
+  git(d, ["checkout", "-q", "proposal/build-slice-1"]);
+  commit(d, { ".sdlc/gates/build-slice-1.yaml": gateText("G3", "return", { by: "runner:verify" }) }, "rule(G3): build-slice-1");
+  git(d, ["checkout", "-q", "main"]);
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [{ id: "R-1.2", target: "new", why: "unbound: signIn.applicant — no link", found: "unbound", adapter, slice: 1, by: "runner:verify", at: "2026-01-01T00:00:00.000Z" }] }) }, "run(verify)");
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run bind-adapter --target new");
+  assert.match(r.next.why, /sandbox up --target new --from proposal\/build-slice-1 first/);
+
+  // build --revise's pre-check records the return on main and keeps the branch as returned/<name>.
+  git(d, ["branch", "-m", "proposal/build-slice-1", "returned/build-slice-1"]);
+  commit(d, { ".sdlc/gates/build-slice-1.yaml": gateText("G3", "return", { by: "runner:verify" }) }, "record(G3): build-slice-1 returned");
+  const after = whatNext(d);
+  assert.equal(after.next.command, "sdlc run bind-adapter --target new");
+  assert.match(after.next.why, /sandbox up --target new --from returned\/build-slice-1 first/);
+});

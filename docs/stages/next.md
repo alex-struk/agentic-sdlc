@@ -85,6 +85,15 @@ is offered again once that proposal is ruled. An open adapter proposal for one t
 nothing that measures with another
 (`docs/decisions/0079-an-adapter-is-ruled-before-it-is-measured-with.md`).
 
+**A returned adapter is revised before it is measured with.** While a `bind-adapter-<t>-*`
+proposal has been returned and `sdlc run bind-adapter --target <t> --revise` is ready, that
+revision is moved to just ahead of the first ready item that measures with `t`'s adapter, and
+ahead of a `sdlc run build --slice <n>` too when `t` is the new target, since the build's verify
+will measure with it. Its `rule` names the step it goes before. The revision is proposed as an
+open adapter proposal, which is then ruled before the same steps under the rule above. A revision
+held on work its ruling asked of another stage holds nothing
+(`docs/decisions/0080-a-returned-adapter-is-revised-before-it-is-measured-with.md`).
+
 **A calibration cadence.** With `policy.next.calibrate_after: <n>` set (`docs/config.md`), a
 calibration of the oracle's target falls due once `n` approved proposals that change what it
 measures have merged into `main` since its suite last ran. A proposal counts when the merge that

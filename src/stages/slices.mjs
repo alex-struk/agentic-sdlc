@@ -45,14 +45,45 @@ export function openBuildProposal(projectDir, slice) {
     .find((name) => !gitOk(["cat-file", "-e", `proposal/${name}:.sdlc/gates/${name}.yaml`], projectDir)) ?? null;
 }
 
+// Every branch a slice's build has gone under, newest first by proposal number, each with
+// whether it is open: `proposal/<name>`, ruled or not, and `returned/<name>`, which a build
+// revision's pre-check renames a returned proposal to (`recordReturnOnMain`,
+// `src/stages/proposals.mjs`). A name found under both is read under `proposal/`.
+export function buildBranches(projectDir, slice) {
+  const base = buildProposalBase(slice);
+  const patterns = [`refs/heads/proposal/${base}*`, `refs/heads/returned/${base}*`];
+  const out = gitOk(["for-each-ref", "--format=%(refname:short)", ...patterns], projectDir)
+    ? git(["for-each-ref", "--format=%(refname:short)", ...patterns], projectDir).split("\n").filter(Boolean)
+    : [];
+  const re = new RegExp(`^(proposal|returned)/(${base}(?:-(\\d+))?)$`);
+  const byName = new Map();
+  for (const m of out.map((b) => re.exec(b)).filter(Boolean)) {
+    const [branch, space, name, k] = m;
+    if (byName.get(name)?.space === "proposal") continue;
+    byName.set(name, { branch, space, name, k: k ? Number(k) : 1 });
+  }
+  return [...byName.values()].sort((a, b) => b.k - a.k).map(({ branch, space, name }) => ({
+    branch, name,
+    open: space === "proposal" && !gitOk(["cat-file", "-e", `${branch}:.sdlc/gates/${name}.yaml`], projectDir),
+  }));
+}
+
 // The branch a binding of the new target runs against, for the rebind entries it is handed:
 // `{ branch }`, or `{ why }` when there is no one branch to start it from. The application
 // such a binding needs is on a build proposal alone until that proposal is ruled
 // (`docs/decisions/0016`, `docs/decisions/0075`). An entry a verify filed names its slice; one
 // that names none belongs to whichever slice claims its criterion. With no entries at all —
-// a binding that only catches up with the contract — every slice in the plan is a candidate.
-// Exactly one of them may have an open build proposal: one sandbox runs one application, and
-// choosing between two is a person's call.
+// a binding that only catches up with the contract, or revises a returned binding whose
+// entries are spent — every slice in the plan is a candidate.
+//
+// An open build proposal is the application to bind (`docs/decisions/0078`), and exactly one
+// candidate may have one: one sandbox runs one application, and choosing between two is a
+// person's call. Where none is open, a verify has returned the newest, and its application is
+// still the one the rows were found on: the newest build proposal of the slice is bound
+// against whatever its state, `proposal/<name>` or `returned/<name>` (`docs/decisions/0080`).
+// With no entries that is the newest of the slice furthest on in the plan that has one, which
+// carries every slice approved before it; with entries naming more than one slice, choosing is
+// a person's call.
 export function bindingBranch(projectDir, entries = []) {
   const slices = new Set();
   const unstamped = new Set();
@@ -63,13 +94,17 @@ export function bindingBranch(projectDir, entries = []) {
   const path = join(projectDir, TASKS_PATH);
   const plan = existsSync(path) ? parseTasks(readText(path)).slices : [];
   for (const s of plan) if (s.criteria.some((id) => unstamped.has(id))) slices.add(s.number);
-  const candidates = entries.length ? [...slices] : plan.map((s) => s.number);
-  const open = candidates.sort((a, b) => a - b)
-    .map((n) => ({ n, name: openBuildProposal(projectDir, n) })).filter((x) => x.name);
-  if (open.length === 1) return { branch: `proposal/${open[0].name}` };
-  if (open.length > 1) return { why: `slices ${open.map((x) => x.n).join(", ")} each have an open build proposal (${open.map((x) => `proposal/${x.name}`).join(", ")}), and which of them to bind against is a person's call` };
+  const candidates = [...new Set(entries.length ? [...slices] : plan.map((s) => s.number))].sort((a, b) => a - b);
   if (!candidates.length) return { why: entries.length ? "no slice in plan/tasks.md claims the criteria this binding is owed for" : "plan/tasks.md names no slice" };
-  return { why: `no open build proposal for slice${candidates.length === 1 ? "" : "s"} ${candidates.join(", ")}` };
+  const built = candidates.map((n) => ({ n, branches: buildBranches(projectDir, n) })).filter((x) => x.branches.length);
+  const open = built.map((x) => ({ n: x.n, branch: x.branches.find((b) => b.open)?.branch })).filter((x) => x.branch);
+  if (open.length === 1) return { branch: open[0].branch };
+  if (open.length > 1) return { why: `slices ${open.map((x) => x.n).join(", ")} each have an open build proposal (${open.map((x) => x.branch).join(", ")}), and which of them to bind against is a person's call` };
+  const newest = built.map((x) => ({ n: x.n, branch: x.branches[0].branch }));
+  if (newest.length === 1 || (newest.length > 1 && !entries.length)) return { branch: newest.at(-1).branch };
+  const which = `slice${candidates.length === 1 ? "" : "s"} ${candidates.join(", ")}`;
+  if (newest.length > 1) return { why: `no build proposal is open for ${which}, and slices ${newest.map((x) => x.n).join(", ")} each have a ruled one (${newest.map((x) => x.branch).join(", ")}); which of them to bind against is a person's call` };
+  return { why: `no build proposal for ${which}` };
 }
 
 // The spec files that exist for these criteria, in the order the criteria are claimed. A
