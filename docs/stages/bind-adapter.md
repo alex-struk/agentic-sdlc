@@ -136,6 +136,16 @@ sign in through a `sandbox-idp` identity, taken straight from the operator's own
 when unset). This is the first stage whose `env` actually carries something worth keeping off a
 dry run's screen.
 
+The session itself never sees the sandbox password: it has no shell to read `SDLC_SANDBOX_PASSWORD`
+with, and the value is never written into its prompt. For a `sandbox-idp` target the stage declares
+`mcpSecrets`, which hands the password to the Playwright server through a named pipe in the turn's
+scratch directory (`--secrets <fifo>`), so neither the MCP config nor any other file holds it. The
+session signs in by typing the literal text `SDLC_SANDBOX_PASSWORD` into the identity provider's
+password field; the server substitutes the value as it types and shows it back as
+`<secret>SDLC_SANDBOX_PASSWORD</secret>` in every response. The adapter the session writes reads the
+password from `process.env.SDLC_SANDBOX_PASSWORD` at run time
+(`docs/decisions/0077-a-browser-session-signs-in-without-seeing-the-password.md`).
+
 ## Checks that block
 
 - **Pre-checks.**

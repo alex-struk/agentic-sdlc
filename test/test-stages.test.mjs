@@ -1412,6 +1412,79 @@ test("sdlc run bind-adapter --target old --dry-run: names the mcp server, the en
   }
 });
 
+// The session has no shell and is never shown the sandbox password, so the browser tool is
+// given it instead: through a named pipe the MCP config names, which the server reads the
+// dotenv text from and which is gone once the turn ends. The fake session below reads the
+// pipe the way the Playwright server does and records only whether what it read matched its
+// own environment, so the value is never written anywhere by this test either.
+test("sdlc run bind-adapter --target old: a sandbox-idp session's browser tool gets the password through a pipe, and the session only its name", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-secrets-"));
+  const { dir, prevEgress } = await makeReadyForBindAdapter(tmp);
+  writeOldOracleLocal(dir);
+  const root = mkdtempSync(join(tmpdir(), "sdlc-bind-adapter-secrets-claude-"));
+  const captureFile = join(root, "capture.jsonl");
+  const bin = join(root, "fake-claude");
+  writeFileSync(bin, [
+    "#!/usr/bin/env node",
+    'import { appendFileSync, existsSync, readFileSync } from "node:fs";',
+    'if (process.argv.includes("--version")) { process.stdout.write("fake 1.0\\n"); process.exit(0); }',
+    "const args = process.argv.slice(2);",
+    'const prompt = readFileSync(0, "utf8");',
+    'const mcpPath = args[args.indexOf("--mcp-config") + 1];',
+    'const mcpText = readFileSync(mcpPath, "utf8");',
+    "const pw = JSON.parse(mcpText).mcpServers.playwright.args;",
+    'const si = pw.indexOf("--secrets");',
+    "const fifo = si === -1 ? null : pw[si + 1];",
+    'const served = fifo ? readFileSync(fifo, "utf8") : "";',
+    "const value = process.env.SDLC_SANDBOX_PASSWORD;",
+    "appendFileSync(process.env.CAPTURE_FILE, JSON.stringify({",
+    "  fifo, secretsLast: si === pw.length - 2,",
+    "  served: served === `SDLC_SANDBOX_PASSWORD='${value}'\\n`,",
+    "  configHasValue: mcpText.includes(value), promptHasValue: prompt.includes(value),",
+    '  promptTypesName: prompt.includes("type the literal text SDLC_SANDBOX_PASSWORD"),',
+    '}) + "\\n");',
+    'process.stdout.write(JSON.stringify({ is_error: false, result: "signed in", num_turns: 1, session_id: "s1" }));',
+  ].join("\n"));
+  chmodSync(bin, 0o755);
+  process.env.SDLC_CLAUDE_BIN = bin;
+  process.env.SDLC_CLAUDE_HOME = join(root, "claude-home");
+  process.env.SDLC_CREDENTIALS = join(root, "no-such-credentials.json");
+  process.env.SDLC_ORACLE = "mock";
+  process.env.CAPTURE_FILE = captureFile;
+  try {
+    // The fake session writes no adapter, so the post-checks fail and the run spends its
+    // repair turn, which gets a pipe of its own.
+    const r = await runStage(dir, "bind-adapter", { target: "old" });
+    assert.equal(r.ok, false);
+    const turns = readFileSync(captureFile, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(turns.length, 2, "the first turn and the repair turn");
+    for (const turn of turns) {
+      assert.ok(turn.fifo, "--secrets names a path");
+      assert.equal(turn.secretsLast, true);
+      assert.equal(turn.served, true, "the pipe serves the password as dotenv");
+      assert.equal(turn.configHasValue, false, "mcp.json holds the pipe's path, never the value");
+      assert.equal(turn.promptHasValue, false);
+      assert.equal(turn.promptTypesName, true);
+      assert.equal(existsSync(turn.fifo), false, "the pipe is gone once the turn ends");
+    }
+    assert.notEqual(turns[0].fifo, turns[1].fifo);
+    const committed = git(["log", "-p", "--all"], dir);
+    assert.ok(!committed.includes(process.env.SDLC_SANDBOX_PASSWORD), "nothing committed holds the value");
+  } finally {
+    for (const k of ["SDLC_CLAUDE_BIN", "SDLC_CLAUDE_HOME", "SDLC_CREDENTIALS", "SDLC_ORACLE", "CAPTURE_FILE"]) delete process.env[k];
+    restoreEgress(prevEgress);
+  }
+});
+
+// A session-route target has no password to hand the browser tool.
+test("bind-adapter gives the browser tool a secret only for a sandbox-idp target", () => {
+  const stage = stageFor("bind-adapter");
+  assert.deepEqual(stage.mcpSecrets({ bindAdapterIdentity: "sandbox-idp" }),
+    { server: "playwright", values: { SDLC_SANDBOX_PASSWORD: process.env.SDLC_SANDBOX_PASSWORD } });
+  assert.equal(stage.mcpSecrets({ bindAdapterIdentity: "session-route" }), undefined);
+  assert.doesNotMatch(stage.prompt({ target: "old", bindAdapterIdentity: "session-route" }), /SDLC_SANDBOX_PASSWORD/);
+});
+
 // An adapter on main that the contract has since outgrown is rebound by a run asked to bind
 // exactly what the post-check will demand: every member the contract declares that the
 // bindings file does not name, and every name it carries that the contract no longer declares.

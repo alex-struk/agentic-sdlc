@@ -1892,13 +1892,13 @@ function checkBindAdapterScope(projectDir, target) {
 // The sign-in instructions for the prompt below, one paragraph per identity this
 // pipeline knows how to reach: `session-route` mints a session by URL alone, no form to
 // fill; `sandbox-idp` needs an actual form filled with the persona's username and the
-// sandbox password every target under test shares — read from the environment, never
-// invented, and never named as its own value here (the value lives only in `env`,
-// never printed by a dry run and never worth spelling out to an agent turn that only
-// ever needs the variable's name).
+// sandbox password every target under test shares. The session never sees that password:
+// it has no shell to read the environment with, and the value is never written into a
+// prompt. It types the variable's name instead, and the browser tool, given the value
+// through `mcpSecrets` below, substitutes it (`docs/decisions/0077`).
 function bindAdapterSignInInstructions(identity) {
   if (identity === "sandbox-idp") {
-    return "This target signs in through sandbox-idp: find the identity provider's own sign-in form and fill it with the persona's username (persona.signIn[\"sandbox-idp\"].username) and the password in your SDLC_SANDBOX_PASSWORD environment variable — never a password you invent or find written down anywhere.";
+    return "This target signs in through sandbox-idp: find the identity provider's own sign-in form and fill it with the persona's username (persona.signIn[\"sandbox-idp\"].username) and the sandbox password. You are never shown that password and do not need it: while you are binding, type the literal text SDLC_SANDBOX_PASSWORD — the name of the variable that holds it — into the identity provider's password field, and the browser tool substitutes the real password as it types, showing it back to you as <secret>SDLC_SANDBOX_PASSWORD</secret>. Never type anything else into that field. In the adapter you write, signIn reads the password from process.env.SDLC_SANDBOX_PASSWORD at run time — never a password you invent or find written down anywhere.";
   }
   if (identity === "session-route") {
     return "This target signs in through session-route: page.goto(baseURL + persona.signIn[\"session-route\"].route) mints the session directly — there is no form to fill.";
@@ -2091,6 +2091,14 @@ const bindAdapter = {
     // is a whole stage's budget spent to learn that a browser was missing. Chromium is
     // the build `runSuite` already installs, so this asks for the one that is there.
     return { playwright: { command: "npx", args: ["-y", "@playwright/mcp@0.0.80", "--headless", "--isolated", "--browser", "chromium"] } };
+  },
+  // The sandbox password, for a target that signs in through `sandbox-idp`, handed to the
+  // browser tool rather than to the session: the server substitutes it wherever the session
+  // types its name and redacts it from everything it returns, so the session signs in
+  // without the value ever reaching its context, its prompt or a file (`docs/decisions/0077`).
+  mcpSecrets(ctx) {
+    if (ctx.bindAdapterIdentity !== "sandbox-idp") return undefined;
+    return { server: "playwright", values: { SDLC_SANDBOX_PASSWORD: process.env.SDLC_SANDBOX_PASSWORD ?? "" } };
   },
   // No Bash: an adapter session drives the browser and edits files, and has no
   // business reaching a shell.

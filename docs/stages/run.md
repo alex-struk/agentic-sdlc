@@ -263,6 +263,16 @@ process's environment alongside the backend's home (`CLAUDE_CONFIG_DIR` or `CODE
 `SDLC_STAGE`. Neither is printed by a dry
 run except by name — `env`'s keys, via the `env: <names>` line described above, and never a value.
 
+A stage that needs an MCP server to hold a secret the session must not see declares
+`stage.mcpSecrets(ctx, config)`, returning `{ server, values }` or `undefined`. Where a value is
+non-empty, the runner creates a named pipe (mode 0600) in the same scratch directory, appends
+`--secrets <that path>` to the named server's arguments before `mcp.json` is written, serves the
+values to the server as dotenv text through the pipe for the length of the turn, and removes the
+pipe with the scratch directory. The config names the pipe and never a value, and nothing holding
+the value is written to disk. `bind-adapter` uses it for the sandbox password
+(`docs/decisions/0077-a-browser-session-signs-in-without-seeing-the-password.md`); a repair turn
+opens its own pipe the same way.
+
 A Claude session is also given its command time limit: `BASH_DEFAULT_TIMEOUT_MS` and
 `BASH_MAX_TIMEOUT_MS`, both the stage's `policy.command_minutes` (30 minutes unless the policy says
 otherwise), set by the runner over anything in the operator's environment, on the host and in a

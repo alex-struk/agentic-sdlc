@@ -19,8 +19,12 @@ baseURL: string; persona: typeof persona }): Surface`, implementing every page
 - **`signIn(persona)`** reads `persona.signIn[<this target's identity>]`. `session-route`:
   `page.goto(baseURL + persona.signIn["session-route"].route)` mints the session directly, no form
   involved. `sandbox-idp`: find the identity provider's own sign-in form and fill it with the
-  persona's username and the password in your `SDLC_SANDBOX_PASSWORD` environment variable — never
-  a password you invent, and never the literal value written anywhere in the file you produce. When
+  persona's username and the sandbox password. You are never shown that password: while you bind,
+  type the literal text `SDLC_SANDBOX_PASSWORD` (the variable's name) into the password field, and
+  the browser tool substitutes the real password as it types and shows it back to you as
+  `<secret>SDLC_SANDBOX_PASSWORD</secret>`. Never type anything else into that field. In the file
+  you produce, `signIn` reads the password from `process.env.SDLC_SANDBOX_PASSWORD` at run time —
+  never a password you invent, and never a value written into the file. When
   the entry is `{ unavailable: "<reason>" }` instead of real credentials, `signIn` throws
   `new Error("unbound: signIn.<persona id> — <reason>")` rather than attempting to sign in — the
   same shape as an unbound action or observation, so calibrate reports every criterion this persona

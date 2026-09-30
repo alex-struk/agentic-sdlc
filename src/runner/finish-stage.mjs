@@ -26,6 +26,7 @@ import { settleRequestedRevision } from "../stages/proposals.mjs";
 import { MISSING_TEST, WRITER, missingTestRef, readdressMissingTests } from "../spec/missing-tests.mjs";
 import { owedPath } from "../spec/owed.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
+import { withMcpSecrets } from "../lib/secret-pipe.mjs";
 import { escalateOverLimit } from "./owed-limits.mjs";
 import { IN_PLACE_MODES } from "./workspace.mjs";
 
@@ -184,14 +185,18 @@ function fixTurnPrompt(taskPrompt, messages) {
 // budget for its fix turn too.
 async function runFixTurn(cwd, stage, ctx, messages) {
   const skillDir = mkdtempSync(join(tmpdir(), `sdlc-fix-${stage.name}-`));
+  let secretPipe = null;
   try {
     const skillPath = join(skillDir, "SKILL.md");
     writeText(skillPath, skillText(stage.name, ctx.projectDir));
     // Mirrors `run`'s own mcp-file handling (`writeMcpConfig`, shared from
     // `./executor.mjs`): a stage whose first turn reached MCP servers should not lose
     // them on its fix turn. The scratch file lives in this same `skillDir`, cleaned up
-    // alongside the skill file below.
-    const mcpConfig = writeMcpConfig(skillDir, stage.mcp?.(ctx, ctx.config));
+    // alongside the skill file below, and so does the pipe carrying the stage's
+    // `mcpSecrets`, if it has any.
+    const secrets = withMcpSecrets(skillDir, stage.mcp?.(ctx, ctx.config), stage.mcpSecrets?.(ctx, ctx.config));
+    secretPipe = secrets.pipe;
+    const mcpConfig = writeMcpConfig(skillDir, secrets.mcpServers);
     return await runAgent({
       cwd,
       prompt: fixTurnPrompt([stage.prompt(ctx), deviationContext(ctx)].filter(Boolean).join("\n\n"), messages),
@@ -206,6 +211,7 @@ async function runFixTurn(cwd, stage, ctx, messages) {
       agent: stageAgent(ctx.config, stage),
     });
   } finally {
+    secretPipe?.close();
     rmSync(skillDir, { recursive: true, force: true });
   }
 }

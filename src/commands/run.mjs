@@ -13,6 +13,7 @@ import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig, metric
 import { stageAgent, codexRefusal, isolationRefusal, isolationUnavailable } from "../runner/agents.mjs";
 import { engineLabel } from "../lib/engine.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
+import { withMcpSecrets } from "../lib/secret-pipe.mjs";
 import { writeRunState } from "../runner/run-state.mjs";
 import { deviationContext } from "../runner/deviation-context.mjs";
 import { writeJournal } from "../runner/journal.mjs";
@@ -317,6 +318,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // what a dry run prints. It is called below, once the dry-run return and the sign-in
   // check are both behind us.
   const skillDir = mkdtempSync(join(tmpdir(), `sdlc-skill-${name}-`));
+  let secretPipe = null;
   try {
     // The skill text an agent turn reads is stage- and run-specific, so it is written
     // to its own scratch file rather than reused from disk.
@@ -409,7 +411,13 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       // passed) means this file is the *only* source of servers for the session; a
       // stage that declares none passes no `mcpConfig` at all, and the session reaches
       // none.
-      const mcpConfig = writeMcpConfig(skillDir, mcpServers);
+      //
+      // A stage's `mcpSecrets` reach its server through a named pipe in that same
+      // directory (`src/lib/secret-pipe.mjs`), so the config names the pipe and never a
+      // value; the pipe is closed in the outer `finally`, with the directory it lives in.
+      const secrets = withMcpSecrets(skillDir, mcpServers, stage.mcpSecrets?.(ctx, config));
+      secretPipe = secrets.pipe;
+      const mcpConfig = writeMcpConfig(skillDir, secrets.mcpServers);
 
       // Written only once the dry-run return above is behind us: a dry run makes no
       // change of any kind, so nothing should exist for `sdlc resume` to find.
@@ -455,6 +463,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       ws.cleanup();
     }
   } finally {
+    secretPipe?.close();
     rmSync(skillDir, { recursive: true, force: true });
   }
 }
