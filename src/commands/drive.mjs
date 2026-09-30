@@ -115,6 +115,7 @@ export function defaultDeps() {
       const dirty = porcelainStatus(dir);
       return { clean: !dirty, dirty: dirty ? dirty.split("\n") : [], branch: currentBranch(dir) };
     },
+    checkoutMain: (dir) => git(["checkout", "-q", "main"], dir),
     execute,
     oracle,
     mark: progressMark,

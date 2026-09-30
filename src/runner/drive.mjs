@@ -102,6 +102,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 // The loop. `deps` (every one required):
 //   readNext(dir)            what `next` names, as `whatNext` returns it
 //   tree(dir)                { clean, dirty: [lines], branch }
+//   checkoutMain(dir)        puts the project back on main after a return left a proposal out
 //   execute(dir, item)       runs one step: { ok, notPassed?, messages?, output? }
 //   oracle(dir, "up"|"down") { ok, output }
 //   mark(dir, item)          what the record holds that a step could change (compared as JSON)
@@ -213,6 +214,13 @@ export async function drive(projectDir, { maxSteps = DEFAULT_MAX_STEPS, dryRun =
     }
     if (result.notPassed) print(`drive: step ${steps}: recorded, not passed (${result.notPassed})`);
 
+    // A returned proposal is left checked out on purpose (0025), for a person to read what came
+    // back; the loop has recorded the return and moves on from main.
+    const after = deps.tree(projectDir);
+    if (after.clean && after.branch?.startsWith("proposal/")) {
+      deps.checkoutMain(projectDir);
+      print(`drive: back to main from ${after.branch}, which a return leaves checked out`);
+    }
     const afterTree = treeProblem(deps.tree(projectDir));
     if (afterTree) return stop(DRIVE_EXIT.failed, `step ${steps} (\`${item.command}\`) left the project unfit for the next step: ${afterTree}`);
   }

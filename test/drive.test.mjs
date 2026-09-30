@@ -227,6 +227,32 @@ test("refuses to start with 2 on a dirty tree or off main, and runs nothing", as
   }
 });
 
+test("a ruling that returns a proposal leaves its branch checked out; the loop goes back to main and carries on", async () => {
+  let branch = "main";
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "old" }), IDLE],
+    tree: () => ({ clean: true, dirty: [], branch }),
+  });
+  const execute = deps.execute;
+  deps.execute = async (dir, item) => { const r = await execute(dir, item); branch = "proposal/bind-adapter-old-50"; return r; };
+  deps.checkoutMain = () => { calls.checkouts = (calls.checkouts ?? 0) + 1; branch = "main"; };
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 0);
+  assert.equal(calls.checkouts, 1);
+  assert.ok(calls.printed.some((l) => /back to main from proposal\/bind-adapter-old-50/.test(l)));
+});
+
+test("a step that leaves a branch other than a proposal checked out still stops with 1", async () => {
+  const { deps, calls } = world({
+    answers: [runItem("intent"), runItem("archaeology", { domain: "a" })],
+    tree: (c) => ({ clean: true, dirty: [], branch: c.executed.length ? "feature/x" : "main" }),
+  });
+  deps.checkoutMain = () => { throw new Error("must not be called"); };
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 1);
+  assert.match(calls.stops[0], /not on main \(on feature\/x\)/);
+});
+
 test("a step that leaves the tree dirty stops the loop with 1 before anything else runs", async () => {
   const { deps, calls } = world({
     answers: [runItem("intent"), runItem("archaeology", { domain: "a" })],

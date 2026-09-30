@@ -149,6 +149,8 @@ None of its own. Each step's stage or ruling sees the workspace it always sees.
 |---|---|
 | 0 | nothing is left that this pipeline runs; with `--dry-run`, also when it would run a step |
 | 1 | a step failed with no recovery, its recovery failed, a step left the project unfit, or `next` could not be read |
+
+A ruling that returns a proposal leaves `proposal/<name>` checked out on purpose (`docs/decisions/0025`), for a person to read what came back. When a step ends on a clean tree with a `proposal/` branch checked out, the loop checks out `main` again, says so on the terminal, and carries on; any other branch, or a dirty tree, is a project left unfit and stops it with 1.
 | 2 | refused to start: uncommitted changes, not on `main`, another drive running, or a bad `--max-steps` |
 | 3 | waiting on a person, or `next` names a person's ruling |
 | 5 | the agent CLI's sign-in has expired or was refused |
