@@ -105,6 +105,16 @@ export function withAuthAdvice(text, advice = AUTH_ADVICE) {
 export const PREFLIGHT_PROMPT = "Reply with one word: ok";
 const PREFLIGHT_FAILED = "the stage was not started: a one-turn check could not authenticate, and the stage would have spent its whole budget to fail the same way.";
 
+// Whether some output carries the executor's own account of a failed sign-in: the sign-in
+// check's refusal, or a failed turn's text with a backend's sign-in advice appended to it.
+// Narrower than `looksLikeAuthFailure`, which reads any text and errs toward yes: this
+// answers only what the executor itself concluded, so a caller can stop on it without
+// mistaking a stage that merely wrote about signing in for one that could not.
+export function authFailureReported(text) {
+  if (!text) return false;
+  return text.includes(PREFLIGHT_FAILED) || Object.values(BACKENDS).some((b) => b.advice && text.includes(b.advice));
+}
+
 // `agent` is the backend and model the turn it guards will run on, so the check signs in
 // exactly as that turn will.
 export async function preflightAuth(agent = {}) {

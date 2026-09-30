@@ -21,6 +21,9 @@ const HELP = `sdlc <command> [args] [--flags]
   run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--revise] [--skip-suite] [--full] [--dry-run] [--reason "..."]
                                    run one pipeline stage; --reason is required to run something other than what next names
   next [dir] [--json]              name the next stage to run and why, read from main (exit 0 run, 3 waiting on a person, 4 nothing left)
+  drive [dir] [--max-steps N] [--dry-run]   run what next names until a person, a failure or a dead end
+                                   (exit 0 nothing left, 1 failed, 2 refused, 3 waiting on a person, 5 sign-in expired, 6 no progress, 7 step limit)
+  drive [dir] --status             what a running drive is doing, or why the last one stopped
   resume [--again]                 continue an interrupted run
   status [dir]                     regenerate the state site
   doctor [dir]                     check tools, config and guardrails
@@ -42,7 +45,7 @@ const HELP = `sdlc <command> [args] [--flags]
 // its own top level, so `COMMANDS` is already the real object by the time they assign to it.
 let commandsLoaded = null;
 function loadCommands() {
-  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs"), import("./commands/withdraw.mjs"), import("./commands/scrub.mjs"), import("./commands/isolation.mjs"), import("./commands/policy.mjs")]);
+  if (!commandsLoaded) commandsLoaded = Promise.all([import("./commands/new.mjs"), import("./commands/init.mjs"), import("./commands/checks.mjs"), import("./commands/doctor.mjs"), import("./commands/propose.mjs"), import("./commands/rule.mjs"), import("./commands/run.mjs"), import("./commands/resume.mjs"), import("./commands/status.mjs"), import("./commands/next.mjs"), import("./commands/oracle.mjs"), import("./commands/sandbox.mjs"), import("./commands/withdraw.mjs"), import("./commands/scrub.mjs"), import("./commands/isolation.mjs"), import("./commands/policy.mjs"), import("./commands/drive.mjs")]);
   return commandsLoaded;
 }
 
