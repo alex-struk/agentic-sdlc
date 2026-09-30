@@ -80,7 +80,10 @@ asks for happens at the gate it is returned to, not here.
    - The verdict is `fail` if anything failed, `environment` if nothing failed but something
      could not be tested here, `unbound` if nothing else stands but something is unbound,
      `pass-unasserted` if nothing failed and something was never asserted, and `pass` only where
-     every criterion the slice claims was put to the application and met.
+     every criterion the slice claims was put to the application and met. G3 may approve on
+     `pass`, and on `pass-unasserted` or `environment` where `policy.gates.G3.approve_unasserted`
+     allows it — an `environment` verdict only while the result lists no unbound criterion
+     (`docs/decisions/0082-a-slice-that-passes-what-can-be-tested-may-be-approved.md`).
 6. **Write the result file**, `tests/results/new/slice-<n>.json` —
    `{ slice, proposal, app_tree, at, verdict, rows }`, plus `unasserted` — one
    `{ id, result, reason }` per criterion nobody asserted — whenever there is one, `environment`

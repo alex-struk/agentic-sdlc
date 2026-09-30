@@ -1415,10 +1415,15 @@ function escalationOn(projectDir, branch, name) {
 }
 
 // The verify verdicts an approval may be given on: a slice whose every claimed criterion was
-// asserted against the application and met, and one where nothing failed and something was
-// never asserted (`src/testrun/results.mjs`) — the second only where the project's policy
-// lets G3 approve on it (`policy.gates.G3.approve_unasserted`, true by default).
-const APPROVABLE_VERDICTS = new Set(["pass", "pass-unasserted"]);
+// asserted against the application and met; one where nothing failed and something was
+// never asserted (`src/testrun/results.mjs`); and one where nothing failed and something
+// could not be tested in this environment (`docs/decisions/0075`). The last two leave a
+// criterion unasserted, so both are approvable only where the project's policy lets G3
+// approve on that (`policy.gates.G3.approve_unasserted`, true by default), and an
+// environment verdict only where no criterion is also unbound, since the verdict names the
+// environment gap ahead of an unbound row (`docs/decisions/0082`).
+const APPROVABLE_VERDICTS = new Set(["pass", "pass-unasserted", "environment"]);
+const UNASSERTED_VERDICTS = new Set(["pass-unasserted", "environment"]);
 
 // The four conditions that make a verify result count as current, shared by `buildVerified`
 // (the working tree, read off disk once the branch is checked out) and `rulePending`'s
@@ -1440,8 +1445,13 @@ function verifiedResult(text, name, slice, appTree, next, config) {
   if (!APPROVABLE_VERDICTS.has(r.verdict)) return { ok: false, notPassed: true, reason: `${name} did not pass verify` };
   // A project may narrow what G3 approves on: where it has, a slice carrying a criterion
   // nobody asserted is not approvable by either seat, and is returned or escalated instead.
-  if (r.verdict === "pass-unasserted" && !approvesUnasserted(config)) {
-    const ids = (r.unasserted ?? []).map((u) => u.id).filter(Boolean);
+  if (r.verdict === "environment" && (r.unbound ?? []).length) {
+    const ids = r.unbound.map((u) => u.id).filter(Boolean);
+    return { ok: false, notPassed: true,
+      reason: `${name} has criteria the adapter could not drive (${ids.join(", ")}) beside the ones this environment cannot test; bind them and verify again` };
+  }
+  if (UNASSERTED_VERDICTS.has(r.verdict) && !approvesUnasserted(config)) {
+    const ids = (r.verdict === "environment" ? r.environment : r.unasserted ?? []).map((u) => u.id).filter(Boolean);
     return { ok: false, notPassed: true,
       reason: `${name} passed verify with ${ids.length ? ids.join(", ") : "criteria"} never asserted against the application, and this project's policy.gates.G3.approve_unasserted is false` };
   }

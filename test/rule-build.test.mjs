@@ -104,7 +104,7 @@ function project(t, config = SIMULATED) {
 // proposal page, and then whatever verify wrote about it — a result file carrying the
 // verdict given, and a gate file only where the retry ceiling was reached. `verdict:
 // null` is the slice verify has not run against yet.
-function buildProposal(d, { verdict = "pass", escalatedTo = null } = {}) {
+function buildProposal(d, { verdict = "pass", escalatedTo = null, extra = {} } = {}) {
   const commit = (m) => {
     git(["add", "-A"], d);
     git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", m], d);
@@ -120,7 +120,7 @@ function buildProposal(d, { verdict = "pass", escalatedTo = null } = {}) {
     mkdirSync(join(d, "tests", "results", "new"), { recursive: true });
     writeFileSync(join(d, "tests/results/new/slice-1.json"), JSON.stringify({
       slice: 1, proposal: "build-slice-1", app_tree: git(["rev-parse", "HEAD:app"], d),
-      at: "2026-09-19T00:00:00.000Z", verdict, rows: [],
+      at: "2026-09-19T00:00:00.000Z", verdict, rows: [], ...extra,
     }));
   }
   if (escalatedTo) {
@@ -271,6 +271,27 @@ test("by default a pass-unasserted build may be approved", (t) => {
   const d = project(t, HUMAN_HELD);
   buildProposal(d, { verdict: "pass-unasserted" });
   assert.equal(rule(d, "build-slice-1", "approve", { by: "tech-lead", note: "the unasserted criterion is acceptable" }).verdict, "approve");
+});
+
+// A slice whose every testable criterion passed and whose remaining criterion this
+// environment cannot test is the ruler's to accept, as a never-asserted one is (0082) —
+// but not while a criterion the adapter could not drive hides behind the environment gap.
+test("an environment verdict may be approved, under the same policy as pass-unasserted", (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "environment", extra: { environment: [{ id: "R-6.1", reason: "configuration" }] } });
+  assert.equal(rule(d, "build-slice-1", "approve", { by: "tech-lead", note: "R-6.1 cannot be tested here" }).verdict, "approve");
+
+  const narrowed = project(t, HUMAN_HELD.replace("G3: { holder: tech-lead, escalate_to: delivery-lead }",
+    "G3: { holder: tech-lead, escalate_to: delivery-lead, approve_unasserted: false }"));
+  buildProposal(narrowed, { verdict: "environment", extra: { environment: [{ id: "R-6.1", reason: "configuration" }] } });
+  assert.throws(() => rule(narrowed, "build-slice-1", "approve", { by: "tech-lead", note: "fine" }), /approve_unasserted/);
+});
+
+test("an environment verdict that also carries an unbound criterion is not approvable", (t) => {
+  const d = project(t, HUMAN_HELD);
+  buildProposal(d, { verdict: "environment", extra: { environment: [{ id: "R-6.1", reason: "configuration" }], unbound: [{ id: "R-4.9", reason: "no control" }] } });
+  assert.throws(() => rule(d, "build-slice-1", "approve", { by: "tech-lead", note: "fine" }), /could not drive \(R-4\.9\)/);
+  assert.equal(gitOk(["cat-file", "-e", "proposal/build-slice-1:.sdlc/gates/build-slice-1.yaml"], d), false);
 });
 
 // `sdlc rule` used to print one line: `<name>: <verdict> at <gate>`. That is
