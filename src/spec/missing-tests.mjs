@@ -27,7 +27,9 @@
 // `spec-wrong` is a result of a test ruled not to test the criterion, a `fail` row the machine
 // failed — the target could not be reset or reached, so no assertion ran (`environmentFault`,
 // the definition calibrate halts on) — is a result of no test at all, and an `attested` row is
-// somebody's word: none of them closes anything. A test that exists and has not run yet is owed a
+// somebody's word: none of them closes anything. A `spec-wrong` ruling rewrote the criterion, so
+// it is about the test written before the rewrite and never about one derived for the version it
+// produced (`standingRuling`, `docs/decisions/0073`). A test that exists and has not run yet is owed a
 // run, by `calibrate` where the project calibrates and by `verify` where it does not.
 //
 // **Reopening.** Every closure the runner made is checked against the commit that recorded it,
@@ -278,7 +280,7 @@ function ofTestAsItStands(tree, row, at) {
 // is a result of the test as it now stands. A failing row whose test never reached the target is
 // the environment's result, not the test's.
 function ranIn(rows, id, version, current = () => true) {
-  return (rows ?? []).find((r) => r?.id === id && r.file && RAN.has(r.result) && !isDisowned(r) && !environmentFault(r)
+  return (rows ?? []).find((r) => r?.id === id && r.file && RAN.has(r.result) && !isDisowned(r, version) && !environmentFault(r)
     && Number(r.version) === Number(version) && current(r)) ?? null;
 }
 
@@ -347,7 +349,7 @@ function staleClosures(projectDir, stored, { records, index }) {
     const tree = treeAt(commit);
     const version = indexIn(tree.text("spec/criteria-index.json")).get(e.id)?.version ?? e.version;
     if (evidenceIn(tree, e.id, version)) continue;
-    out.set(closureKey(e), rejectedWhy(tree, commit, e));
+    out.set(closureKey(e), rejectedWhy(tree, commit, e, version));
   }
   return out;
 }
@@ -355,7 +357,7 @@ function staleClosures(projectDir, stored, { records, index }) {
 // Why the row a closure named does not show its test ran, as the commit that recorded it held
 // the row: a test that never reached the target, a ruling that disowns the test, or a test other
 // than the one that stood.
-function rejectedWhy(tree, commit, e) {
+function rejectedWhy(tree, commit, e, version) {
   const { why } = e.closed;
   const rel = /^(\S+\.json): /.exec(String(why ?? ""))?.[1];
   let rows = [];
@@ -366,7 +368,7 @@ function rejectedWhy(tree, commit, e) {
     return `${why} is not a result of the test for ${e.id}: when the item was closed at ${commit.slice(0, 8)}, its test never reached the target,`
       + " which could not be reset to its seed or could not be reached";
   }
-  const disowned = named.find(isDisowned);
+  const disowned = named.find((r) => isDisowned(r, version));
   return `${why} is not a result of the test for ${e.id} as it stood when the item was closed at ${commit.slice(0, 8)}`
     + (disowned ? `; the row is ruled ${disowned.ruled}` : "");
 }

@@ -1079,6 +1079,114 @@ test("after derive-tests --stale answers a test-wrong ruling, the same failure o
   }
 });
 
+// A ruling applies to the row it was made on while the criterion and its test are the ones it
+// judged (`docs/decisions/0073`). `spec-wrong` corrects the criterion and leaves its test behind;
+// once the test is derived again for the corrected version, what that test does is new evidence.
+const R11_V2_TEST = "// criterion: @R-1.1 v2\n// provenance: blind, spec@000000000000000000000000000000000000000b, derived 2026-09-07\n"
+  + 'import { test, expect, persona } from "../../fixtures";\n\n'
+  + 'test("The system shall reject a permit application from an applicant under 19 years old.", async ({ surface }) => {\n'
+  + "  await surface.signIn(persona.applicant);\n"
+  + "  await surface.applicationsNew.submit({ age: 17 });\n"
+  + '  expect(await surface.applicationsNew.status()).toBe("rejected");\n});\n';
+
+const R11_V2 = { ...PASSING_ROW, version: 2, tests: [{ title: "The system shall reject a permit application from an applicant under 19 years old.", status: "passed" }] };
+
+test("a spec-wrong ruling stops applying once the test is derived again for the corrected criterion: its run closes the missing test, and a failure is asked about afresh", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-specwrong-rederived-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
+    await ruleCalibration(dir, "calibrate-old-1", {
+      rationale: "the age wording was wrong; the status wording is the old system's own defect",
+      conditions: [
+        "defect-in-old R-1.2",
+        "spec-wrong R-1.1: The system shall reject a permit application from an applicant under 19 years old.",
+      ],
+    });
+    const applied = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(applied.ok, true, JSON.stringify(applied.messages));
+    assert.equal(rowFor(latest(dir), "R-1.1").result, "stale");
+    assert.equal(rowFor(latest(dir), "R-1.1").ruled, "spec-wrong", "the test written before the correction is disowned");
+
+    // The test is derived again for v2, and has not run: the missing test is owed a run.
+    const deriveMock = mkdtempSync(join(tmpdir(), "sdlc-calibrate-specwrong-derive-"));
+    writeFileSync(join(deriveMock, "derive-tests.json"), JSON.stringify({
+      text: "Rewrote R-1.1 against the corrected statement.",
+      files: { "tests/acceptance/applications/R-1.1.spec.ts": R11_V2_TEST },
+    }));
+    process.env.SDLC_EXECUTOR = "mock";
+    process.env.SDLC_MOCK_DIR = deriveMock;
+    const derived = await runStage(dir, "derive-tests", { domain: "applications", stale: true });
+    assert.equal(derived.ok, true, JSON.stringify(derived.messages));
+    delete process.env.SDLC_EXECUTOR;
+    rule(dir, derived.proposal.name, "approve", { by: "tech-lead" });
+    const owedPath = join(dir, ".sdlc/owed.yaml");
+    const owed = parseYaml(readFileSync(owedPath, "utf8"));
+    owed.owed.push({ kind: "missing-test", item: "R-1.1", id: "R-1.1", version: 2, domain: "applications", stage: "calibrate", target: "old",
+      why: "a test for v2 exists and has not run", by: "runner", at: "2026-01-01T00:00:00.000Z" });
+    writeFileSync(owedPath, stringifyYaml(owed));
+    git(["add", "-A"], dir);
+    git([...COMMIT, "R-1.1 derived again for v2 (test)"], dir);
+
+    calibrateEnv(mockRunnerDir("rederived-pass", [R11_V2, FAILING_ROW]));
+    const passed = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(passed.ok, true, JSON.stringify(passed.messages));
+    const row = rowFor(latest(dir), "R-1.1");
+    assert.deepEqual([row.version, row.result, row.ruled], [2, "pass", undefined], "a result of the re-derived test, which nobody ruled on");
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, "defect-in-old", "a ruling that still matches its row stands");
+    const item = parseYaml(git(["show", "main:.sdlc/owed.yaml"], dir)).owed.find((e) => e.kind === "missing-test" && e.item === "R-1.1");
+    assert.equal(item.closed?.outcome, "met");
+    assert.equal(item.closed.why, "tests/results/old/latest.json: R-1.1 v2 pass");
+    assert.ok(!passed.proposal, "nothing is asked");
+
+    // The same test failing is a failure nobody has ruled on, and is sorted like any other.
+    calibrateEnv(mockRunnerDir("rederived-fail", [{ ...R11_V2, result: "fail", tests: [{ title: "age", status: "failed", error: "expect(received).toBe(expected)" }] }, FAILING_ROW]));
+    const failed = await runStage(dir, "calibrate", { target: "old", full: true });
+    assert.equal(failed.ok, true, JSON.stringify(failed.messages));
+    assert.equal(rowFor(latest(dir), "R-1.1").ruled, undefined);
+    assert.equal(failed.proposal?.name, "calibrate-triage-old-2");
+    assert.match(git(["show", `${failed.proposal.branch}:.sdlc/proposals/calibrate-triage-old-2.md`], dir), /R-1\.1/);
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
+test("a test-wrong ruling applies to the test file it judged, and a changed test is asked about afresh", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "sdlc-calibrate-testwrong-file-"));
+  const { dir, prevEgress } = await makeReadyForCalibrate(tmp);
+  calibrateEnv(MOCK_DIR);
+  try {
+    await runStage(dir, "calibrate", { target: "old" });
+    await passToProductOwner(dir, ["R-1.2"]);
+    await ruleCalibration(dir, "calibrate-old-1", {
+      rationale: "the status wording the test asserts is not what the criterion states",
+      conditions: ["test-wrong R-1.2: the test asserts a status string the criterion never names"],
+    });
+    await runStage(dir, "calibrate", { target: "old" });
+    const judged = rowFor(latest(dir), "R-1.2");
+    assert.equal(judged.ruled, "test-wrong");
+    const ruling = parseYaml(readFileSync(join(dir, "tests/results/old/applied.yaml"), "utf8")).rulings.find((r) => r.verb === "test-wrong");
+    assert.equal(ruling.file_sha, judged.file_sha, "the ruling records the test it judged");
+
+    // A person rewrites the test by hand and vouches for it.
+    const file = join(dir, "tests/acceptance/applications/R-1.2.spec.ts");
+    writeFileSync(file, `${readFileSync(file, "utf8")}\n// asserts the criterion's own wording\n`);
+    writeFileSync(join(dir, "tests/acceptance/attestations.yaml"), stringifyYaml({ attestations: [{ file: "tests/acceptance/applications/R-1.2.spec.ts", by: "tech-lead" }] }));
+    git(["add", "-A"], dir);
+    git([...COMMIT, "R-1.2's test changes (test)"], dir);
+    const again = await runStage(dir, "calibrate", { target: "old" });
+    assert.equal(again.ok, true, JSON.stringify(again.messages));
+    assert.equal(rowFor(latest(dir), "R-1.2").ruled, undefined, "the ruling was about a test that no longer stands");
+    assert.equal(again.proposal?.name, "calibrate-triage-old-2");
+  } finally {
+    clearCalibrateEnv();
+    restoreEgress(prevEgress);
+  }
+});
+
 // A criterion the spec has corrected — accepted, but superseded by a later one — carries no
 // test on purpose: derive-tests excludes it, because a test for it could only ever
 // contradict its replacement. Calibration read "accepted" without that exclusion and

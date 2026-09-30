@@ -22,7 +22,7 @@ import { oracleUp, oracleConfigurationDown, instancesOf } from "../commands/orac
 import { configurationProblems, readConfigurations } from "../oracle/configurations.mjs";
 import { combineRuns, runSuite, sortRows } from "../testrun/playwright.mjs";
 import { taggedSpecFiles } from "../testrun/tags.mjs";
-import { environmentFaults } from "../testrun/results.mjs";
+import { environmentFaults, standingRuling } from "../testrun/results.mjs";
 import { calibrateEnvironmentFaults, owedLoopLimit } from "../config/policy.mjs";
 import { appendRun, deferRun } from "../lib/runrecord.mjs";
 import { OWED_A_RUN, calibrationInputs, currentSpecs, describePlan, fullRunCountdown, planCalibration, rulingsSeen, runIdOf, sinceFull, stampProvenance } from "../testrun/scope.mjs";
@@ -149,8 +149,10 @@ async function calibrateEndpoint(projectDir, ctx, target) {
 // What this target's rulings have already done to the spec, and which gate files did it.
 // `applied` names the gate files whose conditions are on disk already, so a re-run reads
 // the same ruling and applies nothing a second time; `rulings` records each condition as
-// `{ id, version, verb, gate }`, which is what lets a row say it was ruled on — and stop
-// saying so once the criterion moves on to a version nobody has ruled on.
+// `{ id, version, verb, gate }`, and a `test-wrong` or `product-question` one with the
+// `file_sha` of the test it judged, which is what lets a row say it was ruled on — and stop
+// saying so once the criterion or its test moves on to one nobody has ruled on
+// (`calibrateRuledVerb`).
 function readCalibrateApplied(projectDir, target) {
   const p = join(calibrateResultsDir(projectDir, target), "applied.yaml");
   if (!existsSync(p)) return { applied: [], rulings: [] };
@@ -276,8 +278,16 @@ function applyCalibrateGates(projectDir, target, today) {
   // Every verb is idempotent against a row it has already changed, so a held ruling's
   // other conditions being applied again next run changes nothing; the record of them is
   // de-duplicated here so `applied.yaml` does not grow a copy per run.
+  // A `test-wrong` ruling is about one test file, the one whose row the ruling was asked about:
+  // the row on file when the ruling is applied, since no calibration runs between a ruling
+  // being asked for and being applied.
+  const judged = new Map((readLatestResults(projectDir, target).results?.rows ?? []).filter((r) => r?.id && r.file_sha).map((r) => [r.id, r.file_sha]));
+  const record = (a) => ({
+    id: a.id, version: a.version, verb: a.verb, gate: a.gate,
+    ...(a.verb === "test-wrong" && judged.has(a.id) ? { file_sha: judged.get(a.id) } : {}),
+  });
   const seen = new Set();
-  const rulings = [...state.rulings, ...result.applied.map((a) => ({ id: a.id, version: a.version, verb: a.verb, gate: a.gate }))]
+  const rulings = [...state.rulings, ...result.applied.map(record)]
     .filter((r) => { const k = JSON.stringify(r); if (seen.has(k)) return false; seen.add(k); return true; });
   const rel = `tests/results/${target}/applied.yaml`;
   const abs = join(projectDir, rel);
@@ -364,6 +374,9 @@ export function applyTriageGates(projectDir, target, config) {
         id: c.id, version, verb: c.verb, gate: name,
         ...(c.verb === "adapter-wrong" ? { adapter: tree } : {}),
         ...(c.verb === "oracle-cannot" ? { why: redactLocalPaths(c.text, projectDir) } : {}),
+        // Sorting a failure on to the product owner is a verdict about the test that failed,
+        // so it is recorded against that test and a different one is sorted afresh.
+        ...(c.verb === "product-question" && onFile.get(c.id)?.file_sha ? { file_sha: onFile.get(c.id).file_sha } : {}),
       });
       if (c.verb === "adapter-wrong") rebind.push({ id: c.id, target, why: c.text });
     }
@@ -430,15 +443,34 @@ function commitAppliedRulings(projectDir, rulings, paths) {
   return true;
 }
 
-// The verb an applied ruling gave this criterion, but only while the criterion is still
-// the one that was ruled on: a `spec-wrong` ruling records the version its own edit
-// produced, so a criterion later moved on again by archaeology or another calibration
-// pass comes back unruled and is asked about afresh.
-function calibrateRuledVerb(rulings, id, version) {
+// The verb an applied ruling gave this row's criterion, but only while the ruling still
+// applies to the row (`docs/decisions/0073`). Every ruling records the criterion's version
+// after it was applied, so a criterion later moved on by archaeology or another calibration
+// pass comes back unruled and is asked about afresh. Two rulings are about a test as well:
+//
+// - `spec-wrong` rewrote the criterion, and the version it records is the one its own edit
+//   produced. It is about the test written before the rewrite, so it applies to a row whose
+//   test was written for an earlier version than that (`standingRuling`), and a row of the
+//   test derived for the corrected criterion is a result nobody has ruled on.
+// - `test-wrong` records the test file it judged (`file_sha`), and applies to a row of that
+//   file only. A ruling recorded without one is taken to apply to whatever test the row ran;
+//   `dropTestWrongRulings` removes it once the test is derived again.
+//
+// The other verbs are about the application, the adapter or the oracle, and are bound to the
+// criterion's version alone: an `oracle-cannot` ruling stands whatever the adapter becomes
+// (`docs/decisions/0068`), and an `adapter-wrong` one lapses with the adapter it was about
+// (`expireAdapterVerdicts`).
+function calibrateRuledVerb(rulings, row, version) {
   // `product-question` is not a ruling: it says a failure is the product owner's to rule
   // on, and until they have, the row is still an open question.
-  const matches = rulings.filter((r) => r?.id === id && r?.version === version && r?.verb !== "product-question");
+  const matches = rulings.filter((r) => r?.id === row.id && r?.version === version && r?.verb !== "product-question" && rulingAppliesTo(r, row));
   return matches.length ? matches[matches.length - 1].verb : null;
+}
+
+function rulingAppliesTo(ruling, row) {
+  if (ruling.verb === "spec-wrong") return standingRuling({ ...row, ruled: ruling.verb }, ruling.version) !== null;
+  if (ruling.verb === "test-wrong" && ruling.file_sha) return row.file_sha === ruling.file_sha;
+  return true;
 }
 
 // The newest approved contract (`contract-v<n>`), whose approval established the personas the
@@ -453,10 +485,12 @@ function approvedContract(projectDir) {
   return approved.length ? `contract-v${approved[0][1]}` : null;
 }
 
-// Whether the reviewer has sorted this row and passed it on, on the same version-bound
-// reading as a ruling: a criterion that has moved on since is sorted afresh.
-function calibrateTriagedForProduct(rulings, id, version) {
-  return rulings.some((r) => r?.id === id && r?.version === version && r?.verb === "product-question");
+// Whether the reviewer has sorted this row and passed it on, on the same reading as a
+// ruling: a criterion that has moved on since, or a test other than the one sorted, is
+// sorted afresh.
+function calibrateTriagedForProduct(rulings, row, version) {
+  return rulings.some((r) => r?.id === row.id && r?.version === version && r?.verb === "product-question"
+    && (!r.file_sha || r.file_sha === row.file_sha));
 }
 
 // Rows this target's results file must account for: every accepted criterion of every
@@ -537,8 +571,10 @@ function owedNaming(projectDir, target) {
 // (`docs/decisions/0072-a-calibration-re-runs-what-changed.md`).
 function calibrationPlan(projectDir, ctx, target, onFile, inputs) {
   const applied = readCalibrateApplied(projectDir, target);
+  const { byId } = calibrateIndex(projectDir);
   return planCalibration({
     config: ctx.config, previous: onFile, specs: currentSpecs(projectDir), inputs,
+    versions: new Map([...byId].map(([id, c]) => [id, c.version])),
     stale: new Set(checkTests(projectDir).stale),
     rulings: (id) => rulingsSeen(applied.rulings, id),
     owed: owedNaming(projectDir, target),
@@ -954,11 +990,11 @@ export const calibrate = {
     const current = ctx.skipSuite ? previous?.run : runId;
     const ruledRows = rows.map(({ ruled: _r, triage: _t, unavailable: _u, carried: _c, ...row }) => {
       const version = row.id ? byId.get(row.id)?.version : undefined;
-      const verb = row.id ? calibrateRuledVerb(applied.rulings, row.id, version) : null;
+      const verb = row.id ? calibrateRuledVerb(applied.rulings, row, version) : null;
       const carried = current && row.measured_in !== current ? { carried: true } : {};
       const personas = row.id && !verb ? personaUnavailable(row, unavailable) : null;
       if (personas) return { ...row, ruled: PERSONA_UNAVAILABLE, unavailable: { personas, contract }, ...carried };
-      const sorted = row.id && !verb && calibrateTriagedForProduct(applied.rulings, row.id, version);
+      const sorted = row.id && !verb && calibrateTriagedForProduct(applied.rulings, row, version);
       return { ...row, ...(verb ? { ruled: verb } : {}), ...(sorted ? { triage: "product-question" } : {}), ...carried };
     });
     // Which run measured what `latest.json` reports, how it chose its rows, the last full run,

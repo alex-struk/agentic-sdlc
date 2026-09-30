@@ -363,6 +363,17 @@ test("a result of the test as it now stands closes its item, by its fingerprint 
   assert.equal(read(d, MISSING_TEST)[0].closed.file_sha, fingerprint(d, file), "the closure names the test that ran");
 });
 
+// A spec-wrong ruling corrected the criterion, so it disowns the test written before the
+// correction and not the one derived for the version it produced (`docs/decisions/0073`).
+test("a row of the test derived for the corrected criterion closes its item, whatever spec-wrong mark it carries", (t) => {
+  const { d, file } = reDerived(t, { ruled: null });
+  commitAt(d, "merge: derive-tests-orders approved", "2030-01-04T00:00:00Z");
+  put(d, "tests/results/old/latest.json", JSON.stringify({ target: "old", at: "2030-01-05T00:00:00.000Z", rows: [
+    { id: "R-1.2", version: 2, domain: "orders", file, file_sha: fingerprint(d, file), result: "pass", ruled: "spec-wrong" },
+  ] }));
+  assert.deepEqual(syncMissingTests(d, { config: CALIBRATES }).closed, ["R-1.2"]);
+});
+
 // An item the runner closed on a row the rule above rejects is owed again, where the stage that
 // owes it now can see it: here, a test exists and has not run.
 test("an item closed on a result of an earlier test is reopened and handed to the stage that runs its test, once", (t) => {

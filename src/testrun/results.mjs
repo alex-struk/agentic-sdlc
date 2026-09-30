@@ -38,10 +38,27 @@ export function notAssertedEntries(rows, ids) {
 
 // Two rulings on a failure say the test that produced a row does not test the criterion as it
 // stands: `test-wrong`, the test is wrong and is derived again, and `spec-wrong`, the criterion
-// is rewritten. A row carrying either shows no test of the criterion ran.
+// is rewritten. A row carrying either, while the ruling still applies to it, shows no test of the
+// criterion ran.
 export const DISOWNED = new Set(["test-wrong", "spec-wrong"]);
 
-export const isDisowned = (row) => DISOWNED.has(row?.ruled);
+// The calibration ruling a row carries, while it still applies to the row, or `null`. `version`
+// is the criterion's version now; a reader that does not know it takes the mark as written.
+//
+// A `spec-wrong` ruling rewrote its criterion, so it is a ruling about the test written for the
+// version before the rewrite. A row whose test was written for the criterion's version now (its
+// `version` is the test's own header) is a result of a test derived after the ruling, which
+// nobody has ruled on, and the mark a calibration left on it no longer applies
+// (`docs/decisions/0073`). Every other mark is taken as written: `calibrate` works each one out
+// again from the rulings on every run, bound to the criterion's version and, for `test-wrong`,
+// to the test file it judged.
+export function standingRuling(row, version) {
+  const ruled = row?.ruled ?? null;
+  if (ruled === "spec-wrong" && version !== undefined && version !== null && Number(row.version) >= Number(version)) return null;
+  return ruled;
+}
+
+export const isDisowned = (row, version) => DISOWNED.has(standingRuling(row, version));
 
 // Which test file a row is a result of: git's object id for the file's content, the value
 // `git hash-object <file>` prints and a commit's tree holds for it. A run writes it on every row
