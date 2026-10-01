@@ -134,8 +134,10 @@ asks for happens at the gate it is returned to, not here.
    application that has changed since
    (`docs/decisions/0083-a-rebind-limit-counts-per-application-build.md`). An entry for one of the
    slice's criteria found under an adapter that has since changed lapses, and one whose row the
-   adapter now reaches is closed. Nothing about another slice's criteria is touched. The rows are
-   filed whatever the verdict, so an unbound row beside a failure is owed to the binding as well.
+   adapter now reaches is closed. An open entry the slice filed for a criterion it no longer claims
+   is withdrawn (`docs/decisions/0085-a-re-check-is-settled-by-a-verify-with-the-current-adapter.md`).
+   Nothing about another slice's criteria is touched. The rows are filed whatever the verdict, so
+   an unbound row beside a failure is owed to the binding as well.
 
    An adapter written before the slice built what its tests need — bound against the application
    it replaces, or an earlier cut of this one — names what it found then, so a row it reports

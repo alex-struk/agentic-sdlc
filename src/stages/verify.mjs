@@ -26,7 +26,7 @@ import { isNotAsserted, notAssertedEntries, environmentGap, MAIL_CATCHER_UNSET_R
 import { verifyReturnLimit, owedLoopLimit } from "../config/policy.mjs";
 import { readConfigurations } from "../oracle/configurations.mjs";
 import { taggedSpecFiles } from "../testrun/tags.mjs";
-import { adapterAt, syncUnbound, unavailableOn, personaUnavailable } from "../spec/unbound.mjs";
+import { adapterAt, syncUnbound, unavailableOn, personaUnavailable, withdrawUnclaimed } from "../spec/unbound.mjs";
 import { isOpen, read as readOwed } from "../spec/owed.mjs";
 
 // Five outcomes, because a slice's claims come apart five ways and a reader has to be able
@@ -651,14 +651,16 @@ export const verify = {
         // entries there: an unbound row is filed for bind-adapter --target new while the
         // binding has been sent fewer times than policy.loops.rebind allows against the
         // application this run measured, and an entry for one of this slice's criteria whose
-        // row the binding now reaches is closed (`src/spec/unbound.mjs`). The file is left for
-        // the run's own commit on main.
+        // row the binding now reaches is closed, as is one this slice filed for a criterion it
+        // no longer claims (`src/spec/unbound.mjs`). The file is left for the run's own commit
+        // on main.
         try {
           const unavailable = unavailableOn(projectDir, "new", config);
           syncUnbound(projectDir, "new", {
             rows: binding.rows, adapter: binding.adapter, ids: binding.ids, limit: owedLoopLimit(config, "rebind"),
             unavailable, by: "runner:verify", stamp: { slice: slice.number }, appTree: binding.appTree,
           });
+          withdrawUnclaimed(projectDir, "new", { slice: slice.number, ids: binding.ids, by: "runner:verify" });
           const open = new Set(readOwed(projectDir, "rebind").filter((e) => isOpen(e) && e.target === "new").map((e) => e.id));
           const owed = binding.rows
             .filter((r) => r.result === "unbound" && binding.ids.includes(r.id) && open.has(r.id) && !personaUnavailable(r, unavailable))

@@ -94,6 +94,34 @@ test("the progress mark ignores what every run writes about itself and sees what
   assert.notDeepEqual(progressMark(dir, { ...item, why: "something else" }), progressMark(dir, item));
 });
 
+// A verify merges `main` into its build branch before it runs, so what the step before it wrote
+// on `main` reaches the branch one step late. `main`'s digest has counted it already, and a step
+// that changed nothing else is no progress (`docs/decisions/0085`).
+test("the progress mark does not count a change on main a second time when a step merges it into a branch", (t) => {
+  const dir = repo(t);
+  const at = (args) => git(["-c", "user.name=t", "-c", "user.email=t@example.org", ...args], dir);
+  commit(dir, { "tests/adapters/rebind.yaml": "rebind: []\n", "app/index.ts": "export {};\n" });
+  git(["checkout", "-q", "-b", "proposal/build-slice-1"], dir);
+  commit(dir, { "app/index.ts": "export const a = 1;\n", "tests/results/new/slice-1.json": "{\"verdict\":\"unbound\"}" }, "verify(slice 1)");
+  git(["checkout", "-q", "main"], dir);
+  commit(dir, { "tests/adapters/rebind.yaml": "rebind: [{ id: R-1.1, closed: lapsed }]\n", ".sdlc/runs/2026-01-01.md": "- verify\n" }, "stage(verify)");
+  const before = progressMark(dir, item);
+
+  // The next step: main merged into the branch, the same verdict measured again, its run line.
+  git(["checkout", "-q", "proposal/build-slice-1"], dir);
+  at(["merge", "-q", "--no-edit", "main"]);
+  commit(dir, { "tests/results/new/slice-1.json": "{\"verdict\":\"unbound\",\"at\":2}" }, "verify(slice 1)");
+  git(["checkout", "-q", "main"], dir);
+  commit(dir, { ".sdlc/runs/2026-01-01.md": "- verify\n- verify\n" }, "stage(verify)");
+  assert.deepEqual(progressMark(dir, item), before);
+
+  // What the branch holds of its own is still seen.
+  git(["checkout", "-q", "proposal/build-slice-1"], dir);
+  commit(dir, { "app/index.ts": "export const a = 2;\n" }, "revise");
+  git(["checkout", "-q", "main"], dir);
+  assert.notDeepEqual(progressMark(dir, item), before);
+});
+
 test("a dry run on a real project prints what it would run and why, and writes nothing", async (t) => {
   const dir = await makeProject(t);
   const head = git(["rev-parse", "HEAD"], dir);

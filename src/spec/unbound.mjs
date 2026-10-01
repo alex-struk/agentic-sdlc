@@ -315,3 +315,18 @@ export function syncUnbound(projectDir, target, { rows = [], adapter, fallback =
   }
   return { path, opened, closed };
 }
+
+// Withdraws every open unbound entry on `target` that a run of `slice` filed for a criterion
+// the slice no longer claims (`ids`). A plan revised after the entry was filed can move a
+// criterion to another slice; no verify of this one measures it again, so nothing would ever
+// lapse or settle the entry, and the slice that claims the criterion now files its own when it
+// is verified (`docs/decisions/0085`). Returns the path written (`null` when nothing changed)
+// and the criteria withdrawn.
+export function withdrawUnclaimed(projectDir, target, { slice, ids, by = BY, at = new Date().toISOString() }) {
+  const claimed = new Set(ids ?? []);
+  const unclaimed = (e) => e.found === UNBOUND && e.target === target && e.slice != null && Number(e.slice) === Number(slice) && !claimed.has(e.id);
+  const withdrawn = read(projectDir, KIND).filter((e) => isOpen(e) && unclaimed(e)).map((e) => e.id);
+  if (!withdrawn.length) return { path: null, withdrawn };
+  const path = close(projectDir, KIND, unclaimed, { outcome: "withdrawn", why: `slice ${slice} no longer claims it`, by, at });
+  return { path, withdrawn };
+}

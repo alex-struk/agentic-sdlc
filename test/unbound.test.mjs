@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isOpen, read, sends } from "../src/spec/owed.mjs";
-import { UNBOUND, PERSONA_UNAVAILABLE, openUnboundRows, unboundHanded, unboundOwed, unboundWhy, syncUnbound, legacyAdapter, targetIdentity, unavailablePersonas, personaUnavailable } from "../src/spec/unbound.mjs";
+import { UNBOUND, PERSONA_UNAVAILABLE, openUnboundRows, unboundHanded, unboundOwed, unboundWhy, syncUnbound, withdrawUnclaimed, legacyAdapter, targetIdentity, unavailablePersonas, personaUnavailable } from "../src/spec/unbound.mjs";
 import { stageFor } from "../src/stages/registry.mjs";
 
 const row = (id, result, more = {}) => ({
@@ -306,6 +306,24 @@ test("a sync scoped to some criteria files and closes those alone, stamped by wh
   const again = syncUnbound(d, "new", { rows: [row("R-1.1", "pass", { adapter: B })], adapter: B, limit: 2, ids: ["R-1.1", "R-1.2"], by: "runner:verify" });
   assert.deepEqual(again.closed, ["R-1.1"]);
   assert.equal(new Map(unboundEntries(d).map((x) => [x.id, x])).get("R-1.1").closed.outcome, "met");
+});
+
+// A plan revised after a verify filed a row can move the criterion to another slice. No verify of
+// the first slice measures it again, so that slice's next verify withdraws the entry, and leaves
+// another slice's entries, and its own for criteria it still claims, as they are
+// (`docs/decisions/0085`).
+test("a verify withdraws the entries its slice filed for criteria the slice no longer claims", (t) => {
+  const { d } = project(t);
+  const entry = (id, slice) => `  - { id: ${id}, target: new, why: "unbound: a.b — gone", found: unbound, adapter: A, slice: ${slice}, by: "runner:verify", at: "2026-01-01T00:00:00.000Z" }\n`;
+  mkdirSync(join(d, "tests", "adapters"), { recursive: true });
+  writeFileSync(join(d, "tests", "adapters", "rebind.yaml"), `rebind:\n${entry("R-1.48", 7)}${entry("R-8.19", 7)}${entry("R-2.1", 9)}`);
+  const r = withdrawUnclaimed(d, "new", { slice: 7, ids: ["R-8.19", "R-8.25"], by: "runner:verify", at: "2026-01-02T00:00:00.000Z" });
+  assert.deepEqual(r.withdrawn, ["R-1.48"]);
+  const byId = new Map(unboundEntries(d).map((x) => [x.id, x]));
+  assert.deepEqual([byId.get("R-1.48").closed.outcome, byId.get("R-1.48").closed.why, byId.get("R-1.48").closed.by], ["withdrawn", "slice 7 no longer claims it", "runner:verify"]);
+  assert.ok(isOpen(byId.get("R-8.19")), "a criterion the slice still claims is the sync's to settle");
+  assert.ok(isOpen(byId.get("R-2.1")), "another slice's entry is that slice's");
+  assert.deepEqual(withdrawUnclaimed(d, "new", { slice: 7, ids: ["R-8.19"] }), { path: null, withdrawn: [] }, "nothing left to withdraw writes nothing");
 });
 
 // A verify measures one build of the application, and the slice's next build can add the very

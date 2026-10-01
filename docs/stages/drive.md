@@ -60,8 +60,10 @@ change, and keeps it by command. When `next` names a command that has run before
 taken again and compared with the one taken before that command last ran. Equal marks stop the
 loop. The mark is:
 
-- `main`'s tree, and the tree of every `proposal/*` and `returned/*` branch, each without the
-  account every run writes about itself: `.sdlc/runs/`, `.sdlc/journal/`, `site/` and
+- `main`'s tree, and every `proposal/*` and `returned/*` branch as the files it changed since the
+  commit it shares with `main`, so a step that merges `main` into a branch does not count what
+  `main` already showed (`docs/decisions/0085`); each without the account every run writes about
+  itself: `.sdlc/runs/`, `.sdlc/journal/`, `site/` and
   `tests/results/`;
 - each target's latest calibration as counts of result and ruling (`fail ruled test-wrong: 2`),
   read from `tests/results/<t>/latest.json` on `main`, which is rewritten with a new run id on

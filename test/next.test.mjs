@@ -946,6 +946,51 @@ test("once a binding is ruled onto main, the slice it was owed for is verified a
   assert.ok(!r.ready.some((c) => c.command.startsWith("sdlc rule build-slice-1")));
 });
 
+// The slice's verify run again on its build branch, measuring with the adapter `main` has now:
+// its result records that adapter's tree, as verify writes it.
+function reverified(d, result) {
+  const adapter = git(d, ["rev-parse", "main:tests/adapters/new"]);
+  git(d, ["checkout", "-q", "proposal/build-slice-1"]);
+  const appTree = git(d, ["rev-parse", "HEAD:app"]);
+  commit(d, { "tests/results/new/slice-1.json": JSON.stringify({ slice: 1, proposal: "build-slice-1", app_tree: appTree, adapter, rows: [], ...result }) }, "verify(slice 1)");
+  git(d, ["checkout", "-q", "main"]);
+  return adapter;
+}
+
+const verifyEntry = (id, adapter, more = {}) => ({ id, target: "new", why: "unbound: signIn.applicant — no link", found: "unbound", adapter, slice: 1, by: "runner:verify", at: "2026-01-01T00:00:00.000Z", ...more });
+
+// A rebind entry a verify filed under an adapter since replaced is owed the slice's verify again,
+// and that verify, once it has measured with the adapter there is now, is the re-check. An entry
+// it left open (here for a criterion the slice no longer claims, which no verify of the slice
+// measures) is not checked again, and the row it found still unbound with its sends spent goes to
+// the G3 holder as a build that did not pass (`docs/decisions/0085`).
+test("a re-check a verify with the current adapter has made is not offered again; the build is ruled", (t) => {
+  const d = project(t, { profile: "feature", extra: NEW_TARGET });
+  const A = verifiedBuild(d, { verdict: "unbound", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [verifyEntry("R-1.3", A)] }) }, "run(verify)");
+  commit(d, { "tests/adapters/new/index.ts": "export default 2;\n" }, "merge bind-adapter-new");
+  assert.equal(whatNext(d).next.command, "sdlc run verify --slice 1", "measured with the replaced adapter: checked again");
+
+  reverified(d, { verdict: "unbound", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.stage === "verify"), "the verify that would check it again has run with this adapter");
+  assert.equal(r.next.command, "sdlc rule build-slice-1 --by agent:owner");
+  assert.match(r.next.why, /did not pass verify/);
+});
+
+test("a row the re-check found unbound again and filed afresh is owed to the binding, not to another verify", (t) => {
+  const d = project(t, { profile: "feature", extra: NEW_TARGET });
+  const A = verifiedBuild(d, { verdict: "unbound", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });
+  commit(d, { "tests/adapters/new/index.ts": "export default 2;\n" }, "merge bind-adapter-new");
+  const B = reverified(d, { verdict: "unbound", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [verifyEntry("R-1.3", A), verifyEntry("R-1.2", B, { at: "2026-01-02T00:00:00.000Z" })] }) }, "run(verify)");
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run bind-adapter --target new");
+  assert.match(r.next.why, /^1 binding the adapter reports unbound for target new owed by bind-adapter/);
+  assert.ok(!r.ready.some((c) => c.stage === "verify"));
+  assert.ok(!r.ready.some((c) => c.command.startsWith("sdlc rule build-slice-1")), "the build waits on the binding it is owed");
+});
+
 test("a build whose verify could not test a criterion in this environment waits on a person, then is verified again", (t) => {
   const d = project(t, { profile: "feature", extra: NEW_TARGET });
   verifiedBuild(d, { verdict: "environment", environment: [{ id: "R-1.1", reason: "its test reads a mail catcher, and targets.new.mail_api names none for this target to hand it" }] });

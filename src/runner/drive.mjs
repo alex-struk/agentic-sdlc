@@ -80,6 +80,21 @@ function recordDigest(projectDir, rev) {
   return createHash("sha256").update(kept.join("\n")).digest("hex");
 }
 
+// A proposal or returned branch as what it holds of its own: every file it changed since the
+// commit it shares with `main`, with the blob it has now. A step that merges `main` into a
+// branch before it runs (verify does) carries onto the branch whatever the step before it
+// wrote on `main`, and `main`'s digest has already counted that; digesting the branch's whole
+// tree would see it a second time, one step late, and a step that changed nothing would read
+// as progress (`docs/decisions/0085`).
+function branchDigest(projectDir, branch) {
+  let base = "";
+  try { base = git(["merge-base", "main", branch], projectDir); } catch { return recordDigest(projectDir, branch); }
+  const own = git(["diff", "--raw", "--no-renames", "--no-abbrev", base, branch], projectDir).split("\n")
+    .filter((l) => l && !ACCOUNT_OF_RUNS.some((p) => l.slice(l.indexOf("\t") + 1).startsWith(p)))
+    .map((l) => { const [meta, path] = l.split("\t"); return `${meta.split(" ")[3]}\t${path}`; });
+  return createHash("sha256").update(own.join("\n")).digest("hex");
+}
+
 // Each target's latest calibration as counts of result and ruling (`fail ruled test-wrong: 2`).
 function resultCounts(projectDir) {
   const files = git(["ls-tree", "-r", "--name-only", "main", "--", "tests/results"], projectDir).split("\n")
@@ -96,16 +111,16 @@ function resultCounts(projectDir) {
   }));
 }
 
-// What the record holds that a step could change, for the command `item` names: `main` and
-// every proposal and returned branch, each without the account of runs above; each target's
-// calibration counts; and why `next` names the command. Two marks that are equal mean nothing
+// What the record holds that a step could change, for the command `item` names: `main`, and
+// every proposal and returned branch as its own changes from `main`, each without the account
+// of runs above; each target's calibration counts; and why `next` names the command. Two marks that are equal mean nothing
 // a step could change has changed.
 export function progressMark(projectDir, item) {
   const branches = git(["for-each-ref", "--format=%(refname:short)", "refs/heads/proposal/", "refs/heads/returned/"], projectDir)
     .split("\n").filter(Boolean).sort();
   return {
     main: recordDigest(projectDir, "main"),
-    branches: Object.fromEntries(branches.map((b) => [b, recordDigest(projectDir, b)])),
+    branches: Object.fromEntries(branches.map((b) => [b, branchDigest(projectDir, b)])),
     results: resultCounts(projectDir),
     why: item.why,
   };

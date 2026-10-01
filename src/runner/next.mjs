@@ -429,7 +429,8 @@ function heldBy(record, name, stage) {
 function notTheBuilders(projectDir, record, p, slice) {
   const result = readVerifyResult(projectDir, p.branch, slice);
   if (result?.verdict !== "environment" && result?.verdict !== "unbound") return null;
-  const bindingOwed = record.owed.some((e) => e.kind === "rebind" && e.target === BUILD_TARGET && Number(e.slice) === Number(slice));
+  const bindingOwed = record.owed.some((e) => e.kind === "rebind" && e.target === BUILD_TARGET && Number(e.slice) === Number(slice)
+    && !recheckMade(projectDir, record, e));
   if (result.verdict === "unbound") return bindingOwed ? {} : null;
   const gaps = Array.isArray(result.environment) ? result.environment : [];
   const mailOnly = gaps.length > 0 && gaps.every((g) => /mail catcher/.test(String(g?.reason ?? "")));
@@ -444,6 +445,30 @@ function notTheBuilders(projectDir, record, p, slice) {
     command: mailOnly
       ? `set targets.new.mail_api in .sdlc/config.yaml to the address the application's compose file publishes its mail catcher's API on, then ${verify}`
       : `${personCommand(p.name, on)} (verify cannot start the new target in a configuration; the reasons are in tests/results/new/slice-${slice}.json on ${p.branch})` } };
+}
+
+// Whether the re-check a verify's rebind entry is owed has been made. An entry a verify filed
+// under an adapter its target has since replaced is checked again by the verify of its slice
+// (`docs/decisions/0075`), and that verify is the re-check once it has measured with the
+// adapter the target has now: the slice's latest verify result, on the build branch a binding
+// for the slice runs against, records that adapter's tree. Whatever it found, nothing is left
+// to check again. A row it found unbound once more was filed afresh under the new adapter
+// while sends remained for that build, and is owed to bind-adapter as that entry; or was not,
+// and the build is ruled as one that did not pass (`docs/decisions/0083`). An entry it left
+// open is about a criterion the slice no longer claims, which no verify of the slice measures
+// (`docs/decisions/0085`). A result that records no adapter settles nothing.
+const verifiedWith = new WeakMap();
+function recheckMade(projectDir, record, e) {
+  const now = record.results.get(e.target)?.adapter;
+  if (e.slice == null || !e.adapter || !now || e.adapter === now) return false;
+  if (!verifiedWith.has(record)) verifiedWith.set(record, new Map());
+  const memo = verifiedWith.get(record);
+  const slice = Number(e.slice);
+  if (!memo.has(slice)) {
+    const branch = bindingBuildFor(record, slice);
+    memo.set(slice, (branch && readVerifyResult(projectDir, branch, slice)?.adapter) || "");
+  }
+  return memo.get(slice) === now;
 }
 
 // The newest open build proposal for `slice`, or `null`.
@@ -569,7 +594,7 @@ function proposalState(projectDir, record) {
 }
 
 // The open owed work as runnable items, grouped by the run that answers them.
-function owedWork(record, inFlight, bindsNow) {
+function owedWork(projectDir, record, inFlight, bindsNow) {
   const byId = new Map((record.index?.criteria ?? []).map((c) => [c.id, c]));
   const groups = new Map();
   const groupKey = (stage, args) => `${stage}\u0000${JSON.stringify(args)}`;
@@ -626,6 +651,9 @@ function owedWork(record, inFlight, bindsNow) {
       // it again (`docs/decisions/0075`).
       const slice = e.slice ?? null;
       if (slice !== null && about && r?.adapter && about !== r.adapter) {
+        // Once that verify has run with the adapter there is now, the re-check is made and
+        // offering it again would measure the same thing again (`docs/decisions/0085`).
+        if (recheckMade(projectDir, record, e)) continue;
         group("verify", { slice }, "unbound row to check again now that its adapter has changed", "unbound rows to check again now that their adapter has changed");
       } else if (slice !== null) {
         const build = bindingBuildFor(record, slice);
@@ -979,7 +1007,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
   const open = steps.filter((s) => !s.done);
   const phaseNumber = open.length ? open[0].phase : null;
   const phase = phaseNumber ? PHASES.find((p) => p.number === phaseNumber) : null;
-  const owed = owedWork(record, props.inFlight, bindsNowFor(record, phaseNumber));
+  const owed = owedWork(projectDir, record, props.inFlight, bindsNowFor(record, phaseNumber));
   const sequence = [];
   let blocked = null;
   for (const s of open.filter((x) => x.phase === phaseNumber)) {
