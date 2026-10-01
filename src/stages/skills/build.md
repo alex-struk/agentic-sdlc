@@ -52,6 +52,11 @@ Build each page from the story in `design/catalogue/` for that page and state. E
 `data-testid` a story carries, and every `test_id` in `surface.yaml` for your pages, must
 be in your markup on the same element.
 
+Lay screens out the way the catalogue does: the page container and the stack it defines in
+`design/catalogue/layout.tsx`, defined once in the application and used by every screen, so
+every page has the same width as the banner and the same spacing rhythm. A screen does not
+set its own width, outer padding or gaps.
+
 ## Scope
 
 Change only `app/` and, for a choice a later reader would otherwise have to

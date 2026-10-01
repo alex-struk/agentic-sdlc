@@ -624,3 +624,37 @@ test("a prompt whose conditions are read in a closed grammar carries no conditio
   const prompt = await buildPersonaPrompt(dir, name, "product-owner", { tier: "STANDARD", gate: "G1" });
   assert.ok(!prompt.includes("## Which condition forms a verdict may carry"));
 });
+
+// A design is ruled on what it looks like as well as on its source. The reviewer is pointed at
+// pictures of the screens it is ruling on, or told plainly why there are none, so an approval
+// is never given on the assumption that somebody else looked.
+test("a design ruling is pointed at the screenshots of its screens, and told when there are none", async () => {
+  const dir = microProject();
+  git(["checkout", "-q", "-b", "proposal/design-applications"], dir);
+  write(dir, "design/catalogue/application-list.default.stories.tsx", "export const Default = {};\n");
+  write(dir, ".sdlc/proposals/design-applications.md", "---\ngate: G-DESIGN\n---\n\n# Do these screens serve the criteria?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "design"], dir);
+
+  const shown = await buildPersonaPrompt(dir, "design-applications", "product-owner", {
+    tier: "STANDARD", gate: "G-DESIGN",
+    screens: { dir: "design/screenshots", files: ["design/screenshots/application-list-default--default.png"] },
+  });
+  assert.match(shown, /## Screenshots/);
+  assert.match(shown, /design\/screenshots\/application-list-default--default\.png/);
+  assert.match(shown, /Read/);
+
+  const none = await buildPersonaPrompt(dir, "design-applications", "product-owner", {
+    tier: "STANDARD", gate: "G-DESIGN",
+    screens: { dir: "design/screenshots", files: [], error: "the catalogue did not build" },
+  });
+  assert.match(none, /## Screenshots/);
+  assert.match(none, /No screenshots could be taken: the catalogue did not build/);
+  git(["checkout", "-q", "main"], dir);
+
+  git(["checkout", "-q", "-b", "proposal/derive-tests-applications"], dir);
+  write(dir, "tests/acceptance/applications/R-1.1.spec.ts", "// @R-1.1 v1\n");
+  write(dir, ".sdlc/proposals/derive-tests-applications.md", "---\ngate: G3\n---\n\n# Do these tests follow?\n");
+  git(["add", "-A"], dir); git(["commit", "-q", "-m", "derive tests"], dir);
+  const other = await buildPersonaPrompt(dir, "derive-tests-applications", "product-owner", { tier: "STANDARD", gate: "G3" });
+  assert.ok(!other.includes("## Screenshots"), "a proposal with no screens has no screenshot section");
+});

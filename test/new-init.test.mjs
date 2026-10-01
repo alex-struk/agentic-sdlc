@@ -240,3 +240,38 @@ test("init never rewrites, or stages, a hand-edited tests/acceptance/not-testabl
     else process.env.SDLC_EGRESS_NAMES = prevEgressNames;
   }
 });
+
+// The design harness is the pipeline's machinery, not the project's: a design run is refused
+// for touching it, so the only way an existing project receives a new scanner or Storybook
+// configuration is for `init` to install it, the same way it refreshes the acceptance harness.
+test("init installs the pipeline's current design harness into an existing project, and commits it", async () => {
+  const prevEgressNames = process.env.SDLC_EGRESS_NAMES;
+  const egressDir = mkdtempSync(join(tmpdir(), "sdlc-egress-"));
+  const emptyList = join(egressDir, "empty-egress-names.txt");
+  writeFileSync(emptyList, "");
+  process.env.SDLC_EGRESS_NAMES = emptyList;
+  try {
+    const pack = makePack();
+    const cfgPath = join(mkdtempSync(join(tmpdir(), "sdlc-cfg-")), "example.yaml");
+    writeFileSync(cfgPath, projectConfig(pack, "main"));
+    const dir = join(mkdtempSync(join(tmpdir(), "sdlc-design-harness-")), "example-service");
+    await newProject({ dir, from: cfgPath });
+    const current = {
+      "design/scan.mjs": readFileSync(join(dir, "design", "scan.mjs"), "utf8"),
+      "design/.storybook/main.ts": readFileSync(join(dir, "design", ".storybook", "main.ts"), "utf8"),
+    };
+    writeFileSync(join(dir, "design", "scan.mjs"), "// an older scanner\n");
+    writeFileSync(join(dir, "design", ".storybook", "main.ts"), "export default {};\n");
+    git(["add", "-A"], dir); git(["commit", "-q", "-m", "an older harness"], dir);
+
+    const r = await init(dir);
+
+    assert.equal(r.changed, true);
+    for (const [rel, text] of Object.entries(current)) assert.equal(readFileSync(join(dir, rel), "utf8"), text, `${rel} is the pipeline's copy`);
+    assert.equal(git(["status", "--porcelain"], dir), "", "the refreshed harness is committed, not left lying in the tree");
+    assert.match(readFileSync(join(dir, ".gitignore"), "utf8"), /^design\/screenshots\/$/m, "pictures taken for a ruler are never committed");
+  } finally {
+    if (prevEgressNames === undefined) delete process.env.SDLC_EGRESS_NAMES;
+    else process.env.SDLC_EGRESS_NAMES = prevEgressNames;
+  }
+});

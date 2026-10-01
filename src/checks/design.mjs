@@ -209,12 +209,13 @@ const SCAN_COMMAND = "npm --prefix design install && npm --prefix design run sca
 // The digest `scan.mjs` records, recomputed from the catalogue as it stands now. A report
 // is evidence about the stories it read, and a story edited afterwards is not covered by
 // it — which is the ordinary case, since a revision fixes a story and the old report still
-// says zero.
+// says zero. The modules the stories share (the page container and stack every screen is
+// laid out with) are part of what was read: an edit to one changes every story importing it.
 function catalogueDigest(projectDir) {
   const dir = join(projectDir, "design", "catalogue");
   if (!existsSync(dir)) return null;
   const hash = createHash("sha256");
-  for (const f of readdirSync(dir).filter((n) => n.endsWith(CATALOGUE_SUFFIX)).sort()) {
+  for (const f of readdirSync(dir).filter((n) => /\.tsx?$/.test(n)).sort()) {
     hash.update(f).update("\0").update(readFileSync(join(dir, f))).update("\0");
   }
   return hash.digest("hex");

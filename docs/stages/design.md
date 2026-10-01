@@ -54,8 +54,12 @@ is the one place a screen's states are written down.
 `design/catalogue/<page>.<state>.stories.tsx`, one story per page per declared state, built from
 `@bcgov/design-system-react-components` and the design tokens.
 
+`design/catalogue/layout.tsx`, the page container and the stack every story is laid out with,
+defined once and listed in `DESIGN.md` among the project's own components
+(`docs/decisions/0086-layout-is-a-design-rule-and-the-design-ruler-sees-the-screens.md`).
+
 `spec/contract/surface.yaml`, with the `test_id` of each action and observation on this domain's
-pages filled in.
+pages filled in. A `test_id` already filled in is kept as it is: an adapter is bound to it.
 
 ## Checks
 
@@ -83,11 +87,30 @@ A route or an action changed here would change what the acceptance suite is allo
 silently and behind the gate that already ruled on it — a spec change wearing a design stage's
 clothes.
 
-## What this stage does not do yet
+## The compile and the scan
 
-It does not render the catalogue, so it does not run Storybook's accessibility addon. Rendering
-needs a built Storybook and a browser, which is a second piece of machinery and a second
-decision. What a person can be told deterministically before any of that exists is whether every
-screen and every state the design declares has a story behind it, and that is what these checks
-answer. The accessibility run belongs with the stage that builds the application and can render
-the real components.
+Once the run's work is collected, the pipeline runs `design/scan.mjs`. It typechecks the
+catalogue, builds it with Storybook, renders every story in a browser, and runs axe over each.
+It writes what it found to `design/report.json`, together with a digest of the stories it read
+(`docs/decisions/0009-a-catalogue-is-compiled-and-scanned.md`). Two checks read that report:
+
+`design-compiles` fails a catalogue that does not typecheck or does not build. It also refuses a
+report whose digest does not match the catalogue as it stands, because a report is evidence only
+for the stories it read and a revision must not pass on the previous scan.
+
+`design-accessibility` fails on any violation, on any story that did not render, and on any
+story file the scan did not reach.
+
+A third check guards the scan itself. `design-harness-untouched` fails a run that changed `design/package.json`, `tsconfig.json`,
+`scan.mjs` or `.storybook/`. The run reads these to know which version of the design system it
+draws against, and it must not be able to answer a failing scan by editing the scanner.
+
+## What the ruler sees
+
+Before an agent rules on a design proposal, the runner renders each of the domain's stories at
+desktop width and saves a picture of each into `design/screenshots/`, which git ignores. The
+ruling request lists them and asks for the layout to be judged by eye; when none could be taken
+it says why. A person in the seat opens the catalogue instead (`npm --prefix design start`).
+
+`sdlc init` installs the pipeline's current `design/scan.mjs` and `design/.storybook/` into a
+project, since a design run may not change them.

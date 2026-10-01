@@ -36,6 +36,14 @@ const TEMPLATE_FILES = [
   { src: ["templates", "project", "tests", "fixtures", "mail.ts"], dst: ["tests", "fixtures", "mail.ts"] },
   { src: ["templates", "project", "tests", "fixtures", "upload.ts"], dst: ["tests", "fixtures", "upload.ts"] },
   { src: ["templates", "project", "tests", "fixtures", "env.d.ts"], dst: ["tests", "fixtures", "env.d.ts"] },
+  // The design harness: the scanner that compiles, scans and photographs the catalogue, and
+  // the Storybook configuration it builds with. A design run is refused for changing either
+  // (`checkDesignHarnessUntouched`), so this is the one way a project receives a new one.
+  // `design/package.json` and `tsconfig.json` are not here: the design-system versions a
+  // project draws against are the project's to move.
+  { src: ["templates", "project", "design", "scan.mjs"], dst: ["design", "scan.mjs"] },
+  { src: ["templates", "project", "design", ".storybook", "main.ts"], dst: ["design", ".storybook", "main.ts"] },
+  { src: ["templates", "project", "design", ".storybook", "preview.ts"], dst: ["design", ".storybook", "preview.ts"] },
   { src: ["templates", "project", "tests", "acceptance", "not-testable.yaml"], dst: ["tests", "acceptance", "not-testable.yaml"], onlyIfAbsent: true },
   { src: ["templates", "project", "tests", "acceptance", "attestations.yaml"], dst: ["tests", "acceptance", "attestations.yaml"], onlyIfAbsent: true },
   { src: ["templates", "project", "tests", "seed", "manifest.yaml"], dst: ["tests", "seed", "manifest.yaml"], onlyIfAbsent: true },
@@ -226,6 +234,8 @@ export async function init(projectDir = process.cwd(), { adoptBriefs = false } =
       join("tests", "playwright.config.ts"),
       join("tests", "README.md"),
       join("tests", "fixtures"),
+      join("design", "scan.mjs"),
+      join("design", ".storybook"),
       ".gitattributes",
       relative(projectDir, runPath),
       ...(gitignoreChanged ? [".gitignore"] : []),

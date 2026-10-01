@@ -9,3 +9,4 @@ tests/test-results/
 tests/playwright-report/
 .sdlc/oracle-*.local.yaml
 design/storybook-static/
+design/screenshots/

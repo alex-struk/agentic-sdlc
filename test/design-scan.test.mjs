@@ -162,3 +162,17 @@ test("the colour check reads the catalogue and not the machinery around it", (t)
   assert.equal(r.ok, false);
   assert.match(r.messages[0], /catalogue\/a\.default\.stories\.tsx:1: colour written out as #036/);
 });
+
+// Stories import shared modules — the page container and the stack every screen is laid out
+// with — so an edit to one changes what every story renders. A report is evidence only for the
+// catalogue it read, shared modules included.
+test("a change to a module the stories share is a change to the catalogue the report covered", (t) => {
+  const LAYOUT = "export const Stack = () => null;\n";
+  const stories = { "a.default.stories.tsx": STORY, "layout.tsx": LAYOUT };
+  const dir = project(t, { stories, report: { stories: [] } });
+  assert.equal(checkDesignCompiles(dir).ok, true, "a report over the stories and the module they share is current");
+  writeFileSync(join(dir, "design", "catalogue", "layout.tsx"), "export const Stack = () => 'changed';\n");
+  const r = checkDesignCompiles(dir);
+  assert.equal(r.ok, false);
+  assert.match(r.messages[0], /written for a different catalogue/);
+});

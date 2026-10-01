@@ -43,7 +43,8 @@ declare needs a file and every file needs a declared state; a check refuses eith
 **The test IDs.** In `spec/contract/surface.yaml`, replace `test_id: null` with the identifier
 your story actually puts in the markup, for each action and observation on your domain's
 pages. These are what a later adapter binds against, so an identifier that appears in no story
-is worse than none at all.
+is worse than none at all. A `test_id` already filled in is already bound: keep it exactly as it
+is, on an element that still does what the surface says it does.
 
 ## When the design system has no component for it
 
@@ -53,6 +54,40 @@ badge — build it from standard HTML elements, styled only with design tokens, 
 `DESIGN.md` under a heading saying these are the project's own components and not the design
 system's, with one line each on what it is and why no design-system component fits. That is
 the whole of the rule: the reviewer accepts a component on that list and refuses one hidden.
+
+## Layout
+
+The design system supplies components and spacing tokens but no page grid, so how a screen is
+put together is decided here, once, and every screen is put together the same way.
+
+**One page container.** Every screen's content sits in one column the width of the design
+system's own `Header` and `Footer` content: at most 1100 pixels wide, centred, with
+`--layout-padding-medium` on either side. That is the value the design system's own containers
+use, and no token carries it, so write it in the container and nowhere else. Content laid out
+this way lines up with the banner above it; content that runs the full width of the window
+does not.
+
+**One stack.** Items in a region are spaced by the stack's gap and by nothing else. The design
+system's `Text` and `Heading` carry margins of their own, so inside a stack their margins are
+set to none — otherwise every gap is the token plus the component's margin, and the spacing
+comes out doubled and uneven. Use one rhythm throughout: a larger token between the regions of
+a page, a medium one between the items of a region, a small one between a label and what it
+labels.
+
+Define both once, in `design/catalogue/layout.tsx`, list them in `DESIGN.md` among the
+project's own components, and import them in every story. A story arranges its content with
+them and sets no width or outer padding of its own. The project's own components (a card, a
+section) are laid out inside with the same stack.
+
+Spacing is modelled on an 8-point grid and expressed only through the `--layout-margin-*` and
+`--layout-padding-*` tokens. Name the token, never the size: the installed
+`@bcgov/design-tokens` package defines what each one is, and it is the package you build
+against that counts. The design system uses no hard grid and names Bootstrap 5's grid and
+breakpoints only as a reference if one is needed; add no CSS framework. Let the content decide
+where a layout reflows, and keep every screen usable at 320 pixels wide and at 400% zoom.
+
+The reviewer looks at a picture of every screen you draw, at desktop width, as well as at its
+source.
 
 ## Colour, and everything else the design system already decided
 

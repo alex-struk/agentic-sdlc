@@ -261,6 +261,9 @@ const REQUIRED_IGNORES = [
   // every scan. `design/report.json`, which the scan also writes, is deliberately absent —
   // it is the evidence a design gate is ruled on and belongs in the history.
   "design/storybook-static/",
+  // Pictures of a design proposal's screens, taken for whoever rules it and retaken for every
+  // ruling (`captureScreens`). Evidence for one turn, not history.
+  "design/screenshots/",
   // The agent runtime mirrors the skills it is given into `.agents/skills/`. `init`
   // installs and tracks the canonical copy under `.claude/skills/`, so the mirror is
   // the same text a second time, rewritten by every turn — and left untracked it is

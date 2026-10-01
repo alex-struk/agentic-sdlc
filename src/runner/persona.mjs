@@ -353,7 +353,28 @@ function missingTestsNote(projectDir, name, { slice, verify, config }) {
   ];
 }
 
-export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null, escalation = null }) {
+// What a design ruler is told about the pictures of its screens: where each one is, or why
+// none could be taken. A missing picture is said out loud, because a ruler who is not told
+// otherwise assumes the screens were looked at.
+function screensSection({ files = [], error = null }) {
+  if (!files.length) {
+    return [
+      "## Screenshots",
+      "",
+      `No screenshots could be taken: ${error ?? "the catalogue has no stories for this proposal's screens"}.`,
+      "Rule on the source alone, and say in your rationale that the screens were not seen.",
+    ];
+  }
+  return [
+    "## Screenshots",
+    "",
+    `The runner rendered each story this proposal's screens have, at desktop width, and saved a picture of each (${files.length}). They are not committed. Open them with Read: judge the layout as a person would see it — whether the page's content lines up with the design system's own header width, whether spacing is even and taken from the tokens, whether related things sit together — as well as the code. Look at every \`default\` state at least.`,
+    "",
+    ...files.map((f) => `- ${f}`),
+  ];
+}
+
+export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate = null, typecheck = null, escalation = null, screens = null }) {
   const brief = readPersonaBrief(projectDir, persona);
   const proposalPath = join(projectDir, ".sdlc", "proposals", `${name}.md`);
   const proposal = readText(proposalPath);
@@ -446,6 +467,11 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
     // On the same grounds and in the same place: what the work is judged against belongs in
     // front of the ruler, not inside a budget that decides whether it arrives.
     ...(criteria ? [criteria, ""] : []),
+    // Pictures of the screens a design proposal draws, taken by the runner just before this
+    // turn (`captureScreens` in `./catalogue.mjs`). Ahead of the diff and outside its budget,
+    // for the same reason as the evidence above: whether the screens are laid out well is a
+    // question the story source cannot answer.
+    ...(screens ? [...screensSection(screens), ""] : []),
     `## Diff summary (main...${branch})`,
     "",
     stat || "(no changes)",

@@ -10,9 +10,10 @@
 //
 // Run here, after the stage's work is collected, the compiler and the scanner both report
 // while the gate is still open, and their report is what the gate reads.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { catalogueFiles, surfacePageIds } from "../checks/design.mjs";
 
 const INSTALL_TIMEOUT = 20 * 60 * 1000;
 const SCAN_TIMEOUT = 30 * 60 * 1000;
@@ -46,4 +47,32 @@ export function runCatalogueScan(projectDir) {
   ensureDeps(designDir);
   if (!existsSync(join(designDir, "node_modules"))) return;
   exec(process.execPath, ["scan.mjs"], designDir, SCAN_TIMEOUT);
+}
+
+// Where the pictures go: inside `design/` so the ruler's Read reaches them, and ignored by
+// git (`REQUIRED_IGNORES`) so a ruling neither commits them nor counts them as a change it made.
+export const SCREENS_DIR = "screenshots";
+
+// Pictures of one domain's screens, for whoever rules its design. The scanner renders each
+// of the domain's stories and saves it; nothing is committed. Returns where the pictures
+// are, or why there are none — a ruler is told either way, since one who is not told assumes
+// the screens were looked at.
+export function captureScreens(projectDir, domain, { exec: run = exec, ensure = ensureDeps } = {}) {
+  const designDir = join(projectDir, "design");
+  const result = (files, error = null) => ({ dir: `design/${SCREENS_DIR}`, files, error });
+  const scanner = join(designDir, "scan.mjs");
+  if (!existsSync(join(designDir, "package.json")) || !existsSync(scanner)) return result([], "this project has no design harness (design/scan.mjs)");
+  if (!readFileSync(scanner, "utf8").includes("--screens")) return result([], "this project's design/scan.mjs cannot take screenshots; `sdlc init` installs the pipeline's current one");
+  const pages = surfacePageIds(projectDir, domain);
+  const stories = catalogueFiles(projectDir).filter((f) => pages.some((p) => f.startsWith(`${p}.`)));
+  if (!stories.length) return result([], `no story in design/catalogue/ draws a page of the ${domain} domain`);
+  const out = join(designDir, SCREENS_DIR);
+  rmSync(out, { recursive: true, force: true });
+  ensure(designDir);
+  if (!existsSync(join(designDir, "node_modules"))) return result([], "the design harness's dependencies could not be installed");
+  const r = run(process.execPath, ["scan.mjs", "--screens", SCREENS_DIR, "--only", stories.join(",")], designDir, SCAN_TIMEOUT);
+  const files = existsSync(out) ? readdirSync(out).filter((f) => f.endsWith(".png")).sort().map((f) => `design/${SCREENS_DIR}/${f}`) : [];
+  if (files.length) return result(files);
+  const said = (r.stderr ?? "").trim().split("\n").filter(Boolean).pop();
+  return result([], `the screenshot run produced no pictures${said ? `: ${said}` : ""}`);
 }

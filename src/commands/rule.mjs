@@ -7,6 +7,7 @@ import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } from "../runner/persona.mjs";
+import { captureScreens } from "../runner/catalogue.mjs";
 import { runAgent, endedBecause, preflightAuth, turnsFor, DEFAULT_MAX_TURNS, metricsOf } from "../runner/executor.mjs";
 import { rulingAgent, isolationUnavailable } from "../runner/agents.mjs";
 import { engineFrontMatter, engineLabel } from "../lib/engine.mjs";
@@ -1734,7 +1735,14 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       name, gate, revision: git(["rev-parse", "HEAD"], projectDir),
     });
     assertCleanTree(projectDir, "rule: typecheck modified the working tree");
-    const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate, typecheck, escalation: ruleEscalation ? escalation : null });
+    // A design is ruled on how its screens look as well as on their source, so the agent in
+    // the seat is given pictures of them, taken on this checkout into a folder git ignores. A
+    // person in the same seat sees the same screens by opening the catalogue
+    // (`npm --prefix design start`).
+    const route = routeOf(name, config);
+    const screens = route?.stage === "design" && route.domain ? captureScreens(projectDir, route.domain) : null;
+    if (screens) assertCleanTree(projectDir, "rule: taking screenshots modified the working tree");
+    const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate, typecheck, escalation: ruleEscalation ? escalation : null, screens });
     // A ruling reads and answers; it never writes. The tool list says so up front rather
     // than relying on the clean-tree check below to catch a turn that wrote anyway: the
     // read-only git commands are there because a persona legitimately wants to look
