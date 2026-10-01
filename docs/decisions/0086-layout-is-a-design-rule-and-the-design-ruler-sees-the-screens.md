@@ -29,9 +29,10 @@ one page container and one stack in `design/catalogue/layout.tsx`, lists them am
 own components (`docs/decisions/0009-a-catalogue-is-compiled-and-scanned.md`, section 4), and
 uses them in every story.
 
-- The container takes the content width the design system's own containers use: at most
-  1100 pixels, centred, with `--layout-padding-medium` either side. No token carries that width,
-  so it is written once, in the container.
+- The container takes the content width the design system's own containers use: content at
+  most 1100 pixels wide and centred, so its left edge meets the banner's logo. Padding of
+  `--layout-padding-medium` either side sits outside that width and keeps content off the edge
+  of a narrow screen. No token carries the width, so it is written once, in the container.
 - Inside a stack, the components' own margins are set to none, so the gap is the only spacing.
 - Spacing is named only by token. The installed tokens package defines what each one is, so the
   values in use are the ones the project builds against.

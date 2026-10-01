@@ -61,11 +61,12 @@ The design system supplies components and spacing tokens but no page grid, so ho
 put together is decided here, once, and every screen is put together the same way.
 
 **One page container.** Every screen's content sits in one column the width of the design
-system's own `Header` and `Footer` content: at most 1100 pixels wide, centred, with
-`--layout-padding-medium` on either side. That is the value the design system's own containers
-use, and no token carries it, so write it in the container and nowhere else. Content laid out
-this way lines up with the banner above it; content that runs the full width of the window
-does not.
+system's own `Header` and `Footer` content: the content itself at most 1100 pixels wide and
+centred, so on a wide screen its left edge is exactly where the banner's logo starts. Padding of
+`--layout-padding-medium` on either side keeps it off the edge of a narrow screen, and sits
+outside those 1100 pixels, not inside them. 1100 is the value the design system's own
+containers use, and no token carries it, so write it in the container and nowhere else. Content
+that runs the full width of the window, or is inset from the logo, does not line up.
 
 **One stack.** Items in a region are spaced by the stack's gap and by nothing else. The design
 system's `Text` and `Heading` carry margins of their own, so inside a stack their margins are
