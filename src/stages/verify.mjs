@@ -16,7 +16,7 @@ import { writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
-import { runSuite } from "../testrun/playwright.mjs";
+import { failedLine, runSuite } from "../testrun/playwright.mjs";
 import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, openBuildProposal, specFilesFor } from "./slices.mjs";
@@ -177,6 +177,13 @@ function adapterExists(projectDir, target) {
 // these a condition reads `expect(received).toBeFalsy()` and names nothing it can find in the
 // application. The runner's colour codes are dropped; the test's locators and call log are not
 // carried, since they describe the test rather than the application.
+//
+// Last comes the place the test stopped: `at tests/acceptance/<domain>/<file>:<line>`, the
+// first frame inside the spec file. Several assertions in one test can each read "Received:
+// ''", and the line is what says which one failed. A place is not the test's code, so the
+// builder is still never shown the test. The path is the row's own, relative to the project,
+// and only the line is taken from the stack. The cap is applied to what comes before it, so
+// truncation never cuts the place off.
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const APPLICATION_LINE_RE = /^(Received:|Received string:|Received value:|Expected:)|intercepts pointer events/;
 const MAX_FAILURE_TEXT = 400;
@@ -188,7 +195,18 @@ function firstError(r) {
   const lines = (t?.error ?? "failed").replace(ANSI_RE, "").split("\n").map((l) => l.trim().replace(/^- /, ""));
   const said = [...new Set(lines.slice(1).filter((l) => APPLICATION_LINE_RE.test(l)))];
   const text = [lines[0], ...said].join(" — ");
-  return text.length > MAX_FAILURE_TEXT ? `${text.slice(0, MAX_FAILURE_TEXT - 1)}…` : text;
+  const where = failedAt(r, t);
+  const room = MAX_FAILURE_TEXT - where.length;
+  return `${text.length > room ? `${text.slice(0, room - 1)}…` : text}${where}`;
+}
+
+// ` — at <file>:<line>` for a failed test, or nothing where the line is not known or the row's
+// file is not a path inside the project.
+function failedAt(r, t) {
+  const file = String(r.file ?? "");
+  if (!file.startsWith("tests/acceptance/") || file.includes("..")) return "";
+  const line = Number.isInteger(t?.line) ? t.line : failedLine(t?.error?.replace(ANSI_RE, ""), file);
+  return line ? ` — at ${file}:${line}` : "";
 }
 
 // Every proposal name this slice's build has ever gone under — wherever its gate file

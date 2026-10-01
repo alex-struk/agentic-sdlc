@@ -89,6 +89,31 @@ function collectSpecs(suites, acc = []) {
   return acc;
 }
 
+// The line of the spec file a failed test stopped at: the first stack frame inside that file,
+// which is the assertion that failed or the call into the helper or adapter member that threw.
+// A test with several assertions reads the same "Received: ''" from each, and the line is what
+// tells them apart. Only the number is kept: the frames carry the absolute path of the machine
+// the suite ran on, and the row already names the file relative to the project.
+//
+// `spec` is the file as the report names it — relative to the configured test root, so it ends
+// in `<domain>/<file>` — and a frame is the spec's when its path ends there too. The stack is
+// read before `location`, which Playwright sets to the first frame of all, and that frame is in
+// the adapter when the failure is. `error` is a report's error object or a message carrying the
+// stack in its text; anything with no frame in the spec file has no line.
+const FRAME_RE = /^\s*at (?:.*?\()?(.+?):(\d+):\d+\)?\s*$/;
+export function failedLine(error, spec) {
+  if (!error || !spec) return null;
+  const tail = `/${String(spec).replace(/\\/g, "/").split("/").slice(-2).join("/")}`;
+  const ours = (file) => `/${String(file ?? "").replace(/\\/g, "/")}`.endsWith(tail);
+  const text = typeof error === "string" ? error : error.stack ?? error.message ?? "";
+  for (const l of String(text).split("\n")) {
+    const m = FRAME_RE.exec(l);
+    if (m && ours(m[1])) return Number(m[2]);
+  }
+  const loc = typeof error === "object" ? error.location : null;
+  return loc && ours(loc.file) && Number.isInteger(loc.line) ? loc.line : null;
+}
+
 // A spec's outcome is its last result — the only one that matters when retries are
 // disabled (`playwright.config.ts` sets `retries: 0`) is also the only one there is, and
 // this reads the same either way if that ever changes.
@@ -101,7 +126,8 @@ function specOutcomes(spec) {
     // carries no assertion error of its own, so a failing interrupted test would otherwise
     // report a blank `error`.
     const error = last.error?.message ?? (status === "interrupted" ? "interrupted" : undefined);
-    return { title: spec.title, status, error };
+    const line = failedLine(last.error, spec.file);
+    return { title: spec.title, status, error, ...(line ? { line } : {}) };
   });
 }
 

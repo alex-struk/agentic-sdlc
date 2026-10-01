@@ -373,6 +373,35 @@ test("a return's condition says what the application did, without the runner's c
   ]);
 });
 
+// With several assertions in one test, what the application did does not say which of them
+// failed. The place in the test file does, and a place is not the test's code.
+test("a return's condition names the place in the test the assertion failed, and the cap never cuts it off", async (t) => {
+  const d = buildProject(t);
+  const at = (r, line) => ({ ...r, tests: r.tests.map((x) => ({ ...x, line })) });
+  mockSuite(t, [
+    at(row("R-4.1", "fail", "Error: \x1b[2mexpect(\x1b[22m\x1b[31mreceived\x1b[39m\x1b[2m).\x1b[22mtoBeTruthy\x1b[2m()\x1b[22m\n\nReceived: \x1b[31m\"\"\x1b[39m"), 46),
+    at(row("R-4.2", "fail", `Error: ${"the page said something long ".repeat(30)}`), 12),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.equal(gate.conditions[0], "R-4.1: Error: expect(received).toBeTruthy() — Received: \"\" — at tests/acceptance/users/R-4.1.spec.ts:46");
+  assert.match(gate.conditions[1], /^R-4\.2: Error: the page said something long .*… — at tests\/acceptance\/users\/R-4\.2\.spec\.ts:12$/);
+  assert.ok(gate.conditions[1].length <= "R-4.2: ".length + 400, gate.conditions[1].length);
+});
+
+// A row recorded before the line was, whose message carries the stack, is located from it.
+test("a failure whose message carries the stack is located from the spec file's frame, with the path made the project's own", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "fail", `Error: expect(received).toBe(expected)\n\nExpected: 2\nReceived: 1\n    at helper (/srv/ci/p/tests/adapters/new/index.ts:9:3)\n    at /srv/ci/p/tests/acceptance/users/R-4.1.spec.ts:30:5`)]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.equal(gate.conditions[0], "R-4.1: Error: expect(received).toBe(expected) — Expected: 2 — Received: 1 — at tests/acceptance/users/R-4.1.spec.ts:30");
+});
+
 // The real chain a fixture cannot fabricate its way around: verify writes `return` onto
 // `proposal/build-slice-<n>`, `build --revise`'s own pre-check reads that return and (via
 // `recordReturnOnMain`) renames the branch to `returned/build-slice-<n>` and copies the

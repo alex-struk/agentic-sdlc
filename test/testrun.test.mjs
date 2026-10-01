@@ -169,6 +169,34 @@ test("runSuite: the playwright test call runs from projectDir with --prefix test
   assert.ok(run.args.includes("--config=tests/playwright.config.ts"));
 });
 
+// The shape Playwright's JSON reporter gives a failed assertion: the message, the stack with
+// absolute paths on the machine that ran it, and `location`, the first frame. A failure inside
+// a helper the spec file defines is located in the spec file; one inside the adapter is not,
+// and the spec file's own frame further down the stack is the assertion's place in the test.
+test("runSuite: a failed test records the line of the spec file it failed at, and no absolute path", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1"), accepted("R-1.2"), accepted("R-1.3")]);
+  for (const id of ["R-1.1", "R-1.2", "R-1.3"]) write(d, `tests/acceptance/opportunities/${id}.spec.ts`, specHeader(id, 1));
+  const abs = (f) => join(d, "tests", "acceptance", "opportunities", f);
+  const failed = (file, error) => ({ title: file, file: `opportunities/${file}`, specs: [{ title: "t", file: `opportunities/${file}`, line: 5, tests: [{ results: [{ status: "failed", error }] }] }] });
+  const message = "Error: \x1b[2mexpect(\x1b[22m\x1b[31mreceived\x1b[39m\x1b[2m).\x1b[22mtoBeTruthy\x1b[2m()\x1b[22m\n\nReceived: \x1b[31m\"\"\x1b[39m";
+  writeReport(d, [
+    failed("R-1.1.spec.ts", { message, stack: `${message}\n    at ${abs("R-1.1.spec.ts")}:62:53`, location: { file: abs("R-1.1.spec.ts"), line: 62, column: 53 } }),
+    failed("R-1.2.spec.ts", { message, stack: `${message}\n    at attach (${abs("R-1.2.spec.ts")}:22:71)\n    at ${abs("R-1.2.spec.ts")}:50:18`,
+      location: { file: abs("R-1.2.spec.ts"), line: 22, column: 71 } }),
+    failed("R-1.3.spec.ts", { message, stack: `${message}\n    at Object.read (${join(d, "tests", "adapters", "new", "index.ts")}:310:9)\n    at ${abs("R-1.3.spec.ts")}:41:7`,
+      location: { file: join(d, "tests", "adapters", "new", "index.ts"), line: 310, column: 9 } }),
+  ]);
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "http://mail", exec: recordingExec([]) }));
+  const byId = Object.fromEntries(result.rows.map((r) => [r.id, r]));
+  assert.equal(byId["R-1.1"].tests[0].line, 62);
+  assert.equal(byId["R-1.2"].tests[0].line, 22, "the first frame inside the spec file, a helper it defines included");
+  assert.equal(byId["R-1.3"].tests[0].line, 41, "a frame in the adapter is passed over for the spec file's own");
+  assert.equal(byId["R-1.1"].tests[0].error, message, "the message is kept as it was");
+  assert.ok(!JSON.stringify(result.rows).includes(d), "nothing of the machine's own paths is kept on a row");
+});
+
 test("runSuite: a file with one real failure alongside an unbound one is fail, not unbound", () => {
   const d = project();
   writeIndex(d, [accepted("R-1.1")]);

@@ -95,7 +95,12 @@ asks for happens at the gate it is returned to, not here.
    carries.
 7. **On `fail`, return the build proposal.** `.sdlc/gates/<name>.yaml` is written with
    `verdict: return`, `by: runner:verify`, `held_by: runner`, and one condition per failing
-   criterion (`<id>: <its first error>`) — the same gate-file shape a reviewer's own return would
+   criterion (`<id>: <its first error>`: the error's first line, what the application did —
+   `Received:`, `Expected:`, an element that intercepts pointer events — and the place in the test it
+   failed, `at tests/acceptance/<domain>/<file>:<line>`, the first stack frame inside the spec file,
+   never cut off by the 400-character cap; a place is not the test's code, so the builder is still
+   never shown the test,
+   `docs/decisions/0084-a-ruler-can-withdraw-a-request-and-verify-names-the-failing-line.md`) — the same gate-file shape a reviewer's own return would
    leave, so `build --slice <n> --revise` reads either one the same way
    (`docs/decisions/0011-build-verify-review.md`). The return that reaches the project's limit
    (`policy.loops.verify_returns`, three by default) escalates instead: `verdict: escalated`,
