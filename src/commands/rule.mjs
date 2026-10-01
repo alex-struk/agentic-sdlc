@@ -282,6 +282,30 @@ const namesRequest = (ref) => String(ref ?? "").startsWith(REQUEST_REF_PREFIX);
 // The open revision requests on `main`, each with the reference a ruling names it by.
 const openRequests = (projectDir) => openOn(projectDir, "request", "main", { familyOf: proposalFamily });
 
+// The accounting lines that name a request the proposal under ruling has itself taken up. Its
+// ruler reads that request in the proposal's own account and closes it, as is natural; but the
+// run already closed it when it took it up, so the line closes nothing and would otherwise be
+// refused as naming nothing open. It is dropped instead, with a note, because what it asserts
+// is already true. Read from `main` and from the proposal's branch, where a run's take is
+// recorded until the proposal merges.
+export function dropAnsweredRequests(projectDir, name, conditions) {
+  const list = conditions ?? [];
+  if (!list.some((l) => accountedConditions([l]).some((a) => namesRequest(a.ref)))) return conditions;
+  const taken = new Set();
+  for (const rev of ["main", `proposal/${name}`]) {
+    if (rev !== "main" && !gitOk(["rev-parse", "--verify", "-q", rev], projectDir)) continue;
+    for (const r of readOwedAt(projectDir, "request", rev, { familyOf: proposalFamily })) {
+      if (r.ref && r.taken_by === name) taken.add(r.ref);
+    }
+  }
+  if (!taken.size) return conditions;
+  return list.filter((l) => {
+    const answered = accountedConditions([l]).find((a) => namesRequest(a.ref) && taken.has(a.ref));
+    if (answered) console.log(`rule ${name}: ${answered.ref} was taken up by ${name} itself, so it is already closed; the line is not recorded again`);
+    return !answered;
+  });
+}
+
 // A request is closed as met by the run of its stage that takes it up, and by nothing a ruler
 // writes, so the one accounting line it takes is a withdrawal (`docs/decisions/0084`). The open
 // ones are listed so the line can be written again against what is actually open.
@@ -1370,6 +1394,7 @@ export function rule(projectDir, name, verdict, { by, note = "", conditions } = 
   if (!by) throw new Error("rule needs --by <role or agent:persona>");
   assertCleanTree(projectDir, "rule");
   const { branch, start, gate, g, config } = openGate(projectDir, name);
+  conditions = dropAnsweredRequests(projectDir, name, conditions);
   try {
     const allowed = [g.holder, g.escalate_to].filter(Boolean);
     if (!allowed.includes(by)) throw new Error(`${by} is not a holder of ${gate} (allowed: ${allowed.join(", ")})`);
@@ -1755,6 +1780,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     };
 
     let { verdict, rationale, conditions, metrics } = await askOnce(prompt);
+    conditions = dropAnsweredRequests(projectDir, name, conditions);
     // Set the moment a guard's re-prompt fires, and carried through to whichever exit this
     // ruling takes: an approval or return's gate file, an escalation's, or (had the second
     // reply still been wrong) the refusal thrown below. `null` for the ordinary ruling that
@@ -1797,6 +1823,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       metrics = sumMetrics(metrics, next.metrics);
       reprompt = `The first reply ruled ${verdict}. ${why}. Asked again in the ${grammar.label} grammar.`;
       ({ verdict, rationale, conditions } = next);
+      conditions = dropAnsweredRequests(projectDir, name, conditions);
       unparsed = verdict === "escalate" ? [] : grammar.unparsed(conditions);
       if (unparsed.length) console.warn(`warning: ${name}: ${unparsed.length} condition line(s) still unreadable after one re-prompt; recorded as unparsed_conditions`);
     }
@@ -1835,6 +1862,7 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       metrics = sumMetrics(metrics, next.metrics);
       reprompt = `You ruled ${verdict}. ${guidance}`;
       ({ verdict, rationale, conditions } = next);
+      conditions = dropAnsweredRequests(projectDir, name, conditions);
       if (verdict === "escalate") {
         recorded = true;
         const stalled = writeEscalation(projectDir, { name, gate, by, escalateTo: g.escalate_to, rationale, metrics, reprompt });

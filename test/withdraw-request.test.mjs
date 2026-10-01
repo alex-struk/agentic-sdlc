@@ -174,6 +174,21 @@ test("a request the proposal under ruling took up on its branch is not shown to 
   assert.doesNotMatch(prompt, new RegExp(REF.replace(/[/#.]/g, "\\$&")), "the request it took is not listed as open");
 });
 
+// A ruler reads, in the proposal's own account, the request it took up, and closes it. The run
+// already closed it, so the line asserts what is already true: it is dropped, not refused.
+test("a ruling that closes a request its own proposal took up is recorded without the line", (t) => {
+  const d = project(t);
+  git(["checkout", "-q", "proposal/build-slice-1-2"], d);
+  const taken = REQUESTS.map((r, i) => (i === 1 ? { ...r, deferred: undefined, taken: "2026-10-01T11:30:00.000Z", taken_by: "build-slice-1-2" } : r));
+  put(d, ".sdlc/revision-requests.yaml", stringifyYaml({ requests: taken }));
+  commit(d, "take request");
+  git(["checkout", "-q", "main"], d);
+  const r = rule(d, "build-slice-1-2", "approve", { by: "tech-lead", note: "fine", conditions: [`condition-withdrawn ${REF}: this proposal carries it out`] });
+  assert.equal(r.verdict, "approve");
+  const gate = parseYaml(git(["show", "main:.sdlc/gates/build-slice-1-2.yaml"], d));
+  assert.deepEqual(gate.conditions ?? [], [], "the line naming a request already closed is not recorded");
+});
+
 test("sdlc checks leads each open request with its reference and names the withdrawal", (t) => {
   const d = project(t);
   const c = checkConditions(d);

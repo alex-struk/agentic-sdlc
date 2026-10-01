@@ -83,3 +83,9 @@ never removes it. A location is not the test's code, so the builder is still nev
   carry none and are located from their message where it holds a stack.
 - A ruler reading a verify return sees which assertion of a test failed. A request to another stage
   to find that out is no longer needed.
+
+A ruler reads the requests its proposal answered in that proposal's own account, and may close
+one there. The run closed it when it took it up, so the line asserts what is already true: it is
+dropped before the ruling is checked, with a note naming the request, rather than refused as
+naming nothing open. The ruling prompt likewise reads open requests from the proposal's branch,
+where a run's take is recorded until the proposal merges.
