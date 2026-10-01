@@ -47,7 +47,8 @@ No agent.
   ruler closes one on any later ruling, on an approval as readily as on a return, with
   `condition-met <ref>: <what was done>` or `condition-withdrawn <ref>: <why it is no longer
   asked for>`; see `docs/stages/rule.md`. An untaken revision request is always a warning,
-  because the only way to clear one is to take it up. Every open missing test
+  led by its reference, `request/<proposal>#<n>`, and naming both ways to clear it: the run that
+  takes it up, or `condition-withdrawn request/<proposal>#<n>: <why>` on any ruling. Every open missing test
   (`docs/operating-model.md` §7) is a warning too, as `missing-test/<id>: owed by <stage> — "<what
   is missing>"`, with the line that withdraws it: it is closed by a test that runs, and this list is
   where a person in a seat finds the reference.

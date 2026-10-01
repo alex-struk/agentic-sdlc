@@ -87,23 +87,25 @@ export function checkConditions(projectDir) {
   // list indefinitely, and a stage whose work was approved after it was filed was approved
   // without it.
   //
-  // A warning either way, including where an approval has overtaken it, because the only way
-  // to clear a revision request is to take it up: there is no ruling that withdraws one. A
-  // failure nobody can answer except by running a stage is a failure that gets worked around,
-  // and giving requests a withdrawal of their own is its own change.
+  // A warning either way, including where an approval has overtaken it: a request is cleared
+  // by a run taking it up or by a ruling withdrawing it, and which of the two is wanted is
+  // not something this check can know. Each line leads with the request's reference, which is
+  // how a person in a seat, handed no prompt, finds what to write the withdrawal against
+  // (`docs/decisions/0084`).
   for (const r of read(projectDir, "request").filter(isOpen)) {
     // A request a run was given and could not answer carries its own account of why, and
     // that is the thing worth reading back: without it the line says only that nobody has
     // taken the request up, which is also what it said before a run tried.
     const deferred = r.deferred?.why ? ` A run${r.deferred.proposal ? ` opening ${r.deferred.proposal}` : ""} deferred it: "${quote(r.deferred.why)}"` : "";
-    const line = `${r.stage ?? "?"} has an untaken revision request from ${r.from ?? "?"} (${r.gate ?? "?"}, ${r.by ?? "?"}): "${quote(r.why)}"${deferred}`;
+    const line = `${r.ref ? `${r.ref}: ` : ""}${r.stage ?? "?"} has an untaken revision request from ${r.from ?? "?"} (${r.gate ?? "?"}, ${r.by ?? "?"}): "${quote(r.why)}"${deferred}`;
+    const withdraw = `, or withdraw it on a ruling with \`${CONDITION_WITHDRAWN_FORM}\``;
     // A revision request names a stage rather than one of its proposals, so the stage is the
     // line of work here: what was asked for is that stage's artifact, whichever of them the
     // ruling happened to be reading when it asked.
     const overtaken = all.find((a) => a.stage === r.stage && a.at && r.at && a.at > r.at) ?? null;
     warnings.push(overtaken
-      ? `${line}. ${overtaken.name} was approved afterwards without it. Take it up with \`sdlc run ${r.stage} --revise\`.`
-      : `${line}. Take it up with \`sdlc run ${r.stage} --revise\`.`);
+      ? `${line}. ${overtaken.name} was approved afterwards without it. Take it up with \`sdlc run ${r.stage} --revise\`${withdraw}.`
+      : `${line}. Take it up with \`sdlc run ${r.stage} --revise\`${withdraw}.`);
   }
 
   // And the tests the project is owed. Each is closed by a test that runs and by nothing a

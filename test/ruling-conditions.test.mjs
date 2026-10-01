@@ -302,10 +302,11 @@ test("a revision request nobody has taken up is read back too, and never fails o
   }]);
 
   const c = conditionsCheck(d);
-  assert.equal(c.ok, true, "the only way to clear a request is to take it up, so a failure would have no answer");
+  assert.equal(c.ok, true, "whether to take a request up or withdraw it is a ruler's call, so it is never a failure");
   assert.equal(c.warnings.length, 1);
-  assert.match(c.warnings[0], /plan has an untaken revision request from build-slice-2 \(G3, agent:reviewer\)/);
+  assert.match(c.warnings[0], /^request\/build-slice-2#1: plan has an untaken revision request from build-slice-2 \(G3, agent:reviewer\)/);
   assert.match(c.warnings[0], /sdlc run plan --revise/);
+  assert.match(c.warnings[0], /or withdraw it on a ruling with `condition-withdrawn <ref>: <why it is no longer asked for>`/);
 });
 
 test("a ledger that does not parse reads as nothing owed rather than stopping the check", () => {

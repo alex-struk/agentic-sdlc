@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
-  OWED_PATH, owedPath, read, readAt, open, close, settle, isOpen, openFor, openForFamily, sends, entriesIn, withdrawRetired,
+  OWED_PATH, owedPath, read, readAt, open, close, settle, isOpen, isRequestRef, openFor, openForFamily, sends, entriesIn, withdrawRetired,
 } from "../src/spec/owed.mjs";
 
 function project(t) {
@@ -158,8 +158,33 @@ test("close needs evidence or a reason, and only the outcomes a kind allows", (t
   assert.deepEqual(c.closed, { outcome: "withdrawn", why: "no longer asked for", by: "architect", at: "2" });
   assert.equal(close(dir, "condition", (e) => e.ref === "p#1", { outcome: "met", why: "x" }), null, "nothing open matches");
 
-  open(dir, "request", [{ stage: "plan", why: "a", from: "q", gate: "G3", by: "r", at: "1" }]);
-  assert.throws(() => close(dir, "request", () => true, { outcome: "withdrawn", why: "x" }), /request/);
+  open(dir, "recovery", [{ id: "R-1.1", why: "a", from: "q", gate: "G1", by: "r", at: "1" }]);
+  assert.throws(() => close(dir, "recovery", () => true, { outcome: "withdrawn", why: "x" }), /recovery/);
+});
+
+test("a request is named by the proposal that filed it and its place among that proposal's requests, and may be withdrawn", (t) => {
+  const dir = project(t);
+  open(dir, "request", [
+    { stage: "plan", why: "a", from: "q", gate: "G3", by: "r", at: "1" },
+    { stage: "bind-adapter", why: "b", from: "p", gate: "G3", by: "r", at: "1" },
+    { stage: "bind-adapter", why: "c", from: "q", gate: "G3", by: "r", at: "1" },
+  ]);
+  assert.deepEqual(read(dir, "request").map((e) => e.ref), ["request/q#1", "request/p#1", "request/q#2"]);
+  const { added } = open(dir, "request", [{ stage: "plan", why: "d", from: "q", gate: "G3", by: "r", at: "3" }]);
+  assert.deepEqual(added.map((e) => e.ref), ["request/q#3"], "an entry is numbered where it lands in the file");
+  assert.equal(isRequestRef("request/q#2"), true);
+  assert.equal(isRequestRef("q#2"), false);
+  assert.throws(() => close(dir, "request", (e) => e.ref === "request/q#2", { outcome: "withdrawn", why: " " }), /needs a reason/);
+  assert.equal(close(dir, "request", (e) => e.ref === "request/q#2", { outcome: "withdrawn", why: "no run can answer it", by: "tech-lead", at: "2" }),
+    ".sdlc/revision-requests.yaml");
+  const stored = parseYaml(readFileSync(join(dir, ".sdlc/revision-requests.yaml"), "utf8")).requests;
+  assert.deepEqual(stored[2].withdrawn, { why: "no run can answer it", by: "tech-lead", at: "2" });
+  assert.equal(stored[2].taken, undefined, "a withdrawal is not recorded as a run taking it up");
+  assert.equal(stored[2].ref, undefined, "the reference is derived, not stored");
+  const views = read(dir, "request");
+  assert.deepEqual(views[2].closed, { outcome: "withdrawn", why: "no run can answer it", by: "tech-lead", at: "2" });
+  assert.deepEqual(views.map((e) => e.ref), ["request/q#1", "request/p#1", "request/q#2", "request/q#3"], "a closure moves no reference");
+  assert.deepEqual(openFor(dir, "bind-adapter", { kinds: ["request"] }).map((e) => e.ref), ["request/p#1"]);
 });
 
 test("a round settles whole or not at all", (t) => {

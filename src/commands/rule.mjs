@@ -15,7 +15,7 @@ import { writeJournal } from "../runner/journal.mjs";
 import { stallReason } from "../runner/escalation.mjs";
 import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, MISSING_TEST_CONDITION_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedMissingTestConditions, malformedOverreachConditions, missingTestConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
-import { close as closeOwed, conditionRef, isOpen, open as openOwed, openOn, owedPath, read as readOwed, readAt as readOwedAt, sameFiling, withdrawRetired as withdrawOwedRetired } from "../spec/owed.mjs";
+import { REQUEST_REF_PREFIX, close as closeOwed, conditionRef, isOpen, open as openOwed, openOn, owedPath, read as readOwed, readAt as readOwedAt, sameFiling, withdrawRetired as withdrawOwedRetired } from "../spec/owed.mjs";
 import { revisionLine } from "../stages/proposals.mjs";
 import { dropTestWrongRulings } from "../stages/calibrate.mjs";
 import { MISSING_TEST, WRITER, blockingMissingTests, missingTestRef, openMissingTestsAt, oweClauses, parseMissingTestRef, restoreUnhanded, retired, retiredWhy, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
@@ -274,6 +274,46 @@ function withdrawnMissingTests(conditions) {
   return accountedConditions(conditions).filter((a) => a.outcome === "withdrawn").map((a) => parseMissingTestRef(a.ref)).filter(Boolean);
 }
 
+// Whether an accounting line's reference names a revision request rather than a condition. Read
+// off the prefix alone, so a reference shaped wrong after it — `request/build-slice-7-7` with
+// no position — is answered with the list of open requests rather than the list of conditions.
+const namesRequest = (ref) => String(ref ?? "").startsWith(REQUEST_REF_PREFIX);
+
+// The open revision requests on `main`, each with the reference a ruling names it by.
+const openRequests = (projectDir) => openOn(projectDir, "request", "main", { familyOf: proposalFamily });
+
+// A request is closed as met by the run of its stage that takes it up, and by nothing a ruler
+// writes, so the one accounting line it takes is a withdrawal (`docs/decisions/0084`). The open
+// ones are listed so the line can be written again against what is actually open.
+function requestRefGuidance(ref, verb, open) {
+  if (verb === "met") {
+    return `${JSON.stringify(ref)} is a revision request, and a request is met only by the run of its stage that takes it up;`
+      + ` no ruling can say it was. Where it is no longer asked for, withdraw it with \`${CONDITION_WITHDRAWN_FORM}\` and say why.`;
+  }
+  const list = open.length
+    ? `The revision requests still open are: ${open.map((r) => `${r.ref} (to ${r.stage}: ${JSON.stringify(clip(collapse(r.why), 80))})`).join("; ")}.`
+    : "No revision request is open in this project, so there is nothing here to withdraw.";
+  return `${JSON.stringify(ref)} is not an open revision request. ${list}`;
+}
+
+const clip = (text, n) => (text.length > n ? `${text.slice(0, n)}…` : text);
+
+// The first accounting line naming a revision request that cannot be recorded: `condition-met` on
+// one, or a reference to a request nothing has open on `main`.
+function requestAccountDefect(projectDir, conditions) {
+  const lines = accountedConditions(conditions).filter((a) => namesRequest(a.ref));
+  if (!lines.length) return null;
+  const met = lines.find((a) => a.outcome === "met");
+  if (met) return { ref: met.ref, verb: "met", open: [] };
+  const open = openRequests(projectDir);
+  const refs = new Set(open.map((r) => r.ref));
+  const unknown = lines.find((a) => !refs.has(a.ref));
+  return unknown ? { ref: unknown.ref, verb: "withdrawn", open } : null;
+}
+
+// A condition reference: neither a missing test's nor a request's.
+const namesCondition = (ref) => !parseMissingTestRef(ref) && !namesRequest(ref);
+
 function unknownRefGuidance(ref, open) {
   const list = open.length
     ? `The conditions still open are: ${open.map((c) => `${c.ref} (${JSON.stringify(collapse(c.text))})`).join("; ")}.`
@@ -422,9 +462,11 @@ export function assertAccountedRulable(projectDir, name, verdict, conditions) {
   if (bad.length) throw new Error(withRulingPreserved(`rule ${name}: ${accountedGuidance(bad[0])}`, verdict, conditions));
   const missing = missingTestAccountDefect(projectDir, conditions);
   if (missing) throw new Error(withRulingPreserved(`rule ${name}: ${missingTestRefGuidance(missing.ref, missing.verb, missing.open)}`, verdict, conditions));
+  const request = requestAccountDefect(projectDir, conditions);
+  if (request) throw new Error(withRulingPreserved(`rule ${name}: ${requestRefGuidance(request.ref, request.verb, request.open)}`, verdict, conditions));
   const open = openOn(projectDir, "condition");
   const refs = new Set(open.map((c) => c.ref));
-  const unknown = accountedConditions(conditions).find((a) => !parseMissingTestRef(a.ref) && !refs.has(a.ref));
+  const unknown = accountedConditions(conditions).find((a) => namesCondition(a.ref) && !refs.has(a.ref));
   if (unknown) throw new Error(withRulingPreserved(`rule ${name}: ${unknownRefGuidance(unknown.ref, open)}`, verdict, conditions));
 }
 
@@ -470,9 +512,11 @@ function firstFixableConditionDefect(projectDir, name, verdict, conditions) {
   // refusal only throws a ruling away over.
   const missing = missingTestAccountDefect(projectDir, conditions);
   if (missing) return { kind: "missing-test-ref", ...missing };
+  const request = requestAccountDefect(projectDir, conditions);
+  if (request) return { kind: "request-ref", ...request };
   const open = openOn(projectDir, "condition");
   const refs = new Set(open.map((c) => c.ref));
-  const unknown = accountedConditions(conditions).find((a) => !parseMissingTestRef(a.ref) && !refs.has(a.ref));
+  const unknown = accountedConditions(conditions).find((a) => namesCondition(a.ref) && !refs.has(a.ref));
   if (unknown) return { kind: "unknown-ref", ref: unknown.ref, open };
   const owedClause = missingTestLineDefect(projectDir, conditions);
   if (owedClause) return { kind: "missing-test-line", ...owedClause };
@@ -526,6 +570,7 @@ function defectGuidance(defect) {
   if (defect.kind === "approval-form") return approvalFormGuidance(defect.verb, defect.line);
   if (defect.kind === "approval-evidence") return approvalEvidenceGuidance(defect.reason);
   if (defect.kind === "missing-test-ref") return missingTestRefGuidance(defect.ref, defect.verb, defect.open);
+  if (defect.kind === "request-ref") return requestRefGuidance(defect.ref, defect.verb, defect.open);
   if (defect.kind === "missing-test-line") return missingTestLineGuidance(defect);
   if (defect.kind === "missing-tests") return missingTestsGuidance(defect.blocking);
   return deliverableGuidance(defect);
@@ -756,6 +801,15 @@ function recordConditions(projectDir, { name, gate, by, verdict, conditions, exe
         if (a.outcome === "withdrawn" && withdrawMissingTest(projectDir, id, { why: a.text, by })) {
           closed.push({ ref: a.ref, outcome: a.outcome });
           paths.add(owedPath(MISSING_TEST));
+        }
+        continue;
+      }
+      // A request is withdrawn on the record it was filed on, with who withdrew it, when and
+      // why; nothing else about it changes (`docs/decisions/0084`).
+      if (namesRequest(a.ref)) {
+        if (a.outcome === "withdrawn" && closeOwed(projectDir, "request", (r) => r.ref === a.ref, { outcome: a.outcome, why: a.text, by })) {
+          closed.push({ ref: a.ref, outcome: a.outcome });
+          paths.add(owedPath("request"));
         }
         continue;
       }

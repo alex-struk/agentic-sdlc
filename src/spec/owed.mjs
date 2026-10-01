@@ -28,7 +28,8 @@
 // to start a run: only a `request` opens a `--revise` run with no returned ruling behind it
 // (`requestedRevision`, `src/stages/proposals.mjs`), and a condition is shown to the run and
 // its ruler as owed (`docs/decisions/0032-an-instruction-nobody-had-to-account-for.md`). A
-// request is marked `taken` when a run takes it up, and cannot be withdrawn. A redo entry
+// request is marked `taken` when a run takes it up, or `withdrawn` by a ruling that says it is
+// no longer asked for (`docs/decisions/0084`), and is named by `requestRef`. A redo entry
 // carries the criterion's version and the ruler's words verbatim. Closing a condition needs a
 // reason, and closing anything needs one: an entry closed with nothing said about why is
 // indistinguishable from one that was lost.
@@ -74,25 +75,36 @@ const KINDS = {
   request: {
     path: ".sdlc/revision-requests.yaml",
     list: "requests",
-    outcomes: ["met"],
+    // Met when a run takes it up; withdrawn when a ruling says it is no longer asked for. The
+    // withdrawal is kept under `withdrawn` rather than `taken`, so nothing that reads `taken`
+    // as "a run answered this" is told a run did.
+    outcomes: ["met", "withdrawn"],
     // The line of work asking, so a stage asked again and again by one line of work is one
     // item sent several times. Entries filed before `family` was recorded name only the
     // proposal, and a caller that can resolve its family passes `familyOf`.
     // `taken_by` names the proposal the run that took it up opened, which is what a ruling
     // that asked for it waits to see approved (`docs/stages/next.md`).
-    view: (s, { familyOf }) => ({
+    // `ref` is derived, never stored: see `requestRef`.
+    view: (s, { familyOf, ref }) => ({
       ...s,
+      ...(ref ? { ref } : {}),
       item: `${s.stage} <- ${s.family ?? familyOf?.(s.from) ?? s.from}`,
       closed: s.taken
         ? { outcome: "met", why: "taken up by a revision of this stage", at: s.taken, ...(s.taken_by ? { proposal: s.taken_by } : {}) }
-        : null,
+        : s.withdrawn ? { outcome: "withdrawn", ...s.withdrawn } : null,
     }),
     store: (v) => {
-      const rest = without(v, ["kind", "item", "closed", "taken", "taken_by"]);
+      const rest = without(v, ["kind", "item", "closed", "taken", "taken_by", "withdrawn", "ref"]);
       if (!v.closed) return rest;
+      if (v.closed.outcome === "withdrawn") {
+        const { outcome: _, ...withdrawn } = v.closed;
+        return { ...rest, withdrawn };
+      }
       const by = v.closed.proposal ?? v.taken_by;
       return { ...rest, taken: v.closed.at, ...(by ? { taken_by: by } : {}) };
     },
+    // The request's position among those the same proposal's ruling filed (`requestRef`).
+    numbered: (s) => s.from,
     identity: (e) => `${e.stage}\u0000${e.from}\u0000${e.why}`,
     dedupe: "all",
     // One ruling routing several conditions to one stage asks once: they are halves of one
@@ -197,9 +209,16 @@ function rawList(text, d) {
 }
 
 function viewsFrom(raw, kind, d, opts) {
+  const counts = new Map();
   return raw
     .filter((s) => s && typeof s === "object" && (!d.shared || s.kind === kind))
-    .map((s) => ({ kind, ...d.view(s, opts ?? {}) }));
+    .map((s) => {
+      if (!d.numbered) return { kind, ...d.view(s, opts ?? {}) };
+      const from = d.numbered(s);
+      const n = (counts.get(from) ?? 0) + 1;
+      counts.set(from, n);
+      return { kind, ...d.view(s, { ...(opts ?? {}), ref: from ? requestRef(from, n) : null }) };
+    });
 }
 
 // A kind's entries as one text holds them — a working tree's file, or one read out of a
@@ -241,6 +260,21 @@ export function openOn(projectDir, kind, rev = "main", opts) {
 // turn to quote a sentence back byte for byte is asking it to fail.
 export function conditionRef(proposal, index) {
   return `${proposal}#${index + 1}`;
+}
+
+// How a ruler names one revision request to a later ruling: `request/<proposal>#<n>`, where the
+// proposal is the one whose ruling filed it and `n` is its position, one-based, among the
+// requests that proposal's rulings filed, in filing order — ordinarily its position among that
+// ruling's `addressed-to` conditions. Derived from the file rather than stored on it: entries
+// are only ever appended and never removed, so a position once given does not change, and
+// requests filed before references existed are named the same way. The `request/` prefix keeps
+// it apart from a condition's `<proposal>#<n>`, which numbers the same ruling's plain lines.
+export const REQUEST_REF_PREFIX = "request/";
+export function requestRef(proposal, n) {
+  return `${REQUEST_REF_PREFIX}${proposal}#${n}`;
+}
+export function isRequestRef(ref) {
+  return /^request\/\S+#\d+$/.test(String(ref ?? ""));
 }
 
 export function isOpen(entry) {
@@ -299,7 +333,10 @@ export function open(projectDir, kind, entries) {
   }
   if (!added.length) return { path: null, added: [] };
   const written = writeAll(projectDir, kind, [...list, ...added]);
-  return { path: written, added: entriesIn(kind, stringifyYaml({ [d.list]: added.map(d.store) })) };
+  // Read back from the whole list, so anything a view derives from an entry's place in it (a
+  // request's reference) is what every later read derives.
+  const all = entriesIn(kind, stringifyYaml({ [d.list]: [...list, ...added].map(d.store) }));
+  return { path: written, added: all.slice(-added.length) };
 }
 
 function checkClosure(kind, d, closure) {

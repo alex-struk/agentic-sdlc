@@ -259,6 +259,18 @@ function personCommand(name, role) {
 
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+// The references of the requests an item answers, so a ruler can copy one into a withdrawal
+// (`docs/decisions/0084`). A request a run deferred says so, with the line that withdraws it:
+// every run of its stage is handed it again, and none of them closes it.
+function requestRefs(list) {
+  const named = list.filter((e) => e.ref);
+  if (!named.length) return "";
+  const one = (e) => (e.deferred?.why
+    ? `${e.ref} (deferred by ${e.deferred.proposal || "a run"}; withdraw it on a ruling with condition-withdrawn ${e.ref}: <why>)`
+    : e.ref);
+  return `${named.length === 1 ? "request" : "requests"} ${named.map(one).join(", ")}`;
+}
+
 function subjectKey(stage, route) {
   const s = SUBJECT_OF[stage];
   return `${stage}\u0000${s ? route?.[s] ?? "" : ""}`;
@@ -563,7 +575,7 @@ function owedWork(record, inFlight, bindsNow) {
   const groupKey = (stage, args) => `${stage}\u0000${JSON.stringify(args)}`;
   const group = (stage, args, one, many, n = 1, note = null) => {
     const key = groupKey(stage, args);
-    if (!groups.has(key)) groups.set(key, { stage, args, parts: new Map(), notes: new Set() });
+    if (!groups.has(key)) groups.set(key, { stage, args, parts: new Map(), notes: new Set(), requests: [] });
     const parts = groups.get(key).parts;
     parts.set(one, { many, n: (parts.get(one)?.n ?? 0) + n });
     if (note) groups.get(key).notes.add(note);
@@ -589,7 +601,9 @@ function owedWork(record, inFlight, bindsNow) {
         unplaced.set(e.stage, [...(unplaced.get(e.stage) ?? []), e]);
         continue;
       }
-      group(e.stage, { ...subject, ...(revises(e.stage) ? { revise: true } : {}) }, "revision request", "revision requests");
+      const args = { ...subject, ...(revises(e.stage) ? { revise: true } : {}) };
+      group(e.stage, args, "revision request", "revision requests");
+      groups.get(groupKey(e.stage, args)).requests.push(e);
     } else if (e.kind === "redo") {
       // A criterion another has since superseded, or made obsolete, is derived no test
       // (`acceptedCriteria`), so a `--stale` run never takes this entry up: offering one
@@ -681,7 +695,7 @@ function owedWork(record, inFlight, bindsNow) {
     if (inFlight.has(subjectKey(g.stage, g.args))) continue;
     const detail = [...g.parts].map(([one, { many, n }]) => plural(n, one, many)).join(", ");
     const where = g.args.domain ? ` in ${g.args.domain}` : g.args.target ? ` for target ${g.args.target}` : g.args.slice !== undefined ? ` for slice ${g.args.slice}` : "";
-    const notes = [...g.notes].join("; ");
+    const notes = [...g.notes, ...(g.requests.length ? [requestRefs(g.requests)] : [])].filter(Boolean).join("; ");
     items.push({ kind: "owed", stage: g.stage, args: g.args, command: runCommand(g.stage, g.args), why: `${detail}${where} owed by ${g.stage}${notes ? `; ${notes}` : ""}` });
   }
   const spentBy = new Map();
@@ -714,9 +728,10 @@ function owedWork(record, inFlight, bindsNow) {
   })), ...[...unplaced.entries()].map(([stage, list]) => {
     const s = SUBJECT_OF[stage];
     const from = [...new Set(list.map((e) => e.from).filter(Boolean))];
+    const refs = requestRefs(list);
     return { on: "a ruler", kind: "request", count: list.length, name: `revision requests (${stage})`, gate: null,
       why: `${plural(list.length, "revision request")} owed by ${stage}${from.length ? ` from ${from.join(", ")}` : ""} ${list.length === 1 ? "names" : "name"} no ${s}, `
-        + `and neither the proposal that asked nor the reason says which ${s} ${stage} is to run on`,
+        + `and neither the proposal that asked nor the reason says which ${s} ${stage} is to run on${refs ? `; ${refs}` : ""}`,
       command: `${runCommand(stage, { [s]: `<${s}>`, ...(revises(stage) ? { revise: true } : {}) })}, naming the ${s} the request is about` };
   })];
   return { items, waiting, summary: [...summary.values()], stale: [...stale].map(([domain, ids]) => ({ domain, ids })), staleAdapters };

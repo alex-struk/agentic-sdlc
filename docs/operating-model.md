@@ -223,7 +223,7 @@ stateDiagram-v2
 | Kind | Opened by | Owed by | Closed by |
 |---|---|---|---|
 | `condition` | a plain condition on a return | the stage the proposal goes back to | a later ruling's `condition-met` or `condition-withdrawn` |
-| `request` | `addressed-to <stage>: <why>` on a return | that stage's `--revise` run, or `contract`'s ordinary run | the run that takes it up, naming the proposal it opened; a request cannot be withdrawn |
+| `request` | `addressed-to <stage>: <why>` on a return | that stage's `--revise` run, or `contract`'s ordinary run | the run that takes it up, naming the proposal it opened; or a ruler's `condition-withdrawn request/<proposal>#<n>` |
 | `redo` | `test-wrong` at calibration, `test-overreaches` on a return | `derive-tests --stale`, or the `--revise` of the derive-tests line of work whose ruling filed it | the run that derives the test again, reaching `main` with the approval of its line of work |
 | `rebind` | `adapter-wrong` in a calibration's triage, or an `unbound` calibration row, whose entry `calibrate` writes and every reader counts from the row until then | `bind-adapter` for that target | `calibrate`, once the adapter has changed, or once an unbound row passes, fails, is ruled or is gone; the reviewer's `oracle-cannot` at triage |
 | `recovery` | `recovery-wrong` at ratification | `archaeology` for that domain | the run that recovers the criterion again |

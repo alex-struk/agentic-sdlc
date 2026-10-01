@@ -1150,7 +1150,21 @@ test("a request to bind-adapter is run on the target it records", (t) => {
   requestsForAdapter(d, [{ target: "other" }]);
   const r = whatNext(d);
   assert.ok(r.ready.some((c) => c.command === "sdlc run bind-adapter --target other --revise"), JSON.stringify(r.ready.map((c) => c.command)));
-  assert.match(r.ready.find((c) => c.stage === "bind-adapter").why, /^1 revision request for target other owed by bind-adapter$/);
+  assert.match(r.ready.find((c) => c.stage === "bind-adapter").why, /^1 revision request for target other owed by bind-adapter; request request\/[\w-]+#1$/);
+  assertRunnable(r);
+});
+
+test("a request a run deferred is offered with its reference and the line that withdraws it", (t) => {
+  const d = project(t, { profile: "feature", extra: TWO_TARGETS });
+  requestsForAdapter(d, [
+    { target: "new", why: "the upload control must treat a stored row as stored" },
+    { target: "new", why: "re-run R-1.3 and report which step read ''",
+      deferred: { at: "2026-01-03T00:00:00.000Z", why: "the test is not in this workspace", proposal: "bind-adapter-new-30" } },
+  ]);
+  const r = whatNext(d);
+  const item = r.ready.find((c) => c.command === "sdlc run bind-adapter --target new --revise");
+  assert.ok(item, JSON.stringify(r.ready.map((c) => c.command)));
+  assert.match(item.why, /^2 revision requests for target new owed by bind-adapter; requests request\/build-slice-2-11#1, request\/build-slice-2-11#2 \(deferred by bind-adapter-new-30; withdraw it on a ruling with condition-withdrawn request\/build-slice-2-11#2: <why>\)$/);
   assertRunnable(r);
 });
 
@@ -1196,7 +1210,7 @@ test("a request to bind-adapter that names no target anywhere waits on a ruler, 
   const w = r.waiting.find((x) => x.kind === "request");
   assert.equal(w.on, "a ruler");
   assert.equal(w.count, 2);
-  assert.match(w.why, /^2 revision requests owed by bind-adapter from plan-2 name no target, and neither the proposal that asked nor the reason says which target bind-adapter is to run on$/);
+  assert.match(w.why, /^2 revision requests owed by bind-adapter from plan-2 name no target, and neither the proposal that asked nor the reason says which target bind-adapter is to run on; requests request\/plan-2#1, request\/plan-2#2$/);
   assert.match(w.command, /^sdlc run bind-adapter --target <target> --revise, naming the target the request is about$/);
   assert.match(formatNextShort(r), /2 revision requests waiting on a ruler/);
   assert.doesNotMatch(formatNextShort(r), /proposal waiting on a person/);

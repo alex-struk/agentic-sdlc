@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
 import { git, gitOk } from "../lib/git.mjs";
-import { deliveredBy, stageForProposal } from "../stages/registry.mjs";
+import { deliveredBy, proposalFamily, stageForProposal } from "../stages/registry.mjs";
 import { ADDRESSED_CONDITION_FORM, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, MISSING_TEST_CONDITION_FORM, approvableConditionForms, conditionsAreExecutable, returnOnlyConditionForms } from "../spec/criteria.mjs";
 import { openOn } from "../spec/owed.mjs";
 import { missingTestRef, openMissingTestsAt } from "../spec/missing-tests.mjs";
@@ -280,6 +280,36 @@ function accountingNote(open) {
   ];
 }
 
+// The revision requests a ruler of this proposal is the one placed to withdraw, read from `main`
+// the way the condition ledger is: every open request a run of its stage was handed and deferred
+// as one it cannot answer, and every open request a ruling in this proposal's own line of work
+// filed. A deferred request is asked again of every run of its stage and closed by none of them,
+// so a ruling is the only thing that ends it; one this line of work filed is the one whose ruler
+// knows whether it is still wanted. A person in the seat reads the same list from `sdlc checks`
+// and withdraws with the same line (`docs/decisions/0084`).
+function requestsNote(projectDir, name) {
+  const family = proposalFamily(name) ?? name;
+  const shown = openOn(projectDir, "request", "main", { familyOf: proposalFamily })
+    .filter((r) => r.ref && (r.deferred?.why || (r.family ?? proposalFamily(r.from) ?? r.from) === family));
+  if (!shown.length) return [];
+  const quote = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+  return [
+    "## Revision requests still open",
+    "",
+    "Each of these asks a stage to revise and is open on `main`. A request is closed as met only by the run of its",
+    "stage that takes it up; a run that cannot answer one defers it, and it is asked again of the next.",
+    "",
+    ...shown.map((r) => `- \`${r.ref}\` — to ${r.stage}, ruled at ${r.gate ?? "?"} on ${r.from ?? "?"}: "${quote(r.why)}"`
+      + (r.deferred?.why ? ` Deferred${r.deferred.proposal ? ` by ${r.deferred.proposal}` : ""}: "${quote(r.deferred.why)}"` : "")),
+    "",
+    "Where one is no longer asked for — what it asked has been settled some other way, or no run of its stage",
+    "can answer it — withdraw it in a condition of your own, with the reason:",
+    "",
+    `- \`${CONDITION_WITHDRAWN_FORM}\``,
+    "",
+  ];
+}
+
 // The tests the proposal's criteria are owed, and the ones its stage owes, read from `main` the
 // way the condition ledger is. A build slice's ruler is shown every item naming a criterion the
 // slice claims, and whether the project's policy refuses an approval past them; the ruler of any
@@ -448,6 +478,7 @@ export async function buildPersonaPrompt(projectDir, name, persona, { tier, gate
       "",
     ] : []),
     ...accountingNote(openOn(projectDir, "condition")),
+    ...requestsNote(projectDir, name),
     ...missingTestsNote(projectDir, name, { slice, verify, config: resolved.config }),
     ...conditionFormsNote(name, gate),
     ...deliverabilityNote(name),

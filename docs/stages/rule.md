@@ -340,6 +340,25 @@ against it, so `sdlc checks` goes on reporting it. An entry is marked rather tha
 way, so what was asked for and who asked survives the revision being merged
 (`docs/decisions/0034-a-queue-read-as-though-it-held-one-thing.md`).
 
+**A ruler withdraws a request** that is no longer asked for — one no run of its stage can answer,
+or one whose question has been settled another way — with the line a condition is withdrawn with,
+on any verdict and from either seat:
+
+```
+condition-withdrawn request/<proposal>#<n>: <why it is no longer asked for>
+```
+
+`<proposal>` is the proposal whose ruling filed the request and `<n>` its position among the
+requests that proposal's rulings filed, in filing order. `sdlc checks` leads each open request with
+its reference, `next` prints the references of the requests an item answers, and the ruling prompt
+lists the open requests a run deferred and those this proposal's line of work filed. The entry is
+closed under `withdrawn: { why, by, at }`, never as `taken`, and is no longer handed to a run,
+offered by `next` or reported by `sdlc checks`; a returned proposal held on it is released.
+`condition-met` on a request is refused, since a request is met only by the run that takes it up,
+and so is a reference to no open request, with the open list in the message. On the agent seat
+each gets the one re-prompt a fixable line always gets
+(`docs/decisions/0084-a-ruler-can-withdraw-a-request-and-verify-names-the-failing-line.md`).
+
 How many times one line of work may send a stage back this way is `policy.loops.request` (two by
 default, `docs/config.md`), counted by ruling: the requests one ruling files together are one send.
 A `--revise` run whose round includes a line of work past that limit still answers it, and the

@@ -71,6 +71,14 @@ offered: it is listed under `waiting on a person` as waiting on a ruler, grouped
 run to complete by hand. No command `next` offers to run carries a placeholder
 (`docs/decisions/0081-a-revision-request-carries-its-target.md`).
 
+**A request is named.** The item that offers a stage's run for its requests, and the waiting line for
+requests nothing places, end with each request's reference, `request/<proposal>#<n>`. A request a
+run deferred as one it cannot answer is marked with the proposal that deferred it and the line that
+withdraws it, `condition-withdrawn request/<proposal>#<n>: <why>`, since every run of its stage is
+handed it again and none of them closes it. A withdrawn request is closed, and `next` neither offers
+it nor holds a returned proposal on it
+(`docs/decisions/0084-a-ruler-can-withdraw-a-request-and-verify-names-the-failing-line.md`).
+
 **Contract waits for the test writer.** What `contract` owes in the Tests phase is mostly filed by
 the rulings of `derive-tests` proposals, one domain at a time. The contract run that answers owed
 work (not a return of contract's own proposal) is held while the test writer has ready work that
