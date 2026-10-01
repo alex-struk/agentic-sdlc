@@ -52,7 +52,9 @@ export function owedOverLimit(projectDir, stage, ctx) {
     const id = identityOf(handed);
     const entry = all.find((e) => isOpen(e) && identityOf(e) === id) ?? all.find((e) => identityOf(e) === id);
     if (!entry || seen.has(`${kind}\u0000${entry.item}`)) continue;
-    const n = sends(all, entry.item);
+    // An entry a verify stamped with the application it measured is counted against that
+    // application's sends alone (`docs/decisions/0083`).
+    const n = sends(all, entry.item, entry.app_tree);
     if (n <= limit) continue;
     seen.add(`${kind}\u0000${entry.item}`);
     over.push({

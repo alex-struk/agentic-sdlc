@@ -128,10 +128,12 @@ function commitAdapter(d) {
 }
 
 // `bind-adapter --target new` already sent for `id` as often as policy.loops.rebind allows
-// (two by default), under the adapter on main now.
-function spendBinding(d, id, adapter) {
+// (two by default), under the adapter on main now: against the application tree `appTree`
+// where one is given, and against no build in particular otherwise.
+function spendBinding(d, id, adapter, appTree = "") {
   const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
-  const sent = (n) => `  - { id: ${id}, target: new, why: "unbound: a.b — gone", found: unbound, adapter: ${adapter}, by: "runner:verify", at: "2026-01-0${n}T00:00:00.000Z", closed: { outcome: met, why: "sent", at: "2026-01-0${n}T00:00:00.000Z" } }\n`;
+  const tree = appTree ? `, app_tree: ${appTree}` : "";
+  const sent = (n) => `  - { id: ${id}, target: new, why: "unbound: a.b — gone", found: unbound, adapter: ${adapter}, slice: 1${tree}, by: "runner:verify", at: "2026-01-0${n}T00:00:00.000Z", closed: { outcome: met, why: "sent", at: "2026-01-0${n}T00:00:00.000Z" } }\n`;
   writeFileSync(join(d, "tests", "adapters", "rebind.yaml"), `rebind:\n${sent(1)}${sent(2)}`);
   run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "spent"]);
 }
@@ -901,6 +903,37 @@ test("an unbound slice whose binding has been sent its limit is not told to bind
   assert.match(r.text, /R-4\.2: opportunities\.withdraw — no control on the page withdraws a published opportunity/);
   assert.match(r.text, /plan\/tasks\.md/, "changing what the slice claims is one of the two moves open");
   assert.match(r.text, /build --slice 1 --revise/, "taking the surface on is the other");
+});
+
+// The slice's first build lacked the screen, the binding's sends were spent against it, and
+// the builder has since built the screen. The adapter still throws the reason it recorded then,
+// and only a binding run against this build can replace it, so the row is owed again
+// (`docs/decisions/0083`).
+test("an unbound row whose binding was spent against an earlier build is owed again against this one", async (t) => {
+  const d = buildProject(t);
+  spendBinding(d, "R-4.2", commitAdapter(d), "0123456789abcdef0123456789abcdef01234567");
+  const appTree = execFileSync("git", ["rev-parse", "proposal/build-slice-1:app"], { cwd: d, encoding: "utf8" }).trim();
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: a.b — Page not found")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  const open = parseYaml(readFileSync(join(d, "tests", "adapters", "rebind.yaml"), "utf8")).rebind.filter((e) => !e.closed);
+  assert.deepEqual(open.map((e) => [e.id, e.app_tree, e.slice]), [["R-4.2", appTree, 1]], "filed against the application this verify measured");
+  assert.match(r.text, /sdlc run bind-adapter --target new/);
+  assert.match(r.notPassed, /owed to bind-adapter --target new$/);
+});
+
+test("an unbound row whose binding was spent against this build is still not sent again", async (t) => {
+  const d = buildProject(t);
+  const appTree = execFileSync("git", ["rev-parse", "proposal/build-slice-1:app"], { cwd: d, encoding: "utf8" }).trim();
+  spendBinding(d, "R-4.2", commitAdapter(d), appTree);
+  mockSuite(t, [row("R-4.1", "pass"), row("R-4.2", "unbound", "Error: unbound: a.b — gone")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.deepEqual(parseYaml(readFileSync(join(d, "tests", "adapters", "rebind.yaml"), "utf8")).rebind.filter((e) => !e.closed), []);
+  assert.ok(!/sdlc run bind-adapter/.test(r.text), r.text);
+  assert.match(r.text, /as often as policy\.loops\.rebind allows against this build of the application/);
 });
 
 // The third cause an unbound verdict can have, and the one the other two exits cannot

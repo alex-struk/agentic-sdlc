@@ -422,10 +422,16 @@ export function openForFamily(projectDir, family, opts = {}) {
 // How many times an item has been sent to the stage that owes it: every entry ever filed for
 // it, open or closed, with the entries one ruling filed together counted once. The count is
 // what a loop limit reads (`policy.loops.<kind>`).
-export function sends(entries, item) {
+//
+// `appTree`, where given, is the application the item is being measured against now: an entry
+// stamped with a different `app_tree` was sent about another build of the application and is
+// not counted, and an entry stamped with none counts against every build. Without `appTree`
+// every entry counts (`docs/decisions/0083`).
+export function sends(entries, item, appTree) {
   const rounds = new Set();
   (entries ?? []).forEach((e, i) => {
     if (e?.item !== item) return;
+    if (appTree && e.app_tree && e.app_tree !== appTree) return;
     const d = def(e.kind);
     rounds.add(d.round ? d.round(e) : `#${i}`);
   });

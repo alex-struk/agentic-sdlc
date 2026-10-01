@@ -239,7 +239,10 @@ Nothing is removed. A closed entry stays on file, and an item asked for again is
 list says how many times each item has been sent. The sending loops are bounded in policy
 (`policy.loops.rebind`, `redo`, `recovery` and `request`, two by default): a run handed an item sent
 more times than that still does the work, and the proposal it opens is escalated by the runner to
-its gate's escalation target rather than put to the gate holder for another round. An unbound
+its gate's escalation target rather than put to the gate holder for another round. A rebind entry a
+verify files also records the build of the application it measured (`app_tree`), and only the sends
+made against that build, or naming none, count toward its limit
+(`docs/decisions/0083-a-rebind-limit-counts-per-application-build.md`). An unbound
 calibration row is the exception: once its binding has been sent as many times as
 `policy.loops.rebind` allows, it is not sent again
 (`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`). On the oracle's target it goes

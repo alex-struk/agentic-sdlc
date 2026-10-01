@@ -39,8 +39,13 @@ The run also reads the open entries for its target on `tests/adapters/rebind.yam
   (`docs/decisions/0067-an-unbound-row-is-owed-to-its-binding.md`).
 
   On the new target, which has no calibration, the entries come from a verify of a build slice:
-  each carries the slice (`slice: <n>`) and `by: runner:verify`, and quotes the reason the adapter
-  gave against the application that slice's open build proposal carries. That application is on
+  each carries the slice (`slice: <n>`), the `app` tree the verify measured (`app_tree`) and
+  `by: runner:verify`, and quotes the reason the adapter gave against the application that slice's
+  open build proposal carries. The rebind limit for such an entry counts only the sends made
+  against the same `app_tree` (or naming none), so a row whose sends were spent against an earlier
+  build is handed again once the slice is rebuilt, and a run handed it is not escalated for the
+  earlier build's sends
+  (`docs/decisions/0083-a-rebind-limit-counts-per-application-build.md`). That application is on
   the proposal's branch alone until it is ruled, so the run binds against it started from there —
   `sdlc sandbox up --target new --from proposal/<name>` first, which `sdlc next` names beside the
   offer — and the next `verify --slice <n>` is what closes each row the binding reached

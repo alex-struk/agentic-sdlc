@@ -307,3 +307,45 @@ test("a sync scoped to some criteria files and closes those alone, stamped by wh
   assert.deepEqual(again.closed, ["R-1.1"]);
   assert.equal(new Map(unboundEntries(d).map((x) => [x.id, x])).get("R-1.1").closed.outcome, "met");
 });
+
+// A verify measures one build of the application, and the slice's next build can add the very
+// screen a row needed. The rebind limit stops a binding loop on one application, so the sends a
+// row spent against an earlier build do not stop it being owed against a new one
+// (`docs/decisions/0083`).
+test("a verify's rebind limit counts the sends made against the application it measured", (t) => {
+  const { d, commit } = project(t);
+  commit({ "tests/adapters/new/index.ts": "export default 1;\n" });
+  const A = execFileSync("git", ["rev-parse", "HEAD:tests/adapters/new"], { cwd: d, encoding: "utf8" }).trim();
+  const spentOn = (appTree) => `  - { id: R-1.1, target: new, why: "unbound: a.b — gone", found: unbound, adapter: ${A}, slice: 1, by: "runner:verify", at: "2026-01-01T00:00:00.000Z"${appTree ? `, app_tree: ${appTree}` : ""}, closed: { outcome: met, why: "sent", at: "2026-01-01T00:00:00.000Z" } }\n`;
+  const sync = (appTree) => syncUnbound(d, "new", { rows: [row("R-1.1", "unbound", { adapter: A })], adapter: A, limit: 2, ids: ["R-1.1"], by: "runner:verify", stamp: { slice: 1 }, appTree });
+
+  writeFileSync(join(d, "tests", "adapters", "rebind.yaml"), `rebind:\n${spentOn("tree-a")}${spentOn("tree-a")}`);
+  assert.deepEqual(sync("tree-a").opened, [], "two sends spent against this build: not sent a third time");
+  const again = sync("tree-b");
+  assert.deepEqual(again.opened, ["R-1.1"], "a new build of the application is owed the binding again");
+  const filed = unboundEntries(d).find(isOpen);
+  assert.deepEqual([filed.app_tree, filed.slice, filed.adapter], ["tree-b", 1, A]);
+  assert.equal(sends(read(d, "rebind"), "new:R-1.1", "tree-b"), 1);
+  assert.equal(sends(read(d, "rebind"), "new:R-1.1", "tree-a"), 2);
+  assert.equal(sends(read(d, "rebind"), "new:R-1.1"), 3, "counted without a tree, every send is one");
+
+  // An entry filed before verify recorded the application counts against every build.
+  writeFileSync(join(d, "tests", "adapters", "rebind.yaml"), `rebind:\n${spentOn("")}${spentOn("")}`);
+  assert.deepEqual(sync("tree-c").opened, [], "sends that name no application are spent against this one too");
+  writeFileSync(join(d, "tests", "adapters", "rebind.yaml"), `rebind:\n${spentOn("")}${spentOn("tree-a")}`);
+  assert.deepEqual(sync("tree-a").opened, [], "one unstamped send and one against this build make two");
+  assert.deepEqual(sync("tree-c").opened, ["R-1.1"], "against another build only the unstamped send counts");
+});
+
+// Calibration measures a fixed application and passes no tree, so every send counts, as it did.
+test("a calibration's rebind limit counts every send, whatever application a verify stamped", (t) => {
+  const { d, commit, tree } = project(t);
+  commit({ "tests/adapters/old/index.ts": "export default 1;\n" });
+  const A = tree();
+  const spentOn = (appTree) => `  - { id: R-1.1, target: old, why: "unbound: a.b — gone", found: unbound, adapter: ${A}, by: "runner:calibrate", at: "2026-01-01T00:00:00.000Z"${appTree ? `, app_tree: ${appTree}` : ""}, closed: { outcome: met, why: "sent", at: "2026-01-01T00:00:00.000Z" } }\n`;
+  writeFileSync(join(d, "tests", "adapters", "rebind.yaml"), `rebind:\n${spentOn("tree-a")}${spentOn("tree-b")}`);
+  const r = syncUnbound(d, "old", { rows: [row("R-1.1", "unbound", { adapter: A })], adapter: A, limit: 2 });
+  assert.deepEqual(r.opened, []);
+  assert.equal(unboundEntries(d).filter(isOpen).length, 0);
+  assert.equal(unboundOwed({ target: "old", rows: [row("R-1.1", "unbound", { adapter: A })], adapter: A, entries: read(d, "rebind"), limit: 2 }).spent.length, 1);
+});

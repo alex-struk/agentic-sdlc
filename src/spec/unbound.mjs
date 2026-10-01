@@ -48,7 +48,10 @@
 // the unbound rows its suite found there the same way, scoped to the criteria the slice claims
 // and stamped with the slice, and the next verify of that slice closes them, lapses them or
 // sends them again; `sdlc next` routes an entry whose adapter has changed to that verify rather
-// than to a calibration (`docs/decisions/0075`).
+// than to a calibration (`docs/decisions/0075`). A verify measures one build of the
+// application, and the slice's next build can add the screen a row needed, so its entries also
+// carry the `app` tree measured (`app_tree`), and the limit counts the sends made against that
+// build alone: a new build earns the binding its sends again (`docs/decisions/0083`).
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -239,8 +242,16 @@ export function unboundSpent(projectDir, target, config, rows) {
 // written on every entry it files — a verify's slice, which is what a reader routes the
 // entry's re-check to (`docs/decisions/0075`).
 //
+// `appTree` is the application the rows were measured against, for a run that measures a
+// build of it: a verify, against the `app` tree of the build branch. It is written on every
+// entry the run files as `app_tree`, and `limit` then counts only the sends stamped with that
+// tree or with none, so a new build of the application earns the binding its sends again: the
+// limit stops a binding loop on one application, not a binding of an application that has
+// changed since (`docs/decisions/0083`). A calibration measures a fixed application and passes
+// none, and every send counts.
+//
 // Returns the path written (`null` when nothing changed) and the criteria opened and closed.
-export function syncUnbound(projectDir, target, { rows = [], adapter, fallback = "", limit, settle = true, unavailable = new Map(), at = new Date().toISOString(), ids = null, by = BY, stamp: extra = {} } = {}) {
+export function syncUnbound(projectDir, target, { rows = [], adapter, fallback = "", limit, settle = true, unavailable = new Map(), at = new Date().toISOString(), ids = null, by = BY, stamp: extra = {}, appTree = "" } = {}) {
   const opened = [];
   const closed = [];
   let path = null;
@@ -250,20 +261,22 @@ export function syncUnbound(projectDir, target, { rows = [], adapter, fallback =
   const unbound = openUnboundRows({ rows }).filter((row) => inScope(row.id) && !personaUnavailable(row, unavailable));
   const foundUnder = (row) => row.adapter ?? fallback;
   const stamp = { by, at };
+  const tree = appTree ? { app_tree: appTree } : {};
   const noun = by === BY ? "calibration" : by.replace(/^runner:/, "");
   // The reason is written into a committed file, so it is scrubbed of local paths here, where
   // it is written (`docs/decisions/0020`).
   const why = (row) => redactLocalPaths(unboundWhy(row), projectDir);
 
   let entries = read(projectDir, KIND);
+  const sent = (item) => sends(entries, item, appTree);
   const earlier = unbound.filter((row) => {
     const found = foundUnder(row);
     if (!found || found === adapter) return false;
     const item = itemOf(target, row.id);
     if (entries.some((e) => e.item === item && (isOpen(e) || (e.found === UNBOUND && e.adapter === found)))) return false;
-    return sends(entries, item) < limit;
+    return sent(item) < limit;
   });
-  const filed = open(projectDir, KIND, earlier.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter: foundUnder(row), ...extra, ...stamp })));
+  const filed = open(projectDir, KIND, earlier.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter: foundUnder(row), ...extra, ...tree, ...stamp })));
   wrote(filed.path);
   opened.push(...filed.added.map((e) => e.id));
 
@@ -278,8 +291,8 @@ export function syncUnbound(projectDir, target, { rows = [], adapter, fallback =
   if (!settle) return { path, opened, closed };
 
   entries = read(projectDir, KIND);
-  const fresh = unbound.filter((row) => foundUnder(row) === adapter && !entries.some((e) => isOpen(e) && e.item === itemOf(target, row.id)) && sends(entries, itemOf(target, row.id)) < limit);
-  const now = open(projectDir, KIND, fresh.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter, ...extra, ...stamp })));
+  const fresh = unbound.filter((row) => foundUnder(row) === adapter && !entries.some((e) => isOpen(e) && e.item === itemOf(target, row.id)) && sent(itemOf(target, row.id)) < limit);
+  const now = open(projectDir, KIND, fresh.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter, ...extra, ...tree, ...stamp })));
   wrote(now.path);
   opened.push(...now.added.map((e) => e.id));
 

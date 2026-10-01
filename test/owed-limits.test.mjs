@@ -129,6 +129,24 @@ test("rebind and recovery items are counted the same way, from what their stages
   assert.match(over.messages[0], /policy\.loops\.recovery/);
 });
 
+// A rebind a verify filed names the application it measured, and only the sends made against
+// that application count toward the limit (`docs/decisions/0083`).
+test("a rebind stamped with an application is counted against the sends made on that application", (t) => {
+  const { d } = repo(t);
+  sent(d, "rebind", { id: "R-1.2", target: "new", app_tree: "tree-a" }, 2);
+  close(d, "rebind", () => true, { outcome: "met", why: "answered", by: "runner" });
+  const fresh = sent(d, "rebind", { id: "R-1.2", target: "new", app_tree: "tree-b" }, 1);
+  const ctx = { config: config(), target: "new", bindAdapterRebind: fresh };
+  checkOwedLimits(d, stageFor("bind-adapter"), ctx);
+  assert.deepEqual(ctx.owedOverLimit, [], "the first send against a new build is not past the limit");
+
+  close(d, "rebind", () => true, { outcome: "met", why: "answered", by: "runner" });
+  const third = sent(d, "rebind", { id: "R-1.2", target: "new", app_tree: "tree-a" }, 1);
+  const again = { config: config(), target: "new", bindAdapterRebind: third };
+  checkOwedLimits(d, stageFor("bind-adapter"), again);
+  assert.deepEqual(again.owedOverLimit.map((o) => [o.item, o.sends]), [["new:R-1.2", 3]], "a third send against the same build is");
+});
+
 test("a stage asked by one line of work more times than its limit is counted by ruling, not by line", (t) => {
   const { d } = repo(t);
   const ask = (from, why) => ({ stage: "plan", why, from, gate: "G3", by: "agent:reviewer", at: `2026-01-01T00:00:0${from.length % 10}.000Z` });

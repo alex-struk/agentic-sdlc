@@ -921,6 +921,19 @@ test("a build whose verify found only unbound rows owed to the binding is not ru
   assert.match(r.next.why, /sandbox up --target new --from proposal\/build-slice-1/, "the binding needs the application the proposal carries");
 });
 
+// A verify's rebind entry also names the application it measured (`docs/decisions/0083`); the
+// binding is offered, and started from the build proposal, all the same.
+test("a binding owed against one build of the application is offered with the sandbox started from that build", (t) => {
+  const d = project(t, { profile: "feature", extra: NEW_TARGET });
+  const adapter = verifiedBuild(d, { verdict: "unbound", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });
+  const appTree = git(d, ["rev-parse", "proposal/build-slice-1:app"]);
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [{ id: "R-1.2", target: "new", why: "unbound: signIn.applicant — no link", found: "unbound", adapter, slice: 1, app_tree: appTree, by: "runner:verify", at: "2026-01-01T00:00:00.000Z" }] }) }, "run(verify)");
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run bind-adapter --target new");
+  assert.ok(!r.ready.some((c) => c.command.startsWith("sdlc rule build-slice-1")));
+  assert.match(r.next.why, /sandbox up --target new --from proposal\/build-slice-1/);
+});
+
 test("once a binding is ruled onto main, the slice it was owed for is verified again", (t) => {
   const d = project(t, { profile: "feature", extra: NEW_TARGET });
   const adapter = verifiedBuild(d, { verdict: "unbound", unbound: [{ id: "R-1.2", reason: "signIn.applicant — no link" }] });

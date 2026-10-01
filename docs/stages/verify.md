@@ -37,7 +37,7 @@ asks for happens at the gate it is returned to, not here.
   configuration the target reads at start-up
   (`docs/decisions/0071-a-configuration-gets-its-own-oracle.md`).
 - `tests/adapters/rebind.yaml` on `main`, and `policy.loops.rebind`, for the unbound rows a binding
-  run is owed for (`src/spec/unbound.mjs`).
+  run is owed for (`src/spec/unbound.mjs`), counted against the application this run measures.
 
 ## What `execute` does, in order
 
@@ -121,8 +121,13 @@ asks for happens at the gate it is returned to, not here.
    With an adapter in place, every unbound row among the slice's criteria is settled on `main`,
    once the tree is back there, against the rebind entries in `tests/adapters/rebind.yaml`, by
    the same rules a calibration settles the oracle's (`src/spec/unbound.mjs`): a row is filed for
-   `bind-adapter --target new`, stamped `by: runner:verify` and with the slice, while the binding
-   has been sent for it fewer times than `policy.loops.rebind` allows; an entry for one of the
+   `bind-adapter --target new`, stamped `by: runner:verify`, with the slice and with the `app` tree
+   measured (`app_tree`, the value the result records), while the binding has been sent for it
+   fewer times than `policy.loops.rebind` allows against that tree. Only entries stamped with the
+   same `app_tree`, or with none, count toward the limit, so a later build of the slice earns the
+   binding its sends again: the limit stops a binding loop on one application, not a binding of an
+   application that has changed since
+   (`docs/decisions/0083-a-rebind-limit-counts-per-application-build.md`). An entry for one of the
    slice's criteria found under an adapter that has since changed lapses, and one whose row the
    adapter now reaches is closed. Nothing about another slice's criteria is touched. The rows are
    filed whatever the verdict, so an unbound row beside a failure is owed to the binding as well.
@@ -133,9 +138,9 @@ asks for happens at the gate it is returned to, not here.
    the adapter's reasons and the whole sequence binding against this proposal takes (below),
    ending with the verify that closes each row the new binding reaches.
 
-   Where the binding has been sent as often as `policy.loops.rebind` allows, or the row needs a
-   persona the approved contract marks unavailable, binding again would drive the same application
-   and write the same reasons. Each adapter's own reason is quoted — it is the only place in the
+   Where the binding has been sent as often as `policy.loops.rebind` allows against this build of
+   the application, or the row needs a persona the approved contract marks unavailable, binding
+   again would drive the same application and write the same reasons. Each adapter's own reason is quoted — it is the only place in the
    pipeline that reason is written down — and three exits are offered, and all three are rulings: return the build proposal at G3 with those reasons
    as the conditions, so `build --slice <n> --revise` takes them on; return it with
    `addressed-to plan: <why>` among the conditions, if the surface belongs to a later slice, so

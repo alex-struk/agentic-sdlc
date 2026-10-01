@@ -512,7 +512,10 @@ export const verify = {
         })];
         // Filed on main once the tree is back there, below: owed work is read off main by
         // `next` and by the binding run, and this branch reaches main only when it is ruled.
-        if (adapter) binding = { rows: claimed, adapter, ids: slice.criteria };
+        // `appTree` is the application measured, the tree the result records as `app_tree`: a
+        // rebind entry this run files carries it, and the rebind limit counts the sends made
+        // against this build of the application alone (`docs/decisions/0083`).
+        if (adapter) binding = { rows: claimed, adapter, ids: slice.criteria, appTree: git(["rev-parse", "HEAD:app"], projectDir) };
         const envLines = environmentLines(slice.number, v.environment);
         if (v.verdict === "fail") {
           const { escalate, gateRel } = writeVerifyReturn(projectDir, {
@@ -567,7 +570,7 @@ export const verify = {
               head,
               "tests/adapters/new/index.ts is in place and was exercised. It reports each of these as part of the surface the application does not provide:",
               ...unboundListed.map(({ id, reason }) => `  ${id}: ${reason}`),
-              `bind-adapter --target new has been sent for ${v.unbound.length === 1 ? "it" : "them"} as often as policy.loops.rebind allows, or ${v.unbound.length === 1 ? "it needs" : "they need"} a persona the approved contract marks unavailable, so binding again is not the next step. The question is whether the application is missing something it was asked for, whether this slice was asked for too much, or whether a test is asking for something its criterion never did — and the choice is a person's:`,
+              `bind-adapter --target new has been sent for ${v.unbound.length === 1 ? "it" : "them"} as often as policy.loops.rebind allows against this build of the application, or ${v.unbound.length === 1 ? "it needs" : "they need"} a persona the approved contract marks unavailable, so binding again is not the next step. The question is whether the application is missing something it was asked for, whether this slice was asked for too much, or whether a test is asking for something its criterion never did — and the choice is a person's:`,
               `  - rule ${name} at G3 with those reasons as the conditions, which returns it and lets sdlc run build --slice ${slice.number} --revise take them on;`,
               `  - or, if that surface belongs to a later slice, return ${name} with \`${ADDRESSED_CONDITION_FORM}\` among the conditions — the stage is plan, and the reason says which criterion slice ${slice.number} claims that nothing it builds demonstrates. That files a request the planner reads: sdlc run plan --revise cuts what the slice claims in plan/tasks.md again, with your reason in front of it, and the architect rules the result at the plan's own gate. The request itself changes nothing;`,
               `  - or, where a criterion is right and the test derived from it reaches past it — the test drives a capability the criterion never asks for, which is why there is nothing to bind — return ${name} with \`${OVERREACH_CONDITION_FORM}\` among the conditions. That files the criterion for re-derivation and carries your reason to the writer: sdlc run derive-tests --domain <the criterion's domain> --stale then writes that one test again. It verifies nothing — the criterion stays unverified until a regenerated test binds and passes.`,
@@ -628,14 +631,15 @@ export const verify = {
       } else if (!failure && binding) {
         // On main now. The rows this run put to the target are settled against the rebind
         // entries there: an unbound row is filed for bind-adapter --target new while the
-        // binding has been sent fewer times than policy.loops.rebind allows, and an entry
-        // for one of this slice's criteria whose row the binding now reaches is closed
-        // (`src/spec/unbound.mjs`). The file is left for the run's own commit on main.
+        // binding has been sent fewer times than policy.loops.rebind allows against the
+        // application this run measured, and an entry for one of this slice's criteria whose
+        // row the binding now reaches is closed (`src/spec/unbound.mjs`). The file is left for
+        // the run's own commit on main.
         try {
           const unavailable = unavailableOn(projectDir, "new", config);
           syncUnbound(projectDir, "new", {
             rows: binding.rows, adapter: binding.adapter, ids: binding.ids, limit: owedLoopLimit(config, "rebind"),
-            unavailable, by: "runner:verify", stamp: { slice: slice.number },
+            unavailable, by: "runner:verify", stamp: { slice: slice.number }, appTree: binding.appTree,
           });
           const open = new Set(readOwed(projectDir, "rebind").filter((e) => isOpen(e) && e.target === "new").map((e) => e.id));
           const owed = binding.rows
