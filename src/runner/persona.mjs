@@ -287,9 +287,16 @@ function accountingNote(open) {
 // so a ruling is the only thing that ends it; one this line of work filed is the one whose ruler
 // knows whether it is still wanted. A person in the seat reads the same list from `sdlc checks`
 // and withdraws with the same line (`docs/decisions/0084`).
+//
+// Read from the proposal's own branch where it has one: a run that takes a request up records it
+// taken there, and that reaches `main` only when the proposal is approved. Read from `main`, the
+// ruler would be shown as open the very requests the proposal under ruling has answered, and a
+// condition closing them is refused, since the ruling is checked against the branch.
 function requestsNote(projectDir, name) {
   const family = proposalFamily(name) ?? name;
-  const shown = openOn(projectDir, "request", "main", { familyOf: proposalFamily })
+  const branch = `proposal/${name}`;
+  const rev = gitOk(["rev-parse", "--verify", "-q", branch], projectDir) ? branch : "main";
+  const shown = openOn(projectDir, "request", rev, { familyOf: proposalFamily })
     .filter((r) => r.ref && (r.deferred?.why || (r.family ?? proposalFamily(r.from) ?? r.from) === family));
   if (!shown.length) return [];
   const quote = (text) => String(text ?? "").replace(/\s+/g, " ").trim();

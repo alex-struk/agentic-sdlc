@@ -160,6 +160,20 @@ test("the ruler is shown the deferred request and its own line's requests with t
   assert.match(section, /condition-withdrawn <ref>: <why it is no longer asked for>/);
 });
 
+// A run takes a request up on its own proposal branch, and that reaches `main` only when the
+// proposal is approved; the ruler of that proposal must not be shown it as open, or a condition
+// closing it is refused against the branch.
+test("a request the proposal under ruling took up on its branch is not shown to its ruler as open", async (t) => {
+  withMock(t);
+  const d = project(t);
+  git(["checkout", "-q", "proposal/build-slice-1-2"], d);
+  const taken = REQUESTS.map((r, i) => (i === 1 ? { ...r, deferred: undefined, taken: "2026-10-01T11:30:00.000Z", taken_by: "build-slice-1-2" } : r));
+  put(d, ".sdlc/revision-requests.yaml", stringifyYaml({ requests: taken }));
+  commit(d, "take request");
+  const prompt = await buildPersonaPrompt(d, "build-slice-1-2", "reviewer", { tier: "STANDARD", gate: "G3" });
+  assert.doesNotMatch(prompt, new RegExp(REF.replace(/[/#.]/g, "\\$&")), "the request it took is not listed as open");
+});
+
 test("sdlc checks leads each open request with its reference and names the withdrawal", (t) => {
   const d = project(t);
   const c = checkConditions(d);
