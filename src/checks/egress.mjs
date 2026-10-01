@@ -9,7 +9,10 @@ import { readText } from "../lib/fsx.mjs";
 // the word without ever containing it. The alternative — carving this file out of the
 // scan — is how a real leak would get through.
 const PATTERNS = [
-  [/\b[A-Z]{2,5}-\d{2,5}\b/, "internal ticket number (rule E-2)"],
+  // A ticket key has the shape of a published standard's name — SHA-256, AES-128, ISO-8601,
+  // UTF-16 — and those are written in ordinary technical prose. The prefixes below name
+  // standards, never a team's ticket project, so they are not read as one.
+  [/\b(?!(?:SHA|AES|RSA|ISO|IEC|RFC|ECMA|ES|UTF|CRC|HMAC|TLS|SSL|MD|TCP|UDP|IPV)-\d)[A-Z]{2,5}-\d{2,5}\b/, "internal ticket number (rule E-2)"],
   [/(^|[\s"'(])![A-Z][A-Za-z]+\//, "private notes folder path (rule E-2)"],
   [new RegExp("One" + "Drive"), "private notes location (rule E-2)"],
   [/\bTeams (call|chat|transcript|message|meeting)\b/i, "meeting reference (rule E-2)"],

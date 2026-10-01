@@ -51,6 +51,16 @@ const MEETING = "Teams " + "call";
 const LISTED_NAME = "Jane " + "Example";
 const HOME_PATH = "/ho" + "me/someone/notes.txt";
 
+// A published standard's name has a ticket key's shape and is ordinary technical prose.
+test("egress: standard names such as SHA-256 or ISO-8601 are not read as ticket numbers", () => {
+  const d = repo();
+  mkdirSync(join(d, ".sdlc"), { recursive: true });
+  writeFileSync(join(d, "a.md"), "Files are stored by their SHA-256 digest, dates follow ISO-8601, text is UTF-16 or AES-128 encrypted.\n");
+  git(["add", "a.md"], d);
+  const r = checkEgress(d, {});
+  assert.ok(!r.messages.some((m) => m.includes("ticket")), r.messages.join("\n"));
+});
+
 test("egress: ticket numbers, notes paths and listed names are caught in tracked and untracked files alike", () => {
   const d = repo();
   mkdirSync(join(d, ".sdlc"), { recursive: true });
