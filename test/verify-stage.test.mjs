@@ -1243,8 +1243,9 @@ test("a criterion an approved slice passed is run again, and its failure now ret
   assert.ok(verify.preChecks(d, ctx).every((c) => c.ok));
   const r = await verify.execute(d, ctx);
 
-  assert.ok(calls[0].includes("tests/acceptance/users/R-3.1.spec.ts"), "the earlier slice's passing criterion is in the run");
-  assert.ok(!calls[0].includes("tests/acceptance/users/R-3.2.spec.ts"), "one it never passed is not");
+  assert.ok(!calls[0].includes("tests/acceptance/users/R-3.1.spec.ts"), "the slice's own tests run first, on their own");
+  assert.ok(calls[1].includes("tests/acceptance/users/R-3.1.spec.ts"), "then, its own passing, the earlier slice's passing criterion");
+  assert.ok(!calls[1].includes("tests/acceptance/users/R-3.2.spec.ts"), "one it never passed is not");
   const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
   assert.equal(gate.verdict, "return");
   assert.equal(gate.conditions.length, 1);
@@ -1313,4 +1314,20 @@ test("a condition from a file of several cases names the case that failed", asyn
   const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
   assert.equal(gate.conditions[0], "R-4.1, in the case \"one that does not say whether remote work is acceptable is refused\": Error: expect(received).not.toContain(expected) — at tests/acceptance/users/R-4.1.spec.ts:54");
   assert.equal(gate.conditions[1], "R-4.2: Error: x — at tests/acceptance/users/R-4.2.spec.ts:3", "a file of one case needs no name for it");
+});
+
+// The whole regression suite runs on the build that is a candidate for approval. A build that
+// does not yet do what its own criteria say goes back for that alone, and says the earlier
+// criteria wait (`docs/decisions/0089`).
+test("earlier slices' criteria are checked again only once the slice's own pass", async (t) => {
+  const d = buildProject(t);
+  withEarlierSlice(d, [row("R-3.1", "pass")]);
+  const calls = [];
+  const ctx = { ...ctxFor(d), runSuite: suiteOf([row("R-4.1", "fail", "Error: x"), row("R-4.2", "pass"), row("R-3.1", "fail", "Error: y")], calls) };
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.equal(calls.length, 1, "only the slice's own tests ran");
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.deepEqual(gate.conditions, ["R-4.1: Error: x"]);
+  assert.match(r.text, /The 1 criterion earlier slices passed is checked again once this slice's own criteria pass/);
 });

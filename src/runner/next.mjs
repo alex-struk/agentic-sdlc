@@ -1044,7 +1044,17 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
   let held = [...props.held, ...holdContractForTestWriter(record, byKind)];
   // A calibration the cadence makes due goes before owed and sequence work, and replaces any
   // other offer of the same calibration; proposals keep the place the order gives them.
-  const due = calibrationDue(projectDir, record, props.inFlight);
+  let due = calibrationDue(projectDir, record, props.inFlight);
+  // During the Build phase every slice's verify runs the tests against the application being
+  // built, and a calibration of the oracle would stop slice work for the length of the whole
+  // suite against it. A calibration the cadence makes due, or owed work answered by calibrating,
+  // is held until every slice is approved and the phase is complete (`docs/decisions/0089`).
+  if (phase?.name === "Build") {
+    const deferred = [...byKind.owed.filter((c) => c.stage === "calibrate"), ...(due ? [due] : [])];
+    byKind.owed = byKind.owed.filter((c) => c.stage !== "calibrate");
+    due = null;
+    held = [...held, ...deferred.map((c) => ({ ...c, why: `${c.why}; held until every slice is approved, since a calibration of the oracle waits out the Build phase (docs/decisions/0089)` }))];
+  }
   if (due) {
     const same = (c) => c.stage === "calibrate" && c.args?.target === due.args.target;
     byKind.owed = byKind.owed.filter((c) => !same(c));

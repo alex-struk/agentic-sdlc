@@ -575,22 +575,35 @@ export const verify = {
           : `verify slice ${slice.number}: returned — the sandbox did not start, so nothing was verified. ${(started.messages[0] ?? "").split("\n")[0]} Next: sdlc run build --slice ${slice.number} --revise`;
       } else {
         const settings = targetSettings(config, "new");
-        // The slice's own tests, and the tests of everything earlier, approved slices passed
-        // (`docs/decisions/0087-a-later-build-is-checked-against-what-earlier-slices-passed.md`).
+        const suite = (files) => {
+          const { configured, tags } = configuredCriteria(projectDir, files);
+          const { rows } = (ctx.runSuite ?? runSuite)({
+            projectDir, target: "new", baseUrl: settings.baseUrl, mailApi: settings.mailApi,
+            files, resetCommand: resetCommandFor(projectDir, config, "new"),
+            ...(tags.length ? { grepInvert: tags } : {}),
+          });
+          return { rows, configured };
+        };
+        // The slice's own tests first. What earlier, approved slices passed is checked again only
+        // once they pass, against the same running application: a build that does not yet do what
+        // its own criteria say goes back for that alone, and the whole regression suite runs on
+        // the build that is a candidate for approval
+        // (`docs/decisions/0087-a-later-build-is-checked-against-what-earlier-slices-passed.md`, `0089`).
+        const ownRun = suite(specFilesFor(projectDir, slice.criteria));
+        const configured = ownRun.configured;
         const earlier = earlierPasses(projectDir, slice.number, slice.criteria);
-        const files = [...new Set([...specFilesFor(projectDir, slice.criteria), ...specFilesFor(projectDir, [...earlier.keys()])])];
-        const { configured, tags } = configuredCriteria(projectDir, files);
-        const { rows } = (ctx.runSuite ?? runSuite)({
-          projectDir, target: "new", baseUrl: settings.baseUrl, mailApi: settings.mailApi,
-          files, resetCommand: resetCommandFor(projectDir, config, "new"),
-          ...(tags.length ? { grepInvert: tags } : {}),
-        });
+        const ownFirst = verifyVerdict(ownRun.rows.filter((r) => slice.criteria.includes(r.id)), slice.criteria, { configured });
+        const candidate = ["pass", "pass-unasserted", "environment"].includes(ownFirst.verdict);
+        const earlierRun = candidate && earlier.size ? suite(specFilesFor(projectDir, [...earlier.keys()])) : null;
+        if (earlierRun) for (const [id, why] of earlierRun.configured) configured.set(id, why);
+        const rows = [...ownRun.rows, ...(earlierRun?.rows ?? []).filter((r) => earlier.has(r.id))];
+        const earlierDeferred = !candidate && earlier.size > 0;
         // The adapter the suite drove with, recorded on the result and on every rebind entry
         // this run files, so the verify after a binding run can tell the rows it reaches.
         const adapter = adapterExists(projectDir, "new") ? adapterAt(projectDir, "new", "HEAD") : "";
         const claimed = rows.filter((r) => slice.criteria.includes(r.id)).map((r) => (adapter && r.file ? { ...r, adapter } : r));
         const own = verifyVerdict(claimed, slice.criteria, { configured });
-        const recheck = recheckEarlier(rows, earlier, configured);
+        const recheck = earlierRun ? recheckEarlier(earlierRun.rows, earlier, configured) : { regressed: [], held: [], unexercised: [] };
         // A criterion an earlier slice passed and this build broke fails this build, however its
         // own criteria came out.
         const v = recheck.regressed.length ? { ...own, verdict: "fail" } : own;
@@ -717,6 +730,7 @@ export const verify = {
           text,
           ...(h ? [`${h} ${criteriaWord(h)} earlier slices passed still ${h === 1 ? "passes" : "pass"}.`] : []),
           ...(recheck.unexercised.length ? [`Not checked again, and not charged to this build: ${recheck.unexercised.map((x) => `${x.id} (slice ${x.slice}: ${x.why})`).join("; ")}.`] : []),
+          ...(earlierDeferred ? [`The ${earlier.size} ${criteriaWord(earlier.size)} earlier slices passed ${earlier.size === 1 ? "is" : "are"} checked again once this slice's own criteria pass.`] : []),
         ].join("\n");
         commitOnBranch(projectDir, paths, `verify(slice ${slice.number}): ${v.verdict}`);
       }

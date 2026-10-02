@@ -1291,3 +1291,23 @@ test("a slice whose newest ruling is a return no revision answered is revised, n
   assert.equal(r.next.command, "sdlc run build --slice 1 --revise");
   assert.match(r.next.why, /build-slice-1-2 was returned and no revision of it has been opened/);
 });
+
+// During the Build phase every slice's verify runs the tests against the application being built,
+// and a calibration of the oracle stops slice work for as long as the whole suite takes against
+// it. A calibration due by the cadence, or owed by missing tests, is held until every slice is
+// approved, and says why (`docs/decisions/0089`).
+test("in the Build phase a calibration of the oracle waits until every slice is approved", (t) => {
+  const d = calibratedProject(t, ["next: { calibrate_after: 1 }"]);
+  approved(d, ["design-alpha", "design-beta"], "G-DESIGN");
+  approved(d, ["plan"], "G2");
+  commit(d, { "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1\n" });
+  merged(d, "derive-tests-alpha-stale-1", { "tests/acceptance/alpha/R-1.1.spec.ts": "// criterion: @R-1.1 v1\n" });
+  let r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.stage === "calibrate"), "no calibration is offered while slices are being built");
+  const held = r.held.find((h) => h.stage === "calibrate");
+  assert.ok(held, "the calibration is held, not dropped");
+  assert.match(held.why, /until every slice is approved/);
+  approved(d, ["build-slice-1"], "G3");
+  r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run calibrate --target old");
+});
