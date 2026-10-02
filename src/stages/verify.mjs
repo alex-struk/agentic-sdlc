@@ -10,7 +10,7 @@
 // target instead: a slice that fails that many builds running is usually failing for a
 // reason another build will not fix (spec §7.1).
 import { basename, join, relative } from "node:path";
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
@@ -72,6 +72,52 @@ export function verifyVerdict(rows, criteria, { configured = new Map() } = {}) {
         : unasserted.length ? "pass-unasserted" : "pass";
   return { verdict, failing, unbound, environment, unasserted };
 }
+
+// What the slices already approved established, to be checked again. Each approved slice's
+// verify result is on main, and every criterion it passed then is a criterion a later build
+// can break without any criterion of its own saying so. Only what passed counts: a criterion
+// an earlier slice never passed is owed where it already is, and is not a later build's to
+// answer. A criterion this slice claims is judged as its own and is left out here.
+// Returns criterion id -> the slice whose approval it passed under.
+export function earlierPasses(projectDir, sliceNumber, own = []) {
+  const dir = join(projectDir, "tests", "results", "new");
+  const out = new Map();
+  if (!existsSync(dir)) return out;
+  for (const f of readdirSync(dir).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))) {
+    const m = /^slice-(\d+)\.json$/.exec(f);
+    if (!m || Number(m[1]) === sliceNumber) continue;
+    let result;
+    try { result = JSON.parse(readFileSync(join(dir, f), "utf8")); } catch { continue; }
+    for (const r of result.rows ?? []) {
+      if (r?.result === "pass" && !own.includes(r.id) && !out.has(r.id)) out.set(r.id, Number(m[1]));
+    }
+  }
+  return out;
+}
+
+// How each earlier criterion came out this time. One that fails is a regression and returns
+// the build. One the run could not exercise — no row, unbound, written for a configuration,
+// or stopped by the environment — says nothing about the application and is reported apart.
+export function recheckEarlier(rows, earlier, configured = new Map()) {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const regressed = [];
+  const held = [];
+  const unexercised = [];
+  for (const [id, slice] of earlier) {
+    const r = byId.get(id);
+    const configuration = configured.get(id);
+    if (configuration) unexercised.push({ id, slice, why: configuration });
+    else if (!r) unexercised.push({ id, slice, why: "no test of it ran" });
+    else if (r.result === "pass") held.push(id);
+    else if (r.result === "unbound") unexercised.push({ id, slice, why: "the adapter could not drive it" });
+    else if (isNotAsserted(r)) unexercised.push({ id, slice, why: r.result });
+    else if (environmentGap(r)) unexercised.push({ id, slice, why: environmentGap(r) });
+    else regressed.push({ id, slice, row: r });
+  }
+  return { regressed, held, unexercised };
+}
+
+const criteriaWord = (n) => (n === 1 ? "criterion" : "criteria");
 
 // The criteria among `files` whose tests are written for one of the contract's
 // configurations, each with why verify leaves them out, and the tags that leave them out.
@@ -292,7 +338,7 @@ function environmentOnly(gate) {
 // the routes where no test ran: currency is judged by `app_tree`, so a run that left this
 // file alone would leave an earlier `pass` on the same tree standing and the proposal
 // rulable as approved. `not_verified` says, for a reader, why there are no rows.
-function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "" }) {
+function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "", rechecked = [], regressed = [] }) {
   const resultRel = `tests/results/new/slice-${slice}.json`;
   mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
   // Each row carries the acceptance test's own error text, which is a browser's or a
@@ -314,6 +360,11 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted 
     ...(unbound.length ? { unbound } : {}),
     ...(adapter ? { adapter } : {}),
     ...(notVerified ? { not_verified: notVerified } : {}),
+    // What earlier, approved slices passed and this run checked again: the ones that still pass,
+    // and the ones that no longer do, each with the slice it passed under. Apart from `rows`,
+    // which are this slice's own criteria and nothing else.
+    ...(rechecked.length ? { rechecked } : {}),
+    ...(regressed.length ? { regressed } : {}),
     rows,
   }, null, 2)}\n`, projectDir));
   return resultRel;
@@ -511,7 +562,10 @@ export const verify = {
           : `verify slice ${slice.number}: returned — the sandbox did not start, so nothing was verified. ${(started.messages[0] ?? "").split("\n")[0]} Next: sdlc run build --slice ${slice.number} --revise`;
       } else {
         const settings = targetSettings(config, "new");
-        const files = specFilesFor(projectDir, slice.criteria);
+        // The slice's own tests, and the tests of everything earlier, approved slices passed
+        // (`docs/decisions/0087-a-later-build-is-checked-against-what-earlier-slices-passed.md`).
+        const earlier = earlierPasses(projectDir, slice.number, slice.criteria);
+        const files = [...new Set([...specFilesFor(projectDir, slice.criteria), ...specFilesFor(projectDir, [...earlier.keys()])])];
         const { configured, tags } = configuredCriteria(projectDir, files);
         const { rows } = (ctx.runSuite ?? runSuite)({
           projectDir, target: "new", baseUrl: settings.baseUrl, mailApi: settings.mailApi,
@@ -522,11 +576,18 @@ export const verify = {
         // this run files, so the verify after a binding run can tell the rows it reaches.
         const adapter = adapterExists(projectDir, "new") ? adapterAt(projectDir, "new", "HEAD") : "";
         const claimed = rows.filter((r) => slice.criteria.includes(r.id)).map((r) => (adapter && r.file ? { ...r, adapter } : r));
-        const v = verifyVerdict(claimed, slice.criteria, { configured });
+        const own = verifyVerdict(claimed, slice.criteria, { configured });
+        const recheck = recheckEarlier(rows, earlier, configured);
+        // A criterion an earlier slice passed and this build broke fails this build, however its
+        // own criteria came out.
+        const v = recheck.regressed.length ? { ...own, verdict: "fail" } : own;
+        const regressionConditions = recheck.regressed.map((x) => `${x.id} (passed when slice ${x.slice} was approved): ${firstError(x.row)}`);
         const unboundListed = unboundReasons(claimed, v.unbound);
         const paths = [writeVerifyResult(projectDir, {
           slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted,
           environment: v.environment, unbound: unboundListed, adapter,
+          rechecked: recheck.held,
+          regressed: recheck.regressed.map((x) => ({ id: x.id, slice: x.slice, result: x.row.result, error: firstError(x.row) })),
         })];
         // Filed on main once the tree is back there, below: owed work is read off main by
         // `next` and by the binding run, and this branch reaches main only when it is ruled.
@@ -536,20 +597,28 @@ export const verify = {
         if (adapter) binding = { rows: claimed, adapter, ids: slice.criteria, appTree: git(["rev-parse", "HEAD:app"], projectDir) };
         const envLines = environmentLines(slice.number, v.environment);
         if (v.verdict === "fail") {
+          const k = recheck.regressed.length;
+          const regressionPart = k ? `${k} ${criteriaWord(k)} an earlier slice passed now ${k === 1 ? "fails" : "fail"}` : "";
           const { escalate, gateRel } = writeVerifyReturn(projectDir, {
             name, slice: slice.number, limit, escalateTo,
-            conditions: v.failing.map((r) => `${r.id}: ${firstError(r)}`),
-            rationale: `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say. Each condition is the criterion and what the running application did.`,
+            conditions: [...v.failing.map((r) => `${r.id}: ${firstError(r)}`), ...regressionConditions],
+            rationale: [
+              v.failing.length ? `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say.` : "",
+              k ? `This build breaks ${k} ${criteriaWord(k)} that passed when an earlier slice was approved.` : "",
+              "Each condition is the criterion and what the running application did.",
+            ].filter(Boolean).join(" "),
             escalatedRationale: `Slice ${slice.number} has failed verify ${limit} times. The failures below may not be the application's: a test, the adapter, the criterion or the sandbox can each be what is wrong (spec 7.1), and another build would not find out which.`,
           });
           paths.push(gateRel);
+          const ownPart = v.failing.length ? `${v.failing.length} of ${slice.criteria.length} criteria fail against the application` : "";
           notPassed = escalate
-            ? `escalated to ${escalateTo} — ${v.failing.length} of ${slice.criteria.length} criteria still fail after ${limit} builds`
-            : `returned — ${v.failing.length} of ${slice.criteria.length} criteria fail against the application`;
+            ? `escalated to ${escalateTo} — ${[v.failing.length ? `${v.failing.length} of ${slice.criteria.length} criteria still fail` : "", regressionPart].filter(Boolean).join("; ")} after ${limit} builds`
+            : `returned — ${[ownPart, regressionPart].filter(Boolean).join("; ")}`;
+          const failingIds = [...v.failing.map((r) => r.id), ...recheck.regressed.map((x) => `${x.id} (slice ${x.slice})`)];
           text = [
             escalate
-              ? `verify slice ${slice.number}: ${v.failing.length} criteria still fail after ${limit} builds; escalated to ${escalateTo}.`
-              : `verify slice ${slice.number}: returned — ${v.failing.map((r) => r.id).join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`,
+              ? `verify slice ${slice.number}: ${failingIds.length} criteria still fail after ${limit} builds; escalated to ${escalateTo}.`
+              : `verify slice ${slice.number}: returned — ${failingIds.join(", ")} fail. Next: sdlc run build --slice ${slice.number} --revise`,
             ...envLines,
           ].join("\n");
           // Told after the binding is filed, where the lines about it are added.
@@ -627,6 +696,15 @@ export const verify = {
           // put to the running application and met.
           text = `verify slice ${slice.number} verified: every claimed criterion passes against the application in ${name}. Ready for G3.`;
         }
+        // What became of the earlier slices' criteria, after whatever this slice's own verdict
+        // said: the ones that still pass, and the ones this run could not exercise, which are
+        // reported and left where they lie.
+        const h = recheck.held.length;
+        text = [
+          text,
+          ...(h ? [`${h} ${criteriaWord(h)} earlier slices passed still ${h === 1 ? "passes" : "pass"}.`] : []),
+          ...(recheck.unexercised.length ? [`Not checked again, and not charged to this build: ${recheck.unexercised.map((x) => `${x.id} (slice ${x.slice}: ${x.why})`).join("; ")}.`] : []),
+        ].join("\n");
         commitOnBranch(projectDir, paths, `verify(slice ${slice.number}): ${v.verdict}`);
       }
     } catch (err) {

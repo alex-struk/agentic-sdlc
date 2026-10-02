@@ -29,7 +29,12 @@ asks for happens at the gate it is returned to, not here.
   itself may not exist in the project.
 - `policy.loops.verify_returns`, the return limit, three when the key is absent.
 - The slice's own text and claimed criteria, from `plan/tasks.md`.
-- `tests/acceptance/<domain>/<id>.spec.ts` for each criterion the slice claims.
+- `tests/acceptance/<domain>/<id>.spec.ts` for each criterion the slice claims, and for each
+  criterion an already approved slice passed, read from that slice's result on `main`
+  (`tests/results/new/slice-<n>.json`). The second set is checked again against this build: one
+  that fails now returns the build as a regression, naming the slice it passed under, and one the
+  run could not exercise is reported and not charged to it
+  (`docs/decisions/0087-a-later-build-is-checked-against-what-earlier-slices-passed.md`).
 - `targets.new.mail_api`, the address the new target's mail catcher answers its API on. It is
   handed to the suite as `SDLC_MAIL_API`, the way `calibrate` hands on the oracle's. A target
   that declares none gives the suite none.

@@ -1217,3 +1217,79 @@ test("the ruler is told what an environment verdict means and which criteria it 
   assert.match(text, /Verdict: \*\*environment\*\* — .*could not be tested in this environment/);
   assert.match(text, /R-4\.2 — not tested in this environment: its test reads a mail catcher/);
 });
+
+// ---- what earlier, approved slices established is checked again ----
+
+// An approved slice left its verify result on main. The criteria that passed there are run again
+// with every later slice, because a later build can break them and its own criteria would never
+// say so. One that passed then and fails now returns this build; one that never passed is owed
+// where it already is and is not this build's to answer.
+function withEarlierSlice(d, rows) {
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  run(["checkout", "-q", "main"]);
+  mkdirSync(join(d, "tests", "results", "new"), { recursive: true });
+  writeFileSync(join(d, "tests", "results", "new", "slice-5.json"), JSON.stringify({ slice: 5, proposal: "build-slice-5-2", verdict: "pass", rows }));
+  for (const r of rows) writeFileSync(join(d, "tests", "acceptance", "users", `${r.id}.spec.ts`), "");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "slice 5 approved"]);
+}
+
+const suiteOf = (rows, calls) => (opts) => { calls.push(opts.files); return { rows }; };
+
+test("a criterion an approved slice passed is run again, and its failure now returns this build", async (t) => {
+  const d = buildProject(t);
+  withEarlierSlice(d, [row("R-3.1", "pass"), row("R-3.2", "fail", "Error: never passed")]);
+  const calls = [];
+  const ctx = { ...ctxFor(d), runSuite: suiteOf([row("R-4.1", "pass"), row("R-4.2", "pass"), row("R-3.1", "fail", "Error: expected heading \"Opportunities\""), row("R-3.2", "fail", "Error: never passed")], calls) };
+  assert.ok(verify.preChecks(d, ctx).every((c) => c.ok));
+  const r = await verify.execute(d, ctx);
+
+  assert.ok(calls[0].includes("tests/acceptance/users/R-3.1.spec.ts"), "the earlier slice's passing criterion is in the run");
+  assert.ok(!calls[0].includes("tests/acceptance/users/R-3.2.spec.ts"), "one it never passed is not");
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.equal(gate.verdict, "return");
+  assert.equal(gate.conditions.length, 1);
+  assert.match(gate.conditions[0], /^R-3\.1 \(passed when slice 5 was approved\): Error: expected heading "Opportunities"/);
+  assert.match(r.notPassed, /1 criterion an earlier slice passed now fails/);
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "fail");
+  assert.deepEqual(result.regressed.map((x) => [x.id, x.slice]), [["R-3.1", 5]]);
+  assert.deepEqual(result.rows.map((x) => x.id).sort(), ["R-4.1", "R-4.2"], "the slice's own rows stay its own");
+});
+
+test("earlier criteria that still pass leave the slice's own verdict as it was, and the result says they were checked", async (t) => {
+  const d = buildProject(t);
+  withEarlierSlice(d, [row("R-3.1", "pass")]);
+  const ctx = { ...ctxFor(d), runSuite: suiteOf([row("R-4.1", "pass"), row("R-4.2", "pass"), row("R-3.1", "pass")], []) };
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.text, /slice 1 verified/);
+  assert.match(r.text, /1 criterion earlier slices passed still passes/);
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "pass");
+  assert.deepEqual(result.rechecked, ["R-3.1"]);
+});
+
+// What the build cannot change is not charged to it: an earlier criterion this environment could
+// not exercise, or one the adapter can no longer drive, is reported and left where it lies.
+test("an earlier criterion that cannot be exercised now is reported, not charged to the build", async (t) => {
+  const d = buildProject(t);
+  withEarlierSlice(d, [row("R-3.1", "pass"), row("R-3.3", "pass")]);
+  const ctx = { ...ctxFor(d), runSuite: suiteOf([row("R-4.1", "pass"), row("R-4.2", "pass"), row("R-3.1", "unbound"), row("R-3.3", "fail", MAIL_UNSET)], []) };
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.match(r.text, /slice 1 verified/);
+  assert.match(r.text, /R-3\.1/);
+  assert.equal(JSON.parse(onBranch(d, "tests/results/new/slice-1.json")).verdict, "pass");
+});
+
+test("a criterion this slice claims is judged as its own, never as an earlier slice's", async (t) => {
+  const d = buildProject(t);
+  withEarlierSlice(d, [row("R-4.1", "pass")]);
+  const calls = [];
+  const ctx = { ...ctxFor(d), runSuite: suiteOf([row("R-4.1", "fail", "Error: x"), row("R-4.2", "pass")], calls) };
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.deepEqual(gate.conditions, ["R-4.1: Error: x"]);
+  assert.equal(calls[0].filter((f) => f.endsWith("R-4.1.spec.ts")).length, 1, "its test runs once");
+});
