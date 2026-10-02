@@ -242,3 +242,43 @@ test("the criteria a build is answerable for are named with the file that assign
   assert.match(prompt, /which this workspace carries for reading and does not deliver/);
   assert.match(prompt, /say which and why in your journal entry/);
 });
+
+// The pre-check moves a returned proposal to returned/<name> and records the return on main
+// before the builder runs. A run stopped after that leaves the return recorded and unanswered,
+// and the next revision takes it up from returned/<name> rather than finding nothing.
+test("build --revise takes up a return an interrupted revision recorded and never answered", (t) => {
+  const d = gitProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const gate = "gate: G3\nverdict: return\nby: runner:verify\nconditions:\n  - \"R-4.1: the heading reads Sign on\"\n";
+  run(["checkout", "-q", "-b", "returned/build-slice-1-2"]);
+  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "gates", "build-slice-1-2.yaml"), gate);
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
+  run(["checkout", "-q", "main"]);
+  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "gates", "build-slice-1-2.yaml"), gate);
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "record(G3): build-slice-1-2 returned"]);
+  const head = execFileSync("git", ["rev-parse", "main"], { cwd: d, encoding: "utf8" });
+  const ctx = { slice: 1, revise: true };
+  assert.ok(build.preChecks(d, ctx).every((c) => c.ok), "the unanswered return is revised from");
+  assert.equal(ctx.revision.name, "build-slice-1-2");
+  assert.match(JSON.stringify(ctx.revision.conditions ?? ctx.revision), /Sign on/);
+  assert.equal(execFileSync("git", ["rev-parse", "main"], { cwd: d, encoding: "utf8" }), head, "the return is not recorded a second time");
+});
+
+test("a return a revision has already answered is not taken up again", (t) => {
+  const d = gitProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const gate = "gate: G3\nverdict: return\nby: runner:verify\n";
+  run(["checkout", "-q", "-b", "returned/build-slice-1-2"]);
+  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "gates", "build-slice-1-2.yaml"), gate);
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
+  run(["checkout", "-q", "main"]);
+  mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "gates", "build-slice-1-2.yaml"), gate);
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "record"]);
+  run(["branch", "proposal/build-slice-1-3"]);
+  const fail = build.preChecks(d, { slice: 1, revise: true }).find((c) => !c.ok);
+  assert.match(fail.messages[0], /build-slice-1-3 is open and awaiting a ruling/);
+});

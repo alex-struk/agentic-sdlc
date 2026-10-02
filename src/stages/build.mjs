@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { readText } from "../lib/fsx.mjs";
 import { changedPaths, git } from "../lib/git.mjs";
 import { checkSeparation } from "../checks/separation.mjs";
-import { readSlice, buildProposalBase, buildProposals } from "./slices.mjs";
+import { readSlice, buildProposalBase, buildProposals, buildBranches } from "./slices.mjs";
 import { addressedElsewhereNote, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, owedConditionsNote, revisionConditionList, revisionRulingBlock, withOpenRequests, withOwedConditions } from "./proposals.mjs";
 import { skillPath } from "./shared.mjs";
 import { targetSettings } from "../sandbox/local.mjs";
@@ -71,6 +71,19 @@ function checkBuildRevisionSource(projectDir, ctx) {
     ctx.revision = withOwedConditions(projectDir, revision, buildProposalBase(ctx.slice));
     if (!ctx.dryRun) recordReturnOnMain(projectDir, ctx.revision, { gate: "G3", keepBranch: true });
     return { id, ok: true, messages: [] };
+  }
+  // A revision's pre-check records the return on main and moves the proposal to
+  // returned/<name> before the builder runs. A run stopped after that, before it opened a
+  // proposal, leaves the slice's newest build a return nobody answered. It is revised from
+  // there; its return is already on main and is not recorded again.
+  const [newest] = buildBranches(projectDir, ctx.slice);
+  if (newest && newest.branch.startsWith("returned/")) {
+    const found = returnedRulingOn(projectDir, newest.name, newest.branch, { recordedIsSpent: false });
+    if (found) {
+      const revision = withOpenRequests(projectDir, "build", { name: newest.name, branch: newest.branch, ...found, branchCommit: git(["rev-parse", newest.branch], projectDir) });
+      ctx.revision = withOwedConditions(projectDir, revision, buildProposalBase(ctx.slice));
+      return { id, ok: true, messages: [] };
+    }
   }
   const requested = requestedRevision(projectDir, "build");
   if (requested) { ctx.revision = requested; return { id, ok: true, messages: [] }; }

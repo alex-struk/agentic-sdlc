@@ -1277,3 +1277,17 @@ test("a request to a stage that runs per domain is run in the domain its source 
   assert.match(r.waiting.find((x) => x.kind === "request")?.why ?? "", /owed by derive-tests from plan-2 names no domain/);
   assertRunnable(r);
 });
+
+// A revision's pre-check records the return on main before the builder runs. A run stopped
+// after that and before it opened a proposal leaves the slice's newest ruling a return nobody
+// answered: the slice is revised from it, never built again from main, which would discard it.
+test("a slice whose newest ruling is a return no revision answered is revised, not built from nothing", (t) => {
+  const d = project(t, { profile: "feature" });
+  approved(d, ["intent-thing"], "G0");
+  approved(d, ["plan"], "G2");
+  commit(d, { "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1\n" });
+  commit(d, { ".sdlc/gates/build-slice-1-2.yaml": stringifyYaml({ gate: "G3", verdict: "return", by: "runner:verify", conditions: ["R-1.1: x"] }) });
+  const r = whatNext(d);
+  assert.equal(r.next.command, "sdlc run build --slice 1 --revise");
+  assert.match(r.next.why, /build-slice-1-2 was returned and no revision of it has been opened/);
+});

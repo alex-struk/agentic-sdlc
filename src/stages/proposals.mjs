@@ -96,13 +96,13 @@ export function nextProposalName(projectDir, stem) {
 // function's problem to raise. Shared by every stage with a `--revise` mode (archaeology,
 // derive-tests, design, build) — none of them cares which gate it is being asked about,
 // only whether the named proposal's own gate file, on its own branch, says `return`.
-export function returnedRulingOn(projectDir, name, branch) {
+export function returnedRulingOn(projectDir, name, branch, { recordedIsSpent = true } = {}) {
   const gatePath = `.sdlc/gates/${name}.yaml`;
   let text;
   try { text = git(["show", `${branch}:${gatePath}`], projectDir); } catch { return null; }
   // A full rerun can reuse a proposal name. Only the same recorded ruling is spent,
   // not a newer return whose path happens to exist on main already.
-  if (gitOk(["cat-file", "-e", `main:${gatePath}`], projectDir)
+  if (recordedIsSpent && gitOk(["cat-file", "-e", `main:${gatePath}`], projectDir)
     && git(["show", `main:${gatePath}`], projectDir) === text) return null;
   const gate = parseYaml(text) ?? {};
   if (gate.verdict !== "return") return null;

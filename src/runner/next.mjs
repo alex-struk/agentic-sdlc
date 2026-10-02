@@ -357,6 +357,15 @@ function calibrationSettlesWithoutSuite(record, target) {
   return `${said.join("; ")}; the suite would report ${open.length === 1 ? "it" : "them"} unbound again, so none is run`;
 }
 
+// The newest ruling on main for a slice's builds, when it is a return: the name returned.
+function unansweredBuildReturn(record, slice) {
+  const family = `build-slice-${slice}`;
+  const newest = [...record.gates]
+    .filter(([g]) => lineage(g).family === family)
+    .sort((a, b) => lineage(b[0]).n - lineage(a[0]).n)[0];
+  return newest && newest[1]?.doc?.verdict === "return" ? newest[0] : null;
+}
+
 // The steps of the sequence this project's profile runs, in order, each with what closes it.
 function sequenceSteps(record) {
   const { config, domains } = record;
@@ -1017,8 +1026,12 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
     const where = s.args.domain ? ` for ${s.args.domain}` : s.args.target ? ` for target ${s.args.target}` : s.args.slice !== undefined ? ` for slice ${s.args.slice}` : "";
     const settles = s.stage === "calibrate" ? calibrationSettlesWithoutSuite(record, s.args.target) : null;
     const full = s.stage === "calibrate" && !settles ? calibrationNeedsFullRun(record, s.args.target) : null;
-    const args = settles ? { ...s.args, skipSuite: true } : full ? { ...s.args, full: true } : s.args;
-    const because = settles ?? full;
+    // A slice whose newest ruling on main is a return, with no proposal of it open or returned
+    // in flight, is a return a revision took up and stopped before answering: it is revised
+    // from, never built again from main.
+    const unanswered = s.stage === "build" ? unansweredBuildReturn(record, s.args.slice) : null;
+    const args = settles ? { ...s.args, skipSuite: true } : full ? { ...s.args, full: true } : unanswered ? { ...s.args, revise: true } : s.args;
+    const because = settles ?? full ?? (unanswered ? `${unanswered} was returned and no revision of it has been opened` : null);
     sequence.push({ kind: "sequence", stage: s.stage, args, command: runCommand(s.stage, args),
       why: `phase ${phase.number} ${phase.name} is not complete (exit: ${phase.exit}), and ${s.stage}${where} is next in it${because ? `: ${because}` : ""}` });
   }
