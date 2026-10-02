@@ -1,7 +1,7 @@
 import { join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
-import { git, gitOk, assertCleanTree, porcelainStatus, stagePaths, stageSite, currentBranch, enterBranch, leaveBranch, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, porcelainStatus, stagePaths, stageSite, currentBranch, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { readText, writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
@@ -38,20 +38,16 @@ export { conditionGrammarFor, conditionsAreExecutable };
 
 function mergeApproved(projectDir, branch, message) {
   git(["checkout", "-q", "main"], projectDir);
-  try {
-    git([...SDLC_AUTHOR, "merge", "-q", "--no-ff", "-m", message, branch], projectDir);
-  } catch (e) {
-    // A failed merge leaves main mid-merge, which is the worst place to stop: the
-    // ruling is recorded, main is unbuildable, and nothing says why. Unwind it and name
-    // the files a person has to reconcile. Where the caller is left standing is not
-    // decided here — `leaveRuling` gives the borrowed branch back for every ruling that
-    // throws, and a message here claiming a branch would be claiming one of two places.
-    const conflicted = gitOk(["diff", "--name-only", "--diff-filter=U"], projectDir)
-      ? git(["diff", "--name-only", "--diff-filter=U"], projectDir) : "";
-    git(["merge", "--abort"], projectDir);
-    const files = conflicted ? `\nconflicted files:\n  ${conflicted.split("\n").join("\n  ")}` : "";
-    throw new Error(`merging ${branch} into main failed; main was left unchanged and the ruling stays on ${branch}.${files}\n${e.message}`);
-  }
+  // Two journal entries that took the same name on two branches are both kept
+  // (`mergeInto`). Any other failed merge would leave main mid-merge, which is the worst
+  // place to stop: the ruling is recorded, main is unbuildable, and nothing says why. It is
+  // unwound and the files a person has to reconcile are named. Where the caller is left
+  // standing is not decided here — `leaveRuling` gives the borrowed branch back for every
+  // ruling that throws, and a message here claiming a branch would be claiming one of two places.
+  const merged = mergeInto(projectDir, branch, message);
+  if (merged.ok) return;
+  const files = merged.conflicts.length ? `\nconflicted files:\n  ${merged.conflicts.join("\n  ")}` : "";
+  throw new Error(`merging ${branch} into main failed; main was left unchanged and the ruling stays on ${branch}.${files}\n${merged.message}`);
 }
 
 // A literal block scalar's indentation is normally inferred from its first non-blank

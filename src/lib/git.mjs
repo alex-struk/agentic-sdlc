@@ -150,6 +150,34 @@ export function leaveBranch(projectDir, start) {
 // one merges a proposal INTO `main`, moving the caller between branches to do it, and its
 // unwind has to put them back on the proposal. This merges the other direction, on the
 // branch the caller is already standing on, and moves nobody.
+// A journal entry is the account of one run, named by the next number free on the branch the
+// run started from. Two runs that start from the same `main` take the same number, and where
+// both are entries for the same stage their files collide when the branches meet. Neither side
+// is wrong and neither may be lost. The entry `main` already holds keeps its name, so the two
+// branches agree about it from here on; the other is kept beside it under the same name with
+// the first free `-<n>` added. A conflict anywhere else is left for the caller to report.
+const JOURNAL_DIR = ".sdlc/journal/";
+
+function keepBothEntries(projectDir, paths) {
+  const kept = [];
+  for (const path of paths) {
+    const ours = gitOk(["cat-file", "-e", `:2:${path}`], projectDir) ? gitRaw(["show", `:2:${path}`], projectDir) : null;
+    const theirs = gitOk(["cat-file", "-e", `:3:${path}`], projectDir) ? gitRaw(["show", `:3:${path}`], projectDir) : null;
+    if (ours === null || theirs === null) return null;
+    const onMain = gitOk(["cat-file", "-e", `main:${path}`], projectDir) ? gitRaw(["show", `main:${path}`], projectDir) : null;
+    const [stays, moves] = onMain === theirs ? [theirs, ours] : [ours, theirs];
+    const stem = path.replace(/\.md$/, "");
+    let n = 2;
+    while (existsSync(join(projectDir, `${stem}-${n}.md`)) || gitOk(["cat-file", "-e", `HEAD:${stem}-${n}.md`], projectDir)) n += 1;
+    const moved = `${stem}-${n}.md`;
+    writeFileSync(join(projectDir, path), stays);
+    writeFileSync(join(projectDir, moved), moves);
+    git(["add", "--", path, moved], projectDir);
+    kept.push({ path, moved });
+  }
+  return kept;
+}
+
 export function mergeInto(projectDir, ref, message) {
   try {
     git([...SDLC_AUTHOR, "merge", "-q", "--no-ff", "-m", message, ref], projectDir);
@@ -158,6 +186,11 @@ export function mergeInto(projectDir, ref, message) {
     const listed = gitOk(["diff", "--name-only", "--diff-filter=U"], projectDir)
       ? git(["diff", "--name-only", "--diff-filter=U"], projectDir) : "";
     const conflicts = listed ? listed.split("\n").filter(Boolean) : [];
+    const kept = conflicts.length && conflicts.every((p) => p.startsWith(JOURNAL_DIR)) ? keepBothEntries(projectDir, conflicts) : null;
+    if (kept) {
+      git([...SDLC_AUTHOR, "commit", "-q", "--no-edit"], projectDir);
+      return { ok: true, conflicts: [], kept };
+    }
     // `--abort` refuses when there is no merge in progress — a merge git declined to
     // start at all, over a file it would have to overwrite — and the tree is already
     // untouched in that case, so the refusal is not itself a failure.
