@@ -1293,3 +1293,24 @@ test("a criterion this slice claims is judged as its own, never as an earlier sl
   assert.deepEqual(gate.conditions, ["R-4.1: Error: x"]);
   assert.equal(calls[0].filter((f) => f.endsWith("R-4.1.spec.ts")).length, 1, "its test runs once");
 });
+
+// A criterion's test file can hold several cases, each failing at the same assertion line. The
+// builder never sees the test, so the condition names the case that failed: the behaviour it
+// asserts, as its title says, which is what the builder has to find in the application.
+test("a condition from a file of several cases names the case that failed", async (t) => {
+  const d = buildProject(t);
+  const statement = "An opportunity that is not a draft must state whether remote work is acceptable";
+  mockSuite(t, [
+    { id: "R-4.1", result: "fail", file: "tests/acceptance/users/R-4.1.spec.ts", tests: [
+      { title: `${statement} (one that accepts remote work with no remote-work description is refused)`, status: "passed" },
+      { title: `${statement} (one that does not say whether remote work is acceptable is refused)`, status: "failed", error: "Error: expect(received).not.toContain(expected)", line: 54 },
+    ] },
+    { id: "R-4.2", result: "fail", file: "tests/acceptance/users/R-4.2.spec.ts", tests: [{ title: "A single case", status: "failed", error: "Error: x", line: 3 }] },
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.equal(gate.conditions[0], "R-4.1, in the case \"one that does not say whether remote work is acceptable is refused\": Error: expect(received).not.toContain(expected) — at tests/acceptance/users/R-4.1.spec.ts:54");
+  assert.equal(gate.conditions[1], "R-4.2: Error: x — at tests/acceptance/users/R-4.2.spec.ts:3", "a file of one case needs no name for it");
+});

@@ -104,7 +104,9 @@ asks for happens at the gate it is returned to, not here.
    `Received:`, `Expected:`, an element that intercepts pointer events — and the place in the test it
    failed, `at tests/acceptance/<domain>/<file>:<line>`, the first stack frame inside the spec file,
    never cut off by the 400-character cap; a place is not the test's code, so the builder is still
-   never shown the test,
+   never shown the test. Where the criterion's test file holds several cases, the condition also
+   names the one that failed, `<id>, in the case "<case>": …`, by the behaviour its title asserts,
+   since several cases can fail at the same line,
    `docs/decisions/0084-a-ruler-can-withdraw-a-request-and-verify-names-the-failing-line.md`) — the same gate-file shape a reviewer's own return would
    leave, so `build --slice <n> --revise` reads either one the same way
    (`docs/decisions/0011-build-verify-review.md`). The return that reaches the project's limit

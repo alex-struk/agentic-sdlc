@@ -246,6 +246,19 @@ function firstError(r) {
   return `${text.length > room ? `${text.slice(0, room - 1)}…` : text}${where}`;
 }
 
+// `, in the case "<case>"` for a criterion whose test file holds several cases: the one that
+// failed, named by the behaviour its title asserts. Several cases can fail at the same line, and
+// the builder, who never sees the test, is told which behaviour to look for. A title ending in a
+// parenthesised case (`<statement> (<case>)`) is named by the case; any other by its whole title.
+function failedCase(r) {
+  const tests = r.tests ?? [];
+  if (tests.length < 2) return "";
+  const title = String(tests.find((x) => x.error)?.title ?? "").trim();
+  if (!title) return "";
+  const named = /\(([^()]+)\)\s*$/.exec(title)?.[1]?.trim() ?? title;
+  return `, in the case "${named.length > 200 ? `${named.slice(0, 199)}…` : named}"`;
+}
+
 // ` — at <file>:<line>` for a failed test, or nothing where the line is not known or the row's
 // file is not a path inside the project.
 function failedAt(r, t) {
@@ -581,7 +594,7 @@ export const verify = {
         // A criterion an earlier slice passed and this build broke fails this build, however its
         // own criteria came out.
         const v = recheck.regressed.length ? { ...own, verdict: "fail" } : own;
-        const regressionConditions = recheck.regressed.map((x) => `${x.id} (passed when slice ${x.slice} was approved): ${firstError(x.row)}`);
+        const regressionConditions = recheck.regressed.map((x) => `${x.id} (passed when slice ${x.slice} was approved)${failedCase(x.row)}: ${firstError(x.row)}`);
         const unboundListed = unboundReasons(claimed, v.unbound);
         const paths = [writeVerifyResult(projectDir, {
           slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted,
@@ -601,7 +614,7 @@ export const verify = {
           const regressionPart = k ? `${k} ${criteriaWord(k)} an earlier slice passed now ${k === 1 ? "fails" : "fail"}` : "";
           const { escalate, gateRel } = writeVerifyReturn(projectDir, {
             name, slice: slice.number, limit, escalateTo,
-            conditions: [...v.failing.map((r) => `${r.id}: ${firstError(r)}`), ...regressionConditions],
+            conditions: [...v.failing.map((r) => `${r.id}${failedCase(r)}: ${firstError(r)}`), ...regressionConditions],
             rationale: [
               v.failing.length ? `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say.` : "",
               k ? `This build breaks ${k} ${criteriaWord(k)} that passed when an earlier slice was approved.` : "",
