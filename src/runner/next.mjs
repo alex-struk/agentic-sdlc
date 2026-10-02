@@ -36,6 +36,7 @@ import { MISSING_TEST, openMissingTestsAt, retired } from "../spec/missing-tests
 import { PERSONA_UNAVAILABLE, UNBOUND, legacyAdapter, openUnboundRows, personaUnavailable, targetIdentity, unavailablePersonas, unboundOwed } from "../spec/unbound.mjs";
 import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
+import { openBuildProposal } from "../stages/slices.mjs";
 import { stallReason } from "./escalation.mjs";
 import { buildVerifiedOnBranch, simulatedRole } from "../commands/rule.mjs";
 import { readVerifyResult } from "./verify-evidence.mjs";
@@ -663,6 +664,10 @@ function owedWork(projectDir, record, inFlight, bindsNow) {
         // Once that verify has run with the adapter there is now, the re-check is made and
         // offering it again would measure the same thing again (`docs/decisions/0085`).
         if (recheckMade(projectDir, record, e)) continue;
+        // A verify measures the slice's open build. With none open (returned, or not yet built
+        // again) there is nothing to measure, and the next verify of the slice, after its
+        // revision, checks the row again anyway.
+        if (!openBuildProposal(projectDir, slice)) continue;
         group("verify", { slice }, "unbound row to check again now that its adapter has changed", "unbound rows to check again now that their adapter has changed");
       } else if (slice !== null) {
         const build = bindingBuildFor(record, slice);

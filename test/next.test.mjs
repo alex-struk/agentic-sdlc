@@ -1311,3 +1311,19 @@ test("in the Build phase a calibration of the oracle waits until every slice is 
   r = whatNext(d);
   assert.equal(r.next.command, "sdlc run calibrate --target old");
 });
+
+// A re-check is made by the slice's verify, which measures the slice's open build. With the build
+// returned there is none to measure: the revision's own verify checks the rows again, and the
+// re-check offered meanwhile would only be refused.
+test("an adapter re-check waits for a build of the slice to verify", (t) => {
+  const d = project(t, { profile: "feature", extra: NEW_TARGET });
+  const A = verifiedBuild(d, { verdict: "fail" });
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [verifyEntry("R-1.2", A)] }) }, "run(verify)");
+  commit(d, { "tests/adapters/new/index.ts": "export default 2;\n" }, "merge bind-adapter-new");
+  git(d, ["checkout", "-q", "proposal/build-slice-1"]);
+  commit(d, { ".sdlc/gates/build-slice-1.yaml": stringifyYaml({ gate: "G3", verdict: "return", by: "tech-lead", note: "n" }) }, "rule(G3): build-slice-1 return");
+  git(d, ["checkout", "-q", "main"]);
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.stage === "verify"), "nothing to verify while the build is returned");
+  assert.equal(r.next.command, "sdlc run build --slice 1 --revise");
+});
