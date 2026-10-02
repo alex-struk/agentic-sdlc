@@ -1331,3 +1331,24 @@ test("earlier slices' criteria are checked again only once the slice's own pass"
   assert.deepEqual(gate.conditions, ["R-4.1: Error: x"]);
   assert.match(r.text, /The 1 criterion earlier slices passed is checked again once this slice's own criteria pass/);
 });
+
+// A target that declares several copies is verified across all of them: the suite is handed
+// one address, mail catcher and reset per copy, and spreads its tests over them
+// (`docs/decisions/0090`).
+test("verify starts every copy of the new target and hands the suite one of each", async (t) => {
+  const d = buildProject(t);
+  const calls = [];
+  const ctx = ctxFor(d);
+  ctx.config.targets.new = { ...ctx.config.targets.new, instances: 2, ports: { SDLC_APP_PORT: 8080 } };
+  let asked;
+  ctx.sandbox = {
+    up: async (_d, opts) => { asked = opts; return { ok: true, baseUrl: "http://localhost:8080", copies: [{ index: 0, baseUrl: "http://localhost:8080", mailApi: "" }, { index: 1, baseUrl: "http://localhost:8180", mailApi: "" }] }; },
+    down: () => ({ ok: true }),
+  };
+  ctx.runSuite = (opts) => { calls.push(opts); return { rows: [row("R-4.1", "pass"), row("R-4.2", "pass")] }; };
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  assert.equal(asked?.copies, "all", "verify asks for every copy");
+  assert.deepEqual(calls[0].instances.map((c) => c.baseUrl), ["http://localhost:8080", "http://localhost:8180"]);
+  assert.match(calls[0].instances[1].resetCommand, /-p sdlc-p-new-1 /);
+});

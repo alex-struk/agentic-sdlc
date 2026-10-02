@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { loadConfig } from "../config/load.mjs";
-import { targetSettings, composeArgs, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portsBoundByProject, portOf, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
+import { targetSettings, targetCopies, composeArgs, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portsBoundByProject, portOf, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
 import { portIsFree, portHolder } from "../lib/ports.mjs";
 import { enterBranch, leaveBranch } from "../lib/git.mjs";
 import { COMMANDS } from "../cli.mjs";
@@ -51,8 +51,13 @@ export async function pollAddress(url, tick = async () => null, { fetchUrl = (u)
 // The identity provider's test users sign in with this password, and compose reads it from
 // the environment. It is passed only that way, so it never appears in an argument list, a
 // log line or a file.
-function composeEnv() {
-  return process.env.SDLC_SANDBOX_PASSWORD ? { SDLC_SANDBOX_PASSWORD: process.env.SDLC_SANDBOX_PASSWORD } : {};
+//
+// A copy's own port variables travel the same way (`targetCopies`, `src/sandbox/local.mjs`).
+function composeEnv(s) {
+  return {
+    ...(s?.env ?? {}),
+    ...(process.env.SDLC_SANDBOX_PASSWORD ? { SDLC_SANDBOX_PASSWORD: process.env.SDLC_SANDBOX_PASSWORD } : {}),
+  };
 }
 
 // The sandbox password reaches compose through the environment, and a container is free to
@@ -92,7 +97,7 @@ const sleepMs = (ms) => new Promise((ok) => setTimeout(ok, ms));
 // failed" would print `sandbox up` over the crash loop this whole check exists to catch.
 function psRows(projectDir, s, exec) {
   let r;
-  try { r = exec("docker", [...composeArgs(projectDir, s), "ps", "--all", "--format", "json"], { cwd: projectDir, env: composeEnv() }); }
+  try { r = exec("docker", [...composeArgs(projectDir, s), "ps", "--all", "--format", "json"], { cwd: projectDir, env: composeEnv(s) }); }
   catch (err) { return { ok: false, why: `docker compose ps could not be run: ${redact(err?.message ?? String(err))}` }; }
   if (!r || r.status !== 0) return { ok: false, why: `docker compose ps failed:\n${tail(r ?? {})}` };
   const rows = parseComposePs(r.stdout);
@@ -114,7 +119,7 @@ const psFailures = (projectDir, s, exec) => serviceFailures(psRows(projectDir, s
 // URL points at and nothing else has read it.
 function logTail(projectDir, s, exec, service) {
   let r;
-  try { r = exec("docker", [...composeArgs(projectDir, s), "logs", "--no-color", "--tail", String(LOG_LINES), service], { cwd: projectDir, env: composeEnv() }); }
+  try { r = exec("docker", [...composeArgs(projectDir, s), "logs", "--no-color", "--tail", String(LOG_LINES), service], { cwd: projectDir, env: composeEnv(s) }); }
   catch { return ""; }
   if (!r) return "";
   return redact(`${r.stdout ?? ""}\n${r.stderr ?? ""}`).trim().split("\n").slice(-LOG_LINES).join("\n");
@@ -203,7 +208,7 @@ function addressThisProjectDoesNotServe(projectDir, s, exec, url) {
 // project publishes.
 function publishedPorts(projectDir, s, exec) {
   let r;
-  try { r = exec("docker", [...composeArgs(projectDir, s), "config", "--format", "json"], { cwd: projectDir, env: composeEnv() }); }
+  try { r = exec("docker", [...composeArgs(projectDir, s), "config", "--format", "json"], { cwd: projectDir, env: composeEnv(s) }); }
   catch { return null; }
   if (!r || r.status !== 0) return null;
   return declaredPorts(r.stdout);
@@ -254,8 +259,28 @@ const describe = (f) => (f.log ? `${f.service} ${f.reason}. The end of its own l
 // that has to write one condition per service rather than print a paragraph.
 const failed = (cause, messages, failures = []) => ({ ok: false, cause, failures, messages });
 
-export async function sandboxUp(projectDir, config, target, { exec = defaultExec, health = pollAddress, sleep = sleepMs, samples = SETTLE_SAMPLES, portFree = portIsFree } = {}) {
-  const s = targetSettings(config, target);
+//
+// One copy unless `copies: "all"` asks for every copy the target declares: a sandbox somebody
+// drives by hand, or an adapter is bound against, is one application, and only a verify that
+// spreads its tests across copies needs the rest (`docs/decisions/0090`). Copies are started
+// one after another and the first that does not come up is what is reported; `down` stops
+// every copy whichever were started.
+export async function sandboxUp(projectDir, config, target, deps = {}) {
+  const all = targetCopies(config, target);
+  const wanted = deps.copies === "all" ? all : all.slice(0, 1);
+  const started = [];
+  for (const c of wanted) {
+    const r = await upCopy(projectDir, config, target, c, deps);
+    if (!r.ok) {
+      if (wanted.length < 2) return r;
+      return { ...r, messages: [`copy ${c.index} of the ${wanted.length} (${c.project}): ${r.messages[0]}`, ...r.messages.slice(1)] };
+    }
+    started.push({ index: c.index, baseUrl: c.baseUrl, mailApi: c.mailApi });
+  }
+  return { ok: true, baseUrl: wanted[0].baseUrl, copies: started, messages: [] };
+}
+
+async function upCopy(projectDir, config, target, s, { exec = defaultExec, health = pollAddress, sleep = sleepMs, samples = SETTLE_SAMPLES, portFree = portIsFree } = {}) {
   // The compose file is written by the build that declares the application's local
   // services, and it lives under `app/` with the rest of that build's output, so a missing
   // one is something a builder can be told to write.
@@ -275,7 +300,7 @@ export async function sandboxUp(projectDir, config, target, { exec = defaultExec
       `Free ${held.length === 1 ? "it" : "them"} and run this again, or publish this target somewhere else: the address the suite drives is targets.${target}.base_url in .sdlc/config.yaml, and ${s.compose} has to publish it there. Nothing of this project was started.`,
     ]);
   }
-  const up = exec("docker", [...composeArgs(projectDir, s), "up", "-d", "--build", "--wait"], { cwd: projectDir, env: composeEnv() });
+  const up = exec("docker", [...composeArgs(projectDir, s), "up", "-d", "--build", "--wait"], { cwd: projectDir, env: composeEnv(s) });
   if (up.status !== 0) {
     const bad = withLogs(projectDir, s, exec, psFailures(projectDir, s, exec));
     return failed(causeOf(bad), [`docker compose up failed:\n${tail(up)}`, ...bad.map(describe)], bad);
@@ -333,13 +358,13 @@ export async function sandboxUp(projectDir, config, target, { exec = defaultExec
     return failed(ENVIRONMENT, [`the sandbox is not reported up: whether this project's services are running could not be established.\n${watched.unreadable}`]);
   const bad = withLogs(projectDir, s, exec, watched.failures);
   if (bad.length) return failed(causeOf(bad), [`the sandbox is not up: ${notRunning(bad)}`, ...bad.map(describe)], bad);
-  const seeded = sandboxReset(projectDir, config, target, { exec });
+  const seeded = sandboxReset(projectDir, config, target, { exec, index: s.index });
   return seeded.ok ? { ok: true, baseUrl: s.baseUrl, messages: [] } : seeded;
 }
 
-export function sandboxReset(projectDir, config, target, { exec = defaultExec } = {}) {
-  const s = targetSettings(config, target);
-  const r = exec("docker", [...composeArgs(projectDir, s), "run", "--rm", s.seedService], { cwd: projectDir, env: composeEnv() });
+export function sandboxReset(projectDir, config, target, { exec = defaultExec, index = 0 } = {}) {
+  const s = targetCopies(config, target)[index];
+  const r = exec("docker", [...composeArgs(projectDir, s), "run", "--rm", s.seedService], { cwd: projectDir, env: composeEnv(s) });
   if (r.status === 0) return { ok: true, messages: [] };
   // A seed container is created and run against a stack that is already up, so what failed
   // is the process inside it: the seed, the migrations it depends on, or the schema they
@@ -349,9 +374,12 @@ export function sandboxReset(projectDir, config, target, { exec = defaultExec } 
 }
 
 export function sandboxDown(projectDir, config, target, { exec = defaultExec } = {}) {
-  const s = targetSettings(config, target);
-  const r = exec("docker", [...composeArgs(projectDir, s), "down", "-v"], { cwd: projectDir, env: composeEnv() });
-  return { ok: r.status === 0 };
+  let ok = true;
+  for (const s of targetCopies(config, target)) {
+    const r = exec("docker", [...composeArgs(projectDir, s), "down", "-v"], { cwd: projectDir, env: composeEnv(s) });
+    ok &&= r.status === 0;
+  }
+  return { ok };
 }
 
 const USAGE = "usage: sdlc sandbox up|down|reset|status [--target <t>] [--from <branch>]";
@@ -368,12 +396,12 @@ async function sandboxAction(projectDir, config, sub, target, deps = {}) {
   }
   if (sub === "reset") { const r = sandboxReset(projectDir, config, target, { exec }); console.log(r.ok ? `sandbox ${target} reseeded` : r.messages.join("\n")); return r.ok ? 0 : 1; }
   if (sub === "down") { sandboxDown(projectDir, config, target, { exec }); console.log(`sandbox ${target} down`); return 0; }
-  const s = targetSettings(config, target);
+  const s = targetCopies(config, target)[0];
   // `composeEnv()` for the same reason every other call takes it — compose warns about a
   // variable its file interpolates and the environment does not carry — and `redact` for
   // the reason every other quoting path takes it: what a container was handed is not
   // written down on the way out either.
-  const r = exec("docker", [...composeArgs(projectDir, s), "ps"], { cwd: projectDir, env: composeEnv() });
+  const r = exec("docker", [...composeArgs(projectDir, s), "ps"], { cwd: projectDir, env: composeEnv(s) });
   console.log(redact(r.stdout).trim() || `sandbox ${target}: nothing running`);
   return 0;
 }

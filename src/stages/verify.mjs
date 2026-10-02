@@ -483,7 +483,7 @@ export const verify = {
   },
   async execute(projectDir, ctx) {
     const { verifySlice: slice, verifyProposal: name, config } = ctx;
-    const up = ctx.sandbox?.up ?? ((d) => sandboxUp(d, config, "new"));
+    const up = ctx.sandbox?.up ?? ((d, opts) => sandboxUp(d, config, "new", opts));
     const down = ctx.sandbox?.down ?? ((d) => sandboxDown(d, config, "new"));
     // Who a G3 escalation goes to is the project's policy, not this stage's: `rule.mjs`
     // already routes by `policy.gates.G3.escalate_to`, and the name written here is the
@@ -533,7 +533,9 @@ export const verify = {
         text = mergeFailureText(slice.number, branch, merged);
         throw new Error(text);
       }
-      const started = await up(projectDir);
+      // Every copy the target declares, so the suite can spread its tests across them
+      // (`docs/decisions/0090`). A target that declares none is the one copy it always was.
+      const started = await up(projectDir, { copies: "all" });
       if (!started.ok && started.cause !== APPLICATION) {
         // The machine's half. A port already taken, an image that would not pull, a daemon
         // that is not there: nothing the builder wrote ever ran, so there is nothing to
@@ -575,10 +577,12 @@ export const verify = {
           : `verify slice ${slice.number}: returned — the sandbox did not start, so nothing was verified. ${(started.messages[0] ?? "").split("\n")[0]} Next: sdlc run build --slice ${slice.number} --revise`;
       } else {
         const settings = targetSettings(config, "new");
+        const instances = (started.copies?.length ? started.copies : [{ index: 0, baseUrl: settings.baseUrl, mailApi: settings.mailApi }])
+          .map((c) => ({ baseUrl: c.baseUrl, mailApi: c.mailApi, resetCommand: resetCommandFor(projectDir, config, "new", c.index) }));
         const suite = (files) => {
           const { configured, tags } = configuredCriteria(projectDir, files);
           const { rows } = (ctx.runSuite ?? runSuite)({
-            projectDir, target: "new", baseUrl: settings.baseUrl, mailApi: settings.mailApi,
+            projectDir, target: "new", baseUrl: settings.baseUrl, mailApi: settings.mailApi, instances,
             files, resetCommand: resetCommandFor(projectDir, config, "new"),
             ...(tags.length ? { grepInvert: tags } : {}),
           });

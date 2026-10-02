@@ -29,14 +29,59 @@ export function targetSettings(config, target) {
   };
 }
 
+// The copies of a target a run may start: copy 0 is the sandbox as it always was, and each
+// further copy is a compose project of its own (`<project>-<i>`) with its own database, so a
+// verify can spread its tests across them without two tests sharing data
+// (`docs/decisions/0090`). Copy i publishes on ports moved `instance_port_step` × i along: the
+// compose file reads each published port from a variable `ports` names, defaulting to copy 0's
+// port, and every address the target declares on one of those ports is moved with it. `env` is
+// what compose is handed for that copy; copy 0 is handed its defaults, which change nothing.
+export function targetCopies(config, target) {
+  const s = targetSettings(config, target);
+  const t = config.targets[target];
+  const count = Math.max(1, Number(t.instances ?? 1));
+  const ports = t.ports ?? {};
+  const names = Object.keys(ports);
+  if (count > 1 && !names.length) {
+    throw new Error(`targets.${target}.instances is ${count}, but targets.${target}.ports names no port variable to move the further copies along by; the compose file has to publish its ports through them`);
+  }
+  const step = Number(t.instance_port_step ?? DEFAULT_PORT_STEP);
+  return Array.from({ length: count }, (_, i) => {
+    const moved = new Map(names.map((v) => [Number(ports[v]), Number(ports[v]) + i * step]));
+    const at = (url) => movePort(url, moved);
+    return {
+      ...s,
+      index: i,
+      project: i === 0 ? s.project : `${s.project}-${i}`,
+      env: Object.fromEntries(names.map((v) => [v, String(Number(ports[v]) + i * step)])),
+      baseUrl: at(s.baseUrl),
+      mailApi: s.mailApi ? at(s.mailApi) : s.mailApi,
+      dependsOn: Object.fromEntries(Object.entries(s.dependsOn).map(([k, u]) => [k, at(u)])),
+    };
+  });
+}
+
+const DEFAULT_PORT_STEP = 100;
+
+// The address with its port replaced, where the port is one of those being moved.
+function movePort(url, moved) {
+  let u;
+  try { u = new URL(url); } catch { return url; }
+  const port = Number(u.port || (u.protocol === "https:" ? 443 : 80));
+  if (!moved.has(port) || moved.get(port) === port) return url;
+  u.port = String(moved.get(port));
+  const out = u.toString();
+  return url.endsWith("/") ? out : out.replace(/\/$/, "");
+}
+
 export function composeArgs(projectDir, settings, absolute = false) {
   return ["compose", "-p", settings.project, "-f", absolute ? join(projectDir, settings.compose) : settings.compose];
 }
 
 // What the harness runs before each test to put the data back to the seed. Absolute, since
 // the harness runs from `tests/` and a relative compose path would not resolve there.
-export function resetCommandFor(projectDir, config, target) {
-  const s = targetSettings(config, target);
+export function resetCommandFor(projectDir, config, target, index = 0) {
+  const s = targetCopies(config, target)[index] ?? targetSettings(config, target);
   return ["docker", ...composeArgs(projectDir, s, true), "run", "--rm", s.seedService].join(" ");
 }
 

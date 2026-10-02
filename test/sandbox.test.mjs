@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { targetSettings, resetCommandFor, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portOf, causeOf } from "../src/sandbox/local.mjs";
+import { targetSettings, targetCopies, resetCommandFor, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portOf, causeOf } from "../src/sandbox/local.mjs";
 import { sandboxUp, sandboxReset, sandboxDown, runSandbox, pollAddress } from "../src/commands/sandbox.mjs";
 import { portIsFree, portHolder } from "../src/lib/ports.mjs";
 import { parseConfig } from "../src/config/load.mjs";
@@ -990,4 +990,90 @@ test("a container still starting or looping does not end a wait, and neither doe
     assert.equal(cutShort, false, "the wait ran to its own end");
     assert.match(r.messages[0], /its identity dependency did not answer/);
   }
+});
+
+
+// ---- several copies of the new target, for a verify that spreads its tests across them ----
+
+// Each copy is a compose project of its own, with its own database, on host ports of its own.
+// The compose file reads its published ports from the variables `ports` names, defaulting to
+// copy 0's, so copy 0 is the sandbox as it always was and copy i is moved i steps along
+// (`docs/decisions/0090`).
+const COPIES = {
+  project: { name: "mkt" },
+  targets: { new: {
+    base_url: "http://localhost:4300", identity: "sandbox-idp", mail_api: "http://localhost:8025",
+    depends_on: { identity: "http://localhost:8080/realms/sandbox" },
+    instances: 3, ports: { SDLC_APP_PORT: 4300, SDLC_IDP_PORT: 8080, SDLC_MAIL_PORT: 8025 },
+  } },
+};
+
+test("one copy is the sandbox as it always was", () => {
+  const [only, ...rest] = targetCopies(CONFIG, "new");
+  assert.deepEqual(rest, []);
+  assert.deepEqual(only, { ...targetSettings(CONFIG, "new"), index: 0, env: {} });
+});
+
+test("each further copy is its own compose project, on ports moved one step along, with every address that names them", () => {
+  const copies = targetCopies(COPIES, "new");
+  assert.equal(copies.length, 3);
+  assert.equal(copies[0].project, "sdlc-mkt-new");
+  assert.deepEqual(copies[0].env, { SDLC_APP_PORT: "4300", SDLC_IDP_PORT: "8080", SDLC_MAIL_PORT: "8025" });
+  assert.equal(copies[0].baseUrl, "http://localhost:4300");
+  assert.equal(copies[2].project, "sdlc-mkt-new-2");
+  assert.deepEqual(copies[2].env, { SDLC_APP_PORT: "4500", SDLC_IDP_PORT: "8280", SDLC_MAIL_PORT: "8225" });
+  assert.equal(copies[2].baseUrl, "http://localhost:4500");
+  assert.equal(copies[2].mailApi, "http://localhost:8225");
+  assert.deepEqual(copies[2].dependsOn, { identity: "http://localhost:8280/realms/sandbox" });
+  const step = targetCopies({ ...COPIES, targets: { new: { ...COPIES.targets.new, instance_port_step: 7 } } }, "new");
+  assert.equal(step[1].baseUrl, "http://localhost:4307");
+});
+
+test("more copies than one need the ports they are moved by", () => {
+  const bare = { ...CONFIG, targets: { new: { ...CONFIG.targets.new, instances: 2 } } };
+  assert.throws(() => targetCopies(bare, "new"), /targets\.new\.ports/);
+});
+
+test("the config schema accepts instances, ports and instance_port_step on a target", () => {
+  const text = `pipeline: { repo: a, ref: main }\nprofile: greenfield\nstack: openshift-ts\nproject: { name: p, domains: [a] }\n`
+    + `targets:\n  new: { base_url: "http://localhost:4300", identity: sandbox-idp, instances: 3, instance_port_step: 100, ports: { SDLC_APP_PORT: 4300 } }\n`
+    + `policy:\n  gates:\n    G0: { holder: tech-lead }\n    G1: { holder: tech-lead }\n    G-DESIGN: { holder: tech-lead }\n    G2: { holder: tech-lead }\n    G3: { holder: tech-lead }\n    G-POL: { holder: tech-lead }\n  default_tier: STANDARD\nskills: { packs: [] }\negress: { rules: [E-2] }\n`;
+  assert.deepEqual(parseConfig(text).errors, []);
+});
+
+test("a copy's reset runs its own seed service, in its own compose project", (t) => {
+  const d = project(t);
+  assert.equal(resetCommandFor(d, COPIES, "new", 2),
+    `docker compose -p sdlc-mkt-new-2 -f ${join(d, "app/compose/compose.yaml")} run --rm seed`);
+  assert.equal(resetCommandFor(d, COPIES, "new"), resetCommandFor(d, COPIES, "new", 0));
+});
+
+test("up starts copy 0 alone unless every copy is asked for, each with its own ports; down stops them all", async (t) => {
+  const d = project(t);
+  const seen = [];
+  const exec = (cmd, args, opts) => { seen.push({ args: args.join(" "), env: opts?.env ?? {} }); return { status: 0, stdout: "", stderr: "" }; };
+  const asked = [];
+  const health = async (url) => { asked.push(url); return true; };
+
+  const one = await sandboxUp(d, COPIES, "new", { exec, health });
+  assert.equal(one.ok, true);
+  assert.ok(!seen.some((c) => c.args.includes("sdlc-mkt-new-1")), "a sandbox for one person to drive is one copy");
+
+  seen.length = 0; asked.length = 0;
+  const all = await sandboxUp(d, COPIES, "new", { exec, health, copies: "all" });
+  assert.equal(all.ok, true);
+  assert.deepEqual(all.copies.map((c) => [c.index, c.baseUrl, c.mailApi]), [
+    [0, "http://localhost:4300", "http://localhost:8025"],
+    [1, "http://localhost:4400", "http://localhost:8125"],
+    [2, "http://localhost:4500", "http://localhost:8225"],
+  ]);
+  const up2 = seen.find((c) => /-p sdlc-mkt-new-2 .* up -d --build --wait/.test(c.args));
+  assert.ok(up2, "copy 2 is started as its own project");
+  assert.equal(up2.env.SDLC_APP_PORT, "4500");
+  assert.ok(seen.some((c) => /-p sdlc-mkt-new-2 .* run --rm seed$/.test(c.args)), "and seeded");
+  assert.ok(asked.includes("http://localhost:4500") && asked.includes("http://localhost:8280/realms/sandbox"), asked.join(" "));
+
+  seen.length = 0;
+  sandboxDown(d, COPIES, "new", { exec });
+  assert.deepEqual(seen.map((c) => c.args.match(/-p (\S+)/)[1]), ["sdlc-mkt-new", "sdlc-mkt-new-1", "sdlc-mkt-new-2"]);
 });
