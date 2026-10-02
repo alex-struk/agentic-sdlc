@@ -127,8 +127,41 @@ function specOutcomes(spec) {
     // report a blank `error`.
     const error = last.error?.message ?? (status === "interrupted" ? "interrupted" : undefined);
     const line = failedLine(last.error, spec.file);
-    return { title: spec.title, status, error, ...(line ? { line } : {}) };
+    const { steps, evidence } = failureEvidence(last.attachments);
+    const entry = { title: spec.title, status, error, ...(line ? { line } : {}), ...(steps.length ? { steps } : {}) };
+    // Where the harness left its outline and picture of the page, as absolute paths on this
+    // machine. Kept off the row's own fields, so a writer that serialises the row never
+    // writes them; the stage that keeps the evidence reads them here and copies the files.
+    if (evidence) Object.defineProperty(entry, "evidence", { value: evidence, enumerable: false });
+    return entry;
   });
+}
+
+// What the harness attached to a failing test (`templates/project/tests/fixtures/index.ts`):
+// the steps it took through the surface, the page's accessible outline and a picture of it
+// (`docs/decisions/0091-a-failure-says-where-it-was-and-what-it-saw.md`). An attachment that
+// is missing or unreadable is left out; none of it changes what the test's result is.
+export function failureEvidence(attachments) {
+  const out = { steps: [], evidence: null };
+  const named = (n) => (attachments ?? []).find((a) => a?.name === n);
+  const body = (a) => (a?.body ? Buffer.from(String(a.body), "base64").toString("utf8") : null);
+  try {
+    const parsed = JSON.parse(body(named("sdlc-steps")) ?? "[]");
+    if (Array.isArray(parsed)) out.steps = parsed.filter((s) => s && typeof s.step === "string");
+  } catch { /* left out */ }
+  const outline = body(named("sdlc-outline"));
+  const screen = named("sdlc-screen")?.path ?? null;
+  if (outline || screen) out.evidence = { ...(outline ? { outline } : {}), ...(screen ? { screen } : {}) };
+  return out;
+}
+
+// The step a failing test stopped after, when it was a read that came back with nothing:
+// an empty text, an empty list or nothing at all. That is the one failure whose cause can be
+// the adapter as easily as the application — the adapter looked in the wrong place, or the
+// application drew nothing there — and the steps alone cannot tell the two apart.
+export function emptyReadOf(test) {
+  const last = (test?.steps ?? []).at(-1);
+  return last?.empty && !last.threw ? last : null;
 }
 
 // What one spec file's tests add up to. A spec whose every result is `skipped` (or that

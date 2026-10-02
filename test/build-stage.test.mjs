@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -281,4 +281,32 @@ test("a return a revision has already answered is not taken up again", (t) => {
   run(["branch", "proposal/build-slice-1-3"]);
   const fail = build.preChecks(d, { slice: 1, revise: true }).find((c) => !c.ok);
   assert.match(fail.messages[0], /build-slice-1-3 is open and awaiting a ruling/);
+});
+
+// A revising builder cannot open a browser, so verify keeps a picture and an outline of the page
+// each failure ended on, and the build workspace is given them where the conditions name them
+// (`docs/decisions/0091`). They are in a folder git ignores, which the workspace archive does
+// not carry.
+test("a revision's workspace is given the pictures and outlines verify kept, and is told what it cannot run", (t) => {
+  const d = mkdtempSync(join(tmpdir(), "sdlc-build-ev-"));
+  const ws = mkdtempSync(join(tmpdir(), "sdlc-build-ws-"));
+  t.after(() => { rmSync(d, { recursive: true, force: true }); rmSync(ws, { recursive: true, force: true }); });
+  mkdirSync(join(d, ".sdlc", "evidence", "slice-2"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "evidence", "slice-2", "R-1.1.png"), "png");
+  build.prepare(ws, { slice: 2, revise: true, projectDir: d });
+  assert.equal(readFileSync(join(ws, ".sdlc", "evidence", "slice-2", "R-1.1.png"), "utf8"), "png");
+
+  const fresh = mkdtempSync(join(tmpdir(), "sdlc-build-ws-"));
+  t.after(() => rmSync(fresh, { recursive: true, force: true }));
+  build.prepare(fresh, { slice: 2, revise: false, projectDir: d });
+  assert.equal(existsSync(join(fresh, ".sdlc")), false, "a first build is given no evidence");
+
+  const prompt = build.prompt({
+    slice: 2, revise: true, projectDir: d,
+    buildSlice: { number: 2, title: "Second", body: "### Slice 2\n", criteria: ["R-1.1"] },
+    config: { project: { name: "permit-intake" }, targets: { new: { base_url: "http://localhost:3000" } } },
+    revision: { name: "build-slice-2", rationale: "r", conditions: ["R-1.1: Error: x"], addressedElsewhere: [] },
+  });
+  assert.match(prompt, /Where a failure names `\.sdlc\/evidence\/slice-2\/<id>\.png`/);
+  assert.match(prompt, /there is no Docker and no browser to install, so do not try/);
 });

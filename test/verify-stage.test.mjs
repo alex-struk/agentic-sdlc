@@ -1352,3 +1352,143 @@ test("verify starts every copy of the new target and hands the suite one of each
   assert.deepEqual(calls[0].instances.map((c) => c.baseUrl), ["http://localhost:8080", "http://localhost:8180"]);
   assert.match(calls[0].instances[1].resetCommand, /-p sdlc-p-new-1 /);
 });
+
+// A failing test leaves the steps it took through the contract's surface, and verify keeps a
+// picture and an outline of the page it ended on (`docs/decisions/0091`).
+const stepsTo = (last) => [
+  { step: "signIn", given: "persona member", at: "/" },
+  { step: "accountView.open", given: "{accountId}", at: "/accounts/7" },
+  last,
+];
+const failedAfter = (id, last, extra = {}) => ({ id, result: "fail", file: `tests/acceptance/users/${id}.spec.ts`,
+  tests: [{ title: "t", status: "failed", error: "Error: expect(received).toMatch(expected)\nReceived string:  \"\"", line: 12, steps: stepsTo(last), ...extra }] });
+
+test("a failure says which steps its test took, which page it ended on and what it read there", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [row("R-4.1", "pass"), failedAfter("R-4.2", { step: "accountView.status", at: "/accounts/7", read: "\"Closed\"" })]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.equal(gate.verdict, "return", "a read that came back with something is the application's, and goes straight back");
+  assert.equal(gate.conditions[0], "R-4.2: Error: expect(received).toMatch(expected) — Received string:  \"\" — at tests/acceptance/users/R-4.2.spec.ts:12"
+    + " — its last steps: signIn(persona member) at / → accountView.open({accountId}) at /accounts/7 → accountView.status() at /accounts/7 read \"Closed\"");
+});
+
+test("a failure that stopped on a read that came back with nothing is left open for the G3 ruler to sort", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [failedAfter("R-4.1", { step: "accountView.status", at: "/accounts/7", read: "\"\"", empty: true }), row("R-4.2", "fail", "Error: plainly wrong")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"), "verify writes no ruling of its own");
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "fail");
+  assert.deepEqual(result.sort.empty_reads, ["R-4.1"]);
+  assert.equal(result.sort.conditions.length, 2, "every failure is listed as the build would be told it, not only the empty read");
+  assert.match(result.sort.conditions[0], /accountView\.status\(\) at \/accounts\/7 read ""$/);
+  assert.match(r.text, /R-4\.1 stopped on a read that came back with nothing.*left open for agent:reviewer/);
+  assert.equal(buildVerified(d, "build-slice-1", ctx.config).ok, false, "it is still not approvable");
+});
+
+test("a ruler's return of a build verify left open to sort counts toward verify's limit", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  for (const k of [2, 3]) {
+    run(["checkout", "-q", "-b", `proposal/build-slice-1-${k}`, "proposal/build-slice-1"]);
+    run(["checkout", "-q", "main"]);
+  }
+  for (const name of ["build-slice-1", "build-slice-1-2"]) {
+    run(["checkout", "-q", `proposal/${name}`]);
+    mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+    mkdirSync(join(d, "tests", "results", "new"), { recursive: true });
+    writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), "gate: G3\nverdict: return\nby: agent:reviewer\nheld_by: agent:reviewer\n");
+    writeFileSync(join(d, "tests", "results", "new", "slice-1.json"), JSON.stringify({ slice: 1, proposal: name, verdict: "fail", sort: { empty_reads: ["R-4.1"], conditions: ["R-4.1: x"] }, rows: [] }));
+    run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "sorted and returned"]);
+    run(["checkout", "-q", "main"]);
+  }
+  mockSuite(t, [failedAfter("R-4.1", { step: "accountView.status", at: "/accounts/7", read: "\"\"", empty: true }), row("R-4.2", "pass")]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(execFileSync("git", ["show", "proposal/build-slice-1-3:.sdlc/gates/build-slice-1-3.yaml"], { cwd: d, encoding: "utf8" }));
+  assert.equal(gate.verdict, "escalated", "two sorted returns and this failure are the third strike, so verify escalates rather than leaving it to sort again");
+});
+
+test("verify keeps a picture and an outline of the page a test failed on, and names them in the condition", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  writeFileSync(join(d, ".gitignore"), ".sdlc/evidence/\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "ignores"]);
+  const shots = mkdtempSync(join(tmpdir(), "sdlc-shots-"));
+  t.after(() => rmSync(shots, { recursive: true, force: true }));
+  writeFileSync(join(shots, "failure.png"), "png");
+  const failing = failedAfter("R-4.2", { step: "accountView.status", at: "/accounts/7", read: "\"Closed\"" });
+  Object.defineProperty(failing.tests[0], "evidence", { value: { screen: join(shots, "failure.png"), outline: "/accounts/7\n\n- heading \"Account\" [level=1]" }, enumerable: false });
+  const ctx = { ...ctxFor(d), runSuite: suiteOf([row("R-4.1", "pass"), failing], []) };
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  assert.equal(readFileSync(join(d, ".sdlc", "evidence", "slice-1", "R-4.2.png"), "utf8"), "png");
+  assert.match(readFileSync(join(d, ".sdlc", "evidence", "slice-1", "R-4.2.txt"), "utf8"), /heading "Account"/);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.match(gate.conditions[0], / — the page as it failed: \.sdlc\/evidence\/slice-1\/R-4\.2\.png, \.sdlc\/evidence\/slice-1\/R-4\.2\.txt$/);
+  const result = onBranch(d, "tests/results/new/slice-1.json");
+  assert.ok(!result.includes(shots), "the machine's own path to the picture is never written");
+  assert.doesNotMatch(execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: d, encoding: "utf8" }), /evidence/, "what is kept leaves the tree clean");
+});
+
+test("verify keeps no picture where git would not ignore it, and the steps still travel", async (t) => {
+  const d = buildProject(t);
+  const shots = mkdtempSync(join(tmpdir(), "sdlc-shots-"));
+  t.after(() => rmSync(shots, { recursive: true, force: true }));
+  writeFileSync(join(shots, "failure.png"), "png");
+  const failing = failedAfter("R-4.2", { step: "accountView.status", at: "/accounts/7", read: "\"Closed\"" });
+  Object.defineProperty(failing.tests[0], "evidence", { value: { screen: join(shots, "failure.png") }, enumerable: false });
+  const ctx = { ...ctxFor(d), runSuite: suiteOf([row("R-4.1", "pass"), failing], []) };
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  assert.equal(existsSync(join(d, ".sdlc", "evidence")), false);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.match(gate.conditions[0], /its last steps: .* read "Closed"$/);
+});
+
+test("a ruler given a build to sort is told how, with every failure as the build would be told it", async () => {
+  const { formatVerifyEvidence } = await import("../src/runner/verify-evidence.mjs");
+  const text = formatVerifyEvidence({ slice: 1, result: {
+    verdict: "fail", proposal: "build-slice-1", app_tree: "abcdef0",
+    sort: { empty_reads: ["R-4.1"], conditions: ["R-4.1: Error: x — its last steps: accountView.status() at /accounts/7 read \"\"", "R-4.2: Error: y"] },
+    rows: [row("R-4.1", "fail", "Error: x"), row("R-4.2", "fail", "Error: y")],
+  } });
+  assert.match(text, /### Failures to sort before the build goes back/);
+  assert.match(text, /R-4\.1 stopped on a read that came back with nothing/);
+  assert.match(text, /addressed-to bind-adapter: <the criterion id>:/);
+  assert.match(text, /^- R-4\.1: Error: x — its last steps: accountView\.status\(\) at \/accounts\/7 read ""$/m);
+  assert.match(text, /^- R-4\.2: Error: y$/m);
+});
+
+// Playwright empties its own output folder when it starts, so the pictures one run of the suite
+// left are gone once the next run begins. Verify runs the slice's own tests, then earlier slices'
+// tests, and keeps each run's evidence before the next.
+test("the evidence of the slice's own run is kept before the earlier slices' run starts", async (t) => {
+  const d = buildProject(t);
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  writeFileSync(join(d, ".gitignore"), ".sdlc/evidence/\n");
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "ignores"]);
+  withEarlierSlice(d, [row("R-3.1", "pass")]);
+  const shots = mkdtempSync(join(tmpdir(), "sdlc-shots-"));
+  t.after(() => rmSync(shots, { recursive: true, force: true }));
+  const shot = (name) => { writeFileSync(join(shots, name), name); return join(shots, name); };
+  const withShot = (r, path) => { Object.defineProperty(r.tests[0], "evidence", { value: { screen: path }, enumerable: false }); return r; };
+  let call = 0;
+  const ctx = { ...ctxFor(d), runSuite: () => {
+    call += 1;
+    if (call === 1) return { rows: [row("R-4.1", "pass"), withShot(row("R-4.2", "fail", MAIL_UNSET), shot("own.png"))] };
+    rmSync(join(shots, "own.png"));
+    return { rows: [withShot(row("R-3.1", "fail", "Error: y"), shot("earlier.png"))] };
+  } };
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  assert.equal(call, 2, "the earlier slices' tests ran");
+  assert.equal(readFileSync(join(d, ".sdlc", "evidence", "slice-1", "R-4.2.png"), "utf8"), "own.png");
+  assert.equal(readFileSync(join(d, ".sdlc", "evidence", "slice-1", "R-3.1.png"), "utf8"), "earlier.png");
+});

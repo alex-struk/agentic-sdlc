@@ -10,13 +10,13 @@
 // target instead: a slice that fails that many builds running is usually failing for a
 // reason another build will not fix (spec §7.1).
 import { basename, join, relative } from "node:path";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { stringify as stringifyYaml, parse as parseYaml } from "yaml";
 import { writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
-import { failedLine, runSuite } from "../testrun/playwright.mjs";
+import { emptyReadOf, failedLine, runSuite } from "../testrun/playwright.mjs";
 import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, openBuildProposal, specFilesFor } from "./slices.mjs";
@@ -243,7 +243,79 @@ function firstError(r) {
   const text = [lines[0], ...said].join(" — ");
   const where = failedAt(r, t);
   const room = MAX_FAILURE_TEXT - where.length;
-  return `${text.length > room ? `${text.slice(0, room - 1)}…` : text}${where}`;
+  return `${text.length > room ? `${text.slice(0, room - 1)}…` : text}${where}${stepsClause(t)}${evidenceClause(t)}`;
+}
+
+// ` — its last steps: <step> → <step>` for a failed test the harness recorded steps for: each
+// a member of the contract's surface, what it was given, the page it ended on and what it read
+// there or threw. The contract is the builder's to read, so naming its members shows the
+// builder nothing of the test; what it adds is where the test was when it stopped and what the
+// application put in front of it (`docs/decisions/0091`). The last few are enough to place the
+// failure, and the clause is capped on its own so it never crowds out the error.
+const STEPS_SHOWN = 4;
+const MAX_STEPS_TEXT = 600;
+
+export function stepText(s) {
+  const outcome = s.threw ? ` threw ${JSON.stringify(s.threw)}` : s.read !== undefined ? ` read ${s.read}` : "";
+  return `${s.step}(${s.given ?? ""})${s.at ? ` at ${s.at}` : ""}${outcome}`;
+}
+
+function stepsClause(t) {
+  const steps = (t?.steps ?? []).slice(-STEPS_SHOWN);
+  if (!steps.length) return "";
+  const text = steps.map(stepText).join(" → ");
+  return ` — its last steps: ${text.length > MAX_STEPS_TEXT ? `…${text.slice(text.length - MAX_STEPS_TEXT + 1)}` : text}`;
+}
+
+// ` — the page: <picture>, <outline>` where verify kept them (`keepEvidence`). Paths inside the
+// project, to files git ignores: they are on the machine the slice is being built on, and a
+// reader elsewhere has the steps without them.
+function evidenceClause(t) {
+  const parts = [t?.screen, t?.outline].filter(Boolean);
+  return parts.length ? ` — the page as it failed: ${parts.join(", ")}` : "";
+}
+
+// Where verify keeps what failing tests left behind for one slice (`docs/decisions/0091`).
+export function evidenceDir(slice) {
+  return `.sdlc/evidence/slice-${slice}`;
+}
+
+const FAILED_STATUSES = new Set(["failed", "timedOut", "interrupted"]);
+
+// Whatever an earlier verify of the slice kept is removed before the suite runs: evidence is
+// about the application this run measures.
+function clearEvidence(projectDir, slice) {
+  rmSync(join(projectDir, evidenceDir(slice)), { recursive: true, force: true });
+}
+
+// Copies each failing test's picture and outline, which the suite runner left on this machine,
+// into the slice's evidence folder, and records their paths on the test. Called after each run
+// of the suite, before the next: Playwright empties its own output folder when it starts.
+// Nothing is written to a folder git does not ignore, where it would stop the next command that
+// needs a clean tree; the steps still travel without it.
+function keepEvidence(projectDir, slice, rows) {
+  const rel = evidenceDir(slice);
+  if (!gitOk(["check-ignore", "-q", `${rel}/probe.png`], projectDir)) return;
+  const taken = (stem) => existsSync(join(projectDir, `${stem}.png`)) || existsSync(join(projectDir, `${stem}.txt`));
+  for (const row of rows) {
+    for (const t of row.tests ?? []) {
+      const ev = t.evidence;
+      if (!ev || !FAILED_STATUSES.has(t.status)) continue;
+      const id = String(row.id ?? basename(String(row.file ?? "test"), ".spec.ts")).replace(/[^A-Za-z0-9._-]/g, "_");
+      let k = 1;
+      while (taken(`${rel}/${id}${k > 1 ? `-${k}` : ""}`)) k += 1;
+      const stem = `${rel}/${id}${k > 1 ? `-${k}` : ""}`;
+      mkdirSync(join(projectDir, rel), { recursive: true });
+      if (ev.screen && existsSync(ev.screen)) { copyFileSync(ev.screen, join(projectDir, `${stem}.png`)); t.screen = `${stem}.png`; }
+      if (ev.outline) { writeText(join(projectDir, `${stem}.txt`), redactLocalPaths(ev.outline, projectDir)); t.outline = `${stem}.txt`; }
+    }
+  }
+}
+
+// Whether a failed row's failure is one only a look at the page can place: the test stopped
+// after a read that came back with nothing (`emptyReadOf`).
+function readNothing(r) {
+  return Boolean(emptyReadOf((r?.tests ?? []).find((x) => x.error)));
 }
 
 // `, in the case "<case>"` for a criterion whose test file holds several cases: the one that
@@ -331,9 +403,23 @@ function returnsByVerify(projectDir, slice) {
   const base = buildProposalBase(slice);
   const seq = (name) => (name === base ? 1 : Number(name.slice(base.length + 1)));
   const gates = [...buildProposalFamily(projectDir, slice)]
-    .map((name) => ({ n: seq(name), gate: verifyReturnGate(projectDir, name) }));
+    .map((name) => ({ name, n: seq(name), gate: verifyReturnGate(projectDir, name) }));
   const since = Math.max(0, ...gates.filter(({ gate }) => gate?.verdict === "return" && byPerson(gate.by)).map(({ n }) => n));
-  return gates.filter(({ n, gate }) => n > since && gate?.by === "runner:verify" && !environmentOnly(gate)).length;
+  return gates.filter(({ n, gate, name }) => n > since && !environmentOnly(gate)
+    && (gate?.by === "runner:verify" || (gate?.verdict === "return" && sortedOn(projectDir, name, slice)))).length;
+}
+
+// Whether a build was left open by verify for its ruler to sort the failures, rather than
+// returned by verify itself (`docs/decisions/0091`). The ruler's return of it is verify's
+// return in all but who wrote it, and is counted as one: otherwise a slice whose failures keep
+// reading nothing off the page would go round without ever reaching the limit.
+function sortedOn(projectDir, name, slice) {
+  for (const ref of [`proposal/${name}`, `returned/${name}`]) {
+    const rel = `tests/results/new/slice-${slice}.json`;
+    if (!gitOk(["cat-file", "-e", `${ref}:${rel}`], projectDir)) continue;
+    try { return Boolean(JSON.parse(git(["show", `${ref}:${rel}`], projectDir))?.sort); } catch { return false; }
+  }
+  return false;
 }
 
 function byPerson(by) {
@@ -351,7 +437,7 @@ function environmentOnly(gate) {
 // the routes where no test ran: currency is judged by `app_tree`, so a run that left this
 // file alone would leave an earlier `pass` on the same tree standing and the proposal
 // rulable as approved. `not_verified` says, for a reader, why there are no rows.
-function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "", rechecked = [], regressed = [] }) {
+function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "", rechecked = [], regressed = [], sort = null }) {
   const resultRel = `tests/results/new/slice-${slice}.json`;
   mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
   // Each row carries the acceptance test's own error text, which is a browser's or a
@@ -378,6 +464,9 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted 
     // which are this slice's own criteria and nothing else.
     ...(rechecked.length ? { rechecked } : {}),
     ...(regressed.length ? { regressed } : {}),
+    // A failing verify left for its ruler to sort (`docs/decisions/0091`): the criteria whose
+    // test read nothing off the page, and every failure as the build would be told it.
+    ...(sort ? { sort } : {}),
     rows,
   }, null, 2)}\n`, projectDir));
   return resultRel;
@@ -586,6 +675,7 @@ export const verify = {
             files, resetCommand: resetCommandFor(projectDir, config, "new"),
             ...(tags.length ? { grepInvert: tags } : {}),
           });
+          keepEvidence(projectDir, slice.number, rows);
           return { rows, configured };
         };
         // The slice's own tests first. What earlier, approved slices passed is checked again only
@@ -593,6 +683,7 @@ export const verify = {
         // its own criteria say goes back for that alone, and the whole regression suite runs on
         // the build that is a candidate for approval
         // (`docs/decisions/0087-a-later-build-is-checked-against-what-earlier-slices-passed.md`, `0089`).
+        clearEvidence(projectDir, slice.number);
         const ownRun = suite(specFilesFor(projectDir, slice.criteria));
         const configured = ownRun.configured;
         const earlier = earlierPasses(projectDir, slice.number, slice.criteria);
@@ -612,12 +703,24 @@ export const verify = {
         // own criteria came out.
         const v = recheck.regressed.length ? { ...own, verdict: "fail" } : own;
         const regressionConditions = recheck.regressed.map((x) => `${x.id} (passed when slice ${x.slice} was approved)${failedCase(x.row)}: ${firstError(x.row)}`);
+        const failureConditions = [...v.failing.map((r) => `${r.id}${failedCase(r)}: ${firstError(r)}`), ...regressionConditions];
+        // A failure that stopped on a read that came back with nothing can be the adapter's as
+        // easily as the application's, and only a look at the page tells which. So a build with
+        // one is left open for its G3 ruler, with the picture and outline of each page, to send
+        // each failure to the build or, addressed to bind-adapter, to the binding — rather than
+        // returned to a builder who cannot see the page or change the adapter
+        // (`docs/decisions/0091`). A return that would reach the limit is verify's own, as ever.
+        const emptyReads = v.verdict === "fail"
+          ? [...v.failing.filter(readNothing).map((r) => r.id), ...recheck.regressed.filter((x) => readNothing(x.row)).map((x) => x.id)]
+          : [];
+        const sortFirst = emptyReads.length > 0 && returnsByVerify(projectDir, slice.number) + 1 < limit;
         const unboundListed = unboundReasons(claimed, v.unbound);
         const paths = [writeVerifyResult(projectDir, {
           slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted,
           environment: v.environment, unbound: unboundListed, adapter,
           rechecked: recheck.held,
           regressed: recheck.regressed.map((x) => ({ id: x.id, slice: x.slice, result: x.row.result, error: firstError(x.row) })),
+          sort: sortFirst ? { empty_reads: emptyReads, conditions: failureConditions } : null,
         })];
         // Filed on main once the tree is back there, below: owed work is read off main by
         // `next` and by the binding run, and this branch reaches main only when it is ruled.
@@ -626,12 +729,22 @@ export const verify = {
         // against this build of the application alone (`docs/decisions/0083`).
         if (adapter) binding = { rows: claimed, adapter, ids: slice.criteria, appTree: git(["rev-parse", "HEAD:app"], projectDir) };
         const envLines = environmentLines(slice.number, v.environment);
-        if (v.verdict === "fail") {
+        if (v.verdict === "fail" && sortFirst) {
+          const k = recheck.regressed.length;
+          const holder = config.policy?.gates?.G3?.holder ?? "the G3 ruler";
+          const failingIds = [...v.failing.map((r) => r.id), ...recheck.regressed.map((x) => `${x.id} (slice ${x.slice})`)];
+          notPassed = `not yet returned — ${failingIds.length} ${failingIds.length === 1 ? "failure" : "failures"}, ${emptyReads.length} of them a read that came back with nothing, for ${holder} to sort`;
+          text = [
+            `verify slice ${slice.number}: ${failingIds.join(", ")} fail${k ? ` (${k} that an earlier slice passed)` : ""}. ${emptyReads.join(", ")} stopped on a read that came back with nothing, which can be the adapter's as easily as the application's, so ${name} is left open for ${holder} to send each failure to the build or to bind-adapter.`,
+            ...envLines,
+          ].join("\n");
+          describeUnbound = (owed) => (owed.length ? [text, ...owedBindingLines(slice.number, branch, owed, claimed)].join("\n") : text);
+        } else if (v.verdict === "fail") {
           const k = recheck.regressed.length;
           const regressionPart = k ? `${k} ${criteriaWord(k)} an earlier slice passed now ${k === 1 ? "fails" : "fail"}` : "";
           const { escalate, gateRel } = writeVerifyReturn(projectDir, {
             name, slice: slice.number, limit, escalateTo,
-            conditions: [...v.failing.map((r) => `${r.id}${failedCase(r)}: ${firstError(r)}`), ...regressionConditions],
+            conditions: failureConditions,
             rationale: [
               v.failing.length ? `Slice ${slice.number} does not yet do what ${v.failing.length} of its criteria say.` : "",
               k ? `This build breaks ${k} ${criteriaWord(k)} that passed when an earlier slice was approved.` : "",

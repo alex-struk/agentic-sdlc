@@ -666,3 +666,37 @@ test("combineRuns: rows for one file from two runs are one row over both runs' t
   const unbound = combineRuns([passed], [{ ...base, result: "unbound", tests: [{ title: "e", status: "failed", error: "Error: unbound: page.member — none" }] }]);
   assert.equal(unbound[0].result, "unbound");
 });
+
+// What the harness attaches to a failing test (`docs/decisions/0091`): the steps it took,
+// carried on the row, and where it left the page's outline and picture, carried beside it.
+test("runSuite: a failed test carries the steps the harness recorded, and where it left the page, off the row", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  const b64 = (s) => Buffer.from(s).toString("base64");
+  const steps = [{ step: "listing.open", at: "/opportunities" }, { step: "listing.count", at: "/opportunities", read: "\"\"", empty: true }];
+  const shot = join(d, "tests", "test-results", "x", "failure.png");
+  writeReport(d, [{ title: "R-1.1.spec.ts", file: "opportunities/R-1.1.spec.ts", specs: [{ title: "t", file: "opportunities/R-1.1.spec.ts", tests: [{ results: [{
+    status: "failed", error: { message: "Error: x" },
+    attachments: [
+      { name: "sdlc-steps", contentType: "application/json", body: b64(JSON.stringify(steps)) },
+      { name: "sdlc-outline", contentType: "text/plain", body: b64("/opportunities\n\n- heading \"Opportunities\"") },
+      { name: "sdlc-screen", contentType: "image/png", path: shot },
+    ],
+  }] }] }] }]);
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "old", baseUrl: "http://x", mailApi: "http://mail", exec: recordingExec([]) }));
+  const t = result.rows[0].tests[0];
+  assert.deepEqual(t.steps, steps);
+  assert.deepEqual(t.evidence, { outline: "/opportunities\n\n- heading \"Opportunities\"", screen: shot });
+  assert.ok(!JSON.stringify(result.rows).includes(d), "where the picture is on this machine is never part of the row as written");
+});
+
+test("emptyReadOf: only a last step that read nothing, and did not throw, is an empty read", async () => {
+  const { emptyReadOf } = await import("../src/testrun/playwright.mjs");
+  const at = (last) => ({ steps: [{ step: "a.open" }, last] });
+  assert.ok(emptyReadOf(at({ step: "a.text", read: "\"\"", empty: true })));
+  assert.equal(emptyReadOf(at({ step: "a.text", read: "\"Draft\"" })), null);
+  assert.equal(emptyReadOf(at({ step: "a.click", threw: "timed out" })), null);
+  assert.equal(emptyReadOf({}), null);
+});

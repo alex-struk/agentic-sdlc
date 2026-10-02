@@ -3,7 +3,7 @@
 // `proposal/build-slice-<n>`. It is not ruled until `verify` has run the suite against it
 // (docs/decisions/0011-build-verify-review.md); `--revise` rebuilds from a returned ruling,
 // which is how a failing verify comes back here.
-import { existsSync } from "node:fs";
+import { cpSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { readText } from "../lib/fsx.mjs";
@@ -12,6 +12,7 @@ import { checkSeparation } from "../checks/separation.mjs";
 import { readSlice, buildProposalBase, buildProposals, buildBranches } from "./slices.mjs";
 import { addressedElsewhereNote, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, owedConditionsNote, revisionConditionList, revisionRulingBlock, withOpenRequests, withOwedConditions } from "./proposals.mjs";
 import { skillPath } from "./shared.mjs";
+import { evidenceDir } from "./verify.mjs";
 import { targetSettings } from "../sandbox/local.mjs";
 
 function defaultExec(cmd, args, { cwd } = {}) {
@@ -106,6 +107,21 @@ function revisionInstructions(ctx) {
     owedConditionsNote(ctx),
     addressedElsewhereNote(ctx),
     "A failing criterion is described by what the running application did, never by the test's code, which you will not see. Read the criterion again and find where the application departs from it.",
+    evidenceNote(ctx),
+  ].filter(Boolean).join("\n\n");
+}
+
+// What a revising builder is told about the pages its failures ended on. Each failure names
+// the last steps its test took through the contract's surface — the page it was on and what
+// it read there — and, where verify kept them, a picture of the page and its accessible
+// outline at that moment, copied into this workspace by \`prepare\` (\`docs/decisions/0091\`).
+function evidenceNote(ctx) {
+  const rel = evidenceDir(ctx.slice);
+  const kept = ctx.projectDir && existsSync(join(ctx.projectDir, rel));
+  return [
+    "Each failure ends with the last steps its test took through the contract's surface (spec/contract/surface.yaml): the member it called, the page it was on and what it read there or what went wrong. A step that read \"\" read nothing: look at what that page draws where the member's test_id or label says it should be.",
+    kept ? `Where a failure names \`${rel}/<id>.png\` and \`${rel}/<id>.txt\`, they are in this workspace: a picture of the page as the test failed, and the page's accessible outline (its headings, landmarks, labels and text, as a browser's accessibility tree gives them). Open both before you change anything for that failure.` : null,
+    "Nothing you can run here starts the application in a browser: there is no Docker and no browser to install, so do not try. Find the cause from the evidence above and the code, and prove what you change with unit tests.",
   ].filter(Boolean).join("\n\n");
 }
 
@@ -175,6 +191,15 @@ export const build = {
       question: `Does slice ${ctx.slice} (${ctx.buildSlice?.title ?? ""}) do what its criteria say?`,
       recommendation: recommendationFrom(ctx.agentText),
     };
+  },
+  // A revision's evidence — the pictures and outlines verify kept of the pages its failures
+  // ended on — is in a folder git ignores, so the archive the workspace is built from does not
+  // carry it. Copied in at the same path, where its conditions name it, and not collected.
+  prepare(wsDir, ctx) {
+    if (!ctx.revise || !ctx.projectDir) return;
+    const rel = evidenceDir(ctx.slice);
+    const from = join(ctx.projectDir, rel);
+    if (existsSync(from)) cpSync(from, join(wsDir, rel), { recursive: true });
   },
   preChecks(projectDir, ctx) {
     const slice = checkSliceOption(projectDir, ctx);

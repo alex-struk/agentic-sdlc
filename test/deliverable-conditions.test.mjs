@@ -116,3 +116,16 @@ test("a condition already addressed to another stage is not read as a plain one"
   assert.doesNotThrow(() => assertDeliverableRulable("build-slice-1", "return",
     ["addressed-to plan: slice 2 claims a criterion it cannot demonstrate; move it to a later slice."]));
 });
+
+// A failure quoted as a condition carries where it was seen — the place in the test and the
+// picture and outline verify kept of the page — as evidence for the stage to read, not as files
+// it is asked to change (`docs/decisions/0091`). A ruler passes such a failure on exactly as
+// verify wrote it, so the guard must accept it, and still refuse a real request for those paths.
+test("a condition quoting where a failure was seen is not asking for the test or the evidence to change", () => {
+  const quoted = "R-4.2: Error: expect(received).toMatch(expected) — at tests/acceptance/users/R-4.2.spec.ts:12"
+    + " — its last steps: accountView.status() at /accounts/7 read \"\""
+    + " — the page as it failed: .sdlc/evidence/slice-1/R-4.2.png, .sdlc/evidence/slice-1/R-4.2.txt";
+  assert.deepEqual(undeliverableConditions("build-slice-1", [quoted]), []);
+  const asked = undeliverableConditions("build-slice-1", ["Change tests/acceptance/users/R-4.2.spec.ts to read the status badge."]);
+  assert.equal(asked.length, 1, "a request to change the test itself is still refused");
+});

@@ -794,6 +794,17 @@ export function approvableConditionForms() {
 // `owned` decides which of those tokens this pipeline has any say over; the caller supplies
 // it, and a token outside it belongs to the project and is left alone. The default is every
 // token, which is what a caller testing the reading itself wants.
+// A condition that quotes a failure carries where the failure was seen: the place in the test it
+// stopped at (`at tests/acceptance/<domain>/<file>:<line>`) and the picture and outline of the
+// page verify kept (`.sdlc/evidence/...`). Those are evidence the stage reads, not files it is
+// asked to change, and are taken out before a condition is read for what it asks for
+// (`docs/decisions/0091`).
+export function withoutEvidence(line) {
+  return String(line ?? "")
+    .replace(/\bat tests\/acceptance\/[A-Za-z0-9_.@\/-]+:\d+/g, "")
+    .replace(/\.sdlc\/evidence\/[A-Za-z0-9_.@\/-]+/g, "");
+}
+
 export function conditionPaths(line, owned = null) {
   const found = [];
   for (const raw of String(line ?? "").match(/[A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)*/g) ?? []) {

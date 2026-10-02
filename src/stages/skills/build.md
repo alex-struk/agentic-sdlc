@@ -19,6 +19,13 @@ one of them — which slice a criterion belongs to, what a criterion says, what 
 looks like — do not do it. Build what you can, and say in your journal entry which part
 was not yours and what it would take.
 
+Your shell runs `npm`, `npx`, `node`, `ls` and `mkdir`, so you can install packages, run the
+application's own checks and unit tests, and start its service in-process to try something.
+It does not run Docker, and there is no browser to install: you cannot start the sandbox or
+look at a page, so do not try. Prove what you build with unit tests. On a revision, the
+failures you are given say which page each test ended on and what it read there, and verify
+keeps a picture and an outline of that page for you to open.
+
 ## Where the code goes
 
 Follow the stack profile's standards (the `stack-*` skill in `.claude/skills/`). The

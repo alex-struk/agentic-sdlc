@@ -17,7 +17,7 @@ import { runCatalogueScan } from "../runner/catalogue.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
-import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee, overreachConditions, OVERREACH_STAGE } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, withoutEvidence, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee, overreachConditions, OVERREACH_STAGE } from "../spec/criteria.mjs";
 import { close as closeOwed, identityOf, isOpen, open as openOwed, openOn, read as readOwed, readAt, rewrite, sameFiling, sends, unexpectedChange } from "../spec/owed.mjs";
 import { UNBOUND, unboundHanded } from "../spec/unbound.mjs";
 import { NOT_TESTABLE_PATH, missingTestRef, openMissingTestsAt, recordProblems } from "../spec/missing-tests.mjs";
@@ -3381,7 +3381,7 @@ export function undeliverableConditions(name, lines) {
   const { mine } = splitConditionsByAddressee(lines ?? []);
   const found = [];
   for (const line of mine) {
-    for (const path of conditionPaths(line, pipelineOwns)) {
+    for (const path of conditionPaths(withoutEvidence(line), pipelineOwns)) {
       if (coveredBy(delivers, path)) continue;
       found.push({ line, path, stage, delivers, deliverableBy: deliverableBy(path) });
     }

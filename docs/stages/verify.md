@@ -200,7 +200,9 @@ the proposal branch.
 - `tests/results/new/slice-<n>.json`, on the proposal's own branch, committed as
   `verify(slice <n>): <verdict>`.
 - `.sdlc/gates/<name>.yaml`, only on a `fail` verdict — `return`, or on the return that reaches
-  the limit, `escalated` naming G3's `escalate_to`.
+  the limit, `escalated` naming G3's `escalate_to` — and not when a failure is left to sort (below).
+- `.sdlc/evidence/slice-<n>/`, which git ignores: a picture and the accessible outline of the page
+  each failing test ended on, named by criterion and retaken by every verify of the slice.
 - A merge commit on the proposal's branch, whenever `main` has moved since the branch was cut.
 - A run-record line, on every attempt — including one that failed part-way and one that left the
   branch dirty.
@@ -215,6 +217,25 @@ the proposal branch.
   either the reviewer rules the proposal, or the escalation at the return limit reaches G3's
   `escalate_to`.
 
+## What a failure carries
+
+Each failure verify returns ends with what the harness recorded of it
+(`docs/decisions/0091-a-failure-says-where-it-was-and-what-it-saw.md`):
+
+- **Its last steps.** Up to four members of the contract's surface the test called, with what each
+  was given, the page it ended on and what it read there or threw:
+  `its last steps: listing.open() at /items → listing.count() at /items read ""`.
+- **The page.** Where verify kept them, the picture and the accessible outline of the page the
+  test failed on: `the page as it failed: .sdlc/evidence/slice-<n>/<id>.png, …/<id>.txt`. They
+  are on the machine the slice is being built on, and a build revision's workspace is given them.
+
+A failure whose test stopped on a read that came back with nothing can be the adapter's as easily
+as the application's. A failing verify with one is not returned. The result records every failure
+as the build would be told it (`sort.conditions`) and which were empty reads (`sort.empty_reads`).
+The build stays open for G3's ruler. The ruler returns it with each failure either copied as a
+condition for the build, or addressed to `bind-adapter` with what the adapter read and what the
+page shows instead.
+
 ## The verdict table
 
 | Result | Route | Gate file written |
@@ -222,6 +243,7 @@ the proposal branch.
 | `pass` | Ready for G3 — the reviewer can now rule the build proposal. | None. |
 | `pass-unasserted` | Ready for G3, saying which criteria were never asserted against the application and why. Whether the slice may be approved on that footing is the reviewer's, and the ruling prompt carries the same rows and reasons, unless the project's `policy.gates.G3.approve_unasserted` is false, in which case neither seat may approve it. | None. |
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
+| `fail` with a failure that read nothing off the page (before the 3rd time) | Left open for G3's ruler to sort each failure to the build or, `addressed-to bind-adapter`, to the binding. The ruler's return counts toward the limit. | None; the result records `sort`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
 | `environment` | Nothing the builder can change. A missing mail catcher: set `targets.new.mail_api`, then verify again. A configuration's test: G3's ruler decides. Not counted toward the return limit. | None. |
 | `unbound`, no adapter for `new` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |

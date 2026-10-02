@@ -55,6 +55,13 @@ workspace is torn down (`docs/decisions/0027-a-run-that-fabricated-success.md`).
 a build to move a criterion between slices is asking it to write `plan/`, which is the plan stage's
 to deliver; `sdlc rule` refuses such a condition when the ruling is made.
 
+A revision's workspace also holds `.sdlc/evidence/slice-<n>/`, copied in by `prepare` because
+git ignores it and the archive does not carry it: the picture and outline of the page each
+failure ended on, which the conditions name (`docs/decisions/0091`). It is not collected.
+
+The agent's shell runs `npm`, `npx`, `node`, `ls` and `mkdir`. It cannot start Docker or a
+browser, so it cannot run the sandbox or the acceptance suite, and the build skill tells it so.
+
 ## Outputs
 
 - Application code under `app/`, and any `docs/decisions/` record the slice's build needed for a

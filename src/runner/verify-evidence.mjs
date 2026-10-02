@@ -64,6 +64,33 @@ const VERDICT_MEANING = {
   environment: "a criterion the slice claims could not be tested in this environment — its test reads a mail catcher the target declares none of, or is written for a configuration verify cannot start the target in. Nothing was established about those criteria in either direction, and none of it is the build's.",
 };
 
+// What a ruler is asked when verify left the build open rather than returning it: some failures
+// stopped on a read that came back with nothing, and whether the adapter looked in the wrong
+// place or the application drew nothing there is a question the page answers and the builder
+// cannot (`docs/decisions/0091`). Every failure is listed as verify would have returned it, so
+// a ruler who finds it the application's passes it on exactly as written.
+const SORT_SHOWN = 40;
+
+function sortSection(sort) {
+  const conditions = Array.isArray(sort.conditions) ? sort.conditions : [];
+  const empty = Array.isArray(sort.empty_reads) ? sort.empty_reads : [];
+  return [
+    "### Failures to sort before the build goes back",
+    "",
+    `Verify did not return this build itself. ${empty.join(", ")} stopped on a read that came back with nothing — an empty text, an empty list — and that is the adapter's fault as often as the application's: it looked in the wrong place, or the application drew nothing there. The builder cannot see the page and cannot change the adapter, so each failure is sorted here first.`,
+    "",
+    "For each one, open the picture and the outline of the page named at its end (with Read; they are on this machine and not committed), and read the adapter member its last step names in `tests/adapters/new/`. Then:",
+    "",
+    "- the application's — the page does not show what the criterion needs: return it with the failure as a condition, copied exactly as it is written below;",
+    `- the adapter's — the page shows it and the adapter read somewhere else, or read it wrongly: \`addressed-to bind-adapter: <the criterion id>: <what the adapter read, what the page shows instead, and where>\`.`,
+    "",
+    "A failure that is not an empty read is the application's unless the evidence plainly says otherwise. Return the build with every failure accounted for one way or the other.",
+    "",
+    ...conditions.slice(0, SORT_SHOWN).map((c) => `- ${c}`),
+    ...(conditions.length > SORT_SHOWN ? [`- and ${conditions.length - SORT_SHOWN} more, in \`sort.conditions\` of the result file on the branch.`] : []),
+  ];
+}
+
 // The section a build ruling is given, bounded by construction: a line per criterion that
 // did not pass with its own reason, the passing criteria named up to a limit and counted
 // past it. A suite with hundreds of criteria cannot spend the budget the diff needs.
@@ -125,6 +152,7 @@ export function formatVerifyEvidence({ result, slice, branchAppTree }) {
     "claims failed, so on any other verdict the ruling is a return or an escalation. Both are open",
     "to you here whatever the verdict: neither asserts anything about the application, and neither",
     "is evidenced by a suite result.");
+  if (result.sort) lines.push("", ...sortSection(result.sort));
   if (unasserted.length) {
     lines.push("",
       `Nothing in the pipeline decides whether this slice can be accepted with ${unasserted.length} ${unasserted.length === 1 ? "criterion" : "criteria"} nobody`,

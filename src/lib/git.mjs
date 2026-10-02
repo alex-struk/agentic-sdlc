@@ -264,6 +264,10 @@ const REQUIRED_IGNORES = [
   // Pictures of a design proposal's screens, taken for whoever rules it and retaken for every
   // ruling (`captureScreens`). Evidence for one turn, not history.
   "design/screenshots/",
+  // What a failing acceptance test left behind — a picture of the page and its outline — kept
+  // by `verify` for whoever rules the build and for the builder revising it
+  // (`docs/decisions/0091`). Retaken by every verify of the slice; evidence for one round.
+  ".sdlc/evidence/",
   // The agent runtime mirrors the skills it is given into `.agents/skills/`. `init`
   // installs and tracks the canonical copy under `.claude/skills/`, so the mirror is
   // the same text a second time, rewritten by every turn — and left untracked it is
