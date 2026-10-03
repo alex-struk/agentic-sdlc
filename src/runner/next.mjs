@@ -27,12 +27,12 @@ import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { git, gitOk } from "../lib/git.mjs";
 import { parseConfig } from "../config/load.mjs";
-import { calibrateAfter, nextOrder, owedLoopLimit } from "../config/policy.mjs";
+import { blocksOnMissingTests, calibrateAfter, nextOrder, owedLoopLimit } from "../config/policy.mjs";
 import { oracleOverridePath } from "../oracle/paths.mjs";
 import { STAGES, stagesFor } from "../profiles.mjs";
 import { openAcross, readAt } from "../spec/owed.mjs";
 import { bindingGaps } from "../spec/surface.mjs";
-import { MISSING_TEST, openMissingTestsAt, retired } from "../spec/missing-tests.mjs";
+import { MISSING_TEST, blockingMissingTests, missingTestRef, openMissingTestsAt, retired } from "../spec/missing-tests.mjs";
 import { PERSONA_UNAVAILABLE, UNBOUND, legacyAdapter, openUnboundRows, personaUnavailable, targetIdentity, unavailablePersonas, unboundOwed } from "../spec/unbound.mjs";
 import { parseTasks } from "../checks/plan.mjs";
 import { STAGES_BY_NAME, proposalFamily, requestTakenBy } from "../stages/registry.mjs";
@@ -321,6 +321,17 @@ function calibrated(record, target) {
   return rows.every(closesCalibration(record)) && !rows.some((r) => r?.carried);
 }
 
+// Whether slices are being built: the plan is approved and a slice of it is still to be approved.
+// The oracle's calibration waits out that phase (`docs/decisions/0089`), so while it lasts what a
+// calibration made during it found, or carried from the run before it, does not take the project
+// back to the Tests phase: the full calibration after the last slice settles it
+// (`docs/decisions/0093`).
+function buildUnderway(record, has) {
+  if (!has.has("build") || !record.tasks.length) return false;
+  if (has.has("plan") && !approvedFamily(record, "plan")) return false;
+  return record.tasks.some((s) => !approvedFamily(record, `build-slice-${s.number}`));
+}
+
 // Why a target's calibration is next with `--full`, or `null`: when every row passes or is ruled
 // and all that keeps it open is rows carried from an earlier run.
 function calibrationNeedsFullRun(record, target) {
@@ -385,7 +396,7 @@ function sequenceSteps(record) {
   if (has.has("derive-tests")) for (const d of domains) add(2, "derive-tests", { domain: d }, approvedFamily(record, `derive-tests-${d}`), contract);
   if (oracle) {
     const before = steps.filter((s) => s.phase === 2 && s.stage !== "contract").map((s) => s.key);
-    add(2, "calibrate", { target: oracle }, calibrated(record, oracle), before);
+    add(2, "calibrate", { target: oracle }, calibrated(record, oracle) || buildUnderway(record, has), before);
   }
   if (has.has("design")) for (const d of domains) add(3, "design", { domain: d }, approvedFamily(record, `design-${d}`));
   if (has.has("plan")) add(4, "plan", {}, approvedFamily(record, "plan"));
@@ -503,6 +514,58 @@ function bindingBuildFor(record, slice) {
   return names.length ? byName.get(names[0]) : null;
 }
 
+// The calibrations that stand between an open build and its approval (`docs/decisions/0093`).
+// Under policy.gates.G3.block_on_missing_tests a slice is approved only once every criterion it
+// claims has had a test run, and a run owed by calibrate waits out the Build phase (`0089`). Where
+// the slice's own verify could not run the test — one written for a configuration verify cannot
+// start the new target in — each would wait on the other for ever. So the build is not put to its
+// ruler yet, and one calibration of each domain those tests are in is offered in its place: the
+// suite of that domain, not the whole of it, and not held for the Build phase.
+//
+// A calibration that has measured the criterion since the test was handed to calibrate, and left
+// the item open, would leave it open again: its test did not run, for a reason no calibration
+// answers. None is offered for it, and the build goes to its ruler, who can return the slice or
+// withdraw the item.
+function calibrationsUnblocking(projectDir, record, p, slice) {
+  const oracle = record.config?.oracle?.target;
+  if (!oracle || !blocksOnMissingTests(record.config)) return [];
+  const claimed = record.tasks.find((s) => Number(s.number) === Number(slice))?.criteria ?? [];
+  const result = readVerifyResult(projectDir, p.branch, slice);
+  const owed = blockingMissingTests(projectDir, { claimed, rows: result?.rows ?? [], at: result?.at ?? null, rev: record.rev })
+    .filter((e) => e.stage === "calibrate" && e.domain && !measuredSince(projectDir, record, oracle, e));
+  return [...new Set(owed.map((e) => e.domain))].sort().map((domain) => {
+    const refs = owed.filter((e) => e.domain === domain).map((e) => missingTestRef(e.item));
+    const args = { target: oracle, domain };
+    return { kind: "proposals", stage: "calibrate", args, command: runCommand("calibrate", args), name: p.name, unblocks: p.name,
+      why: `${p.name} waits on a run of ${refs.join(", ")}, owed by calibrate, which its own verify could not make, and an approval is recorded only once it is made (policy.gates.G3.block_on_missing_tests); a calibration of ${domain} alone makes it, so it is not held for the Build phase (docs/decisions/0093)` };
+  });
+}
+
+// Whether the latest calibration of `target` measured the item's criterion at or after the moment
+// the item was last handed to calibrate. A row the latest run carried was measured by the run it
+// names, whose own result file says when.
+function measuredSince(projectDir, record, target, e) {
+  const latest = record.results.get(target)?.latest;
+  const row = (latest?.rows ?? []).find((r) => r?.id === e.item);
+  if (!row) return false;
+  const handed = timeOf([...(e.readdressed ?? [])].reverse().find((x) => x?.to === "calibrate")?.at ?? e.at);
+  const run = row.carried ? row.measured_in : latest.run ?? row.measured_in;
+  const at = run && run === latest.run ? timeOf(latest.at) : runTime(projectDir, record.rev, target, run);
+  return Number.isFinite(at) && Number.isFinite(handed) && at >= handed;
+}
+
+function runTime(projectDir, rev, target, run) {
+  if (!run) return NaN;
+  try { return timeOf(JSON.parse(git(["show", `${rev}:tests/results/${target}/${run}.json`], projectDir))?.at); } catch { return NaN; }
+}
+
+// A time as the owed ledger or a result file records it: an ISO string, the space-separated form
+// YAML writes, or a parsed date.
+function timeOf(value) {
+  if (value instanceof Date) return value.getTime();
+  return value ? Date.parse(String(value).trim().replace(" ", "T")) : NaN;
+}
+
 // Every proposal branch not yet merged, sorted into what a seat played by an agent can rule
 // now, what waits on a person, what has been returned for its stage to revise, and what is
 // returned and held until what its ruling asked of another stage is approved.
@@ -537,6 +600,11 @@ function proposalState(projectDir, record) {
         if (!verified.ok && !verified.notPassed) {
           ready.push({ kind: "proposals", stage: "verify", args: { slice: route.slice }, command: runCommand("verify", { slice: route.slice }), name: p.name,
             why: `${p.name} is open at ${code ?? "G3"} and has no verify result for the application it carries; it is verified before it is ruled` });
+          continue;
+        }
+        const unblocking = verified.ok ? calibrationsUnblocking(projectDir, record, p, route.slice) : [];
+        if (unblocking.length) {
+          ready.push(...unblocking);
           continue;
         }
         // A verify that found nothing the builder is answerable for — criteria this
@@ -1074,7 +1142,7 @@ export function whatNext(projectDir, { rev = "main" } = {}) {
   // A calibration that runs the suite is full when `policy.calibrate.full_every` says one is due,
   // however it came to be offered (`docs/decisions/0072`).
   for (const [i, c] of ready.entries()) {
-    if (c.stage !== "calibrate" || c.args?.skipSuite || c.args?.full) continue;
+    if (c.stage !== "calibrate" || c.args?.skipSuite || c.args?.full || c.unblocks) continue;
     const dueFull = fullRunDue(record.config, record.results.get(c.args?.target)?.latest);
     if (!dueFull) continue;
     const args = { ...c.args, full: true };

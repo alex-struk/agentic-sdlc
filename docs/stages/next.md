@@ -126,6 +126,21 @@ rule still comes first. Its `why` names the proposals that made it due. Nothing 
 first calibration, which the sequence brings, or while a calibration or triage proposal for the
 oracle is open. Unset, nothing changes (`docs/decisions/0070-a-calibration-cadence.md`).
 
+**The oracle waits out the Build phase.** While slices are being built — the plan approved and a
+slice of it still to be approved — a calibration the cadence makes due, and owed work answered by
+calibrating, are held, each saying why (`docs/decisions/0089`). In the same span the oracle's
+calibration does not decide the phase: rows a calibration made then found, or carried from the run
+before it, are settled by the full calibration after the last slice, which `next` names once every
+slice is approved.
+
+One calibration is not held. A slice's approval waits on any test a criterion it claims is owed
+(`policy.gates.G3.block_on_missing_tests`). Where that test is owed a run by calibrate and the
+slice's own verify could not run it, the build is not put to its ruler: `next` offers
+`sdlc run calibrate --target <oracle> --domain <d>` for the domain the test is in, kept to that
+domain however a full run is otherwise due, in place of the ruling. Once a calibration has measured
+the criterion since the test was handed to calibrate and left the item open, none is offered for it
+again, and the build goes to its ruler (`docs/decisions/0093`).
+
 **A full calibration.** Under `policy.calibrate.scope: changed` a calibration carries the rows
 none of whose inputs changed, marked `carried` in `latest.json`. Two things make `next` name
 `sdlc run calibrate --target <t> --full` instead. Every row passing or ruled with some of them
@@ -190,7 +205,7 @@ replaces `contract-v2`), since what it asked has been asked again.
 | 2 Tests | `contract` | a `contract-v<n>` proposal is approved |
 | | `bind-adapter --target <oracle>` | the `bind-adapter-<oracle>` line of work has an approval |
 | | `derive-tests --domain <d>` | the `derive-tests-<d>` line of work has an approval |
-| | `calibrate --target <oracle>` | every row of `tests/results/<oracle>/latest.json` is `pass`, `not-testable` or `attested`, or carries a ruling, and no row is `carried` from an earlier run; an `unbound` row stays open until a binding reaches its test, calibration closes it as `persona-unavailable`, or the reviewer's triage rules it. Offered with `--skip-suite` when only such unbound rows keep it open, and with `--full` when only carried rows do |
+| | `calibrate --target <oracle>` | every row of `tests/results/<oracle>/latest.json` is `pass`, `not-testable` or `attested`, or carries a ruling, and no row is `carried` from an earlier run; an `unbound` row stays open until a binding reaches its test, calibration closes it as `persona-unavailable`, or the reviewer's triage rules it. Offered with `--skip-suite` when only such unbound rows keep it open, and with `--full` when only carried rows do. While slices are being built it counts as closed (`docs/decisions/0093`) |
 | 3 Design | `design --domain <d>` | the `design-<d>` line of work has an approval |
 | 4 Build | `plan` | the `plan` line of work has an approval |
 | | `build --slice <n>` | the `build-slice-<n>` line of work has an approval at G3 |

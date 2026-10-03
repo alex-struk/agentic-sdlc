@@ -1327,3 +1327,77 @@ test("an adapter re-check waits for a build of the slice to verify", (t) => {
   assert.ok(!r.ready.some((c) => c.stage === "verify"), "nothing to verify while the build is returned");
   assert.equal(r.next.command, "sdlc run build --slice 1 --revise");
 });
+
+// A slice's approval waits on any test a criterion it claims is owed (policy.gates.G3.
+// block_on_missing_tests), and a run owed by calibrate waits out the Build phase (0089). Where the
+// slice's own verify could not run the test, each would wait on the other for ever. The one
+// calibration that settles it, of the domain the test is in, is offered in place of the ruling
+// (`docs/decisions/0093`).
+const calibrateOwes = (id, domain, more = {}) => ({ kind: "missing-test", item: id, id, version: 1, domain, stage: "calibrate", why: "a test for v1 exists and has not run", from: "build-slice-1", gate: "G3", by: "runner", at: "2026-01-02T00:00:00.000Z", ...more });
+
+function buildingProject(t, verify, owed = [calibrateOwes("R-1.1", "alpha")]) {
+  const d = calibratedProject(t);
+  approved(d, ["design-alpha", "design-beta"], "G-DESIGN");
+  commit(d, { ".sdlc/owed.yaml": stringifyYaml({ owed }), "tests/acceptance/alpha/R-1.1.spec.ts": "// criterion: @R-1.1 v1\n" });
+  verifiedBuild(d, verify);
+  return d;
+}
+
+const ENVIRONMENT = { verdict: "environment", environment: [{ id: "R-1.1", reason: "its test is written for configuration page_absent, which the target reads at start-up, and verify cannot start the new target in a configuration" }] };
+
+test("a slice whose approval waits on a test calibration owes is offered that calibration, scoped to its domain", (t) => {
+  const d = buildingProject(t, ENVIRONMENT);
+  const r = whatNext(d);
+  const offered = r.ready.find((c) => c.stage === "calibrate");
+  assert.ok(offered, "the calibration is offered, not held");
+  assert.equal(offered.command, "sdlc run calibrate --domain alpha --target old");
+  assert.match(offered.why, /build-slice-1 waits on a run of missing-test\/R-1\.1, owed by calibrate/);
+  assert.ok(!r.held.some((h) => h.stage === "calibrate" && h.args?.domain === "alpha"));
+  assert.ok(!r.waiting.some((w) => w.name === "build-slice-1"), "nobody is asked to rule what an approval could not yet be recorded for");
+});
+
+test("an agent seat is not asked to rule a slice its approval would be refused for; the calibration comes first", (t) => {
+  const d = buildingProject(t, { verdict: "pass" });
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.command.startsWith("sdlc rule build-slice-1")));
+  assert.ok(r.ready.some((c) => c.command === "sdlc run calibrate --domain alpha --target old"));
+});
+
+test("a scoped calibration offered for a slice stays scoped when a full run would otherwise be due", (t) => {
+  const d = buildingProject(t, ENVIRONMENT);
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", run: "2026-01-01", scope: "changed", full_run: "2025-12-01", since_full: 9,
+    rows: [{ id: "R-1.1", result: "pass", measured_in: "2026-01-01" }, { id: "R-2.1", result: "pass", measured_in: "2026-01-01" }] }) }, "stage(calibrate)");
+  const offered = whatNext(d).ready.find((c) => c.stage === "calibrate");
+  assert.equal(offered?.command, "sdlc run calibrate --domain alpha --target old");
+});
+
+test("a calibration that already ran since the test was handed over is not offered again", (t) => {
+  const d = buildingProject(t, ENVIRONMENT);
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", run: "2026-01-03", at: "2026-01-03T00:00:00.000Z", scope: "domain", full_run: "2026-01-01",
+    rows: [{ id: "R-1.1", result: "unbound", measured_in: "2026-01-03" }, { id: "R-2.1", result: "pass", measured_in: "2026-01-01", carried: true }] }) }, "stage(calibrate)");
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.stage === "calibrate"), "a run that left the item open would leave it open again");
+  assert.ok(r.waiting.some((w) => w.name === "build-slice-1"), "the slice goes to its ruler, who can withdraw the item or return the slice");
+});
+
+// What a calibration made during the Build phase finds, and the rows it carries from the run
+// before it, are settled by the full calibration after the last slice. In the meantime they do not
+// take the project back to the Tests phase, which would stop slice work for the whole suite.
+test("while slices are being built, a calibration's carried or unsorted rows do not reopen the Tests phase", (t) => {
+  const d = calibratedProject(t);
+  approved(d, ["design-alpha", "design-beta"], "G-DESIGN");
+  approved(d, ["plan"], "G2");
+  commit(d, { "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1\n" });
+  merged(d, "derive-tests-beta-stale-1", { "tests/acceptance/beta/R-2.1.spec.ts": "// criterion: @R-2.1 v1\n", "tests/acceptance/redo.yaml": stringifyYaml({ redo: [] }) });
+  commit(d, { "tests/results/old/latest.json": JSON.stringify({ target: "old", run: "2026-01-03", scope: "domain", full_run: "2026-01-01", since_full: 1,
+    rows: [{ id: "R-1.1", result: "fail", measured_in: "2026-01-03" }, { id: "R-2.1", result: "pass", measured_in: "2026-01-01", carried: true }] }) }, "stage(calibrate)");
+  let r = whatNext(d);
+  assert.equal(r.phase.number, 4);
+  assert.equal(r.next.command, "sdlc run build --slice 1");
+  assert.ok(!r.ready.some((c) => c.stage === "calibrate"));
+
+  approved(d, ["build-slice-1"], "G3");
+  r = whatNext(d);
+  assert.equal(r.phase.number, 2, "once the last slice is approved, the oracle's calibration is due again");
+  assert.match(r.next.command, /^sdlc run calibrate --target old/);
+});
