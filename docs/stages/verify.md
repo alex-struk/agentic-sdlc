@@ -219,6 +219,15 @@ the proposal branch.
 
 ## What a failure carries
 
+A criterion's test file holds one test per case, and its cases can fail for different reasons.
+Verify returns one condition for each different way a criterion's tests failed
+(`docs/decisions/0094-every-way-a-criterion-failed-is-named.md`). Tests that stopped at the same
+line with the same message are one failure, and its condition names each case:
+`R-3.2, in the cases "<case>" and "<case>": <message> — at <file>:<line>`. A case is named by what
+its title adds to the criterion's statement. Three failures of a criterion are described; past
+them, the remaining cases are named in one more condition. The section a G3 ruler reads lists a
+criterion's failures the same way.
+
 Each failure verify returns ends with what the harness recorded of it
 (`docs/decisions/0091-a-failure-says-where-it-was-and-what-it-saw.md`):
 
@@ -230,7 +239,8 @@ Each failure verify returns ends with what the harness recorded of it
   are on the machine the slice is being built on, and a build revision's workspace is given them.
 
 A failure whose test stopped on a read that came back with nothing can be the adapter's as easily
-as the application's. A failing verify with one is not returned. The result records every failure
+as the application's. A failing verify with one, in any case of any failing criterion, is not
+returned. The result records every failure
 as the build would be told it (`sort.conditions`) and which were empty reads (`sort.empty_reads`).
 The build stays open for G3's ruler. The ruler returns it with each failure either copied as a
 condition for the build, or addressed to `bind-adapter` with what the adapter read and what the

@@ -16,7 +16,8 @@ import { writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
-import { emptyReadOf, failedLine, runSuite } from "../testrun/playwright.mjs";
+import { emptyReadOf, runSuite } from "../testrun/playwright.mjs";
+import { caseOf, casesPhrase, failureMessage, failuresOf, quotedList, stoppedAt, FAILURES_DESCRIBED } from "../testrun/failures.mjs";
 import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, openBuildProposal, specFilesFor } from "./slices.mjs";
@@ -217,33 +218,48 @@ function adapterExists(projectDir, target) {
   return existsSync(join(projectDir, "tests", "adapters", target, "index.ts"));
 }
 
-// A failure as the builder is given it: the error's first line, and after it the lines that
-// say what the running application did — the value an assertion received, or the element that
-// took a click meant for another. The builder never sees the test (`build.mjs`), so without
-// these a condition reads `expect(received).toBeFalsy()` and names nothing it can find in the
-// application. The runner's colour codes are dropped; the test's locators and call log are not
-// carried, since they describe the test rather than the application.
+// A failed test as the builder is given it: its message, which says what the running application
+// did (`failureMessage`). The builder never sees the test (`build.mjs`), so without that a
+// condition reads `expect(received).toBeFalsy()` and names nothing it can find in the application.
 //
-// Last comes the place the test stopped: `at tests/acceptance/<domain>/<file>:<line>`, the
+// After it comes the place the test stopped: `at tests/acceptance/<domain>/<file>:<line>`, the
 // first frame inside the spec file. Several assertions in one test can each read "Received:
 // ''", and the line is what says which one failed. A place is not the test's code, so the
 // builder is still never shown the test. The path is the row's own, relative to the project,
 // and only the line is taken from the stack. The cap is applied to what comes before it, so
 // truncation never cuts the place off.
-const ANSI_RE = /\x1b\[[0-9;]*m/g;
-const APPLICATION_LINE_RE = /^(Received:|Received string:|Received value:|Expected:)|intercepts pointer events/;
 const MAX_FAILURE_TEXT = 400;
 
-function firstError(r) {
-  if (r.result === "missing") return "no acceptance test ran for this criterion";
-  if (r.result === "stale") return "its test was written for an older version of the criterion";
-  const t = (r.tests ?? []).find((x) => x.error);
-  const lines = (t?.error ?? "failed").replace(ANSI_RE, "").split("\n").map((l) => l.trim().replace(/^- /, ""));
-  const said = [...new Set(lines.slice(1).filter((l) => APPLICATION_LINE_RE.test(l)))];
-  const text = [lines[0], ...said].join(" — ");
+function failureText(r, t) {
+  const text = failureMessage(t);
   const where = failedAt(r, t);
   const room = MAX_FAILURE_TEXT - where.length;
   return `${text.length > room ? `${text.slice(0, room - 1)}…` : text}${where}${stepsClause(t)}${evidenceClause(t)}`;
+}
+
+// A criterion's first failure, as the result file records a criterion an earlier slice passed.
+function firstError(r) {
+  if (r.result === "missing") return "no acceptance test ran for this criterion";
+  if (r.result === "stale") return "its test was written for an older version of the criterion";
+  return failureText(r, (r.tests ?? []).find((x) => x.error));
+}
+
+// The conditions a failing criterion goes back with: one for each different way its tests failed,
+// naming the cases that failed that way (`docs/decisions/0094`). Each is a fix of its own, and a
+// failure left out would only be found by the next verify. Past the first few, the rest are named
+// by their cases, so one criterion cannot crowd out the others.
+function conditionsFor(r, label = r.id) {
+  const failures = r.result === "missing" || r.result === "stale" ? [] : failuresOf(r);
+  if (!failures.length) return [`${label}: ${firstError(r)}`];
+  const described = failures.slice(0, FAILURES_DESCRIBED).map((tests) => {
+    const phrase = casesPhrase(r, tests);
+    return `${label}${phrase ? `, ${phrase}` : ""}: ${failureText(r, tests[0])}`;
+  });
+  const rest = failures.slice(FAILURES_DESCRIBED).flat();
+  if (rest.length) {
+    described.push(`${label}: ${rest.length} more ${rest.length === 1 ? "case" : "cases"} failed, not described here: ${quotedList(rest.map((t) => caseOf(r, t)))}`);
+  }
+  return described;
 }
 
 // ` — its last steps: <step> → <step>` for a failed test the harness recorded steps for: each
@@ -312,23 +328,10 @@ function keepEvidence(projectDir, slice, rows) {
   }
 }
 
-// Whether a failed row's failure is one only a look at the page can place: the test stopped
+// Whether a failed row has a failure only a look at the page can place: one of its tests stopped
 // after a read that came back with nothing (`emptyReadOf`).
 function readNothing(r) {
-  return Boolean(emptyReadOf((r?.tests ?? []).find((x) => x.error)));
-}
-
-// `, in the case "<case>"` for a criterion whose test file holds several cases: the one that
-// failed, named by the behaviour its title asserts. Several cases can fail at the same line, and
-// the builder, who never sees the test, is told which behaviour to look for. A title ending in a
-// parenthesised case (`<statement> (<case>)`) is named by the case; any other by its whole title.
-function failedCase(r) {
-  const tests = r.tests ?? [];
-  if (tests.length < 2) return "";
-  const title = String(tests.find((x) => x.error)?.title ?? "").trim();
-  if (!title) return "";
-  const named = /\(([^()]+)\)\s*$/.exec(title)?.[1]?.trim() ?? title;
-  return `, in the case "${named.length > 200 ? `${named.slice(0, 199)}…` : named}"`;
+  return (r?.tests ?? []).some((x) => x.error && emptyReadOf(x));
 }
 
 // ` — at <file>:<line>` for a failed test, or nothing where the line is not known or the row's
@@ -336,7 +339,7 @@ function failedCase(r) {
 function failedAt(r, t) {
   const file = String(r.file ?? "");
   if (!file.startsWith("tests/acceptance/") || file.includes("..")) return "";
-  const line = Number.isInteger(t?.line) ? t.line : failedLine(t?.error?.replace(ANSI_RE, ""), file);
+  const line = stoppedAt(r, t);
   return line ? ` — at ${file}:${line}` : "";
 }
 
@@ -702,8 +705,8 @@ export const verify = {
         // A criterion an earlier slice passed and this build broke fails this build, however its
         // own criteria came out.
         const v = recheck.regressed.length ? { ...own, verdict: "fail" } : own;
-        const regressionConditions = recheck.regressed.map((x) => `${x.id} (passed when slice ${x.slice} was approved)${failedCase(x.row)}: ${firstError(x.row)}`);
-        const failureConditions = [...v.failing.map((r) => `${r.id}${failedCase(r)}: ${firstError(r)}`), ...regressionConditions];
+        const regressionConditions = recheck.regressed.flatMap((x) => conditionsFor(x.row, `${x.id} (passed when slice ${x.slice} was approved)`));
+        const failureConditions = [...v.failing.flatMap((r) => conditionsFor(r)), ...regressionConditions];
         // A failure that stopped on a read that came back with nothing can be the adapter's as
         // easily as the application's, and only a look at the page tells which. So a build with
         // one is left open for its G3 ruler, with the picture and outline of each page, to send

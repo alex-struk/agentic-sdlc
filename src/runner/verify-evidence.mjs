@@ -1,5 +1,6 @@
 import { git, gitOk } from "../lib/git.mjs";
 import { isNotAsserted, notAssertedReason } from "../testrun/results.mjs";
+import { caseOf, casesPhrase, failuresOf, quotedList, withoutColour, FAILURES_DESCRIBED } from "../testrun/failures.mjs";
 
 // What a build ruling turns on, put in front of the ruler on purpose.
 //
@@ -43,17 +44,28 @@ const PASSING_NAMED = 40;
 const REASON_ROWS = 20;
 
 function cut(text) {
-  const one = String(text).replace(/\s+/g, " ").trim();
+  const one = withoutColour(text).replace(/\s+/g, " ").trim();
   return one.length > ROW_REASON ? `${one.slice(0, ROW_REASON)} […]` : one;
 }
 
-// A row that ran carries its reason in the first test that errored; a row that never ran
-// carries it on the row itself, written by whoever recorded that the application would not
-// be asked about this criterion.
-function rowReason(row) {
-  if (row.reason) return cut(row.reason);
-  const t = (row.tests ?? []).find((x) => x.error);
-  return t ? cut(t.error) : "";
+// The lines a criterion is listed with. A row that never ran carries its reason on the row
+// itself, written by whoever recorded that the application would not be asked about this
+// criterion. A row that ran carries its reasons in its tests, and where they failed in different
+// ways each way is listed with the cases that failed so: the ruler sees every fix the criterion
+// needs, not only the first (`docs/decisions/0094`).
+function rowLines(row, head, fallback = "") {
+  if (row.reason) return [`${head}: ${cut(row.reason)}`];
+  const failures = failuresOf(row);
+  if (!failures.length) return [fallback ? `${head}: ${fallback}` : head];
+  if (failures.length === 1) {
+    const phrase = casesPhrase(row, failures[0]);
+    return [`${head}${phrase ? `, ${phrase}` : ""}: ${cut(failures[0][0].error)}`];
+  }
+  const lines = [`${head}, ${failures.length} different failures:`];
+  for (const tests of failures.slice(0, FAILURES_DESCRIBED)) lines.push(`  - ${casesPhrase(row, tests)}: ${cut(tests[0].error)}`);
+  const rest = failures.slice(FAILURES_DESCRIBED).flat();
+  if (rest.length) lines.push(`  - and ${rest.length} more ${rest.length === 1 ? "case" : "cases"}: ${quotedList(rest.map((t) => caseOf(row, t)))}`);
+  return lines;
 }
 
 const VERDICT_MEANING = {
@@ -127,10 +139,7 @@ export function formatVerifyEvidence({ result, slice, branchAppTree }) {
   if (result.not_verified) lines.push(`No test ran: ${result.not_verified}`);
   lines.push("", `${rows.length} criteria claimed by the slice: ${passed.length} pass, ${notPassed.length} did not pass, ${unasserted.length} never asserted against the application${gaps.size ? `, ${gaps.size} not tested in this environment` : ""}.`, "");
 
-  for (const r of notPassed.slice(0, REASON_ROWS)) {
-    const reason = rowReason(r);
-    lines.push(`- ${r.id} — **${r.result}**${reason ? `: ${reason}` : ""}`);
-  }
+  for (const r of notPassed.slice(0, REASON_ROWS)) lines.push(...rowLines(r, `- ${r.id} — **${r.result}**`));
   if (notPassed.length > REASON_ROWS) {
     lines.push(`- and ${notPassed.length - REASON_ROWS} further criteria that did not pass: ${notPassed.slice(REASON_ROWS).map((r) => r.id).join(", ")}. Read them in \`${rel}\` on the branch.`);
   }
@@ -138,7 +147,7 @@ export function formatVerifyEvidence({ result, slice, branchAppTree }) {
   // Named whatever the verdict is: a slice can fail on one criterion and have another
   // nobody asserted, and the second is invisible in a list of failures.
   for (const r of unasserted.slice(0, REASON_ROWS)) {
-    lines.push(`- ${r.id} — **${r.result}**, never asserted against the application: ${rowReason(r) || notAssertedReason(r)}`);
+    lines.push(...rowLines(r, `- ${r.id} — **${r.result}**, never asserted against the application`, notAssertedReason(r)));
   }
   if (unasserted.length > REASON_ROWS) {
     lines.push(`- and ${unasserted.length - REASON_ROWS} further criteria never asserted against the application: ${unasserted.slice(REASON_ROWS).map((r) => r.id).join(", ")}. Read their reasons in \`${rel}\` on the branch.`);

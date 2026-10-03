@@ -1316,6 +1316,91 @@ test("a condition from a file of several cases names the case that failed", asyn
   assert.equal(gate.conditions[1], "R-4.2: Error: x — at tests/acceptance/users/R-4.2.spec.ts:3", "a file of one case needs no name for it");
 });
 
+// A criterion's cases can fail for different reasons, and each reason is a fix of its own. Every
+// failing case is named; cases that stopped at the same assertion with the same message are one
+// failure, and share a condition (`docs/decisions/0094`).
+test("every failing case of a criterion is named, and cases that failed the same way share a condition", async (t) => {
+  const d = buildProject(t);
+  const statement = "Only a signed-in vendor who has accepted the terms may register an organization; a request from anyone else is refused";
+  const refused = "Error: expect(received).toMatch(expected)\n\nExpected pattern: /permission/i\nReceived string:  \"errors\"";
+  mockSuite(t, [
+    { id: "R-4.1", result: "fail", file: "tests/acceptance/users/R-4.1.spec.ts", tests: [
+      { title: `${statement} — a registration through the create screen is accepted`, status: "passed" },
+      { title: `${statement} — a registration sent by a vendor who has accepted the terms is accepted`, status: "failed", error: "Error: the input key \"addressLineTwo\" names no field", line: 70 },
+      { title: `${statement} — a registration sent by a member of staff is refused`, status: "failed", error: refused, line: 52 },
+      { title: `${statement} — a registration sent by a visitor is refused`, status: "failed", error: refused, line: 52 },
+    ] },
+    row("R-4.2", "pass"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.deepEqual(gate.conditions, [
+    "R-4.1, in the case \"a registration sent by a vendor who has accepted the terms is accepted\": Error: the input key \"addressLineTwo\" names no field — at tests/acceptance/users/R-4.1.spec.ts:70",
+    "R-4.1, in the cases \"a registration sent by a member of staff is refused\" and \"a registration sent by a visitor is refused\": Error: expect(received).toMatch(expected) — Expected pattern: /permission/i — Received string:  \"errors\" — at tests/acceptance/users/R-4.1.spec.ts:52",
+  ]);
+});
+
+// A title carries the criterion's statement and then the case, and a statement can be long and
+// hold a dash of its own. The case is what the title adds to the start every test of the criterion
+// shares.
+test("a case is named by what its title adds to the criterion's statement, however long the statement", async (t) => {
+  const d = buildProject(t);
+  const statement = `The Edit and Archive controls are offered only to a person permitted to use them — the owner or an administrator; ${"an organization administrator who is not the owner sees the profile read-only, ".repeat(3)}and the service refuses anyone else`;
+  mockSuite(t, [
+    { id: "R-4.1", result: "fail", file: "tests/acceptance/users/R-4.1.spec.ts", tests: [
+      { title: `${statement} — the Edit and Archive controls are offered to a service administrator`, status: "passed" },
+      { title: `${statement} — an archive request sent by an administrator who is not the owner is refused`, status: "failed", error: "Error: x", line: 9 },
+    ] },
+    row("R-4.2", "pass"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.equal(gate.conditions[0], "R-4.1, in the case \"an archive request sent by an administrator who is not the owner is refused\": Error: x — at tests/acceptance/users/R-4.1.spec.ts:9");
+});
+
+test("a criterion's failures past the first few are named by their cases rather than described", async (t) => {
+  const d = buildProject(t);
+  const cases = ["c1", "c2", "c3", "c4", "c5"];
+  mockSuite(t, [
+    { id: "R-4.1", result: "fail", file: "tests/acceptance/users/R-4.1.spec.ts",
+      tests: cases.map((c, i) => ({ title: `A statement (${c})`, status: "failed", error: `Error: e${i + 1}`, line: 10 + i })) },
+    row("R-4.2", "pass"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
+  assert.deepEqual(gate.conditions, [
+    "R-4.1, in the case \"c1\": Error: e1 — at tests/acceptance/users/R-4.1.spec.ts:10",
+    "R-4.1, in the case \"c2\": Error: e2 — at tests/acceptance/users/R-4.1.spec.ts:11",
+    "R-4.1, in the case \"c3\": Error: e3 — at tests/acceptance/users/R-4.1.spec.ts:12",
+    "R-4.1: 2 more cases failed, not described here: \"c4\" and \"c5\"",
+  ]);
+});
+
+test("an empty read in any failing case of a criterion leaves the build open to sort", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [
+    { id: "R-4.1", result: "fail", file: "tests/acceptance/users/R-4.1.spec.ts", tests: [
+      { title: "A statement (one that fails plainly)", status: "failed", error: "Error: plainly wrong", line: 5 },
+      { title: "A statement (one that reads nothing)", status: "failed", error: "Error: expect(received).toMatch(expected)\nReceived string:  \"\"", line: 12,
+        steps: stepsTo({ step: "accountView.status", at: "/accounts/7", read: "\"\"", empty: true }) },
+    ] },
+    row("R-4.2", "pass"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"), "verify writes no ruling of its own");
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.deepEqual(result.sort.empty_reads, ["R-4.1"]);
+  assert.equal(result.sort.conditions.length, 2);
+});
+
 // The whole regression suite runs on the build that is a candidate for approval. A build that
 // does not yet do what its own criteria say goes back for that alone, and says the earlier
 // criteria wait (`docs/decisions/0089`).
@@ -1464,6 +1549,34 @@ test("a ruler given a build to sort is told how, with every failure as the build
   assert.match(text, /addressed-to bind-adapter: <the criterion id>:/);
   assert.match(text, /^- R-4\.1: Error: x — its last steps: accountView\.status\(\) at \/accounts\/7 read ""$/m);
   assert.match(text, /^- R-4\.2: Error: y$/m);
+});
+
+// The ruler of a build verify escalated works from this section, so a criterion whose cases
+// failed for different reasons shows each reason (`docs/decisions/0094`).
+test("a ruler is shown every way a criterion's tests failed, each with its cases", async () => {
+  const { formatVerifyEvidence } = await import("../src/runner/verify-evidence.mjs");
+  const statement = "Only a signed-in vendor may register an organization";
+  const refused = "Error: \u001b[2mexpect(\u001b[22mreceived\u001b[2m).\u001b[22mtoMatch\nExpected pattern: /permission/i\nReceived string:  \"errors\"";
+  const text = formatVerifyEvidence({ slice: 1, result: {
+    verdict: "fail", proposal: "build-slice-1", app_tree: "abcdef0",
+    rows: [
+      { id: "R-4.1", result: "fail", file: "tests/acceptance/users/R-4.1.spec.ts", tests: [
+        { title: `${statement} — a registration by a vendor is accepted`, status: "failed", error: "Error: the input key \"addressLineTwo\" names no field", line: 70 },
+        { title: `${statement} — a registration by staff is refused`, status: "failed", error: refused, line: 52 },
+        { title: `${statement} — a registration by a visitor is refused`, status: "failed", error: refused, line: 52 },
+        { title: `${statement} — a registration through the create screen is accepted`, status: "passed" },
+      ] },
+      { id: "R-4.2", result: "fail", file: "tests/acceptance/users/R-4.2.spec.ts", tests: [
+        { title: "Another statement (one case)", status: "failed", error: refused, line: 8 },
+        { title: "Another statement (a second case)", status: "failed", error: refused, line: 8 },
+      ] },
+    ],
+  } });
+  assert.match(text, /^- R-4\.1 — \*\*fail\*\*, 2 different failures:$/m);
+  assert.match(text, /^ {2}- in the case "a registration by a vendor is accepted": Error: the input key "addressLineTwo" names no field$/m);
+  assert.match(text, /^ {2}- in the cases "a registration by staff is refused" and "a registration by a visitor is refused": Error: expect\(received\)\.toMatch Expected pattern: \/permission\/i Received string: "errors"$/m);
+  assert.match(text, /^- R-4\.2 — \*\*fail\*\*, in the cases "one case" and "a second case": Error: expect/m);
+  assert.doesNotMatch(text, /\u001b/, "the runner's colour codes are not passed on");
 });
 
 // Playwright empties its own output folder when it starts, so the pictures one run of the suite
