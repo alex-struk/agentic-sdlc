@@ -1077,3 +1077,44 @@ test("up starts copy 0 alone unless every copy is asked for, each with its own p
   sandboxDown(d, COPIES, "new", { exec });
   assert.deepEqual(seen.map((c) => c.args.match(/-p (\S+)/)[1]), ["sdlc-mkt-new", "sdlc-mkt-new-1", "sdlc-mkt-new-2"]);
 });
+
+// Bringing a copy up is a build, a start and a seed, and every copy is its own compose project
+// on its own ports, so the copies come up together: a verify waits for the slowest copy rather
+// than for the sum of them (`docs/decisions/0095`).
+test("every copy comes up at the same time, and the lowest-numbered copy that does not is reported", async (t) => {
+  const d = project(t);
+  const exec = () => ({ status: 0, stdout: "", stderr: "" });
+  let running = 0;
+  let most = 0;
+  const execAsync = async (cmd, args) => {
+    const line = args.join(" ");
+    running += 1;
+    most = Math.max(most, running);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    running -= 1;
+    return / up -d --build --wait$/.test(line) && /-p sdlc-mkt-new-[12] /.test(line)
+      ? { status: 1, stdout: "", stderr: "the build stopped" }
+      : { status: 0, stdout: "", stderr: "" };
+  };
+  const health = async () => true;
+  const r = await sandboxUp(d, COPIES, "new", { exec, execAsync, health, copies: "all" });
+  assert.equal(most, 3, "the three copies were coming up at the same time");
+  assert.equal(r.ok, false);
+  assert.match(r.messages[0], /^copy 1 of the 3 \(sdlc-mkt-new-1\): docker compose up failed/);
+});
+
+test("copies that all come up are reported in their own order, each seeded", async (t) => {
+  const d = project(t);
+  const exec = () => ({ status: 0, stdout: "", stderr: "" });
+  const seeded = [];
+  const execAsync = async (cmd, args) => {
+    const line = args.join(" ");
+    await new Promise((resolve) => setTimeout(resolve, line.includes("sdlc-mkt-new-1 ") ? 5 : 25));
+    if (/ run --rm seed$/.test(line)) seeded.push(line.match(/-p (\S+)/)[1]);
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const r = await sandboxUp(d, COPIES, "new", { exec, execAsync, health: async () => true, copies: "all" });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.copies.map((c) => c.index), [0, 1, 2]);
+  assert.deepEqual([...seeded].sort(), ["sdlc-mkt-new", "sdlc-mkt-new-1", "sdlc-mkt-new-2"]);
+});

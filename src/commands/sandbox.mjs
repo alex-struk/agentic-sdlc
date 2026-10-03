@@ -13,7 +13,7 @@
 // is started from `main` (docs/decisions/0016-binding-and-verifying-an-unmerged-proposal.md): the
 // action runs with the working tree on that branch and HEAD is put back afterwards.
 import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { loadConfig } from "../config/load.mjs";
 import { targetSettings, targetCopies, composeArgs, parseComposePs, serviceFailures, stoppedForGood, declaredPorts, portsBoundByProject, portOf, causeOf, APPLICATION, ENVIRONMENT } from "../sandbox/local.mjs";
@@ -24,6 +24,20 @@ import { COMMANDS } from "../cli.mjs";
 function defaultExec(cmd, args, { cwd, env = {} } = {}) {
   const res = spawnSync(cmd, args, { cwd, env: { ...process.env, ...env }, encoding: "utf8" });
   return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr || (res.error ? res.error.message : "") };
+}
+
+// The same answer as `defaultExec`, without holding the process while the command runs: the
+// long steps of bringing a copy up, so several copies can come up at once.
+function defaultExecAsync(cmd, args, { cwd, env = {} } = {}) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(cmd, args, { cwd, env: { ...process.env, ...env } });
+    child.stdout.setEncoding("utf8").on("data", (d) => { stdout += d; });
+    child.stderr.setEncoding("utf8").on("data", (d) => { stderr += d; });
+    child.on("error", (e) => resolve({ status: null, stdout, stderr: stderr || e.message }));
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
 }
 
 // How long one address is waited for, and how often it is asked.
@@ -262,25 +276,27 @@ const failed = (cause, messages, failures = []) => ({ ok: false, cause, failures
 //
 // One copy unless `copies: "all"` asks for every copy the target declares: a sandbox somebody
 // drives by hand, or an adapter is bound against, is one application, and only a verify that
-// spreads its tests across copies needs the rest (`docs/decisions/0090`). Copies are started
-// one after another and the first that does not come up is what is reported; `down` stops
-// every copy whichever were started.
+// spreads its tests across copies needs the rest (`docs/decisions/0090`). Each copy is its own
+// compose project on its own ports, so the copies come up together and a verify waits for the
+// slowest of them rather than the sum (`docs/decisions/0095`). The lowest-numbered copy that
+// does not come up is what is reported; `down` stops every copy whichever were started.
 export async function sandboxUp(projectDir, config, target, deps = {}) {
   const all = targetCopies(config, target);
   const wanted = deps.copies === "all" ? all : all.slice(0, 1);
-  const started = [];
-  for (const c of wanted) {
-    const r = await upCopy(projectDir, config, target, c, deps);
-    if (!r.ok) {
-      if (wanted.length < 2) return r;
-      return { ...r, messages: [`copy ${c.index} of the ${wanted.length} (${c.project}): ${r.messages[0]}`, ...r.messages.slice(1)] };
-    }
-    started.push({ index: c.index, baseUrl: c.baseUrl, mailApi: c.mailApi });
+  // A caller that hands in its own `exec` has every command answered by it.
+  const execAsync = deps.execAsync ?? (deps.exec ? async (cmd, args, opts) => deps.exec(cmd, args, opts) : defaultExecAsync);
+  const results = await Promise.all(wanted.map((c) => upCopy(projectDir, config, target, c, { ...deps, execAsync })));
+  const bad = results.findIndex((r) => !r.ok);
+  if (bad >= 0) {
+    const r = results[bad];
+    if (wanted.length < 2) return r;
+    const c = wanted[bad];
+    return { ...r, messages: [`copy ${c.index} of the ${wanted.length} (${c.project}): ${r.messages[0]}`, ...r.messages.slice(1)] };
   }
-  return { ok: true, baseUrl: wanted[0].baseUrl, copies: started, messages: [] };
+  return { ok: true, baseUrl: wanted[0].baseUrl, copies: wanted.map((c) => ({ index: c.index, baseUrl: c.baseUrl, mailApi: c.mailApi })), messages: [] };
 }
 
-async function upCopy(projectDir, config, target, s, { exec = defaultExec, health = pollAddress, sleep = sleepMs, samples = SETTLE_SAMPLES, portFree = portIsFree } = {}) {
+async function upCopy(projectDir, config, target, s, { exec = defaultExec, execAsync = defaultExecAsync, health = pollAddress, sleep = sleepMs, samples = SETTLE_SAMPLES, portFree = portIsFree } = {}) {
   // The compose file is written by the build that declares the application's local
   // services, and it lives under `app/` with the rest of that build's output, so a missing
   // one is something a builder can be told to write.
@@ -300,7 +316,7 @@ async function upCopy(projectDir, config, target, s, { exec = defaultExec, healt
       `Free ${held.length === 1 ? "it" : "them"} and run this again, or publish this target somewhere else: the address the suite drives is targets.${target}.base_url in .sdlc/config.yaml, and ${s.compose} has to publish it there. Nothing of this project was started.`,
     ]);
   }
-  const up = exec("docker", [...composeArgs(projectDir, s), "up", "-d", "--build", "--wait"], { cwd: projectDir, env: composeEnv(s) });
+  const up = await execAsync("docker", [...composeArgs(projectDir, s), "up", "-d", "--build", "--wait"], { cwd: projectDir, env: composeEnv(s) });
   if (up.status !== 0) {
     const bad = withLogs(projectDir, s, exec, psFailures(projectDir, s, exec));
     return failed(causeOf(bad), [`docker compose up failed:\n${tail(up)}`, ...bad.map(describe)], bad);
@@ -358,13 +374,18 @@ async function upCopy(projectDir, config, target, s, { exec = defaultExec, healt
     return failed(ENVIRONMENT, [`the sandbox is not reported up: whether this project's services are running could not be established.\n${watched.unreadable}`]);
   const bad = withLogs(projectDir, s, exec, watched.failures);
   if (bad.length) return failed(causeOf(bad), [`the sandbox is not up: ${notRunning(bad)}`, ...bad.map(describe)], bad);
-  const seeded = sandboxReset(projectDir, config, target, { exec, index: s.index });
+  const seeded = seedOutcome(s, await execAsync("docker", seedArgs(projectDir, s), { cwd: projectDir, env: composeEnv(s) }));
   return seeded.ok ? { ok: true, baseUrl: s.baseUrl, messages: [] } : seeded;
 }
 
+const seedArgs = (projectDir, s) => [...composeArgs(projectDir, s), "run", "--rm", s.seedService];
+
 export function sandboxReset(projectDir, config, target, { exec = defaultExec, index = 0 } = {}) {
   const s = targetCopies(config, target)[index];
-  const r = exec("docker", [...composeArgs(projectDir, s), "run", "--rm", s.seedService], { cwd: projectDir, env: composeEnv(s) });
+  return seedOutcome(s, exec("docker", seedArgs(projectDir, s), { cwd: projectDir, env: composeEnv(s) }));
+}
+
+function seedOutcome(s, r) {
   if (r.status === 0) return { ok: true, messages: [] };
   // A seed container is created and run against a stack that is already up, so what failed
   // is the process inside it: the seed, the migrations it depends on, or the schema they
