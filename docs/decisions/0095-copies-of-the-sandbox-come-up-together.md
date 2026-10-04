@@ -33,6 +33,10 @@ before (`copy <i> of the <n> (<project>): …`). A first copy that does not come
 any other is started. Copies that did come up are taken down with the rest, as before. A sandbox
 brought up for one person, or for an adapter to be bound against, is still one copy.
 
+**The copies go down together.** Taking a copy down stops and removes its containers and volumes,
+and copies share none of them, so every copy's `docker compose down -v` runs at once and a verify
+waits for the slowest. The teardown is not ok when any copy's is not.
+
 ## Consequences
 
 - Bringing up six copies takes about as long as bringing up two, so a project can declare as many

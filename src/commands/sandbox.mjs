@@ -397,13 +397,13 @@ function seedOutcome(s, r) {
     [{ service: s.seedService, state: "exited", ran: true, reason: "failed to load the seed", log: tail(r) }]);
 }
 
-export function sandboxDown(projectDir, config, target, { exec = defaultExec } = {}) {
-  let ok = true;
-  for (const s of targetCopies(config, target)) {
-    const r = exec("docker", [...composeArgs(projectDir, s), "down", "-v"], { cwd: projectDir, env: composeEnv(s) });
-    ok &&= r.status === 0;
-  }
-  return { ok };
+// Every copy the target declares is taken down, containers and volumes, all at once: the copies
+// share nothing, so a caller waits for the slowest rather than for the sum (`docs/decisions/0095`).
+export async function sandboxDown(projectDir, config, target, deps = {}) {
+  const execAsync = deps.execAsync ?? (deps.exec ? async (cmd, args, opts) => deps.exec(cmd, args, opts) : defaultExecAsync);
+  const results = await Promise.all(targetCopies(config, target).map((s) =>
+    execAsync("docker", [...composeArgs(projectDir, s), "down", "-v"], { cwd: projectDir, env: composeEnv(s) })));
+  return { ok: results.every((r) => r.status === 0) };
 }
 
 const USAGE = "usage: sdlc sandbox up|down|reset|status [--target <t>] [--from <branch>]";
@@ -419,7 +419,7 @@ async function sandboxAction(projectDir, config, sub, target, deps = {}) {
     return r.ok ? 0 : 1;
   }
   if (sub === "reset") { const r = sandboxReset(projectDir, config, target, { exec }); console.log(r.ok ? `sandbox ${target} reseeded` : r.messages.join("\n")); return r.ok ? 0 : 1; }
-  if (sub === "down") { sandboxDown(projectDir, config, target, { exec }); console.log(`sandbox ${target} down`); return 0; }
+  if (sub === "down") { await sandboxDown(projectDir, config, target, deps); console.log(`sandbox ${target} down`); return 0; }
   const s = targetCopies(config, target)[0];
   // `composeEnv()` for the same reason every other call takes it — compose warns about a
   // variable its file interpolates and the environment does not carry — and `redact` for

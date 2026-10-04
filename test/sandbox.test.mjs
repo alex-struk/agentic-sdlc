@@ -1139,3 +1139,18 @@ test("copies that all come up are reported in their own order, each seeded", asy
   assert.deepEqual(r.copies.map((c) => c.index), [0, 1, 2]);
   assert.deepEqual([...seeded].sort(), ["sdlc-mkt-new", "sdlc-mkt-new-1", "sdlc-mkt-new-2"]);
 });
+
+// Taking a copy down is a stop and a removal for each of its containers and volumes, and the copies
+// share nothing, so they go down together: a verify waits for the slowest copy rather than for the
+// sum of them (`docs/decisions/0095`).
+test("copies of the sandbox go down together, and one that does not makes the whole not ok", async (t) => {
+  const d = project(t);
+  const started = [];
+  const finish = [];
+  const execAsync = (_cmd, args) => new Promise((resolve) => { started.push(args.join(" ")); finish.push(resolve); });
+  const going = sandboxDown(d, COPIES, "new", { execAsync });
+  assert.equal(started.length, 3, "every copy's teardown starts before any has finished");
+  assert.ok(started.every((a) => / down -v$/.test(a)));
+  finish.forEach((f, i) => f({ status: i === 1 ? 1 : 0, stdout: "", stderr: "" }));
+  assert.deepEqual(await going, { ok: false });
+});

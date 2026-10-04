@@ -55,7 +55,8 @@ identity provider's test users can sign in without the password ever appearing o
 - `reset` — runs the target's `seed_service` (`docker compose ... run --rm <service>`), which puts
   the data back to what `tests/seed/manifest.yaml` describes. Prints `sandbox <target> reseeded`,
   or the service's own failure.
-- `down` — `docker compose ... down -v`. Always prints `sandbox <target> down` and exits 0.
+- `down` — `docker compose ... down -v`, for every copy the target declares at once. Always prints
+  `sandbox <target> down` and exits 0.
 - `status` — `docker compose ... ps`, or `sandbox <target>: nothing running`.
 
 No run-record line and no local port file the way `sdlc oracle` writes one: a sandbox target's
