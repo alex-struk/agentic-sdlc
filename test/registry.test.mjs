@@ -125,6 +125,18 @@ test("bind-adapter can revise a returned binding, overlaying its own target and 
   assert.ok(ordinary.every((r) => r.id !== "bind-adapter-revise-source" || r.ok));
 });
 
+// The tests were calibrated against the old target's binding, and they read what a member
+// returns as text. A new target's member that answers in another form fails a test the
+// application passes, and the failure goes back to a builder who cannot change it
+// (`docs/decisions/0096`).
+test("the binder of the new target is told to answer in the form the old target's binding does", () => {
+  const skill = skillText("bind-adapter");
+  assert.match(skill, /## The old target's binding is the form to match/);
+  assert.match(skill, /tests\/adapters\/old\/index\.ts/);
+  assert.match(skill, /the same items, in the same order and with the same separators/);
+  assert.match(skill, /the same spellings of its input/);
+});
+
 // A revision refused because the new target's sandbox was not up is run again once it is
 // started, and must find the same return to revise (`docs/decisions/0080`).
 test("bind-adapter --revise refused on a pre-check ahead of it leaves the return where the next run finds it", (t) => {

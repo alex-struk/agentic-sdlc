@@ -117,6 +117,11 @@ contract into `tests/generated/surface.d.ts`, `personas.ts` and `seed.ts` right 
 workspace, exactly the way `derive-tests`'s own `prepare` does — so the agent's very first read of
 `Surface` is the type it is about to implement.
 
+On `--target new`, the old target's binding (`tests/adapters/old/index.ts`) is in the same archive,
+and the skill has the agent match it: each member returns what the old binding returns, in the same
+form, since calibration ran the tests against it
+(`docs/decisions/0096-the-new-binding-answers-in-the-old-bindings-form.md`).
+
 Once the session ends, only `tests/adapters` is copied back into the project (`stage.collect`):
 `tests/generated/*` is derived from the contract already committed on `main` and needs no commit of
 its own here. The guard row for `bind-adapter` allows only `tests/adapters/` — every other path,

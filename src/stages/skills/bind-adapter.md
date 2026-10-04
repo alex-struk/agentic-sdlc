@@ -38,6 +38,18 @@ baseURL: string; persona: typeof persona }): Surface`, implementing every page
   contract names — throws `new Error("unbound: <page>.<member> — <reason>")` from that method
   instead of pretending to succeed.
 
+## The old target's binding is the form to match
+
+When you bind the `new` target and `tests/adapters/old/index.ts` is in your workspace, read its
+binding of a member before you write yours. Calibration ran the tests against that binding, and
+they pass on exactly what it returns, often by looking for words in the text an observation hands
+back. So an observation returns the same items, in the same order and with the same separators,
+and leaves out what the old binding leaves out: if it returns only the boxes that are ticked, so
+does yours. An action accepts the same spellings of its input as the old binding does. The running
+page tells you how to reach a thing; the old binding tells you what to hand back. Where the new
+page offers something the old one did not, say so in your journal rather than inventing a form a
+test was never run against.
+
 ## Two ways a page hides from you, and what to do about each
 
 Nearly everything an adapter reports as unbound is one of these, and neither is the page failing
