@@ -24,8 +24,8 @@ should come to. None of that is restated by a check, and none of it can be skipp
 none by default. The runner approves one only where every check holds: the stage is listed; the
 ruling is the holder's own, with no escalation standing and none being ruled; the acceptance
 typecheck passed (a contract has none to pass); no ruler has asked anything of it that only a ruler
-can say was done (an open condition or revision request, read from the ledgers the persona's prompt
-is shown), and it is not a revision of a returned proposal; and, measured from where its branch was
+can say was done (an open condition or revision request, or a request its own run took up, read
+from the ledgers the persona's prompt is shown), and it is not a revision of a returned proposal; and, measured from where its branch was
 cut, a derivation deleted no acceptance file, has no changed test calling `expect(` fewer times and
 no added test calling it not at all, a contract deleted no line, and a binding changed nothing
 outside what its stage delivers. The work a stage is routinely sent (an unbound row to bind, a test

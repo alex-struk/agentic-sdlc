@@ -9,7 +9,7 @@ import { git } from "../lib/git.mjs";
 import { autoApproveStages } from "../config/policy.mjs";
 import { deliveredBy, proposalFamily } from "../stages/registry.mjs";
 import { returnRecordedAt } from "../stages/proposals.mjs";
-import { openOn } from "../spec/owed.mjs";
+import { openOn, readAt } from "../spec/owed.mjs";
 import { routeOf } from "./routes.mjs";
 import { ownedDirectory } from "./typecheck.mjs";
 import { DIFF_EXCLUDE, requestsShown } from "./persona.mjs";
@@ -83,7 +83,8 @@ function typecheckHeld(projectDir, name, stage, typecheck) {
 // Whether a ruler has asked anything of this proposal that only a ruler can say was done, read
 // from the same ledgers on `main` the persona's prompt is shown (`buildPersonaPrompt`): an
 // instruction an earlier ruling asked of this stage, or a revision request the prompt would put
-// in front of the ruler or that was asked of this stage. And a revision of a returned proposal,
+// in front of the ruler or that was asked of this stage, or one this proposal's run took up, which
+// the run marks taken before the proposal is ruled. And a revision of a returned proposal,
 // whatever the ledgers say: its branch was cut from the commit that recorded the return
 // (`returnRecordedAt`). The work a stage is routinely sent — an unbound row, a test to derive
 // again, a missing test — is not among them: whether it was done is what the next verify
@@ -93,6 +94,7 @@ function owed(projectDir, { name, stage, base }) {
   const opts = { familyOf: proposalFamily };
   if (openOn(projectDir, "condition", "main", opts).some((c) => c.stage === stage)) return true;
   if (requestsShown(projectDir, name).length) return true;
+  if (readAt(projectDir, "request", "main", opts).some((r) => r.taken_by === name)) return true;
   return openOn(projectDir, "request", "main", opts).some((r) => r.stage === stage);
 }
 

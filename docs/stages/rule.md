@@ -681,7 +681,8 @@ runner-owned typecheck, and it approves only where every one of these holds:
    the other checks alone.
 4. No ruler has asked anything of the proposal that only a ruler can say was done, read from the
    ledgers on `main` the persona's prompt is shown: an open condition asked of its stage, or a
-   revision request the prompt would show or that was asked of its stage. And it is not a revision
+   revision request the prompt would show, that was asked of its stage, or that the proposal's own
+   run took up (a run marks a request taken before its proposal is ruled). And it is not a revision
    of a returned proposal: its branch was not cut from the commit that recorded a return. The work
    a stage is routinely sent (an unbound row on `rebind`, a test to derive again on `redo`, a
    missing test) does not count: whether it was done is what the next verify measures.

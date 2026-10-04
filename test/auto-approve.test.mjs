@@ -238,6 +238,19 @@ test("auto_approve: a new test that asserts nothing leaves the ruling to the per
   });
 });
 
+// A run that takes up a ruler's revision request marks it taken before its proposal is ruled, so
+// the request is no longer open when the ruling comes; the proposal that took it is still the
+// answer to a ruler, and a ruler says whether it was answered.
+test("auto_approve: a proposal that took up a ruler's revision request is ruled by the persona", async () => {
+  await withProject({}, async (dir) => {
+    const at = new Date().toISOString();
+    write(dir, ".sdlc/revision-requests.yaml", `requests:\n  - stage: bind-adapter\n    target: new\n    why: "read the status after the page renders it"\n    from: build-slice-1\n    gate: G3\n    by: agent:reviewer\n    at: ${at}\n    taken: ${at}\n    taken_by: bind-adapter-new\n`);
+    commit(dir, "a request taken up");
+    proposeFiles(dir, "bind-adapter-new", "G3", { "tests/adapters/new/index.ts": "export default function create() { return { a: 1 }; }\n" });
+    await assertPersonaAsked(dir, "bind-adapter-new", "reviewer");
+  });
+});
+
 test("auto_approve: a revision of a returned proposal is ruled by the persona", async () => {
   await withProject({}, async (dir) => {
     proposeFiles(dir, "derive-tests-applications", "G3", { "tests/acceptance/applications/age.spec.ts": spec(3) });
