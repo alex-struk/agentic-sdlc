@@ -14,7 +14,10 @@ export function parseConfig(text) {
   try { config = parse(text); }
   catch (e) { return { config: null, errors: [`config.yaml is not valid YAML: ${e.message}`] }; }
   const ok = validate(config);
-  const errors = ok ? [] : validate.errors.map((e) => `${e.instancePath || "/"}: ${e.message}`);
+  // A value outside an enum is answered with the values the key accepts, since "one of the
+  // allowed values" is no help to whoever has to write one.
+  const errors = ok ? [] : validate.errors.map((e) => `${e.instancePath || "/"}: ${e.message}`
+    + (e.keyword === "enum" ? `: ${e.params.allowedValues.join(", ")}` : ""));
   return { config, errors };
 }
 

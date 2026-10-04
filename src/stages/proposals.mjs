@@ -257,7 +257,7 @@ export function recordReturnOnMain(projectDir, { name, branch }, { gate = "G1", 
 // cut from that commit, since nothing commits to `main` while a stage runs, so a revision's
 // branch point names the proposal it revised: the one gate file that commit added, ruled
 // `return`.
-function returnRecordedAt(projectDir, commit) {
+export function returnRecordedAt(projectDir, commit) {
   let added;
   try {
     added = git(["diff-tree", "--no-commit-id", "--name-only", "--diff-filter=A", "-r", commit, "--", ".sdlc/gates"], projectDir)

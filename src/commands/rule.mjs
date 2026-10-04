@@ -32,6 +32,7 @@ import { requestSubject } from "../runner/routes.mjs";
 import { heldByFor } from "../lib/seat.mjs";
 import { approvesUnasserted, blocksOnMissingTests, escalateTiers } from "../config/policy.mjs";
 import { proposedPolicyChange } from "../runner/ruling-config.mjs";
+import { AUTO_APPROVER, autoApproval } from "../runner/auto-approve.mjs";
 
 // Which grammar a proposal's conditions are read in is a property of the conditions, so it
 // is defined with them; `rule` is what applies it, and is where a caller reaches it.
@@ -1687,6 +1688,26 @@ function assertNoMissingTests(projectDir, name, verdict, conditions, config) {
     throw new Error(withRulingPreserved(`rule ${name}: ${missingTestsGuidance(blocking)}`, verdict, conditions));
 }
 
+// The guards an approval from the agent seat is held to, run over the runner's own: the five on
+// its conditions (it carries none), the verify evidence and the missing tests. A guard that would
+// refuse it says the approval is not the runner's to give, and the persona is asked instead.
+function approvalGuardsPass(projectDir, name, { executable, config }) {
+  try {
+    if (!executable) {
+      assertOverreachRulable(name, "approve", []);
+      assertAddressedRulable(name, "approve", []);
+      assertDeliverableRulable(name, "approve", []);
+      assertAccountedRulable(projectDir, name, "approve", []);
+      assertMissingTestRulable(projectDir, name, "approve", []);
+    }
+    assertApprovalEvidence(projectDir, name, "approve", false, [], config);
+    assertNoMissingTests(projectDir, name, "approve", [], config);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // The agent path: no human types --by approve|return. A persona brief is handed to a
 // short-lived agent turn along with the proposal, the diff and the checks, and the
 // verdict it comes back with is trusted the same way a human's --by is trusted — phase 0
@@ -1774,6 +1795,30 @@ export async function ruleByAgent(projectDir, name, { persona }) {
       name, gate, revision: git(["rev-parse", "HEAD"], projectDir),
     });
     assertCleanTree(projectDir, "rule: typecheck modified the working tree");
+    // A proposal from a stage the gate's `auto_approve` lists, on which every check the runner
+    // reads holds, is approved by the runner without a persona turn (`src/runner/auto-approve.mjs`,
+    // `docs/decisions/0105`). It is recorded as the persona's approval would be: the same
+    // ruling section, gate file, merge and settlement, under `by: runner:checks`. The seat is
+    // the persona's, which the runner sits in under the policy, so `held_by` is the agent's and
+    // the approval is sampled for a person to read back as the persona's would be
+    // (`computeSampled`, `src/site/model.mjs`). Where any check fails, or a guard an approval
+    // passes would refuse this one, the persona is asked below, and nothing is recorded about
+    // why.
+    //
+    // Conditions are read as instructions at G1, and at G3 only for a triage proposal: every
+    // other G3 ruling's conditions are free-text notes to a writer, not something a stage
+    // executes.
+    const executable = conditionsAreExecutable(gate, name);
+    const auto = autoApproval(projectDir, { name, gate, config, typecheck, onEscalation: ruleEscalation || Boolean(escalation) });
+    if (auto.approve && approvalGuardsPass(projectDir, name, { executable, config })) {
+      const metrics = { cost: 0, turns: 0, session: "" };
+      recorded = true;
+      writeText(proposalPath, redactLocalPaths(appendRulingSection(proposalText, { verdict: "approve", by: AUTO_APPROVER, rationale: auto.rationale, conditions: [], typecheck }), projectDir));
+      const requests = commitRuling(projectDir, { name, branch, gate, verdict: "approve", by: AUTO_APPROVER, heldBy: "agent", rationale: auto.rationale,
+        conditions: [], unparsed: [], metrics, proposalPath, proposalAppended: true, executable, reprompt: null });
+      return { verdict: "approve", rationale: auto.rationale, conditions: [], unparsed: [], escalated: false, gate, escalateTo: null, reprompted: false,
+        autoApproved: true, ...requests, ...metrics };
+    }
     // A design is ruled on how its screens look as well as on their source, so the agent in
     // the seat is given pictures of them, taken on this checkout into a folder git ignores. A
     // person in the same seat sees the same screens by opening the catalogue
@@ -1843,9 +1888,6 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // and the ruling proceeds: the verdict was reached and the reasoning is worth keeping,
     // and `ratify` refuses to act on that gate file until a person fixes the lines.
     const grammar = conditionGrammarFor(name);
-    // Read as instructions at G1, and at G3 only for a triage proposal: every other G3 ruling's
-    // conditions are free-text notes to a writer, not something a stage executes.
-    const executable = conditionsAreExecutable(gate, name);
     let unparsed = executable && verdict !== "escalate" ? grammar.unparsed(conditions) : [];
     if (unparsed.length) {
       const why = `${unparsed.length} condition line(s) did not match the ${grammar.label} grammar: `
@@ -1977,10 +2019,11 @@ function pointedAt(text, gatePath) {
 // Redacted the same way the gate file itself is (`redactLocalPaths`) — an agent's own
 // prose can carry a path off the machine it ran on, and a terminal is not exempt from the
 // rule the committed file is held to.
-function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, opened, closed, missingTests, addressed, clauses }) {
+function formatRuling(projectDir, name, { gate, verdict, conditions, rationale, note, escalateTo, stalled, reprompted, autoApproved, opened, closed, missingTests, addressed, clauses }) {
   const gatePath = join(".sdlc", "gates", `${name}.yaml`);
   const recordedOn = verdict === "approve" ? "main (merged)" : `proposal/${name}`;
   const lines = [`${name}: ${verdict} at ${gate}`];
+  if (autoApproved) lines.push(`  approved by the runner's checks under policy.gates.${gate}.auto_approve; no persona turn was run`);
   if (escalateTo) lines.push(`  escalated to: ${escalateTo}`);
   // Said in the turn it happened, not left for whoever opens the gate file: an escalation
   // to the role that raised it looks identical to a hand-off on every other line here.
@@ -2101,7 +2144,7 @@ export async function rulePending(projectDir) {
       console.log(formatRuling(projectDir, name, {
         gate: r.gate ?? gateMatch[1], verdict: r.escalated ? "escalate" : r.verdict,
         conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, stalled: r.stalled,
-        reprompted: r.reprompted, opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed, clauses: r.clauses,
+        reprompted: r.reprompted, autoApproved: r.autoApproved, opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed, clauses: r.clauses,
       }));
     } catch (e) {
       results.push({ name, failed: true, error: e.message });
@@ -2150,7 +2193,7 @@ export async function ruleByAgentReported(projectDir, name, persona) {
   const r = await ruleByAgent(projectDir, name, { persona });
   console.log(formatRuling(projectDir, name, {
     gate: r.gate, verdict: r.escalated ? "escalate" : r.verdict,
-    conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted,
+    conditions: r.conditions, rationale: r.rationale, escalateTo: r.escalateTo, reprompted: r.reprompted, autoApproved: r.autoApproved,
     opened: r.opened, closed: r.closed, missingTests: r.missingTests, addressed: r.addressed, clauses: r.clauses,
   }));
   return r;

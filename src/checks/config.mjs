@@ -41,6 +41,26 @@ function agentEntryMessages(config) {
   return messages;
 }
 
+// A gate's `auto_approve` that approves nothing. The runner approves in place of a persona that
+// holds the gate (`ruleByAgent`), so a list on a gate a person holds applies to nothing, and so
+// does a stage whose proposals are ruled at another gate. Either reads as though those proposals
+// were being approved without a ruling, which they are not.
+function autoApproveMessages(config) {
+  const messages = [];
+  for (const [gate, g] of Object.entries(config?.policy?.gates ?? {})) {
+    const stages = g?.auto_approve ?? [];
+    if (!stages.length) continue;
+    if (!String(g.holder ?? "").startsWith("agent:")) {
+      messages.push(`policy.gates.${gate}.auto_approve is set, but ${gate} is held by ${g.holder}, a person, and the runner approves only in place of a persona; remove it or seat a persona at ${gate}`);
+    }
+    for (const stage of stages) {
+      const at = STAGES_BY_NAME[stage]?.gate;
+      if (at && at !== gate) messages.push(`policy.gates.${gate}.auto_approve names ${stage}, whose proposals are ruled at ${at}; list it under policy.gates.${at}.auto_approve instead`);
+    }
+  }
+  return messages;
+}
+
 // A calibration cadence counts approved changes since the oracle's suite last ran, so it applies
 // to nothing in a project whose profile does not calibrate or whose config names no oracle, and
 // reads as though calibration had been scheduled.
@@ -82,7 +102,7 @@ export function checkConfigText(text) {
   const { config, errors } = parseConfig(text);
   const messages = [...errors];
   try { stagesFor(config?.profile); } catch (e) { messages.push(e.message); }
-  if (config) messages.push(...agentEntryMessages(config), ...calibrateAfterMessages(config), ...calibrateScopeMessages(config));
+  if (config) messages.push(...agentEntryMessages(config), ...autoApproveMessages(config), ...calibrateAfterMessages(config), ...calibrateScopeMessages(config));
   // A turn budget that the runner would ignore or silently reduce is worse than no budget
   // at all: it reads as a cap that a gate approved and a run honoured, and it is neither.
   // Refusing it here puts the failure in front of whoever proposes the number, rather than

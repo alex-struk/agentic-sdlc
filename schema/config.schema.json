@@ -628,6 +628,17 @@
         "human_sample_per_week": {
           "type": "integer",
           "minimum": 0
+        },
+        "auto_approve": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "bind-adapter",
+              "derive-tests",
+              "contract"
+            ]
+          }
         }
       }
     },
@@ -690,6 +701,9 @@
         },
         "human_sample_per_week": {
           "$ref": "#/definitions/gate/properties/human_sample_per_week"
+        },
+        "auto_approve": {
+          "$ref": "#/definitions/gate/properties/auto_approve"
         },
         "approve_unasserted": {
           "type": "boolean"

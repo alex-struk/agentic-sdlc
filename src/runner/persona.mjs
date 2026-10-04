@@ -40,7 +40,7 @@ function diffCapFor(gate) {
 // up in the prompt, so its diff is the same text a second time. Excluded by pathspec so
 // none of them enter the budget at all. `app/` is excluded for a different reason: the
 // personas that hold the spec-side gates rule on the spec, not on an implementation.
-const DIFF_EXCLUDE = [":!site", ":!.sdlc/runs", ":!.sdlc/journal", ":!.sdlc/proposals"];
+export const DIFF_EXCLUDE = [":!site", ":!.sdlc/runs", ":!.sdlc/journal", ":!.sdlc/proposals"];
 
 // No single file takes more than this share of the budget while other files are still
 // waiting to be shown. A diff is evidence about a change, and one file of it — a
@@ -292,12 +292,16 @@ function accountingNote(open) {
 // taken there, and that reaches `main` only when the proposal is approved. Read from `main`, the
 // ruler would be shown as open the very requests the proposal under ruling has answered, and a
 // condition closing them is refused, since the ruling is checked against the branch.
-function requestsNote(projectDir, name) {
+export function requestsShown(projectDir, name) {
   const family = proposalFamily(name) ?? name;
   const branch = `proposal/${name}`;
   const rev = gitOk(["rev-parse", "--verify", "-q", branch], projectDir) ? branch : "main";
-  const shown = openOn(projectDir, "request", rev, { familyOf: proposalFamily })
+  return openOn(projectDir, "request", rev, { familyOf: proposalFamily })
     .filter((r) => r.ref && (r.deferred?.why || (r.family ?? proposalFamily(r.from) ?? r.from) === family));
+}
+
+function requestsNote(projectDir, name) {
+  const shown = requestsShown(projectDir, name);
   if (!shown.length) return [];
   const quote = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
   return [

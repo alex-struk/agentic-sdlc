@@ -102,6 +102,17 @@ export function blocksOnMissingTests(config) {
   return config?.policy?.gates?.G3?.block_on_missing_tests ?? true;
 }
 
+// The stages whose proposals a gate's `auto_approve` may name: the ones whose approval the
+// runner's own checks can settle (`src/runner/auto-approve.mjs`, `docs/decisions/0105`). The
+// schema's enum for the key is this list.
+export const AUTO_APPROVE_STAGES = Object.freeze(["bind-adapter", "derive-tests", "contract"]);
+
+// The stages whose proposals at `gate` the runner approves itself when its checks hold. None
+// by default: every proposal is ruled by the gate's holder.
+export function autoApproveStages(config, gate) {
+  return config?.policy?.gates?.[gate]?.auto_approve ?? [];
+}
+
 // The kinds of ready work `sdlc next` weighs against each other, and the order it takes them
 // in when more than one kind is ready (`src/runner/next.mjs`). The record orders the work
 // inside a kind; which kind goes first is not something the record can settle.
