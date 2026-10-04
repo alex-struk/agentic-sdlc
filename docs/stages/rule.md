@@ -667,6 +667,61 @@ A role escalating to a different role is unaffected, and so is a person in the s
 `--by <role>` carries no `agent:` prefix, which is what makes a person ruling an escalation an
 agent of the same role raised the way out of a stall rather than another instance of one.
 
+## The runner's own approval
+
+A gate's `policy.gates.<gate>.auto_approve` lists the stages — any of `bind-adapter`,
+`derive-tests` and `contract` — whose proposals the runner may approve itself rather than asking
+the persona that holds the gate. It is asked after the mandatory escalation above and the
+runner-owned typecheck, and it approves only where every one of these holds:
+
+1. The proposal's stage is one the gate's list names.
+2. The ruling is the holder's own: no escalation stands on the proposal, and it is not a ruling on
+   one.
+3. The typecheck passed. A contract proposal, for which the typecheck compiles no suite, is held to
+   the other checks alone.
+4. Nothing is owed that the proposal is meant to answer, read from the ledgers on `main` the
+   persona's prompt is shown: an open condition asked of its stage; a revision request the prompt
+   would show, or one asked of its stage; a missing test its stage owes; a test its stage is to
+   derive again (`redo`); a binding owed on its target (`rebind`). And it is not a revision of a
+   returned proposal: its branch was not cut from the commit that recorded a return.
+5. Measured from the commit the proposal's branch was cut from on `main`:
+   - `derive-tests`: no file under `tests/acceptance/` was deleted, and no changed `*.spec.ts` file
+     calls `expect(` fewer times than it did there;
+   - `contract`: no line under `spec/contract/` was deleted (`git diff --numstat`, renames read as
+     a deletion and an addition; a binary file's row counts as a deletion);
+   - `bind-adapter`: nothing changed outside what the stage delivers (`tests/adapters`), leaving
+     aside the runner's own records of the run: the run record, the journal, the proposal page and
+     the state site.
+
+And every guard an approval from the seat passes (the condition guards, the verify evidence, the
+missing tests a build slice is refused over) would pass this one.
+
+The approval is recorded as the persona's would be: the `## Ruling` section with the typecheck
+evidence, the gate file, the merge, and everything an approval settles on `main`. The gate file
+says `by: runner:checks`, `held_by: agent`, `cost: 0`, `turns: 0` and `session: ""`, and its
+rationale names the policy and each check that held:
+
+```
+Approved by the runner's checks, which policy.gates.G3.auto_approve lets settle derive-tests
+proposals: the acceptance typecheck of 1a2b3c4 is clean; no condition is open against it; no
+escalation stands on it; no test file was deleted and no changed test asserts less than before.
+```
+
+The seat is the persona's, which the runner sits in under the policy, so the site counts the
+approval toward the gate's `human_sample_per_week` as it would the persona's. `sdlc rule` prints the
+block every ruling prints, with one more line:
+
+```
+derive-tests-<domain>: approve at G3
+  approved by the runner's checks under policy.gates.G3.auto_approve; no persona turn was run
+```
+
+Where any check fails, the persona is asked exactly as it would have been: its prompt says nothing
+about the checks, and nothing is recorded about which one failed. A gate a person holds is ruled by
+the person, since the runner approves only in place of a persona; `sdlc checks` refuses an
+`auto_approve` on such a gate, and one naming a stage whose proposals are ruled at another gate
+(`docs/decisions/0105`).
+
 ## The configuration a ruling reasons from
 
 `.sdlc/config.yaml` is versioned with the repository, so the copy on a proposal branch is the

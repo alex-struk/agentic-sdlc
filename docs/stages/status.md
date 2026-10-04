@@ -56,7 +56,9 @@ every `.sdlc/proposals/*.md`, every `.sdlc/runs/*.md`, `tests/acceptance/<domain
   was no turn to measure, and `$0` for an agent ruling that genuinely cost nothing (a mandatory
   escalation never asks the persona anything) — and a `Sample` column: for each gate, the first `human_sample_per_week` (from that gate's policy
   entry, default 0) agent-held rulings in each ISO week (grouped by `at`) are marked `sample`;
-  every other row is left blank.
+  every other row is left blank. An approval the runner's checks gave in place of a gate's
+  persona (`by: runner:checks`, `docs/stages/rule.md`) is made in the persona's seat, so it is
+  counted toward that sample as the persona's own approval would be.
 
   `Made by` is the column that answers "did a person decide this?", and three seats can rule:
   `persona agent` (an agent that read the gate holder's brief and ruled in that role), `a person`
