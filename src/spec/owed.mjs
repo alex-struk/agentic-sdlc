@@ -202,10 +202,29 @@ export const OWED_KINDS = Object.freeze(Object.keys(KINDS));
 // Every file this module keeps owed work in: each kind's own, and the one the rest share.
 export const OWED_FILES = Object.freeze([...Object.values(KINDS).map((d) => d.path), OWED_PATH]);
 
+// These lists are the pipeline's own files, written only here. A list is written without YAML
+// aliases (`dump`), and read with no limit on them, because an older write gave every entry one
+// closing closed the same closure object, which the YAML writer emits as one anchor and an alias
+// per entry, and the YAML reader refuses a document with more than a hundred aliases of one
+// anchor as though it were an attack: a single closing of more than a hundred entries left a
+// list every reader took to be empty.
+const READ_OPTIONS = { maxAliasCount: -1 };
+const dump = (doc) => stringifyYaml(doc, { aliasDuplicateObjects: false });
+
 function rawList(text, d) {
   let parsed;
-  try { parsed = parseYaml(text ?? ""); } catch { return []; }
+  try { parsed = parseYaml(text ?? "", READ_OPTIONS); } catch { return []; }
   return Array.isArray(parsed?.[d.list]) ? parsed[d.list] : [];
+}
+
+// Refuses to write over a list on disk that does not parse. Read, such a file holds nothing
+// (`entriesIn`), so a write built on that reading would keep only what it adds and put the
+// loss on `main`; the file is left as it is, and the error names it.
+function assertParses(p, rel) {
+  if (!existsSync(p)) return;
+  try { parseYaml(readText(p), READ_OPTIONS); } catch (err) {
+    throw new Error(`${rel} does not parse, so it is not written over: ${String(err?.message ?? err).split("\n")[0]}`);
+  }
 }
 
 function viewsFrom(raw, kind, d, opts) {
@@ -287,13 +306,14 @@ export function isOpen(entry) {
 function writeAll(projectDir, kind, views) {
   const d = def(kind);
   const p = join(projectDir, d.path);
+  assertParses(p, d.path);
   const stored = views.map((v) => d.store(v));
   if (!d.shared) {
-    writeText(p, stringifyYaml({ [d.list]: stored }));
+    writeText(p, dump({ [d.list]: stored }));
     return d.path;
   }
   const others = existsSync(p) ? rawList(readText(p), d).filter((s) => s?.kind !== kind) : [];
-  writeText(p, stringifyYaml({ [d.list]: [...others, ...stored] }));
+  writeText(p, dump({ [d.list]: [...others, ...stored] }));
   return d.path;
 }
 
@@ -335,7 +355,7 @@ export function open(projectDir, kind, entries) {
   const written = writeAll(projectDir, kind, [...list, ...added]);
   // Read back from the whole list, so anything a view derives from an entry's place in it (a
   // request's reference) is what every later read derives.
-  const all = entriesIn(kind, stringifyYaml({ [d.list]: [...list, ...added].map(d.store) }));
+  const all = entriesIn(kind, dump({ [d.list]: [...list, ...added].map(d.store) }));
   return { path: written, added: all.slice(-added.length) };
 }
 

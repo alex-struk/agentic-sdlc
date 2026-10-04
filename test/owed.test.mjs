@@ -286,3 +286,35 @@ test("withdrawRetired leaves a kind whose items are never criteria untouched", (
   assert.deepEqual(r, { path: null, withdrawn: [] });
   assert.ok(isOpen(read(dir, "rebind")[0]));
 });
+
+// One closing written as one shared closure, aliased from every entry it closed, made a file the
+// YAML reader refuses past a hundred aliases: every reader saw an empty list, and the next write
+// kept only what it added. A list is written without aliases, read whatever aliases an older
+// write left in it, and never written over when what is on disk does not parse.
+test("a hundred and one entries closed at once are all read back, and written without aliases", (t) => {
+  const dir = project(t);
+  open(dir, "rebind", Array.from({ length: 101 }, (_, i) => ({ id: `R-1.${i + 1}`, target: "old", why: "unbound: a.b — gone", found: "unbound", adapter: "A" })));
+  close(dir, "rebind", () => true, { outcome: "met", why: "tests/adapters/old has changed since this was found" });
+  assert.equal(read(dir, "rebind").length, 101);
+  assert.ok(read(dir, "rebind").every((e) => !isOpen(e)));
+  assert.doesNotMatch(readFileSync(join(dir, owedPath("rebind")), "utf8"), /\*a\d/);
+});
+
+test("a list an older write left with one closure aliased a hundred and fifty times is read whole", (t) => {
+  const dir = project(t);
+  const entries = Array.from({ length: 150 }, (_, i) => `  - id: R-2.${i + 1}\n    target: old\n    why: gone\n    found: unbound\n    adapter: A\n    closed: ${i === 0 ? "&a1\n      outcome: met\n      why: changed" : "*a1"}`);
+  mkdirSync(join(dir, "tests", "adapters"), { recursive: true });
+  writeFileSync(join(dir, owedPath("rebind")), `rebind:\n${entries.join("\n")}\n`);
+  const all = read(dir, "rebind");
+  assert.equal(all.length, 150);
+  assert.equal(all.at(-1).closed.outcome, "met");
+});
+
+test("a list on disk that does not parse is never written over", (t) => {
+  const dir = project(t);
+  mkdirSync(join(dir, "tests", "adapters"), { recursive: true });
+  const broken = "rebind:\n  - id: R-1.1\n    why: [unclosed\n";
+  writeFileSync(join(dir, owedPath("rebind")), broken);
+  assert.throws(() => open(dir, "rebind", [{ id: "R-1.2", target: "old", why: "x" }]), /does not parse/);
+  assert.equal(readFileSync(join(dir, owedPath("rebind")), "utf8"), broken);
+});
