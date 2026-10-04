@@ -124,9 +124,12 @@ the migration one-off service `oracle.migrate_service` names, if the config name
 
 ## Proving the oracle starts
 
-When this project configures `oracle`, your prompt asks you to bring it up with the override you
-wrote, and to take it down again before you finish. Nothing you can read tells you whether the
-application will start, so this is how you find out.
+When this project configures `oracle` and this run changed the override or the seed, your prompt
+asks you to bring the oracle up from what you wrote, and to take it down again before you finish.
+Nothing you can read tells you whether the application will start, so this is how you find out.
+A run that changed neither the override nor the seed has nothing new to prove: the oracle starts
+from exactly what it started from before. Leave it as you found it, since the stages either side
+of this one may be using it, and say so in your journal.
 
 Done is not "a page was served": done is that the migration ran, the seed loaded, and a record from
 tests/seed/manifest.yaml is visible through the application itself. An application that starts with

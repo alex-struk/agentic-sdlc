@@ -365,6 +365,19 @@ test("the contract stage's judgement is in its skill, and its prompt carries the
   assert.match(prompt, /\$\{SDLC_APP_PORT\}/);
 });
 
+// The oracle may be running for the stages either side of a contract run (`docs/decisions/0101`).
+// A run that changed nothing it starts from has nothing new to prove, and taking it down then only
+// makes the next stage that needs it build and seed it again (`docs/decisions/0103`).
+test("the contract stage proves the oracle only when it changed what the oracle starts from, and otherwise leaves it as it found it", () => {
+  const config = { oracle: { target: "old", compose: "sources/old/docker-compose.yml", base_url: "http://localhost:3000", identity: "session-route" } };
+  const prompt = stageFor("contract").prompt({ config });
+  assert.match(prompt, /only when this run changed the override or anything under tests\/seed\//);
+  assert.match(prompt, /node \$SDLC_BIN oracle down` first/);
+  assert.match(prompt, /leave the oracle as you found it/);
+  const skill = readFileSync(skillPath("contract"), "utf8").replace(/\s+/g, " ");
+  assert.match(skill, /changed neither the override nor the seed/);
+});
+
 test("derive-tests leaves how to judge a not-testable reason to its skill", () => {
   const prompt = stageFor("derive-tests").prompt({ domain: "alpha", deriveTestsCriteria: [{ id: "R-1.1", version: 1, statement: "s" }] });
   assert.ok(!prompt.includes("not that the criterion is hard"));

@@ -964,8 +964,8 @@ const contract = {
         : "6. This project configures no oracle, so there is nothing to write under .sdlc/oracle/.",
       oracle
         ? [
-          "7. Then prove the override actually works: run `node $SDLC_BIN oracle up` — the CLI is not on PATH, so use that variable. Your skill says what counts as working, what you may change to get there, and how many attempts to make.",
-          "Run `node $SDLC_BIN oracle down` before you finish, whatever the outcome. A container left running collides with the next run.",
+          "7. Then prove the override actually works — but only when this run changed the override or anything under tests/seed/, which is what the oracle starts from. Run `node $SDLC_BIN oracle down` first, so a copy already running is started again from what you wrote, then `node $SDLC_BIN oracle up` — the CLI is not on PATH, so use that variable. Your skill says what counts as working, what you may change to get there, and how many attempts to make. Run `node $SDLC_BIN oracle down` again before you finish, whatever the outcome.",
+          "When this run changed neither, there is nothing new to prove: leave the oracle as you found it, running or not, since the stages either side of this one may be using it, and say in your journal that neither changed.",
         ].join("\n\n")
         : "",
       "Finish with your journal entry: say which pages exist, which sign-in method each persona uses, what the seed contains, what could not be recovered, and — when this project has an oracle — whether the application started and what you had to change to get it there.",

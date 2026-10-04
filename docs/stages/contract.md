@@ -149,6 +149,12 @@ run in a mode that refuses a shell outright, which is why the first version of t
 nothing at all — the agent was refused on every attempt and correctly reported that it had made
 none. The CLI is on nobody's PATH, so the runner passes its own entry point as `$SDLC_BIN`.
 
+The proof is made only when the run changed the override or the seed, which is what the oracle
+starts from. The agent takes any running copy down first, so the oracle starts from what it wrote,
+and takes it down again when it is done. A run that changed neither leaves the oracle as it found
+it, since the stages either side of a contract run may be using it
+(`docs/decisions/0103-a-contract-run-proves-the-oracle-only-when-it-changed-what-it-starts-from.md`).
+
 `oracle up` takes minutes — pulling images, installing, migrating — and the agent waits for it in
 the foreground. The session is headless and ends when the agent stops replying, so an `oracle up`
 left running in the background finishes with nobody to read it, and the proposal says only that a
