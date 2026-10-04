@@ -62,9 +62,10 @@ asks for happens at the gate it is returned to, not here.
    undone, and ends the run: see "Checks" below.
 3. **Bring the sandbox up** against target `new` (`sandboxUp`, `docs/stages/sandbox.md`): the
    project's own compose file, built, started, health-checked, checked service by service, and
-   reseeded. Every copy `targets.new.instances` declares comes up at the same time
-   (`docs/decisions/0095-copies-of-the-sandbox-come-up-together.md`), and the lowest-numbered copy
-   that does not is the one reported. A sandbox that will not start ends the run there. Which way it ends depends on the
+   reseeded. Of the copies `targets.new.instances` declares, the first comes up alone and builds
+   the images, and the rest come up together from what it built
+   (`docs/decisions/0095-copies-of-the-sandbox-come-up-together.md`). The lowest-numbered copy
+   that does not come up is the one reported. A sandbox that will not start ends the run there. Which way it ends depends on the
    `cause` the result carries: `application` returns the build proposal, `environment` halts with
    nothing recorded — see "A sandbox that will not start" below.
 4. **Run the acceptance suite** for the slice's spec files against the running sandbox, with the

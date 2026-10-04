@@ -1078,29 +1078,50 @@ test("up starts copy 0 alone unless every copy is asked for, each with its own p
   assert.deepEqual(seen.map((c) => c.args.match(/-p (\S+)/)[1]), ["sdlc-mkt-new", "sdlc-mkt-new-1", "sdlc-mkt-new-2"]);
 });
 
-// Bringing a copy up is a build, a start and a seed, and every copy is its own compose project
-// on its own ports, so the copies come up together: a verify waits for the slowest copy rather
-// than for the sum of them (`docs/decisions/0095`).
-test("every copy comes up at the same time, and the lowest-numbered copy that does not is reported", async (t) => {
+// Bringing a copy up is a build, a start and a seed. Every copy builds the same images, so the
+// first copy comes up alone and builds them, and the rest come up together from what it built: a
+// verify waits for the first copy and then the slowest of the rest, and the same image is never
+// built several times at once (`docs/decisions/0095`).
+test("the first copy comes up alone, the rest together, and the lowest-numbered copy that does not is reported", async (t) => {
   const d = project(t);
   const exec = () => ({ status: 0, stdout: "", stderr: "" });
+  const ups = [];
   let running = 0;
   let most = 0;
   const execAsync = async (cmd, args) => {
     const line = args.join(" ");
-    running += 1;
-    most = Math.max(most, running);
+    const up = / up -d --build --wait$/.test(line);
+    const name = line.match(/-p (\S+)/)[1];
+    if (up) { ups.push(`start ${name}`); running += 1; most = Math.max(most, running); }
     await new Promise((resolve) => setTimeout(resolve, 20));
-    running -= 1;
-    return / up -d --build --wait$/.test(line) && /-p sdlc-mkt-new-[12] /.test(line)
+    if (up) { running -= 1; ups.push(`end ${name}`); }
+    return up && /^sdlc-mkt-new-[12]$/.test(name)
       ? { status: 1, stdout: "", stderr: "the build stopped" }
       : { status: 0, stdout: "", stderr: "" };
   };
-  const health = async () => true;
-  const r = await sandboxUp(d, COPIES, "new", { exec, execAsync, health, copies: "all" });
-  assert.equal(most, 3, "the three copies were coming up at the same time");
+  const r = await sandboxUp(d, COPIES, "new", { exec, execAsync, health: async () => true, copies: "all" });
+  assert.deepEqual(ups.slice(0, 2), ["start sdlc-mkt-new", "end sdlc-mkt-new"], "the first copy is up before another starts");
+  assert.equal(most, 2, "the other two came up at the same time");
   assert.equal(r.ok, false);
   assert.match(r.messages[0], /^copy 1 of the 3 \(sdlc-mkt-new-1\): docker compose up failed/);
+});
+
+test("a first copy that does not come up is reported, and no other copy is started", async (t) => {
+  const d = project(t);
+  const exec = () => ({ status: 0, stdout: "", stderr: "" });
+  const started = [];
+  const execAsync = async (cmd, args) => {
+    const line = args.join(" ");
+    if (/ up -d --build --wait$/.test(line)) {
+      started.push(line.match(/-p (\S+)/)[1]);
+      return { status: 1, stdout: "", stderr: "the build stopped" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const r = await sandboxUp(d, COPIES, "new", { exec, execAsync, health: async () => true, copies: "all" });
+  assert.equal(r.ok, false);
+  assert.deepEqual(started, ["sdlc-mkt-new"]);
+  assert.match(r.messages[0], /^copy 0 of the 3 \(sdlc-mkt-new\): docker compose up failed/);
 });
 
 test("copies that all come up are reported in their own order, each seeded", async (t) => {

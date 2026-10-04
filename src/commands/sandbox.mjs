@@ -276,16 +276,19 @@ const failed = (cause, messages, failures = []) => ({ ok: false, cause, failures
 //
 // One copy unless `copies: "all"` asks for every copy the target declares: a sandbox somebody
 // drives by hand, or an adapter is bound against, is one application, and only a verify that
-// spreads its tests across copies needs the rest (`docs/decisions/0090`). Each copy is its own
-// compose project on its own ports, so the copies come up together and a verify waits for the
-// slowest of them rather than the sum (`docs/decisions/0095`). The lowest-numbered copy that
-// does not come up is what is reported; `down` stops every copy whichever were started.
+// spreads its tests across copies needs the rest (`docs/decisions/0090`). Every copy builds the
+// same images, so the first comes up alone and builds them, and the rest, each its own compose
+// project on its own ports, come up together from what it built (`docs/decisions/0095`). The
+// lowest-numbered copy that does not come up is what is reported, and a first copy that does not
+// come up is reported before any other is started; `down` stops every copy whichever were started.
 export async function sandboxUp(projectDir, config, target, deps = {}) {
   const all = targetCopies(config, target);
   const wanted = deps.copies === "all" ? all : all.slice(0, 1);
   // A caller that hands in its own `exec` has every command answered by it.
   const execAsync = deps.execAsync ?? (deps.exec ? async (cmd, args, opts) => deps.exec(cmd, args, opts) : defaultExecAsync);
-  const results = await Promise.all(wanted.map((c) => upCopy(projectDir, config, target, c, { ...deps, execAsync })));
+  const up = (c) => upCopy(projectDir, config, target, c, { ...deps, execAsync });
+  const results = [await up(wanted[0])];
+  if (results[0].ok) results.push(...await Promise.all(wanted.slice(1).map(up)));
   const bad = results.findIndex((r) => !r.ok);
   if (bad >= 0) {
     const r = results[bad];

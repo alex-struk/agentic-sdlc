@@ -20,22 +20,25 @@ verify another 45 seconds, failing ones included.
 
 ## Decision
 
-**Every copy a verify asks for is brought up at the same time.** The long steps of bringing a copy
-up (`docker compose up --build --wait` and the seed) run without holding the process, so each copy
-proceeds as its own commands allow. A verify waits for the slowest copy rather than for the sum of
-them.
+**The first copy comes up alone, and the rest come up together.** Every copy builds the same images
+from the same files, and building one image several times at once repeats the work; on one machine
+it failed partway through installing an image's packages. So the first copy a verify asks for comes
+up alone and builds them. The rest then come up at the same time, from what it built: the long
+steps of bringing a copy up (`docker compose up --build --wait` and the seed) run without holding
+the process, so each copy proceeds as its own commands allow. A verify waits for the first copy and
+then the slowest of the rest, rather than for the sum of them.
 
 **The lowest-numbered copy that does not come up is the one reported,** with the same message as
-before (`copy <i> of the <n> (<project>): …`). Copies that did come up are taken down with the rest,
-as before. A sandbox brought up for one person, or for an adapter to be bound against, is still one
-copy.
+before (`copy <i> of the <n> (<project>): …`). A first copy that does not come up is reported before
+any other is started. Copies that did come up are taken down with the rest, as before. A sandbox
+brought up for one person, or for an adapter to be bound against, is still one copy.
 
 ## Consequences
 
-- Bringing up three copies takes about as long as bringing up one, so a project can declare as many
+- Bringing up six copies takes about as long as bringing up two, so a project can declare as many
   copies as its machine has memory and processors for, and each one shortens the suite without
   lengthening the start.
-- Copies building the same images at once share the image builder's cache, and the first build of a
-  changed image may be done by more than one copy.
-- A failure in one copy no longer stops the copies after it from being started; they are taken down
-  when the run ends, as every copy is.
+- The images are built once per verify, by the first copy; a build step that depends on a copy's own
+  settings, such as an address baked in at build time, still runs once for each copy.
+- A failure in one of the later copies does not stop the others from being started; they are taken
+  down when the run ends, as every copy is.
