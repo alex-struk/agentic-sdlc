@@ -96,12 +96,13 @@ each action on the run record before it is taken:
   that slice's newest build, the returned build's own branch, `proposal/build-slice-<n>[-k]` or
   `returned/build-slice-<n>[-k]`. The branch is passed to `sandbox up` and `sandbox down` as the
   step named it
-  (`docs/decisions/0080-a-returned-adapter-is-revised-before-it-is-measured-with.md`). The oracle is taken down
-  first when `oracle up` has a copy of it recorded as running, since the two publish on this
-  machine's ports and can share one; then `sdlc sandbox up --target new --from <branch>`, the step
-  once more, and `sdlc sandbox down --target new --from <branch>` whatever became of the start or
-  the step. A sandbox that does not start stops the loop with 1 and the tail of its output, and is
-  still taken down. A sandbox that cannot be taken down stops the loop with 1 and the command to
+  (`docs/decisions/0080-a-returned-adapter-is-revised-before-it-is-measured-with.md`). Then
+  `sdlc sandbox up --target new --from <branch>`, the step once more, and
+  `sdlc sandbox down --target new --from <branch>` whatever became of the start or the step. The
+  oracle stays up beside the sandbox; a start refused a host port while the oracle is up is
+  answered by `sdlc oracle down` and one more start
+  (`docs/decisions/0101-the-oracle-stays-up-beside-the-new-sandbox.md`). A sandbox that does not
+  start stops the loop with 1 and the tail of its output, and is still taken down. A sandbox that cannot be taken down stops the loop with 1 and the command to
   take it down by hand. A refusal that names no branch — no build proposal of the slice, or more
   than one slice's — is a stop (`docs/decisions/0078-drive-starts-the-new-sandbox-for-a-rebind.md`).
 - **A sandbox could not start on a port the oracle holds.** A step whose sandbox was refused a

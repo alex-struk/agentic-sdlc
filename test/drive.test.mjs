@@ -31,7 +31,8 @@ function world({ answers, steps = [{ ok: true }], oracle = [], oracleUp = false,
     sandbox: async (_dir, sub, { target, from }) => {
       calls.sandbox.push(`${sub} --target ${target} --from ${from}`);
       calls.order.push(`sandbox ${sub}`);
-      return sandbox[sub] ?? { ok: true, output: [] };
+      const answer = Array.isArray(sandbox[sub]) ? sandbox[sub].shift() : sandbox[sub];
+      return answer ?? { ok: true, output: [] };
     },
     mark: (_dir, item) => (marks ? marks(calls, item) : { n: calls.executed.length, why: item.why }),
     record: {
@@ -209,16 +210,33 @@ test("a revision whose sandbox is to start from a returned build passes that bra
   assert.deepEqual(calls.executed, ["sdlc run bind-adapter --target new --revise", "sdlc run bind-adapter --target new --revise"]);
 });
 
-test("the oracle is taken down before the new target's sandbox is started, when it is up", async () => {
+// The oracle and the new target's sandbox share this machine. Where their ports are apart the
+// oracle stays up beside the sandbox, and the next step that needs it does not wait for it to be
+// built and seeded again (`docs/decisions/0101`).
+test("the oracle stays up while the new target's sandbox starts beside it", async () => {
   const { deps, calls } = world({
     answers: [runItem("bind-adapter", { target: "new" }), IDLE],
-    steps: [{ ok: false, messages: [ORACLE_ON_NEW] }, { ok: true }],
+    steps: [{ ok: false, messages: [NEW_NOT_UP] }, { ok: true }],
     oracleUp: true,
   });
   const r = await drive("/p", { deps });
   assert.equal(r.code, 0);
-  assert.deepEqual(calls.order, ["step", "oracle down", "sandbox up", "step", "sandbox down"]);
-  assert.match(calls.recoveries[0], /oracle down/);
+  assert.deepEqual(calls.order, ["step", "sandbox up", "step", "sandbox down"]);
+  assert.deepEqual(calls.oracle, []);
+});
+
+test("the oracle is taken down when the new target's sandbox cannot start on a port it holds, and the start is tried once more", async () => {
+  const held = "the sandbox was not started: app/compose/compose.yaml publishes a host port this machine is already using — 4300 (the oracle).";
+  const { deps, calls } = world({
+    answers: [runItem("bind-adapter", { target: "new" }), IDLE],
+    steps: [{ ok: false, messages: [ORACLE_ON_NEW] }, { ok: true }],
+    oracleUp: true,
+    sandbox: { up: [{ ok: false, output: [held] }, { ok: true, output: [] }] },
+  });
+  const r = await drive("/p", { deps });
+  assert.equal(r.code, 0);
+  assert.deepEqual(calls.order, ["step", "sandbox up", "oracle down", "sandbox up", "step", "sandbox down"]);
+  assert.ok(calls.recoveries.some((l) => /port the oracle holds/.test(l) && /sdlc oracle down/.test(l)));
 });
 
 test("the new target's sandbox is taken down after a retry that fails, and the failure stops the loop with 1", async () => {

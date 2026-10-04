@@ -300,25 +300,28 @@ async function bringUp(projectDir, deps, trouble, step) {
   return second.ok ? { ok: true } : { ok: false, why: "sdlc oracle up failed twice, the second time after sdlc oracle down", output: second.output };
 }
 
-// One recovery for a step that found a rebuilt target's sandbox not up: take the oracle down
-// when it is up, since the two share this machine's ports; start the sandbox from the branch
-// the step named; run the step once more; and take the sandbox down whatever happened, so the
-// loop never leaves a stack running that the next step does not expect. Each action is on the
-// record before it runs. The sandbox password the stack signs in with is this process's own
-// environment, which `sandbox up` and the step read alike; it is never an argument.
+// One recovery for a step that found a rebuilt target's sandbox not up: start the sandbox from
+// the branch the step named; run the step once more; and take the sandbox down whatever
+// happened, so the loop never leaves a stack running that the next step does not expect. The
+// oracle stays up beside the sandbox, so the next step that needs it does not wait for it to be
+// built and seeded again; only a sandbox refused a port the oracle holds takes it down, and is
+// started once more (`docs/decisions/0101`). Each action is on the record before it runs. The
+// sandbox password the stack signs in with is this process's own environment, which
+// `sandbox up` and the step read alike; it is never an argument.
 async function withSandbox(projectDir, deps, { target, from }, step, run) {
   const up = `sdlc sandbox up --target ${target} --from ${from}`;
   const down = `sdlc sandbox down --target ${target} --from ${from}`;
-  if (deps.oracleUp(projectDir)) {
-    deps.record.recovery(projectDir, `drive: step ${step} recovery: the oracle is up, and the ${target} target's sandbox publishes on this machine's ports beside it; taking the oracle down first (sdlc oracle down)`);
-    await deps.oracle(projectDir, "down");
-  }
   deps.record.recovery(projectDir, `drive: step ${step} recovery: the ${target} target's sandbox was not up; starting it from ${from} (${up}), running the step once more, and taking it down after (${down})`);
   let started = { ok: false, output: [] };
   let result;
   let stopped;
   try {
     started = await deps.sandbox(projectDir, "up", { target, from });
+    if (!started.ok && sandboxTrouble(textOf(started))?.kind === "ports" && deps.oracleUp(projectDir)) {
+      deps.record.recovery(projectDir, `drive: step ${step} recovery: the ${target} target's sandbox could not start on a port the oracle holds; taking the oracle down (sdlc oracle down) and starting it once more`);
+      await deps.oracle(projectDir, "down");
+      started = await deps.sandbox(projectDir, "up", { target, from });
+    }
     if (started.ok) result = await run();
   } finally {
     deps.record.recovery(projectDir, `drive: step ${step} recovery: taking the ${target} target's sandbox down (${down})`);
