@@ -101,6 +101,25 @@ emptiness.
 So before you write either, ask one thing: did I get to the place? If not, `unbound:`. If yes,
 report exactly what is there, including nothing.
 
+## A page the application does not serve
+
+Sometimes the page a member belongs to is not there at all: its route answers the application's
+own not-found page, and nothing in the application leads to it — no link, tab, menu or button —
+for any persona the contract lets onto it. No binding reaches a page that does not exist, and what
+is missing is the application's, so report it as absent rather than unbound:
+
+- **Decide it when the method runs, not now.** Open the route. While it answers the not-found
+  page, throw `new Error("absent: <page>.<member> — <the route, each persona you walked it as, and
+  what the application answered>")`. When it answers anything else, the page has been built since
+  you looked and you have not seen its controls. Throw `unbound:` saying so, and the next binding
+  run binds it. Never bind controls on a page you have not seen.
+- **In `bindings.yaml`**, name the member `"absent: <reason>"`.
+
+A test that stops at `absent:` fails, and whoever rules the build decides who makes the page: this
+build, or the slice that the plan gives it to. So `absent:` is for a page the application does not
+serve and for nothing else. A page that answers, with a control you cannot find on it, is
+`unbound:`; a page that answers and shows nothing is an empty answer.
+
 ## An action does what the test gave it, and says so the moment it cannot
 
 **Fill the form from the input.** An action like `publish(input)` or `createOrganization(input)`
@@ -131,8 +150,8 @@ file is; it is telling you what to call the one you are about to offer.
 ## `bindings.yaml`
 
 Write `tests/adapters/<target>/bindings.yaml`, naming every action and observation of every page
-in the surface exactly once, as `bound` or `unbound: <reason>` — nothing named twice, nothing left
-out, nothing named that is not in the surface.
+in the surface exactly once, as `bound`, `unbound: <reason>` or `absent: <reason>` — nothing named
+twice, nothing left out, nothing named that is not in the surface.
 
 Every name in this file is spelled exactly as `spec/contract/surface.yaml` spells it, not as the
 TypeScript member it becomes: a page `applications-new` with an action `submit_proposal` is

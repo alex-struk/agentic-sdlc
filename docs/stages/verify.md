@@ -249,6 +249,14 @@ The build stays open for G3's ruler. The ruler returns it with each failure eith
 condition for the build, or addressed to `bind-adapter` with what the adapter read and what the
 page shows instead.
 
+A failure whose test stopped at the adapter's `absent:` error is sorted the same way. The adapter
+throws it for a member whose page the application does not serve: the route answers the
+application's own not-found page for every persona the contract lets onto it. The result names
+those criteria in `sort.absent`. The ruler returns each to the build when the slice is the one to
+make the page, addresses it to `plan` when the plan makes the page in another slice, or addresses
+it to `bind-adapter` when the page is served after all
+(`docs/decisions/0098-a-page-the-application-does-not-serve-is-a-failure.md`).
+
 ## The verdict table
 
 | Result | Route | Gate file written |
@@ -256,7 +264,7 @@ page shows instead.
 | `pass` | Ready for G3 — the reviewer can now rule the build proposal. | None. |
 | `pass-unasserted` | Ready for G3, saying which criteria were never asserted against the application and why. Whether the slice may be approved on that footing is the reviewer's, and the ruling prompt carries the same rows and reasons, unless the project's `policy.gates.G3.approve_unasserted` is false, in which case neither seat may approve it. | None. |
 | `fail` (1st or 2nd time for the slice) | Returned to `build`: `sdlc run build --slice <n> --revise`. | `verdict: return`, `by: runner:verify`. |
-| `fail` with a failure that read nothing off the page (before the 3rd time) | Left open for G3's ruler to sort each failure to the build or, `addressed-to bind-adapter`, to the binding. The ruler's return counts toward the limit. | None; the result records `sort`. |
+| `fail` with a failure that read nothing off the page, or stopped at a page the application does not serve (before the 3rd time) | Left open for G3's ruler to sort each failure to the build, to the binding (`addressed-to bind-adapter`) or, for a missing page, to the plan (`addressed-to plan`). The ruler's return counts toward the limit. | None; the result records `sort`. |
 | `fail` (3rd time running) | Escalated — a fourth build is unlikely to find what three did not. | `verdict: escalated`, `escalate_to` from `policy.gates.G3`. |
 | `environment` | Nothing the builder can change. A missing mail catcher: set `targets.new.mail_api`, then verify again. A configuration's test: G3's ruler decides. Not counted toward the return limit. | None. |
 | `unbound`, no adapter for `new` | The binding sequence: `sandbox up --from` the proposal branch, `bind-adapter`, its G3 ruling, `sandbox down --from`, then verify again. | None. |

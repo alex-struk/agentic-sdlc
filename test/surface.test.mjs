@@ -445,3 +445,12 @@ test("bindingGaps names what the contract declares and the bindings leave out, a
   } });
   assert.deepEqual(clean, { missing: [], extra: [], invalid: [] });
 });
+
+// A member whose page the application does not serve is reported as absent, with the reason, and
+// is named so in the bindings file like any other verdict (`docs/decisions/0098`).
+test("bindingGaps reads absent: <reason> as a verdict, and absent alone as none", () => {
+  const pages = [{ id: "a-page", route: "/a", actions: { go: {} }, observations: { shown: {} } }];
+  const gaps = bindingGaps(pages, { pages: { "a-page": { actions: { go: "absent: /a answers the not-found page as every persona" }, observations: { shown: "absent" } } } });
+  assert.deepEqual(gaps.invalid, [{ page: "a-page", group: "observations", name: "shown", verdict: "absent" }]);
+  assert.deepEqual(gaps.missing, []);
+});

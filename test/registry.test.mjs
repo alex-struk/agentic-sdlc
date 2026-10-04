@@ -137,6 +137,21 @@ test("the binder of the new target is told to answer in the form the old target'
   assert.match(skill, /the same spellings of its input/);
 });
 
+// A page the application does not serve is the application's to make, not the binding's to find:
+// the binder reports it absent, decided when the member runs, and unbound once the page answers
+// (`docs/decisions/0098`).
+test("the binder reports a page the application does not serve as absent, decided when the member runs", () => {
+  const skill = skillText("bind-adapter");
+  assert.match(skill, /## A page the application does not serve/);
+  assert.match(skill, /absent: <page>\.<member> — /);
+  assert.match(skill, /not-found page/);
+  assert.match(skill, /When it answers anything else[^.]*\. Throw `unbound:`/);
+  assert.match(skill, /"absent: <reason>"/);
+  const prompt = stageFor("bind-adapter").prompt({ target: "new", bindAdapterBaseUrl: "http://localhost:3000", bindAdapterIdentity: "sandbox-idp" });
+  assert.match(prompt, /new Error\("absent: <page>\.<member> — <reason>"\)/);
+  assert.match(prompt, /"bound", "unbound: <reason>" or "absent: <reason>"/);
+});
+
 // A revision refused because the new target's sandbox was not up is run again once it is
 // started, and must find the same return to revise (`docs/decisions/0080`).
 test("bind-adapter --revise refused on a pre-check ahead of it leaves the return where the next run finds it", (t) => {

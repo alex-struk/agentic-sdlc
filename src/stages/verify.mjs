@@ -17,7 +17,7 @@ import { redactLocalPaths } from "../lib/redact.mjs";
 import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { emptyReadOf, runSuite } from "../testrun/playwright.mjs";
-import { caseOf, casesPhrase, failureMessage, failuresOf, quotedList, stoppedAt, FAILURES_DESCRIBED } from "../testrun/failures.mjs";
+import { caseOf, casesPhrase, failureMessage, failuresOf, quotedList, stoppedAt, withoutColour, FAILURES_DESCRIBED } from "../testrun/failures.mjs";
 import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildProposals, buildProposalBase, openBuildProposal, specFilesFor } from "./slices.mjs";
@@ -332,6 +332,16 @@ function keepEvidence(projectDir, slice, rows) {
 // after a read that came back with nothing (`emptyReadOf`).
 function readNothing(r) {
   return (r?.tests ?? []).some((x) => x.error && emptyReadOf(x));
+}
+
+// Whether a failed row has a test the adapter stopped because the application does not serve the
+// page it needs: `absent: <page>.<member> — <reason>`, which `bind-adapter` throws while the page's
+// route answers the application's own not-found page (`docs/decisions/0098`). The build may be
+// the one to make the page, the plan may give it to another slice, or the adapter may be wrong
+// about it, and a builder can answer only the first.
+const ABSENT_LINE = /^(?:Error: )?absent: /m;
+function pageAbsent(r) {
+  return (r?.tests ?? []).some((x) => x.status !== "passed" && x.status !== "skipped" && ABSENT_LINE.test(withoutColour(x.error ?? "")));
 }
 
 // ` — at <file>:<line>` for a failed test, or nothing where the line is not known or the row's
@@ -716,14 +726,19 @@ export const verify = {
         const emptyReads = v.verdict === "fail"
           ? [...v.failing.filter(readNothing).map((r) => r.id), ...recheck.regressed.filter((x) => readNothing(x.row)).map((x) => x.id)]
           : [];
-        const sortFirst = emptyReads.length > 0 && returnsByVerify(projectDir, slice.number) + 1 < limit;
+        // A failure the adapter put down to a page the application does not serve is sorted the
+        // same way: by the ruler, before anything goes back to a builder (`docs/decisions/0098`).
+        const absent = v.verdict === "fail"
+          ? [...v.failing.filter(pageAbsent).map((r) => r.id), ...recheck.regressed.filter((x) => pageAbsent(x.row)).map((x) => x.id)]
+          : [];
+        const sortFirst = (emptyReads.length > 0 || absent.length > 0) && returnsByVerify(projectDir, slice.number) + 1 < limit;
         const unboundListed = unboundReasons(claimed, v.unbound);
         const paths = [writeVerifyResult(projectDir, {
           slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted,
           environment: v.environment, unbound: unboundListed, adapter,
           rechecked: recheck.held,
           regressed: recheck.regressed.map((x) => ({ id: x.id, slice: x.slice, result: x.row.result, error: firstError(x.row) })),
-          sort: sortFirst ? { empty_reads: emptyReads, conditions: failureConditions } : null,
+          sort: sortFirst ? { empty_reads: emptyReads, ...(absent.length ? { absent } : {}), conditions: failureConditions } : null,
         })];
         // Filed on main once the tree is back there, below: owed work is read off main by
         // `next` and by the binding run, and this branch reaches main only when it is ruled.
@@ -736,9 +751,18 @@ export const verify = {
           const k = recheck.regressed.length;
           const holder = config.policy?.gates?.G3?.holder ?? "the G3 ruler";
           const failingIds = [...v.failing.map((r) => r.id), ...recheck.regressed.map((x) => `${x.id} (slice ${x.slice})`)];
-          notPassed = `not yet returned — ${failingIds.length} ${failingIds.length === 1 ? "failure" : "failures"}, ${emptyReads.length} of them a read that came back with nothing, for ${holder} to sort`;
+          const why = [
+            emptyReads.length ? `${emptyReads.length} of them a read that came back with nothing` : null,
+            absent.length ? `${absent.length} of them a page the application does not serve` : null,
+          ].filter(Boolean).join(", ");
+          notPassed = `not yet returned — ${failingIds.length} ${failingIds.length === 1 ? "failure" : "failures"}, ${why}, for ${holder} to sort`;
+          const stopped = [
+            emptyReads.length ? `${emptyReads.join(", ")} stopped on a read that came back with nothing, which can be the adapter's as easily as the application's` : null,
+            absent.length ? `${absent.join(", ")} stopped where the adapter found the application does not serve the page, which this build, another slice or the adapter may be the one to answer` : null,
+          ].filter(Boolean).join("; ");
+          const to = absent.length ? "to the build, to bind-adapter or to the plan" : "to the build or to bind-adapter";
           text = [
-            `verify slice ${slice.number}: ${failingIds.join(", ")} fail${k ? ` (${k} that an earlier slice passed)` : ""}. ${emptyReads.join(", ")} stopped on a read that came back with nothing, which can be the adapter's as easily as the application's, so ${name} is left open for ${holder} to send each failure to the build or to bind-adapter.`,
+            `verify slice ${slice.number}: ${failingIds.join(", ")} fail${k ? ` (${k} that an earlier slice passed)` : ""}. ${stopped}, so ${name} is left open for ${holder} to send each failure ${to}.`,
             ...envLines,
           ].join("\n");
           describeUnbound = (owed) => (owed.length ? [text, ...owedBindingLines(slice.number, branch, owed, claimed)].join("\n") : text);

@@ -1889,7 +1889,7 @@ function nextBindAdapterName(projectDir, target) {
 }
 
 // `bindings.yaml` names every action and observation the surface declares, on every
-// page, exactly once — `bound`, or `unbound: <reason>` — and names nothing the surface
+// page, exactly once — `bound`, `unbound: <reason>` or `absent: <reason>` — and names nothing the surface
 // does not. Checked against `loadContract`, the same source of truth `writeGenerated`
 // built `tests/generated/surface.d.ts` from, so an adapter can never quietly drift from
 // what the contract (and therefore the acceptance suite) actually names.
@@ -1910,7 +1910,7 @@ function checkBindAdapterBindings(projectDir, target) {
   const gaps = bindingGaps(surface.pages, doc);
   const messages = [
     ...gaps.missing.map((m) => `${file}: ${m.page}.${m.name} is missing`),
-    ...gaps.invalid.map((m) => `${file}: ${m.page}.${m.name} must be "bound" or "unbound: <reason>", got ${JSON.stringify(m.verdict)}`),
+    ...gaps.invalid.map((m) => `${file}: ${m.page}.${m.name} must be "bound", "unbound: <reason>" or "absent: <reason>", got ${JSON.stringify(m.verdict)}`),
     ...gaps.extra.map((m) => (m.name ? `${file}: ${m.page}.${m.group}.${m.name} is not in the surface` : `${file}: page "${m.page}" is not in the surface`)),
   ];
   return { id, ok: messages.length === 0, messages };
@@ -2179,8 +2179,8 @@ const bindAdapter = {
         ? `Email this target sends is readable through a mail catcher at ${ctx.bindAdapterMailApi}, which is what spec/contract/observables.yaml means by \${SDLC_MAIL_API}. Your adapter reads it from process.env at run time; this is the address it has while you are looking.`
         : null,
       `signIn(persona) reads persona.signIn["${identity ?? "?"}"] for the persona it is given. ${bindAdapterSignInInstructions(identity)} When that entry is { unavailable: "<reason>" } instead of real credentials, signIn must throw new Error("unbound: signIn.<persona id> — <reason>") rather than attempt to sign in — the same shape as an unbound action or observation, so calibrate reports every criterion that needs this persona as unbound instead of a real failure.`,
-      `Bind every action and observation by driving the browser: open the page at its route, find the control by its role, its label, its visible text, or the URL it lands you on — never a CSS selector, a test id, or anything else that only makes sense with the source open next to you. An action or observation nothing on the page actually does throws new Error("unbound: <page>.<member> — <reason>") from that method, naming what is missing.`,
-      `Write tests/adapters/${t}/bindings.yaml naming every action and observation on every page in the surface exactly once, as "bound" or "unbound: <reason>". Spell every page, action and observation exactly as spec/contract/surface.yaml spells it — "applications-new" and "submit_proposal", not the camelCased TypeScript members ("applicationsNew", "submitProposal") your adapter implements them as:\n\ntarget: ${t}\npages:\n  <pageId>:\n    actions: { <name>: bound }\n    observations: { <name>: "unbound: <why>" }`,
+      `Bind every action and observation by driving the browser: open the page at its route, find the control by its role, its label, its visible text, or the URL it lands you on — never a CSS selector, a test id, or anything else that only makes sense with the source open next to you. An action or observation nothing on the page actually does throws new Error("unbound: <page>.<member> — <reason>") from that method, naming what is missing. One whose page the application does not serve at all — its route answers the application's own not-found page, and nothing in the application leads to it, for any persona the contract lets onto it — throws new Error("absent: <page>.<member> — <reason>") instead, decided when the method runs: while the route answers the not-found page it is absent, and once it answers anything else it is unbound, because the page has been built since and the next binding run binds it.`,
+      `Write tests/adapters/${t}/bindings.yaml naming every action and observation on every page in the surface exactly once, as "bound", "unbound: <reason>" or "absent: <reason>". Spell every page, action and observation exactly as spec/contract/surface.yaml spells it — "applications-new" and "submit_proposal", not the camelCased TypeScript members ("applicationsNew", "submitProposal") your adapter implements them as:\n\ntarget: ${t}\npages:\n  <pageId>:\n    actions: { <name>: bound }\n    observations: { <name>: "unbound: <why>" }`,
       `Your territory is tests/adapters/${t}/ alone. Never write under tests/acceptance or spec/ — this workspace does not even have them for you to touch by mistake.`,
       `Finish with your journal entry: what was bound, what was not and why, and any page whose route in surface.yaml did not resolve on the target.`,
       ctx.revise ? bindAdapterRevisionInstructions(ctx) : null,

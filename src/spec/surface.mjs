@@ -125,15 +125,15 @@ export function loadContract(dir) {
 
 // How an adapter's `bindings.yaml` disagrees with the surface: each member a page declares
 // that the file does not name (`missing`), each name the file carries that the surface does
-// not declare, a whole page or one member (`extra`), and each verdict that is neither
-// `bound` nor `unbound: <reason>` (`invalid`). Names are compared as `surface.yaml` spells
+// not declare, a whole page or one member (`extra`), and each verdict that is none of
+// `bound`, `unbound: <reason>` and `absent: <reason>` (`invalid`, `docs/decisions/0098`). Names are compared as `surface.yaml` spells
 // them. It is the bind-adapter post-check, and read against `main` it is also whether an
 // approved adapter is out of date with the contract: an adapter the post-check accepted
 // disagrees later only because the contract changed under it.
 export function bindingGaps(pages, doc) {
   const gaps = { missing: [], extra: [], invalid: [] };
   const isMap = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
-  const isVerdict = (v) => v === "bound" || (typeof v === "string" && v.startsWith("unbound:"));
+  const isVerdict = (v) => v === "bound" || (typeof v === "string" && (v.startsWith("unbound:") || v.startsWith("absent:")));
   const named = isMap(doc?.pages) ? doc.pages : {};
   const declared = new Set();
   for (const page of pages ?? []) {

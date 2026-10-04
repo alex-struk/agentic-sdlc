@@ -1476,6 +1476,30 @@ test("a failure that stopped on a read that came back with nothing is left open 
   assert.equal(buildVerified(d, "build-slice-1", ctx.config).ok, false, "it is still not approvable");
 });
 
+// The adapter reports a member whose page the application does not serve as absent. The build may
+// be the one to make the page, a later slice may, or the adapter may be wrong about it, and a
+// builder can answer only the first, so the ruler sorts it first (`docs/decisions/0098`).
+test("a failure where the adapter found the application does not serve the page is left open for the G3 ruler to sort", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [
+    { id: "R-4.1", result: "fail", file: "tests/acceptance/users/R-4.1.spec.ts",
+      tests: [{ title: "t", status: "failed", error: "Error: absent: proposal-create.open — /proposals/create answers the application's \"Page not found\" as every persona", line: 7 }] },
+    row("R-4.2", "fail", "Error: plainly wrong"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"), "verify writes no ruling of its own");
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "fail");
+  assert.deepEqual(result.sort.absent, ["R-4.1"]);
+  assert.deepEqual(result.sort.empty_reads, []);
+  assert.equal(result.sort.conditions.length, 2);
+  assert.match(result.sort.conditions[0], /^R-4\.1: Error: absent: proposal-create\.open — /);
+  assert.match(r.text, /R-4\.1 stopped where the adapter found the application does not serve the page.*left open for agent:reviewer/);
+  assert.equal(buildVerified(d, "build-slice-1", ctx.config).ok, false, "it is still not approvable");
+});
+
 test("a ruler's return of a build verify left open to sort counts toward verify's limit", async (t) => {
   const d = buildProject(t);
   const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
@@ -1548,6 +1572,21 @@ test("a ruler given a build to sort is told how, with every failure as the build
   assert.match(text, /R-4\.1 stopped on a read that came back with nothing/);
   assert.match(text, /addressed-to bind-adapter: <the criterion id>:/);
   assert.match(text, /^- R-4\.1: Error: x — its last steps: accountView\.status\(\) at \/accounts\/7 read ""$/m);
+  assert.match(text, /^- R-4\.2: Error: y$/m);
+});
+
+test("a ruler given a page the application does not serve is told who can make it", async () => {
+  const { formatVerifyEvidence } = await import("../src/runner/verify-evidence.mjs");
+  const text = formatVerifyEvidence({ slice: 1, result: {
+    verdict: "fail", proposal: "build-slice-1", app_tree: "abcdef0",
+    sort: { empty_reads: [], absent: ["R-4.1"], conditions: ["R-4.1: Error: absent: proposal-create.open — /proposals/create answers \"Page not found\"", "R-4.2: Error: y"] },
+    rows: [row("R-4.1", "fail", "Error: absent: proposal-create.open — x"), row("R-4.2", "fail", "Error: y")],
+  } });
+  assert.match(text, /### Failures to sort before the build goes back/);
+  assert.match(text, /R-4\.1 stopped where the adapter found the application does not serve the page/);
+  assert.doesNotMatch(text, /came back with nothing/);
+  assert.match(text, /addressed-to plan: <the criterion id>:/);
+  assert.match(text, /addressed-to bind-adapter: <the criterion id>:/);
   assert.match(text, /^- R-4\.2: Error: y$/m);
 });
 

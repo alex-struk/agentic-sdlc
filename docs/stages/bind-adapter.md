@@ -53,6 +53,14 @@ The run also reads the open entries for its target on `tests/adapters/rebind.yam
 
 `calibrate` closes both kinds once it has run against an adapter that changed since.
 
+A member whose page the application does not serve at all is reported as absent, not unbound: the
+method throws `absent: <page>.<member> — <reason>` while the page's route answers the
+application's own not-found page, and `bindings.yaml` names the member `absent: <reason>`. The
+check is made when the method runs, so once the page answers the method throws `unbound:` and the
+next binding run binds the page it has not seen. A test that stops at `absent:` fails rather than
+coming back unbound, and verify leaves the build open for its ruler to say who makes the page
+(`docs/decisions/0098-a-page-the-application-does-not-serve-is-a-failure.md`).
+
 A binding approved with the adapter left as it was gives no later run anything new to measure, so
 its approval closes the unbound entries the run was handed instead: those open where its branch
 was cut, under the adapter it left as it was. Each is closed as met and names the binding
