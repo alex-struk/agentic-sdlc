@@ -1638,6 +1638,107 @@ test("a ruler is shown every way a criterion's tests failed, each with its cases
   assert.doesNotMatch(text, /\u001b/, "the runner's colour codes are not passed on");
 });
 
+// ---- an earlier criterion measured on the same inputs is not measured again ----
+
+// A suite that answers only for the files it is handed, and notes which they were.
+const suiteFor = (rows, calls) => (opts) => { calls.push(opts.files); return { rows: rows.filter((r) => opts.files.includes(r.file)) }; };
+
+// `build --revise` as far as verify can tell: the returned proposal renamed out of the way and
+// the next one opened from main, carrying the application `app` writes (the same as before when
+// omitted).
+function reviseBuild(d, k, app = "export {};\n") {
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const previous = k === 2 ? "build-slice-1" : `build-slice-1-${k - 1}`;
+  run(["branch", "-m", `proposal/${previous}`, `returned/${previous}`]);
+  run(["checkout", "-q", "-b", `proposal/build-slice-1-${k}`, "main"]);
+  mkdirSync(join(d, ".sdlc", "proposals"), { recursive: true });
+  writeFileSync(join(d, ".sdlc", "proposals", `build-slice-1-${k}.md`), "---\ngate: G3\nquestion: \"q\"\nrecommendation: \"r\"\n---\n");
+  writeFileSync(join(d, "app", "index.ts"), app);
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "propose"]);
+  run(["checkout", "-q", "main"]);
+}
+
+// The first verify of the slice: its own criteria pass, one earlier criterion passes and the
+// other fails, so the build is returned with a measurement of every earlier criterion on record.
+async function firstMeasure(d) {
+  withEarlierSlice(d, [row("R-3.1", "pass"), row("R-3.2", "pass")]);
+  const ctx = { ...ctxFor(d), runSuite: suiteFor([row("R-4.1", "pass"), row("R-4.2", "pass"), row("R-3.1", "pass"), row("R-3.2", "fail", "Error: expected \"Opportunities\"")], []) };
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+}
+
+async function secondMeasure(d) {
+  const calls = [];
+  const ctx = { ...ctxFor(d), runSuite: suiteFor([row("R-4.1", "pass"), row("R-4.2", "pass"), row("R-3.1", "pass"), row("R-3.2", "pass")], calls) };
+  assert.ok(verify.preChecks(d, ctx).every((c) => c.ok));
+  const r = await verify.execute(d, ctx);
+  const result = JSON.parse(execFileSync("git", ["show", "proposal/build-slice-1-2:tests/results/new/slice-1.json"], { cwd: d, encoding: "utf8" }));
+  return { calls, r, result };
+}
+
+test("an earlier criterion that passed against the same application, harness and test file is carried, not run again", async (t) => {
+  const d = buildProject(t);
+  await firstMeasure(d);
+  // The failing test is re-derived on main, and nothing else changes.
+  commitOnMain(d, "tests/acceptance/users/R-3.2.spec.ts", "// re-derived\n");
+  reviseBuild(d, 2);
+  const { calls, r, result } = await secondMeasure(d);
+  assert.deepEqual(calls[1], ["tests/acceptance/users/R-3.2.spec.ts"], "only the earlier criterion whose test changed runs again");
+  assert.match(r.text, /2 criteria earlier slices passed still pass \(1 of them carried from the run on build-slice-1, against the same application, test harness and test\)\./);
+  assert.equal(result.verdict, "pass");
+  assert.deepEqual([...result.rechecked].sort(), ["R-3.1", "R-3.2"]);
+  assert.deepEqual(Object.keys(result.measured.passed).sort(), ["R-3.1", "R-3.2"], "what was carried is on record for the next run too");
+});
+
+test("a changed application runs every earlier criterion again", async (t) => {
+  const d = buildProject(t);
+  await firstMeasure(d);
+  commitOnMain(d, "tests/acceptance/users/R-3.2.spec.ts", "// re-derived\n");
+  reviseBuild(d, 2, "export const changed = true;\n");
+  const { calls, r } = await secondMeasure(d);
+  assert.deepEqual([...calls[1]].sort(), ["tests/acceptance/users/R-3.1.spec.ts", "tests/acceptance/users/R-3.2.spec.ts"]);
+  assert.doesNotMatch(r.text, /carried/);
+});
+
+test("a changed adapter runs every earlier criterion again", async (t) => {
+  const d = buildProject(t);
+  await firstMeasure(d);
+  commitOnMain(d, "tests/adapters/new/index.ts", "export default function create() { return {}; }\n");
+  reviseBuild(d, 2);
+  const { calls } = await secondMeasure(d);
+  assert.deepEqual([...calls[1]].sort(), ["tests/acceptance/users/R-3.1.spec.ts", "tests/acceptance/users/R-3.2.spec.ts"]);
+});
+
+test("a changed helper beside the tests runs every earlier criterion again", async (t) => {
+  const d = buildProject(t);
+  await firstMeasure(d);
+  commitOnMain(d, "tests/acceptance/users/support.ts", "export const wait = 1;\n");
+  reviseBuild(d, 2);
+  const { calls } = await secondMeasure(d);
+  assert.deepEqual([...calls[1]].sort(), ["tests/acceptance/users/R-3.1.spec.ts", "tests/acceptance/users/R-3.2.spec.ts"]);
+});
+
+test("with nothing changed, no earlier criterion that passed is run again", async (t) => {
+  const d = buildProject(t);
+  withEarlierSlice(d, [row("R-3.1", "pass")]);
+  const ctx = { ...ctxFor(d), runSuite: suiteFor([row("R-4.1", "fail", "Error: x"), row("R-4.2", "pass"), row("R-3.1", "pass")], []) };
+  // Own criteria fail first time round, so nothing earlier is measured yet: nothing can be carried.
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  reviseBuild(d, 2);
+  const { calls, r, result } = await secondMeasure(d);
+  assert.deepEqual([...calls[1]], ["tests/acceptance/users/R-3.1.spec.ts"], "a criterion never measured on this slice is run");
+  reviseBuild(d, 3);
+  const third = [];
+  const ctx3 = { ...ctxFor(d), runSuite: suiteFor([row("R-4.1", "pass"), row("R-4.2", "pass"), row("R-3.1", "pass")], third) };
+  verify.preChecks(d, ctx3);
+  const r3 = await verify.execute(d, ctx3);
+  assert.equal(third.length, 1, "only the slice's own tests ran");
+  assert.match(r3.text, /1 criterion earlier slices passed still passes \(carried from the run on build-slice-1-2, against the same application, test harness and test\)\./);
+  assert.equal(result.verdict, "pass");
+  assert.ok(r.text);
+});
+
 // Playwright empties its own output folder when it starts, so the pictures one run of the suite
 // left are gone once the next run begins. Verify runs the slice's own tests, then earlier slices'
 // tests, and keeps each run's evidence before the next.

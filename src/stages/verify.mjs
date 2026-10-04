@@ -20,7 +20,8 @@ import { caughtThrow, emptyReadOf, runSuite } from "../testrun/playwright.mjs";
 import { caseOf, casesPhrase, failureMessage, failuresOf, quotedList, stoppedAt, withoutColour, FAILURES_DESCRIBED } from "../testrun/failures.mjs";
 import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
-import { readSlice, buildProposals, buildProposalBase, openBuildProposal, specFilesFor } from "./slices.mjs";
+import { readSlice, buildBranches, buildProposals, buildProposalBase, openBuildProposal, specFilesFor } from "./slices.mjs";
+import { carriedFrom, criterionOf, measureOf, priorMeasure } from "../testrun/measured.mjs";
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
 import { ADDRESSED_CONDITION_FORM, OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
 import { isNotAsserted, notAssertedEntries, environmentGap, MAIL_CATCHER_UNSET_RE } from "../testrun/results.mjs";
@@ -454,7 +455,7 @@ function environmentOnly(gate) {
 // the routes where no test ran: currency is judged by `app_tree`, so a run that left this
 // file alone would leave an earlier `pass` on the same tree standing and the proposal
 // rulable as approved. `not_verified` says, for a reader, why there are no rows.
-function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "", rechecked = [], regressed = [], sort = null }) {
+function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "", rechecked = [], regressed = [], measured = null, sort = null }) {
   const resultRel = `tests/results/new/slice-${slice}.json`;
   mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
   // Each row carries the acceptance test's own error text, which is a browser's or a
@@ -481,6 +482,10 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted 
     // which are this slice's own criteria and nothing else.
     ...(rechecked.length ? { rechecked } : {}),
     ...(regressed.length ? { regressed } : {}),
+    // What the earlier criteria that pass were measured against: the harness digest beside
+    // `app_tree`, and each one's test file, so the slice's next verify runs again only what has
+    // changed since (`docs/decisions/0104`).
+    ...(measured ? { measured } : {}),
     // A failing verify left for its ruler to sort (`docs/decisions/0091`): the criteria whose
     // test read nothing off the page, and every failure as the build would be told it.
     ...(sort ? { sort } : {}),
@@ -706,8 +711,23 @@ export const verify = {
         const earlier = earlierPasses(projectDir, slice.number, slice.criteria);
         const ownFirst = verifyVerdict(ownRun.rows.filter((r) => slice.criteria.includes(r.id)), slice.criteria, { configured });
         const candidate = ["pass", "pass-unasserted", "environment"].includes(ownFirst.verdict);
-        const earlierRun = candidate && earlier.size ? suite(specFilesFor(projectDir, [...earlier.keys()])) : null;
+        // An earlier criterion a verify of this slice already passed against this application, this
+        // harness and this very test file is carried rather than run again, since the run would
+        // measure the same thing; whatever has changed since, or never passed here, runs
+        // (`docs/decisions/0104`). One now written for a configuration is left to the run, which
+        // reports it as it always has.
+        const earlierFiles = candidate && earlier.size ? specFilesFor(projectDir, [...earlier.keys()]) : [];
+        const measure = earlierFiles.length ? measureOf(projectDir) : null;
+        const prior = measure ? priorMeasure(projectDir, slice.number, buildBranches(projectDir, slice.number), measure) : null;
+        const carriable = [...carriedFrom(prior, earlierFiles, measure)];
+        const nowConfigured = carriable.length ? configuredCriteria(projectDir, carriable).configured : new Map();
+        const carried = carriable.filter((f) => !nowConfigured.has(criterionOf(f)));
+        const toRun = earlierFiles.filter((f) => !carried.includes(f));
+        const earlierRun = candidate && earlier.size
+          ? (toRun.length || !carried.length ? suite(toRun) : { rows: [], configured: new Map() })
+          : null;
         if (earlierRun) for (const [id, why] of earlierRun.configured) configured.set(id, why);
+        const carriedRows = carried.map((f) => ({ id: criterionOf(f), result: "pass", file: f }));
         const rows = [...ownRun.rows, ...(earlierRun?.rows ?? []).filter((r) => earlier.has(r.id))];
         const earlierDeferred = !candidate && earlier.size > 0;
         // The adapter the suite drove with, recorded on the result and on every rebind entry
@@ -715,7 +735,12 @@ export const verify = {
         const adapter = adapterExists(projectDir, "new") ? adapterAt(projectDir, "new", "HEAD") : "";
         const claimed = rows.filter((r) => slice.criteria.includes(r.id)).map((r) => (adapter && r.file ? { ...r, adapter } : r));
         const own = verifyVerdict(claimed, slice.criteria, { configured });
-        const recheck = earlierRun ? recheckEarlier(earlierRun.rows, earlier, configured) : { regressed: [], held: [], unexercised: [] };
+        const recheck = earlierRun ? recheckEarlier([...earlierRun.rows, ...carriedRows], earlier, configured) : { regressed: [], held: [], unexercised: [] };
+        const fileOf = new Map(earlierFiles.map((f) => [criterionOf(f), f]));
+        const measured = earlierRun && measure ? {
+          harness: measure.harness,
+          passed: Object.fromEntries(recheck.held.flatMap((id) => (measure.specs.get(fileOf.get(id)) ? [[id, measure.specs.get(fileOf.get(id))]] : []))),
+        } : null;
         // A criterion an earlier slice passed and this build broke fails this build, however its
         // own criteria came out.
         const v = recheck.regressed.length ? { ...own, verdict: "fail" } : own;
@@ -742,6 +767,7 @@ export const verify = {
           environment: v.environment, unbound: unboundListed, adapter,
           rechecked: recheck.held,
           regressed: recheck.regressed.map((x) => ({ id: x.id, slice: x.slice, result: x.row.result, error: firstError(x.row) })),
+          measured,
           sort: sortFirst ? { empty_reads: emptyReads, ...(absent.length ? { absent } : {}), conditions: failureConditions } : null,
         })];
         // Filed on main once the tree is back there, below: owed work is read off main by
@@ -874,9 +900,11 @@ export const verify = {
         // said: the ones that still pass, and the ones this run could not exercise, which are
         // reported and left where they lie.
         const h = recheck.held.length;
+        const k = carried.filter((f) => recheck.held.includes(criterionOf(f))).length;
+        const carriedNote = k ? ` (${k === h ? "" : `${k} of them `}carried from the run on ${prior.from}, against the same application, test harness and test)` : "";
         text = [
           text,
-          ...(h ? [`${h} ${criteriaWord(h)} earlier slices passed still ${h === 1 ? "passes" : "pass"}.`] : []),
+          ...(h ? [`${h} ${criteriaWord(h)} earlier slices passed still ${h === 1 ? "passes" : "pass"}${carriedNote}.`] : []),
           ...(recheck.unexercised.length ? [`Not checked again, and not charged to this build: ${recheck.unexercised.map((x) => `${x.id} (slice ${x.slice}: ${x.why})`).join("; ")}.`] : []),
           ...(earlierDeferred ? [`The ${earlier.size} ${criteriaWord(earlier.size)} earlier slices passed ${earlier.size === 1 ? "is" : "are"} checked again once this slice's own criteria pass.`] : []),
         ].join("\n");

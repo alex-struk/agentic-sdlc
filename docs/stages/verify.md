@@ -37,6 +37,10 @@ asks for happens at the gate it is returned to, not here.
   that fails now returns the build as a regression, naming the slice it passed under, and one the
   run could not exercise is reported and not charged to it
   (`docs/decisions/0087-a-later-build-is-checked-against-what-earlier-slices-passed.md`).
+  An earlier criterion a verify of this slice already passed against the same application, the
+  same test harness and the same test file is carried rather than run again, and the summary says
+  how many were carried and from which proposal's run
+  (`docs/decisions/0104-an-earlier-criterion-measured-on-the-same-inputs-is-not-measured-again.md`).
 - `targets.new.mail_api`, the address the new target's mail catcher answers its API on. It is
   handed to the suite as `SDLC_MAIL_API`, the way `calibrate` hands on the oracle's. A target
   that declares none gives the suite none.
