@@ -202,12 +202,11 @@ export const OWED_KINDS = Object.freeze(Object.keys(KINDS));
 // Every file this module keeps owed work in: each kind's own, and the one the rest share.
 export const OWED_FILES = Object.freeze([...Object.values(KINDS).map((d) => d.path), OWED_PATH]);
 
-// These lists are the pipeline's own files, written only here. A list is written without YAML
-// aliases (`dump`), and read with no limit on them, because an older write gave every entry one
-// closing closed the same closure object, which the YAML writer emits as one anchor and an alias
-// per entry, and the YAML reader refuses a document with more than a hundred aliases of one
-// anchor as though it were an attack: a single closing of more than a hundred entries left a
-// list every reader took to be empty.
+// These lists are the pipeline's own files, written only here. A closing gives every entry it
+// closes the same closure object, which the YAML writer emits as one anchor with an alias per
+// entry, and the YAML reader refuses a document with more than a hundred aliases of one anchor.
+// So a list is written without aliases (`dump`), and read with no limit on them, so that a list
+// written with aliases is still read whole (`docs/decisions/0102`).
 const READ_OPTIONS = { maxAliasCount: -1 };
 const dump = (doc) => stringifyYaml(doc, { aliasDuplicateObjects: false });
 
