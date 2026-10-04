@@ -69,6 +69,7 @@ import { owedLoopLimit } from "../config/policy.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { close, isOpen, open, read, sends } from "./owed.mjs";
 import { standingRuling } from "../testrun/results.mjs";
+import { caughtThrow } from "../testrun/playwright.mjs";
 
 export const UNBOUND = "unbound";
 export const PERSONA_UNAVAILABLE = "persona-unavailable";
@@ -96,7 +97,7 @@ export function unboundWhy(row) {
   const lineOf = (text) => UNBOUND_LINE.exec(String(text ?? ""))?.[1]?.trim();
   const take = (line) => { if (line && !said.includes(line)) said.push(line); };
   for (const t of row?.tests ?? []) {
-    if (t?.status !== "passed" && t?.status !== "skipped") take(lineOf(t?.error) ?? lineOf((t?.steps ?? []).at(-1)?.threw));
+    if (t?.status !== "passed" && t?.status !== "skipped") take(lineOf(t?.error) ?? lineOf(caughtThrow(t)));
   }
   if (!said.length) take(lineOf(row?.error));
   return said.join("; ") || "unbound: the adapter gave no reason";
@@ -129,7 +130,8 @@ export function unavailablePersonas(doc, identity) {
 export function personaUnavailable(row, unavailable) {
   if (row?.result !== UNBOUND || !unavailable?.size) return null;
   const failing = (row.tests ?? []).filter((t) => t?.status !== "passed" && t?.status !== "skipped");
-  const messages = failing.length ? failing.map((t) => t?.error) : [row.error];
+  // A test that caught the adapter's sign-in error carries it in its last step (`caughtThrow`).
+  const messages = failing.length ? failing.map((t) => (UNBOUND_LINE.test(String(t?.error ?? "")) ? t.error : caughtThrow(t) || t?.error)) : [row.error];
   const named = [];
   for (const text of messages) {
     const line = UNBOUND_LINE.exec(String(text ?? ""))?.[1]?.trim() ?? "";

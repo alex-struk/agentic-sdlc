@@ -20,7 +20,7 @@ import { checkTests, loadIndex } from "../checks/tests.mjs";
 import { readLocal } from "../oracle/ports.mjs";
 import { oracleUp, oracleConfigurationDown, instancesOf } from "../commands/oracle.mjs";
 import { configurationProblems, readConfigurations } from "../oracle/configurations.mjs";
-import { combineRuns, runSuite, sortRows } from "../testrun/playwright.mjs";
+import { caughtThrow, combineRuns, runSuite, sortRows } from "../testrun/playwright.mjs";
 import { taggedSpecFiles } from "../testrun/tags.mjs";
 import { environmentFaults, standingRuling } from "../testrun/results.mjs";
 import { calibrateEnvironmentFaults, owedLoopLimit } from "../config/policy.mjs";
@@ -718,7 +718,7 @@ function calibrateSpentUnbound(projectDir, config, target, results) {
   const rows = results?.rows ?? [];
   const spent = new Map(unboundSpent(projectDir, target, config, rows).map((s) => [s.id, s]));
   return rows.filter((r) => spent.has(r.id) && r.triage !== "product-question")
-    .map((r) => ({ ...r, sends: spent.get(r.id).sends }))
+    .map((r) => ({ ...r, sends: spent.get(r.id).sends, ...(spent.get(r.id).answered_by ? { answered_by: spent.get(r.id).answered_by } : {}) }))
     .sort((a, b) => compareIds(a.id, b.id));
 }
 
@@ -752,7 +752,10 @@ export function triagePage(target, baseUrl, failing, unbound, byId) {
   const shownUnbound = shown.filter((r) => r.result === UNBOUND);
   const lines = [];
   if (failing.length) lines.push(`${failing.length} criterion(s) failed against the **${target}** target at ${baseUrl}, and nobody has sorted them yet.`);
-  if (unbound.length) lines.push(`${unbound.length} criterion(s) are unbound on the **${target}** target after bind-adapter was sent them as often as \`policy.loops.rebind\` allows.`);
+  const answered = unbound.filter((r) => r.answered_by);
+  const sentOut = unbound.filter((r) => !r.answered_by);
+  if (sentOut.length) lines.push(`${sentOut.length} criterion(s) are unbound on the **${target}** target after bind-adapter was sent them as often as \`policy.loops.rebind\` allows.`);
+  if (answered.length) lines.push(`${answered.length} criterion(s) are unbound on the **${target}** target after an approved binding looked at them and left the adapter as it was (${[...new Set(answered.map((r) => r.answered_by))].join(", ")}); its journal says what it found.`);
   lines.push(
     `Before any reaches the product owner, say which of them this project's own adapter caused. The adapter is`,
     `under \`tests/adapters/${target}/\`; read each one against it and against the test.`,
@@ -763,12 +766,18 @@ export function triagePage(target, baseUrl, failing, unbound, byId) {
   }
   if (shownFailing.length) lines.push(...failureSections(shownFailing, byId));
   if (shownUnbound.length) {
-    const sends = [...new Set(shownUnbound.map((r) => r.sends))].sort((a, b) => a - b).join(" or ");
+    const sentRows = shownUnbound.filter((r) => !r.answered_by);
+    const answeredRows = shownUnbound.filter((r) => r.answered_by);
+    const sends = [...new Set(sentRows.map((r) => r.sends))].sort((a, b) => a - b).join(" or ");
+    const how = [
+      sentRows.length ? `bind-adapter was sent ${sentRows.length < shownUnbound.length ? sentRows.map((r) => r.id).join(", ") : shownUnbound.length === 1 ? "it" : "each"} ${sends} times without binding it` : null,
+      answeredRows.length ? `${answeredRows.map((r) => `${r.id} was answered by ${r.answered_by}, approved with the adapter left as it was`).join("; ")}` : null,
+    ].filter(Boolean).join("; ");
     lines.push(
       "## Unbound after binding",
       "",
       `Every failing test of each criterion below ended in the adapter's own \`unbound:\` error, quoted as it said it, and`,
-      `bind-adapter was sent ${shownUnbound.length === 1 ? "it" : "each"} ${sends} times without binding it. Answer \`adapter-wrong\` where the`,
+      `${how}. Answer \`adapter-wrong\` where the`,
       "application does offer what the test needs — under another label, behind a step, as another persona —",
       "and the binding run goes back for it. Answer `oracle-cannot` only where the oracle genuinely cannot be",
       "driven into, or observed in, the state the test needs without changing its code: behind an external",
@@ -802,6 +811,10 @@ function failureSections(rows, byId) {
     for (const t of failing) {
       lines.push(`**${t.title}** — ${t.status}`, "");
       lines.push("```", trimFailure(t.error ?? row.error ?? "(no failure message recorded)"), "```", "");
+      // A test that caught the adapter's error failed on what it was left with, and the adapter's
+      // own words are in its last step (`docs/decisions/0100`).
+      const caught = caughtThrow(t);
+      if (caught && !/^(?:Error: )?(?:unbound|absent): /m.test(String(t.error ?? ""))) lines.push(`The adapter threw this at the test's last step, and the test caught it: \`${caught}\``, "");
     }
   }
   return lines;

@@ -710,6 +710,23 @@ test("runSuite: a test that caught the adapter's unbound error and failed on wha
   assert.equal(result.rows[0].result, "unbound");
 });
 
+// A test that timed out was inside a call that never settled, so the steps it left end before
+// where it stopped, and an earlier caught `unbound:` is not where it stopped (`docs/decisions/0100`).
+test("runSuite: a test that timed out after catching the adapter's unbound error is a failure", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  const b64 = (s) => Buffer.from(s).toString("base64");
+  const steps = [{ step: "proposalView.totalScore", at: "/proposals/1", threw: "unbound: proposal-view.total_score — not bound" }];
+  writeReport(d, [{ title: "R-1.1.spec.ts", file: "opportunities/R-1.1.spec.ts", specs: [{ title: "t", file: "opportunities/R-1.1.spec.ts", tests: [{ results: [{
+    status: "timedOut", error: { message: "Test timeout of 30000ms exceeded." },
+    attachments: [{ name: "sdlc-steps", contentType: "application/json", body: b64(JSON.stringify(steps)) }],
+  }] }] }] }]);
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "new", baseUrl: "http://x", mailApi: "", exec: recordingExec([]) }));
+  assert.equal(result.rows[0].result, "fail");
+});
+
 test("emptyReadOf: only a last step that read nothing, and did not throw, is an empty read", async () => {
   const { emptyReadOf } = await import("../src/testrun/playwright.mjs");
   const at = (last) => ({ steps: [{ step: "a.open" }, last] });

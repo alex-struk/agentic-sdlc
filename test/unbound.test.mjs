@@ -399,3 +399,12 @@ test("an unbound row's reason is read off the last step where the test caught th
     steps: [{ step: "view.open" }, { step: "view.totalScore", threw: "unbound: view.total_score — the page now shows a total score" }] }] };
   assert.equal(unboundWhy(caught), "unbound: view.total_score — the page now shows a total score");
 });
+
+test("a sign-in refusal a test caught is read off its last step, and a test that timed out is not", () => {
+  const unavailable = new Map([["applicant", "no account on this identity"]]);
+  const caught = (status) => ({ id: "R-1.8", result: "unbound", tests: [{ title: "t", status, error: "Error: the form opened",
+    steps: [{ step: "signIn", threw: "unbound: signIn.applicant — no account on this identity" }] }] });
+  assert.deepEqual(personaUnavailable(caught("failed"), unavailable), ["applicant"]);
+  assert.equal(personaUnavailable(caught("timedOut"), unavailable), null);
+  assert.equal(unboundWhy(caught("timedOut")), "unbound: the adapter gave no reason");
+});

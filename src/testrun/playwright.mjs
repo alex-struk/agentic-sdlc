@@ -178,10 +178,18 @@ function classify(tests) {
 }
 
 // Whether a failing test stopped at the adapter's own `unbound:`: its error says so, or the test
-// caught that error and failed on what it was left with, and the last step it recorded is the one
-// that threw it (`docs/decisions/0100`).
+// caught that error and failed on what it was left with (`caughtThrow`, `docs/decisions/0100`).
 function stoppedUnbound(t) {
-  return UNBOUND_RE.test(t.error ?? "") || UNBOUND_RE.test(String((t.steps ?? []).at(-1)?.threw ?? ""));
+  return UNBOUND_RE.test(t.error ?? "") || UNBOUND_RE.test(caughtThrow(t));
+}
+
+// What the adapter threw at the last step a failed test recorded, for a test that caught it and
+// failed on what it was left with (`docs/decisions/0100`), or "". Only a test whose status is
+// `failed` counts: one that timed out or was interrupted was inside a call that never settled,
+// which the steps do not record, so the last step it left is not where it stopped.
+export function caughtThrow(test) {
+  if (test?.status !== "failed") return "";
+  return String((test?.steps ?? []).at(-1)?.threw ?? "");
 }
 
 // Groups a Playwright JSON report's specs by file and turns each group into one row: the

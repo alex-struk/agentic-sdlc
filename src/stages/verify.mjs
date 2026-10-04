@@ -16,7 +16,7 @@ import { writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
-import { emptyReadOf, runSuite } from "../testrun/playwright.mjs";
+import { caughtThrow, emptyReadOf, runSuite } from "../testrun/playwright.mjs";
 import { caseOf, casesPhrase, failureMessage, failuresOf, quotedList, stoppedAt, withoutColour, FAILURES_DESCRIBED } from "../testrun/failures.mjs";
 import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
@@ -205,7 +205,7 @@ export function unboundReasons(rows, ids) {
   return ids.map((id) => {
     // A test that caught the adapter's error carries it in its last step (`docs/decisions/0100`).
     const reason = (byId.get(id)?.tests ?? [])
-      .map((t) => lineOf(t.error) || lineOf((t.steps ?? []).at(-1)?.threw))
+      .map((t) => lineOf(t.error) || lineOf(caughtThrow(t)))
       .find(Boolean);
     return { id, reason: reason || "the adapter gave no reason" };
   });
@@ -345,7 +345,7 @@ function readNothing(r) {
 const ABSENT_LINE = /^(?:Error: )?absent: /m;
 function pageAbsent(r) {
   return (r?.tests ?? []).some((x) => x.status !== "passed" && x.status !== "skipped"
-    && (ABSENT_LINE.test(withoutColour(x.error ?? "")) || ABSENT_LINE.test(String((x.steps ?? []).at(-1)?.threw ?? ""))));
+    && (ABSENT_LINE.test(withoutColour(x.error ?? "")) || ABSENT_LINE.test(caughtThrow(x))));
 }
 
 // ` — at <file>:<line>` for a failed test, or nothing where the line is not known or the row's

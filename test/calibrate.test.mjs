@@ -1944,3 +1944,19 @@ test("the reviewer's and the product owner's pages mark a failing row carried fr
     assert.equal(page.match(/carried from/g).length, 1, "a row this run measured is not marked");
   }
 });
+
+// A row an approved binding answered with the adapter as it was is triaged on that binding's word,
+// not on a spent send limit (`docs/decisions/0097`), and a row unbound only because a test caught
+// the adapter's error shows the reviewer the adapter's reason (`docs/decisions/0100`).
+test("the triage page names the binding that answered a row, and the adapter's reason a test caught", async () => {
+  const { triagePage } = await import("../src/stages/calibrate.mjs");
+  const answered = { id: "R-1.1", result: "unbound", sends: 1, answered_by: "bind-adapter-old-4",
+    tests: [{ title: "a", status: "failed", error: "Error: unbound: a-page.go — no control labelled Go" }] };
+  const caught = { id: "R-1.2", result: "unbound", sends: 2,
+    tests: [{ title: "b", status: "failed", error: "Error: the proposal carries no score",
+      steps: [{ step: "view.totalScore", threw: "unbound: proposal-view.total_score — not bound" }] }] };
+  const page = triagePage("old", "http://x", [], [answered, caught], new Map());
+  assert.match(page, /bind-adapter-old-4/);
+  assert.doesNotMatch(page, /sent it 1 times/);
+  assert.match(page, /unbound: proposal-view\.total_score — not bound/);
+});

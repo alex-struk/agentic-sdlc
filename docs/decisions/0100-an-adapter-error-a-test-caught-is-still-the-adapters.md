@@ -28,8 +28,12 @@ test whose error is that message, and the reason the binding is shown is read of
 the error carries none. A failing test whose last recorded step threw `absent:` is sorted by the
 build's ruler as one whose error does (`0098`).
 
-Only the last step counts. A test that caught an adapter error and then went on to take other
-steps through the surface stopped somewhere else, and its failure is read as before.
+Only the last step counts, and only for a test whose status is `failed`. A test that caught an
+adapter error and then went on to take other steps through the surface stopped somewhere else, and
+its failure is read as before. A test that timed out or was interrupted was inside a call that never
+settled, which the steps do not record, so the last step it left is not where it stopped. The same
+reading decides whether a caught sign-in refusal is for a persona the contract marks unavailable,
+and the reviewer's triage page quotes the adapter's reason from that step.
 
 ## Consequences
 
