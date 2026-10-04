@@ -367,3 +367,29 @@ test("a calibration's rebind limit counts every send, whatever application a ver
   assert.equal(unboundEntries(d).filter(isOpen).length, 0);
   assert.equal(unboundOwed({ target: "old", rows: [row("R-1.1", "unbound", { adapter: A })], adapter: A, entries: read(d, "rebind"), limit: 2 }).spent.length, 1);
 });
+
+// A binding run is handed every open rebind entry for its target. One approved with the adapter
+// left as it was has looked at each and found nothing to bind it to, and another run would look
+// at the same adapter: the row is the ruler's, as if its sends were spent (`docs/decisions/0097`).
+const answeredBy = (adapter, more = {}) => ({ kind: "rebind", item: "old:R-1.1", id: "R-1.1", target: "old", why: "x", found: UNBOUND, adapter,
+  closed: { outcome: "met", why: "left as it was", answered_by: "bind-adapter-old-4" }, ...more });
+
+test("a row an approved binding answered under the adapter there is now is the ruler's, not sent again", () => {
+  const rows = [row("R-1.1", "unbound", { adapter: "A" })];
+  const r = unboundOwed({ target: "old", rows, adapter: "A", entries: [answeredBy("A")], limit: 2 });
+  assert.deepEqual(r.pending, [], "one send of two, and still not owed to bind-adapter again");
+  assert.deepEqual(r.spent.map((s) => [s.id, s.sends, s.answered_by]), [["R-1.1", 1, "bind-adapter-old-4"]]);
+  const changed = unboundOwed({ target: "old", rows: [row("R-1.1", "unbound", { adapter: "B" })], adapter: "B", entries: [answeredBy("A")], limit: 2 });
+  assert.equal(changed.pending.length, 1, "under an adapter that has changed since, the row is owed again");
+  assert.deepEqual(changed.spent, []);
+});
+
+test("a run does not file again a row a binding answered against the same adapter and build", (t) => {
+  const { d, commit } = project(t);
+  commit({ "tests/adapters/new/index.ts": "export default 1;\n" });
+  const A = execFileSync("git", ["rev-parse", "HEAD:tests/adapters/new"], { cwd: d, encoding: "utf8" }).trim();
+  writeFileSync(join(d, "tests", "adapters", "rebind.yaml"), `rebind:\n  - { id: R-1.1, target: new, why: "unbound: a.b — gone", found: unbound, adapter: ${A}, slice: 1, by: "runner:verify", at: "2026-01-01T00:00:00.000Z", app_tree: tree-a, closed: { outcome: met, why: "left as it was", at: "2026-01-02T00:00:00.000Z", answered_by: bind-adapter-new-4 } }\n`);
+  const sync = (appTree) => syncUnbound(d, "new", { rows: [row("R-1.1", "unbound", { adapter: A })], adapter: A, limit: 2, ids: ["R-1.1"], by: "runner:verify", stamp: { slice: 1 }, appTree });
+  assert.deepEqual(sync("tree-a").opened, [], "the binding has answered against this build");
+  assert.deepEqual(sync("tree-b").opened, ["R-1.1"], "a new build of the application is owed the binding again");
+});

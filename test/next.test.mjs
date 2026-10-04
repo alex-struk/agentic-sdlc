@@ -623,6 +623,21 @@ test("an unbound row bind-adapter has had its sends for is taken to the reviewer
   assert.equal(matchesNext(r, "calibrate", { target: "old" }), true);
 });
 
+// A binding approved with the adapter left as it was has answered the row: it is not sent again
+// whatever its count, and goes where a spent one goes (`docs/decisions/0097`).
+test("an unbound row an approved binding left as it was goes to the reviewer's triage, not to bind-adapter again", (t) => {
+  const d = project(t, { extra: TARGETS, policy: ["loops: { rebind: 2 }"] });
+  specDone(d);
+  calibratedWithUnbound(d, [unboundRow("R-1.1", "alpha"), { id: "R-2.1", result: "pass" }]);
+  const adapter = execFileSync("git", ["rev-parse", "HEAD:tests/adapters/old"], { cwd: d, encoding: "utf8" }).trim();
+  commit(d, { "tests/adapters/rebind.yaml": stringifyYaml({ rebind: [{ id: "R-1.1", target: "old", why: "unbound: a-page.stop — gone", found: "unbound", adapter,
+    closed: { outcome: "met", why: "bind-adapter-old-4 was approved and left tests/adapters/old as it was", by: "bind-adapter-old-4", at: "2026-01-02T00:00:00.000Z", answered_by: "bind-adapter-old-4" } }] }) });
+  const r = whatNext(d);
+  assert.ok(!r.ready.some((c) => c.stage === "bind-adapter"), "one send of two, and not sent again");
+  assert.equal(r.next.command, "sdlc run calibrate --target old --skip-suite");
+  assert.match(r.next.why, /1 unbound row an approved binding left as it was \(bind-adapter-old-4\) goes to the reviewer's triage: R-1\.1/);
+});
+
 test("while the reviewer's triage is open, a spent unbound row is that proposal's question and nothing else's", (t) => {
   const d = project(t, { extra: TARGETS, policy: ["loops: { rebind: 2 }"] });
   specDone(d);

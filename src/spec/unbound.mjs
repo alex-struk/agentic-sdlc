@@ -28,6 +28,14 @@
 // (`adapter-wrong`) or passes it to the product owner (`product-question`); on any other target
 // `sdlc next` lists it as waiting on a ruler (`docs/decisions/0068`).
 //
+// **An answer from a binding.** A binding run is handed every open entry for its target. One
+// approved with the adapter left as it was has looked at each and found nothing on the target to
+// bind it to, and the approval closes the entries it was handed, naming itself (`answered_by`).
+// Another run would look at the same adapter, and for an entry a verify filed, at the same build:
+// so a row answered under the adapter the target still has is not sent again, whatever its count,
+// and goes where a spent row goes. A new adapter, or a new build of the application, is owed the
+// binding again (`docs/decisions/0097`).
+//
 // **A persona the contract marks unavailable.** A row whose every failing test stopped at the
 // adapter's `unbound: signIn.<persona>` error, for a persona whose sign-in the approved contract
 // marks `{ unavailable: "<reason>" }` on the target's identity, can never run there whatever a
@@ -146,6 +154,15 @@ export function legacyAdapter(projectDir, target, rev = "HEAD") {
   return commit ? adapterAt(projectDir, target, commit) : "";
 }
 
+// The binding that answered `item` under `adapter` by leaving it as it was, or `null`. With
+// `appTree`, only an answer about that build of the application, or about none, counts, the way
+// `sends` counts (`docs/decisions/0083`).
+export function answeredBy(entries, item, adapter, appTree = "") {
+  const hit = (entries ?? []).find((e) => e?.kind === KIND && e.item === item && e.adapter === adapter && e.closed?.answered_by
+    && (!appTree || !e.app_tree || e.app_tree === appTree));
+  return hit?.closed?.answered_by ?? null;
+}
+
 function entryFor(target, row, adapter) {
   return { kind: KIND, item: itemOf(target, row.id), stage: "bind-adapter", id: row.id, target, why: unboundWhy(row), found: UNBOUND, adapter, closed: null };
 }
@@ -157,9 +174,10 @@ function entryFor(target, row, adapter) {
 // A row with an open entry is owed as that entry. Otherwise a row found under an adapter that
 // has since changed is `pending` whatever its count, carrying the adapter it was found under, so
 // a reader sends it to calibration to be looked at again; one found under the adapter the target
-// has now is `pending` while it has been sent fewer than `limit` times, and `spent` once it has
-// been sent that many. A row needing a persona `unavailable` names is neither: calibration
-// closes it.
+// has now is `pending` while it has been sent fewer than `limit` times and no binding has
+// answered it under that adapter, and `spent` otherwise, carrying the binding that answered it
+// (`answered_by`) where one did. A row needing a persona `unavailable` names is neither:
+// calibration closes it.
 export function unboundOwed({ target, rows, adapter, fallback = "", entries = [], limit, unavailable = new Map() }) {
   const pending = [];
   const spent = [];
@@ -170,8 +188,9 @@ export function unboundOwed({ target, rows, adapter, fallback = "", entries = []
     const found = row.adapter ?? fallback;
     if (found !== adapter) { pending.push(entryFor(target, row, found)); continue; }
     const n = sends(entries, item);
-    if (n < limit) pending.push(entryFor(target, row, adapter));
-    else spent.push({ id: row.id, target, sends: n, limit, why: unboundWhy(row) });
+    const answered = answeredBy(entries, item, adapter);
+    if (n < limit && !answered) pending.push(entryFor(target, row, adapter));
+    else spent.push({ id: row.id, target, sends: n, limit, why: unboundWhy(row), ...(answered ? { answered_by: answered } : {}) });
   }
   return { pending, spent };
 }
@@ -231,8 +250,9 @@ export function unboundSpent(projectDir, target, config, rows) {
 //    times, is filed under that adapter: whatever it was owed was sent under it.
 // 2. Every open unbound entry filed under another adapter than `adapter` lapses, closed as met.
 // 3. With `settle` (the rows a calibration has just produced), a row found under `adapter`,
-//    with no open entry and sent fewer than `limit` times, is filed; and an open entry under
-//    `adapter` whose row is no longer an open unbound row is closed.
+//    with no open entry, sent fewer than `limit` times and not answered by a binding under
+//    `adapter` (`answeredBy`), is filed; and an open entry under `adapter` whose row is no
+//    longer an open unbound row is closed.
 //
 // A row needing a persona `unavailable` names is never filed: calibration closes it.
 //
@@ -291,7 +311,8 @@ export function syncUnbound(projectDir, target, { rows = [], adapter, fallback =
   if (!settle) return { path, opened, closed };
 
   entries = read(projectDir, KIND);
-  const fresh = unbound.filter((row) => foundUnder(row) === adapter && !entries.some((e) => isOpen(e) && e.item === itemOf(target, row.id)) && sent(itemOf(target, row.id)) < limit);
+  const fresh = unbound.filter((row) => foundUnder(row) === adapter && !entries.some((e) => isOpen(e) && e.item === itemOf(target, row.id))
+    && sent(itemOf(target, row.id)) < limit && !answeredBy(entries, itemOf(target, row.id), adapter, appTree));
   const now = open(projectDir, KIND, fresh.map((row) => ({ id: row.id, target, why: why(row), found: UNBOUND, adapter, ...extra, ...tree, ...stamp })));
   wrote(now.path);
   opened.push(...now.added.map((e) => e.id));

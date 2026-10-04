@@ -53,6 +53,15 @@ The run also reads the open entries for its target on `tests/adapters/rebind.yam
 
 `calibrate` closes both kinds once it has run against an adapter that changed since.
 
+A binding approved with the adapter left as it was gives no later run anything new to measure, so
+its approval closes the unbound entries the run was handed instead: those open where its branch
+was cut, under the adapter it left as it was. Each is closed as met and names the binding
+(`answered_by`). Its row is not sent to a binding run again under that adapter, nor, on the new
+target, against that build of the application; it goes where a row whose sends are spent goes,
+which on the new target is the open build's G3 ruling. `sdlc rule <binding> --settle` applies the
+same to a binding approved before this rule
+(`docs/decisions/0097-a-binding-that-changes-nothing-has-answered.md`).
+
 The run also compares the target's `tests/adapters/<t>/bindings.yaml`, where one exists, with
 `spec/contract/surface.yaml`, using the same comparison as the bindings post-check below
 (`bindingGaps`, `src/spec/surface.mjs`). Where the contract declares members the file does not

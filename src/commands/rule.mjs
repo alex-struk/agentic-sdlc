@@ -18,6 +18,7 @@ import { buildSite } from "./status.mjs";
 import { ADDRESSED_CONDITION_FORM, ADDRESSED_VERB, CONDITION_MET_FORM, CONDITION_WITHDRAWN_FORM, MISSING_TEST_CONDITION_FORM, OVERREACH_CONDITION_FORM, OVERREACH_VERB, accountedConditions, addressedConditions, conditionFormRule, conditionGrammarFor, conditionsAreExecutable, malformedAccountedConditions, malformedAddressedConditions, malformedMissingTestConditions, malformedOverreachConditions, missingTestConditions, overreachConditions, splitConditionsByAddressee } from "../spec/criteria.mjs";
 import { REQUEST_REF_PREFIX, close as closeOwed, conditionRef, isOpen, open as openOwed, openOn, owedPath, read as readOwed, readAt as readOwedAt, sameFiling, withdrawRetired as withdrawOwedRetired } from "../spec/owed.mjs";
 import { revisionLine } from "../stages/proposals.mjs";
+import { UNBOUND, adapterAt } from "../spec/unbound.mjs";
 import { dropTestWrongRulings } from "../stages/calibrate.mjs";
 import { MISSING_TEST, WRITER, blockingMissingTests, missingTestRef, openMissingTestsAt, oweClauses, parseMissingTestRef, restoreUnhanded, retired, retiredWhy, settleApprovedMissingTests, syncMissingTests, withdrawMissingTest } from "../spec/missing-tests.mjs";
 import { readSlice } from "../stages/slices.mjs";
@@ -886,7 +887,9 @@ function commitRuling(projectDir, { name, branch, gate, verdict, by, heldBy, not
     missingTests = recordMissingTests(projectDir, { name, gate, by });
     const redo = closeRedoAnswered(projectDir, { name, gate, by, merge: "HEAD" });
     const retiredRedo = withdrawRetiredRedo(projectDir);
-    if (redo.paths.length || retiredRedo.paths.length) stagePaths(projectDir, [...new Set([...redo.paths, ...retiredRedo.paths])]);
+    const rebind = closeRebindAnswered(projectDir, { name, gate, by, merge: "HEAD" });
+    const settledPaths = [...redo.paths, ...retiredRedo.paths, ...rebind.paths];
+    if (settledPaths.length) stagePaths(projectDir, [...new Set(settledPaths)]);
     // After the merge's own settlement, so the ruler's word on a clause is the last thing said
     // about the item, and in the merge commit, which is where an approval records what it owes.
     if (!executable) {
@@ -1005,6 +1008,41 @@ function closeRedoAnswered(projectDir, { name, gate = null, by = null, merge, at
   return { paths: [owedPath("redo"), ...dropTestWrongRulings(projectDir, closed)], closed };
 }
 
+// The rebind entries an approved binding answered by leaving the adapter as it was, closed on
+// `main` in the approval's merge. A binding run is handed every open rebind entry for its target
+// (`owedHanded`, `src/stages/registry.mjs`). A binding that changes the adapter is checked by the
+// run that measures with it: the next calibration or verify lapses each entry and files it again
+// where its row is still unbound. One approved with the adapter unchanged leaves nothing for any
+// run to measure again, and another binding run would look at the same adapter and find the
+// same. So each unbound entry for the binding's target that was open where its branch was cut,
+// under the adapter the merge left as it was, is closed as met, naming the binding
+// (`answered_by`); its row is then the ruler's, as one whose sends are spent is
+// (`src/spec/unbound.mjs`, `docs/decisions/0097`). An entry filed since the branch was cut was not
+// handed to the run, and an entry filed under another adapter is owed the run that measures with
+// this one; both stay open.
+//
+// `merge` is the approval's merge commit. Writes the working tree, stages nothing, and returns
+// the paths written and the criteria closed; applying it twice changes nothing.
+function closeRebindAnswered(projectDir, { name, gate = null, by = null, merge, at = new Date().toISOString() }) {
+  const none = { paths: [], closed: [] };
+  const { config } = loadConfig(join(projectDir, ".sdlc", "config.yaml"));
+  const route = routeOf(name, config);
+  if (route?.stage !== "bind-adapter" || !route.target) return none;
+  const target = route.target;
+  const adapter = adapterAt(projectDir, target, merge);
+  if (!adapter || adapter !== adapterAt(projectDir, target, `${merge}^1`)) return none;
+  const base = git(["merge-base", `${merge}^1`, `${merge}^2`], projectDir);
+  const handed = openOn(projectDir, "rebind", base).filter((e) => e.target === target && e.found === UNBOUND && e.adapter === adapter);
+  const answered = readOwed(projectDir, "rebind").filter((e) => isOpen(e) && handed.some((h) => sameFiling(h, e)));
+  if (!answered.length) return none;
+  const path = closeOwed(projectDir, "rebind", (e) => answered.some((x) => sameFiling(x, e)), {
+    outcome: "met",
+    why: `${name} was approved and left tests/adapters/${target} as it was: the binding run found nothing on ${target} to bind this to`,
+    by: name, at, answered_by: name, ...(gate ? { gate } : {}), ...(by ? { approved_by: by } : {}),
+  });
+  return { paths: path ? [path] : [], closed: answered.map((e) => e.id) };
+}
+
 // A redo entry for a criterion another has since superseded, or one made obsolete, asks
 // derive-tests to derive a test for a criterion `acceptedCriteria` already excludes: no run
 // will ever take it up, so nothing else would ever close it, the same way an open missing
@@ -1059,10 +1097,12 @@ function settledMessage(name, gate, stage, r) {
   const n = new Set([...reopened, ...restored, ...r.readdressed.map((m) => m.id), ...r.kept, ...closed, ...withdrawn]).size;
   const redo = r.redo ?? [];
   const redoWithdrawn = r.redoWithdrawn ?? [];
+  const rebind = r.rebind ?? [];
   const settles = [
     ...(n ? [`${n} missing ${n === 1 ? "test" : "tests"}: ${counts.join(", ")}`] : []),
     ...(redo.length ? [`${redo.length} ${redo.length === 1 ? "test" : "tests"} derived again (redo)`] : []),
     ...(redoWithdrawn.length ? [`${redoWithdrawn.length} redo ${redoWithdrawn.length === 1 ? "entry" : "entries"} withdrawn`] : []),
+    ...(rebind.length ? [`${rebind.length} unbound ${rebind.length === 1 ? "binding" : "bindings"} answered with the adapter as it was (rebind)`] : []),
   ];
   const owes = r.clauses ?? [];
   const said = [...(settles.length ? [`settles ${settles.join("; ")}`] : []), ...(owes.length ? [`owes ${owesClauses(owes)}`] : [])];
@@ -1070,6 +1110,7 @@ function settledMessage(name, gate, stage, r) {
   const body = [
     ...(redo.length ? [`redo closed, derived again in the line of work ${name} approved: ${redo.join(", ")}`] : []),
     ...(redoWithdrawn.length ? [`redo withdrawn, the criterion is superseded or obsolete: ${redoWithdrawn.join(", ")}`] : []),
+    ...(rebind.length ? [`rebind closed, ${name} left the adapter as it was: ${rebind.join(", ")}`] : []),
     ...(reopened.length ? [`reopened, closed on a row that does not show its test ran as it stood: ${reopened.map(missingTestRef).join(", ")}`] : []),
     ...(restored.length ? [`restored to ${stage}, moved outside what ${name} was handed: ${restored.map(missingTestRef).join(", ")}`] : []),
     ...[...to].map(([t, ids]) => `re-addressed to ${t}: ${ids.map(missingTestRef).join(", ")}`),
@@ -1184,12 +1225,13 @@ export function settleApproved(projectDir, name, { clauseLines = [] } = {}) {
     const settled = settleHandedOn(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, stage, domain });
     const redo = closeRedoAnswered(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, at: doc.at ?? undefined });
     const retiredRedo = withdrawRetiredRedo(projectDir, doc.at ?? undefined);
+    const rebind = closeRebindAnswered(projectDir, { name, gate: doc.gate ?? null, by: doc.by ?? null, merge, at: doc.at ?? undefined });
     // Last, as an approval applies them: the ruler's word on a clause is the last thing said.
     const owedClauses = clauseLines.map(({ lines, restates }) =>
       oweClauses(projectDir, lines, { from: name, gate: doc.gate ?? null, by: doc.by ?? null, restates }));
     const clausesPath = owedClauses.map((c) => c.path).find(Boolean) ?? null;
     const r = {
-      path: settled.path ?? synced.path ?? restored.path ?? clausesPath ?? redo.paths[0] ?? retiredRedo.paths[0] ?? null,
+      path: settled.path ?? synced.path ?? restored.path ?? clausesPath ?? redo.paths[0] ?? retiredRedo.paths[0] ?? rebind.paths[0] ?? null,
       restored: restored.restored,
       readdressed: [...synced.readdressed, ...settled.readdressed],
       kept: settled.kept,
@@ -1198,12 +1240,13 @@ export function settleApproved(projectDir, name, { clauseLines = [] } = {}) {
       reopened: synced.reopened,
       redo: redo.closed,
       redoWithdrawn: retiredRedo.withdrawn,
+      rebind: rebind.closed,
       clauses: owedClauses.flatMap((c) => c.owed),
     };
     if (!r.path) return r;
     const { subject, body } = settledMessage(name, doc.gate, stage, r);
     const missingChanged = settled.path ?? synced.path ?? restored.path ?? clausesPath;
-    stagePaths(projectDir, [...(missingChanged ? [owedPath(MISSING_TEST)] : []), ...new Set([...redo.paths, ...retiredRedo.paths])]);
+    stagePaths(projectDir, [...(missingChanged ? [owedPath(MISSING_TEST)] : []), ...new Set([...redo.paths, ...retiredRedo.paths, ...rebind.paths])]);
     git([...SDLC_AUTHOR, "commit", "-q", "-m", subject, "-m", body], projectDir);
     return r;
   } finally {

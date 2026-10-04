@@ -360,13 +360,24 @@ function calibrationSettlesWithoutSuite(record, target) {
   const ids = (list) => { const all = list.map((s) => s.id); return all.length > 10 ? `${all.slice(0, 10).join(", ")} and ${all.length - 10} more` : all.join(", "); };
   const said = [];
   if (triage.length) {
-    said.push(`${plural(triage.length, "unbound row")} bind-adapter was sent ${plural(triage[0].limit, "time")} (policy.loops.rebind) `
-      + `${triage.length === 1 ? "goes" : "go"} to the reviewer's triage: ${ids(triage)}`);
+    said.push(`${spentRows(triage, "unbound row")} ${triage.length === 1 ? "goes" : "go"} to the reviewer's triage: ${ids(triage)}`);
   }
   if (unavailable.length) {
     said.push(`${plural(unavailable.length, "unbound row")} ${unavailable.length === 1 ? "needs" : "need"} a persona the approved contract marks unavailable on ${target}: ${ids(unavailable)}`);
   }
   return `${said.join("; ")}; the suite would report ${open.length === 1 ? "it" : "them"} unbound again, so none is run`;
+}
+
+// How rows bind-adapter has had its turns at are counted to a reader: those sent as often as
+// policy.loops.rebind allows, and those an approved binding looked at and left the adapter as it
+// was for (`answered_by`, `docs/decisions/0097`).
+function spentRows(list, noun) {
+  const answered = list.filter((s) => s.answered_by);
+  const sent = list.filter((s) => !s.answered_by);
+  return [
+    sent.length ? `${plural(sent.length, noun)} bind-adapter was sent ${plural(sent[0].limit, "time")} (policy.loops.rebind)` : null,
+    answered.length ? `${plural(answered.length, noun)} an approved binding left as ${answered.length === 1 ? "it was" : "they were"} (${[...new Set(answered.map((s) => s.answered_by))].join(", ")})` : null,
+  ].filter(Boolean).join(" and ");
 }
 
 // The newest ruling on main for a slice's builds, when it is a return: the name returned.
@@ -816,9 +827,8 @@ function owedWork(projectDir, record, inFlight, bindsNow) {
   const spent = [...spentBy].map(([target, list]) => {
     const ids = list.map((s) => s.id);
     const shown = ids.length > 10 ? `${ids.slice(0, 10).join(", ")} and ${ids.length - 10} more` : ids.join(", ");
-    const limit = list[0].limit;
     return { on: "a ruler", kind: UNBOUND, count: list.length, name: `unbound bindings (${target})`, gate: null,
-      why: `${plural(list.length, "binding")} bind-adapter was sent ${plural(limit, "time")} (policy.loops.rebind) and still reports unbound on ${target}: ${shown}; `
+      why: `${spentRows(list, "binding")} and still reports unbound on ${target}: ${shown}; `
         + `${list.length === 1 ? "it is" : "they are"} not sent again, and each row stays open until a ruler decides it`,
       command: `oracle-cannot applies only on the oracle's target, so no calibration verb closes an unbound row on ${target}: a ruler decides what each one needs` };
   });
