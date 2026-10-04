@@ -12,7 +12,7 @@ const SDLC_BIN = resolve(fileURLToPath(import.meta.url), "../../../bin/sdlc.mjs"
 import { readText, writeText } from "../lib/fsx.mjs";
 import { branchNameFree, changedPaths, git, gitOk, gitRaw } from "../lib/git.mjs";
 import { STAGES } from "../profiles.mjs";
-import { MODES, coveredBy } from "../runner/workspace.mjs";
+import { MODES, coveredBy, sealedPathsFor } from "../runner/workspace.mjs";
 import { runCatalogueScan } from "../runner/catalogue.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
@@ -3374,15 +3374,27 @@ export function proposalFamily(name) {
 // Only plain lines are read. `addressed-to` and `test-overreaches` already say, in the
 // condition itself, that the work belongs to another stage, and reading them here as well
 // would refuse a ruling for being explicit about exactly this.
+//
+// A line that names a path the stage delivers says where the work goes, and a path beside it
+// that the stage's workspace carries to be read is what the work is built from: the contract a
+// screen is named in, the design story it is drawn in. That path is a source, not a request
+// (`docs/decisions/0099`). A path the workspace does not carry at all is refused wherever it
+// stands, and so is a line that names only paths the stage cannot write.
 export function undeliverableConditions(name, lines) {
   const stage = stageForProposal(name);
   if (!stage) return [];
-  const delivers = collectOf(STAGES_BY_NAME[stage]);
+  const def = STAGES_BY_NAME[stage];
+  const delivers = collectOf(def);
+  const mode = typeof def?.workspace === "function" ? null : def?.workspace;
+  const reads = mode && MODES[mode] ? sealedPathsFor(mode, delivers) : [];
   const { mine } = splitConditionsByAddressee(lines ?? []);
   const found = [];
   for (const line of mine) {
-    for (const path of conditionPaths(withoutEvidence(line), pipelineOwns)) {
+    const paths = conditionPaths(withoutEvidence(line), pipelineOwns);
+    const changes = paths.some((p) => coveredBy(delivers, p));
+    for (const path of paths) {
       if (coveredBy(delivers, path)) continue;
+      if (changes && coveredBy(reads, path)) continue;
       found.push({ line, path, stage, delivers, deliverableBy: deliverableBy(path) });
     }
   }

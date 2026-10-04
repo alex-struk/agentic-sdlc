@@ -129,3 +129,19 @@ test("a condition quoting where a failure was seen is not asking for the test or
   const asked = undeliverableConditions("build-slice-1", ["Change tests/acceptance/users/R-4.2.spec.ts to read the status badge."]);
   assert.equal(asked.length, 1, "a request to change the test itself is still refused");
 });
+
+// A condition says where the work goes by naming a file the stage changes, and often names what
+// to build it from beside it: the contract a screen is named in, the design story it is drawn in.
+// The stage's workspace carries those to be read, so such a path is a source, not a request
+// (`docs/decisions/0099`).
+test("a condition naming a file the stage changes may name what to build it from, out of what its workspace carries", () => {
+  assert.deepEqual(undeliverableConditions("build-slice-1", ["app/router.tsx: serve the screen drawn in design/catalogue/item-view.stories.tsx at /items/:id."]), []);
+  assert.deepEqual(undeliverableConditions("build-slice-1", ["app/screens/edit.tsx: add the tab spec/contract/surface.yaml names as edit.tab."]), []);
+});
+
+test("a source is not enough on its own, and a path the workspace does not carry is refused beside a file the stage changes", () => {
+  const alone = undeliverableConditions("build-slice-1", ["Add the tab to spec/contract/surface.yaml."]);
+  assert.deepEqual(alone.map((f) => f.path), ["spec/contract/surface.yaml"]);
+  const unseen = undeliverableConditions("build-slice-1", ["app/screens/edit.tsx: show what tests/acceptance/users/R-4.2.spec.ts reads."]);
+  assert.deepEqual(unseen.map((f) => f.path), ["tests/acceptance/users/R-4.2.spec.ts"]);
+});

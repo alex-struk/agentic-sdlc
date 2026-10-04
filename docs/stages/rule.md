@@ -564,6 +564,13 @@ and only when this pipeline has some say over it. "Rework the plan so the second
 alone" names no file; `plan/tasks.md` does. A path no stage of this pipeline delivers is refused
 too, and says so rather than naming a stage.
 
+A condition that names a path the stage delivers says where the work goes, and may name beside it
+what to build it from, out of what the stage's workspace carries to be read: "`app/router.tsx`:
+serve the screen drawn in `design/catalogue/<screen>.stories.tsx`" asks the build for the router
+and reads the design story. Such a path is a source and is not refused. A path the workspace does
+not carry at all is refused wherever it stands, and so is a condition that names only paths the
+stage cannot write (`docs/decisions/0099-a-file-a-condition-builds-from-is-read-not-asked-for.md`).
+
 Only a return is checked. An approval's conditions are commentary no `--revise` run reads, and the
 verdicts that may not carry a cross-stage request at all are refused by the two guards above.
 
