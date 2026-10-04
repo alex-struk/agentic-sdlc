@@ -31,6 +31,12 @@ binds it. `absent:` is for a missing page alone. A page that answers, with a con
 cannot find, is still `unbound:`, and a page that answers and shows nothing is still an empty
 answer (`0091`).
 
+**A field is looked up when the action runs, too.** An action handed a value finds the field for
+it by its label as it runs, and reports the key unbound only when the page has no such field then.
+A list of the fields the binder saw, written into the adapter, refuses a field the build adds later
+until another binding run rewrites it; a field looked up when the action runs is filled as soon as
+the build has it.
+
 **A test that stops at `absent:` fails, and the build's ruler sorts it.** The harness counts only
 `unbound:` errors toward an unbound row, so the row fails. Verify does not return a build for such
 a failure. It leaves the build open for G3's ruler, as it does for a read that came back with

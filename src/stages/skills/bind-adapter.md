@@ -129,6 +129,12 @@ contract names; it is testing whatever the form does when left blank, which is a
 the criterion is about. Match each input key to its field by label, and when a key has no field
 you can find, throw `unbound:` naming the key rather than dropping it.
 
+Look each key's field up on the page when the action runs, by the label that names the key, and
+throw only when the page has no such field then, saying which fields it does offer. Never refuse a
+key from a list of the fields you saw while binding. A build that adds the field later, labelled for
+what it holds, is then filled the next time the test runs; a list written down at binding refuses
+it until another binding run rewrites the list.
+
 **A disabled control is an answer, not something to wait out.** When the control an action is
 about to press is disabled, the form is telling you it is not ready — usually because a required
 field was never filled. Do not click it again and again, and do not wait for it: throw at once,

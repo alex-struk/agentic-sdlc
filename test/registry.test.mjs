@@ -152,6 +152,15 @@ test("the binder reports a page the application does not serve as absent, decide
   assert.match(prompt, /"bound", "unbound: <reason>" or "absent: <reason>"/);
 });
 
+// A field the build adds after the adapter was bound is filled without another binding run when
+// the action looks it up on the page as it runs, rather than in a list written down at binding
+// (`docs/decisions/0098`).
+test("the binder looks an input's field up when the action runs, not in a list it wrote down", () => {
+  const skill = skillText("bind-adapter");
+  assert.match(skill, /Look each key's field up on the page when the action runs/);
+  assert.match(skill, /Never refuse a\s+key from a list of the fields you saw while binding/);
+});
+
 // A revision refused because the new target's sandbox was not up is run again once it is
 // started, and must find the same return to revise (`docs/decisions/0080`).
 test("bind-adapter --revise refused on a pre-check ahead of it leaves the return where the next run finds it", (t) => {
