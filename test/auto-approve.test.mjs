@@ -136,7 +136,7 @@ test("auto_approve: a listed stage whose checks all hold is approved by the runn
     assert.match(gate.rationale, /^Approved by the runner's checks, which policy\.gates\.G3\.auto_approve lets settle derive-tests proposals: /);
     assert.ok(gate.rationale.includes(`the acceptance typecheck of ${short} is clean`), gate.rationale);
     assert.match(gate.rationale, /no condition is open against it/);
-    assert.match(gate.rationale, /no test file was deleted and no changed test asserts less than before/);
+    assert.match(gate.rationale, /no test file was deleted, no changed test asserts less than before and no new test asserts nothing/);
 
     // Recorded as any approval is: merged onto main, the ruling on the proposal page, a clean tree.
     assert.equal(git(["rev-parse", "--abbrev-ref", "HEAD"], dir), "main");
@@ -202,6 +202,38 @@ test("auto_approve: a condition open against the stage leaves the ruling to the 
     }]);
     commit(dir, "an open condition");
     proposeFiles(dir, "derive-tests-applications", "G3", { "tests/acceptance/applications/age.spec.ts": spec(3) });
+    await assertPersonaAsked(dir, "derive-tests-applications", "reviewer");
+  });
+});
+
+// What a binding or a derivation is routinely sent to do is not an instruction it answers to a
+// ruler for: an unbound row verify filed and a test a criterion's new version asks to be derived
+// again are each measured by the next verify, not judged at the gate.
+test("auto_approve: a binding sent for an unbound row is still approved by the runner", async () => {
+  await withProject({}, async (dir) => {
+    openOwed(dir, "rebind", [{ id: "applications.age", target: "new", why: "unbound: applications.age — not bound", found: "unbound", by: "runner:verify", at: new Date().toISOString() }]);
+    commit(dir, "an unbound row");
+    proposeFiles(dir, "bind-adapter-new", "G3", { "tests/adapters/new/index.ts": "export default function create() { return { a: 1 }; }\n" });
+    noPersona();
+    const { gate } = await ruled(dir, "bind-adapter-new", "reviewer");
+    assert.equal(gate.by, "runner:checks");
+  });
+});
+
+test("auto_approve: a derivation sent to derive a test again is still approved by the runner", async () => {
+  await withProject({}, async (dir) => {
+    openOwed(dir, "redo", [{ id: "R-1.1", version: 2, why: "the criterion's wording changed", by: "runner", at: new Date().toISOString() }]);
+    commit(dir, "a test to derive again");
+    proposeFiles(dir, "derive-tests-applications", "G3", { "tests/acceptance/applications/age.spec.ts": spec(3) });
+    noPersona();
+    const { gate } = await ruled(dir, "derive-tests-applications", "reviewer");
+    assert.equal(gate.by, "runner:checks");
+  });
+});
+
+test("auto_approve: a new test that asserts nothing leaves the ruling to the persona", async () => {
+  await withProject({}, async (dir) => {
+    proposeFiles(dir, "derive-tests-applications", "G3", { "tests/acceptance/applications/fee.spec.ts": spec(0) });
     await assertPersonaAsked(dir, "derive-tests-applications", "reviewer");
   });
 });

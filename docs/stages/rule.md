@@ -679,14 +679,15 @@ runner-owned typecheck, and it approves only where every one of these holds:
    one.
 3. The typecheck passed. A contract proposal, for which the typecheck compiles no suite, is held to
    the other checks alone.
-4. Nothing is owed that the proposal is meant to answer, read from the ledgers on `main` the
-   persona's prompt is shown: an open condition asked of its stage; a revision request the prompt
-   would show, or one asked of its stage; a missing test its stage owes; a test its stage is to
-   derive again (`redo`); a binding owed on its target (`rebind`). And it is not a revision of a
-   returned proposal: its branch was not cut from the commit that recorded a return.
+4. No ruler has asked anything of the proposal that only a ruler can say was done, read from the
+   ledgers on `main` the persona's prompt is shown: an open condition asked of its stage, or a
+   revision request the prompt would show or that was asked of its stage. And it is not a revision
+   of a returned proposal: its branch was not cut from the commit that recorded a return. The work
+   a stage is routinely sent (an unbound row on `rebind`, a test to derive again on `redo`, a
+   missing test) does not count: whether it was done is what the next verify measures.
 5. Measured from the commit the proposal's branch was cut from on `main`:
-   - `derive-tests`: no file under `tests/acceptance/` was deleted, and no changed `*.spec.ts` file
-     calls `expect(` fewer times than it did there;
+   - `derive-tests`: no file under `tests/acceptance/` was deleted, no changed `*.spec.ts` file
+     calls `expect(` fewer times than it did there, and no added one calls it not at all;
    - `contract`: no line under `spec/contract/` was deleted (`git diff --numstat`, renames read as
      a deletion and an addition; a binary file's row counts as a deletion);
    - `bind-adapter`: nothing changed outside what the stage delivers (`tests/adapters`), leaving
@@ -704,7 +705,8 @@ rationale names the policy and each check that held:
 ```
 Approved by the runner's checks, which policy.gates.G3.auto_approve lets settle derive-tests
 proposals: the acceptance typecheck of 1a2b3c4 is clean; no condition is open against it; no
-escalation stands on it; no test file was deleted and no changed test asserts less than before.
+escalation stands on it; no test file was deleted, no changed test asserts less than before and no
+new test asserts nothing.
 ```
 
 The seat is the persona's, which the runner sits in under the policy, so the site counts the

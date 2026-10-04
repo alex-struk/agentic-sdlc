@@ -10,7 +10,6 @@ import { autoApproveStages } from "../config/policy.mjs";
 import { deliveredBy, proposalFamily } from "../stages/registry.mjs";
 import { returnRecordedAt } from "../stages/proposals.mjs";
 import { openOn } from "../spec/owed.mjs";
-import { openMissingTestsAt } from "../spec/missing-tests.mjs";
 import { routeOf } from "./routes.mjs";
 import { ownedDirectory } from "./typecheck.mjs";
 import { DIFF_EXCLUDE, requestsShown } from "./persona.mjs";
@@ -39,8 +38,8 @@ function changes(projectDir, base, branch) {
 
 // What each stage's proposal has to show for the runner to settle it, as the sentence the
 // rationale gives it, or `null`. A derivation is the one place a test rewritten to assert less
-// is caught, so a test deleted, or changed to call `expect(` fewer times than it did, is left to
-// the persona. A contract that only adds to itself changes nothing anything is built on. A
+// is caught, so a test deleted, changed to call `expect(` fewer times than it did, or added
+// calling it not at all, is left to the persona. A contract that only adds to itself changes nothing anything is built on. A
 // binding that changed only what its stage delivers (`deliveredBy`, the same list a ruling's
 // conditions are held to) is a binding and nothing else; the run record, the journal, the
 // proposal page and the state site are the runner's own records of the run and are not read.
@@ -48,9 +47,10 @@ const STAGE_CHECKS = {
   "derive-tests": (projectDir, { base, branch }) => {
     const changed = changes(projectDir, base, branch);
     if (changed.some((c) => c.status === "D" && coveredBy([ACCEPTANCE], c.path))) return null;
-    const weaker = changed.some((c) => c.status === "M" && c.path.endsWith(".spec.ts")
-      && expectsAt(projectDir, branch, c.path) < expectsAt(projectDir, base, c.path));
-    return weaker ? null : "no test file was deleted and no changed test asserts less than before";
+    const weaker = changed.some((c) => c.path.endsWith(".spec.ts") && (
+      (c.status === "M" && expectsAt(projectDir, branch, c.path) < expectsAt(projectDir, base, c.path))
+      || (c.status === "A" && expectsAt(projectDir, branch, c.path) === 0)));
+    return weaker ? null : "no test file was deleted, no changed test asserts less than before and no new test asserts nothing";
   },
   contract: (projectDir, { base, branch }) => {
     const rows = lines(git(["diff", "--numstat", "--no-renames", base, branch, "--", CONTRACT], projectDir));
@@ -80,22 +80,20 @@ function typecheckHeld(projectDir, name, stage, typecheck) {
   return ownedDirectory(name) ? null : `the runner typechecks no acceptance suite for a ${stage} proposal`;
 }
 
-// Whether anything is owed that this proposal is meant to answer, read from the same ledgers on
-// `main` the persona's prompt is shown (`buildPersonaPrompt`): an instruction an earlier ruling
-// asked of this stage; a revision request the prompt would put in front of the ruler, or one
-// asked of this stage; a test this stage owes; a test the stage is to derive again; a binding
-// owed on this proposal's target. And a revision of a returned proposal, whatever the ledgers
-// say: its branch was cut from the commit that recorded the return (`returnRecordedAt`). Each is
-// something the persona judges a proposal against beyond what the checks read.
-function owed(projectDir, { name, stage, route, base }) {
+// Whether a ruler has asked anything of this proposal that only a ruler can say was done, read
+// from the same ledgers on `main` the persona's prompt is shown (`buildPersonaPrompt`): an
+// instruction an earlier ruling asked of this stage, or a revision request the prompt would put
+// in front of the ruler or that was asked of this stage. And a revision of a returned proposal,
+// whatever the ledgers say: its branch was cut from the commit that recorded the return
+// (`returnRecordedAt`). The work a stage is routinely sent — an unbound row, a test to derive
+// again, a missing test — is not among them: whether it was done is what the next verify
+// measures.
+function owed(projectDir, { name, stage, base }) {
   if (returnRecordedAt(projectDir, base)) return true;
   const opts = { familyOf: proposalFamily };
   if (openOn(projectDir, "condition", "main", opts).some((c) => c.stage === stage)) return true;
   if (requestsShown(projectDir, name).length) return true;
-  if (openOn(projectDir, "request", "main", opts).some((r) => r.stage === stage)) return true;
-  if (openMissingTestsAt(projectDir, "main").some((e) => e.stage === stage)) return true;
-  if (openOn(projectDir, "redo", "main", opts).some((e) => e.stage === stage)) return true;
-  return openOn(projectDir, "rebind", "main", opts).some((e) => e.stage === stage && (!route.target || e.target === route.target));
+  return openOn(projectDir, "request", "main", opts).some((r) => r.stage === stage);
 }
 
 // Whether the runner approves `name` at `gate` itself, and the rationale it records when it
@@ -113,7 +111,7 @@ export function autoApproval(projectDir, { name, gate, config, typecheck = null,
   if (!typechecked) return refused("typecheck");
   const branch = `proposal/${name}`;
   const base = git(["merge-base", "main", branch], projectDir);
-  if (owed(projectDir, { name, stage, route, base })) return refused("owed");
+  if (owed(projectDir, { name, stage, base })) return refused("owed");
   const delivered = STAGE_CHECKS[stage](projectDir, { base, branch, stage });
   if (!delivered) return refused(stage);
   const held = [typechecked, "no condition is open against it", "no escalation stands on it", delivered];

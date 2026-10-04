@@ -23,11 +23,14 @@ should come to. None of that is restated by a check, and none of it can be skipp
 `policy.gates.<gate>.auto_approve` names them, from `bind-adapter`, `derive-tests` and `contract`;
 none by default. The runner approves one only where every check holds: the stage is listed; the
 ruling is the holder's own, with no escalation standing and none being ruled; the acceptance
-typecheck passed (a contract has none to pass); nothing is owed that the proposal is meant to
-answer, read from the ledgers the persona's prompt is shown, and it is not a revision of a returned
-proposal; and, measured from where its branch was cut, a derivation deleted no acceptance file and
-has no changed test calling `expect(` fewer times, a contract deleted no line, and a binding changed
-nothing outside what its stage delivers. Every guard an approval from the seat passes must pass it
+typecheck passed (a contract has none to pass); no ruler has asked anything of it that only a ruler
+can say was done (an open condition or revision request, read from the ledgers the persona's prompt
+is shown), and it is not a revision of a returned proposal; and, measured from where its branch was
+cut, a derivation deleted no acceptance file, has no changed test calling `expect(` fewer times and
+no added test calling it not at all, a contract deleted no line, and a binding changed nothing
+outside what its stage delivers. The work a stage is routinely sent (an unbound row to bind, a test
+to derive again, a missing test) is not something a ruler asked: whether it was done is what the
+next verify measures. Every guard an approval from the seat passes must pass it
 too.
 
 **It is recorded as the persona's approval would be,** with `by: runner:checks`, a cost of
@@ -40,10 +43,12 @@ and nothing is recorded about the check that failed.
 ## Consequences
 
 - A proposal that only restates the checks is approved without a turn; one that answers a
-  condition, a request, a redo or a return, or one any escalation touches, is ruled by the persona,
-  always.
-- Owed work lowers how often it applies: while anything is owed of a stage, its proposals go to
-  the persona, and a binding goes to the persona while one is owed on its target.
+  condition, a request or a return, or one any escalation touches, is ruled by the persona, always.
+- A binding sent for unbound rows and a derivation sent for tests to derive again or missing tests
+  are approved on the checks. A binding that reads the page wrongly, or a test that asserts the
+  wrong thing while asserting as much as before, is no longer read by a persona before it merges:
+  the first is found by the next verify, and the second only by the persona's sampled read-back
+  or a later ruling.
 - It does not return or escalate anything, and it adds nothing to the persona's prompt.
 - It does not apply to a gate a person holds, which the person rules as before; `sdlc checks`
   refuses a list there, and one naming a stage whose proposals are ruled at another gate.
