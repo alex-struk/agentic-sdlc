@@ -201,9 +201,11 @@ const UNBOUND_LINE = /^(?:Error: )?unbound: (.*)$/m;
 
 export function unboundReasons(rows, ids) {
   const byId = new Map(rows.map((r) => [r.id, r]));
+  const lineOf = (text) => UNBOUND_LINE.exec(String(text ?? ""))?.[1]?.trim();
   return ids.map((id) => {
+    // A test that caught the adapter's error carries it in its last step (`docs/decisions/0100`).
     const reason = (byId.get(id)?.tests ?? [])
-      .map((t) => UNBOUND_LINE.exec(t.error ?? "")?.[1]?.trim())
+      .map((t) => lineOf(t.error) || lineOf((t.steps ?? []).at(-1)?.threw))
       .find(Boolean);
     return { id, reason: reason || "the adapter gave no reason" };
   });
@@ -336,12 +338,14 @@ function readNothing(r) {
 
 // Whether a failed row has a test the adapter stopped because the application does not serve the
 // page it needs: `absent: <page>.<member> — <reason>`, which `bind-adapter` throws while the page's
-// route answers the application's own not-found page (`docs/decisions/0098`). The build may be
+// route answers the application's own not-found page (`docs/decisions/0098`), in the test's error
+// or, where the test caught it, in the last step it recorded (`0100`). The build may be
 // the one to make the page, the plan may give it to another slice, or the adapter may be wrong
 // about it, and a builder can answer only the first.
 const ABSENT_LINE = /^(?:Error: )?absent: /m;
 function pageAbsent(r) {
-  return (r?.tests ?? []).some((x) => x.status !== "passed" && x.status !== "skipped" && ABSENT_LINE.test(withoutColour(x.error ?? "")));
+  return (r?.tests ?? []).some((x) => x.status !== "passed" && x.status !== "skipped"
+    && (ABSENT_LINE.test(withoutColour(x.error ?? "")) || ABSENT_LINE.test(String((x.steps ?? []).at(-1)?.threw ?? ""))));
 }
 
 // ` — at <file>:<line>` for a failed test, or nothing where the line is not known or the row's

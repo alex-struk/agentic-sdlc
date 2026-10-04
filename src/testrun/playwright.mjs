@@ -173,8 +173,15 @@ function classify(tests) {
   const failing = tests.filter((t) => t.status === "failed" || t.status === "timedOut" || t.status === "interrupted");
   if (neverRan) return { result: "fail", error: "no result recorded" };
   if (failing.length === 0) return { result: "pass" };
-  if (failing.every((t) => t.error && UNBOUND_RE.test(t.error))) return { result: "unbound" };
+  if (failing.every(stoppedUnbound)) return { result: "unbound" };
   return { result: "fail" };
+}
+
+// Whether a failing test stopped at the adapter's own `unbound:`: its error says so, or the test
+// caught that error and failed on what it was left with, and the last step it recorded is the one
+// that threw it (`docs/decisions/0100`).
+function stoppedUnbound(t) {
+  return UNBOUND_RE.test(t.error ?? "") || UNBOUND_RE.test(String((t.steps ?? []).at(-1)?.threw ?? ""));
 }
 
 // Groups a Playwright JSON report's specs by file and turns each group into one row: the

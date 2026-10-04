@@ -1500,6 +1500,26 @@ test("a failure where the adapter found the application does not serve the page 
   assert.equal(buildVerified(d, "build-slice-1", ctx.config).ok, false, "it is still not approvable");
 });
 
+// A test that caught the adapter's `absent:` and failed on what it was left with stopped at a page
+// the application does not serve all the same (`docs/decisions/0100`).
+test("a failure whose last step threw absent: is sorted as a page the application does not serve, and an unbound reason is read off the step", async (t) => {
+  const d = buildProject(t);
+  mockSuite(t, [
+    { id: "R-4.1", result: "fail", file: "tests/acceptance/users/R-4.1.spec.ts",
+      tests: [{ title: "t", status: "failed", error: "Error: the proposal page opened\nExpected: true\nReceived: false", line: 7,
+        steps: [{ step: "proposalView.open", threw: "absent: proposal-view.open — /proposals/1 answers the application's not-found page as every persona" }] }] },
+    row("R-4.2", "pass"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  await verify.execute(d, ctx);
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.deepEqual(result.sort.absent, ["R-4.1"]);
+  const { unboundReasons } = await import("../src/stages/verify.mjs");
+  const caught = [{ id: "R-4.3", result: "unbound", tests: [{ status: "failed", error: "Error: no score", steps: [{ step: "v.score", threw: "unbound: v.score — not bound" }] }] }];
+  assert.deepEqual(unboundReasons(caught, ["R-4.3"]), [{ id: "R-4.3", reason: "v.score — not bound" }]);
+});
+
 test("a ruler's return of a build verify left open to sort counts toward verify's limit", async (t) => {
   const d = buildProject(t);
   const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });

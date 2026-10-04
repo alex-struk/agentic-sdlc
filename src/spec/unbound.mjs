@@ -89,16 +89,16 @@ export function openUnboundRows(results, version = () => undefined) {
 }
 
 // The adapter's own reasons on a row, each distinct message once, in the order the tests gave
-// them.
+// them. A test that caught the adapter's error and failed on what it was left with carries the
+// reason in the last step it recorded rather than in its own error (`docs/decisions/0100`).
 export function unboundWhy(row) {
   const said = [];
-  const take = (text) => {
-    const m = UNBOUND_LINE.exec(String(text ?? ""));
-    const line = m?.[1]?.trim();
-    if (line && !said.includes(line)) said.push(line);
-  };
-  for (const t of row?.tests ?? []) if (t?.status !== "passed" && t?.status !== "skipped") take(t?.error);
-  if (!said.length) take(row?.error);
+  const lineOf = (text) => UNBOUND_LINE.exec(String(text ?? ""))?.[1]?.trim();
+  const take = (line) => { if (line && !said.includes(line)) said.push(line); };
+  for (const t of row?.tests ?? []) {
+    if (t?.status !== "passed" && t?.status !== "skipped") take(lineOf(t?.error) ?? lineOf((t?.steps ?? []).at(-1)?.threw));
+  }
+  if (!said.length) take(lineOf(row?.error));
   return said.join("; ") || "unbound: the adapter gave no reason";
 }
 

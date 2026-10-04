@@ -692,6 +692,24 @@ test("runSuite: a failed test carries the steps the harness recorded, and where 
   assert.ok(!JSON.stringify(result.rows).includes(d), "where the picture is on this machine is never part of the row as written");
 });
 
+// A test can catch the adapter's error and fail on what it was left with: "the proposal carries no
+// score", after a read that threw `unbound:`. Its last step still says where it stopped, and the
+// gap is the binding's, not the application's (`docs/decisions/0100`).
+test("runSuite: a test that caught the adapter's unbound error and failed on what was left is unbound", () => {
+  const d = project();
+  writeIndex(d, [accepted("R-1.1")]);
+  write(d, "tests/acceptance/opportunities/R-1.1.spec.ts", specHeader("R-1.1", 1));
+  const b64 = (s) => Buffer.from(s).toString("base64");
+  const steps = [{ step: "proposalView.open", at: "/proposals/1" }, { step: "proposalView.totalScore", at: "/proposals/1", threw: "unbound: proposal-view.total_score — the page now shows a total score; bind it" }];
+  writeReport(d, [{ title: "R-1.1.spec.ts", file: "opportunities/R-1.1.spec.ts", specs: [{ title: "t", file: "opportunities/R-1.1.spec.ts", tests: [{ results: [{
+    status: "failed", error: { message: "Error: the proposal carries no score\n\nExpected pattern: /\\d/\nReceived string: \"\"" },
+    attachments: [{ name: "sdlc-steps", contentType: "application/json", body: b64(JSON.stringify(steps)) }],
+  }] }] }] }]);
+  const result = withBrowsersPath(true, () =>
+    runSuite({ projectDir: d, target: "new", baseUrl: "http://x", mailApi: "", exec: recordingExec([]) }));
+  assert.equal(result.rows[0].result, "unbound");
+});
+
 test("emptyReadOf: only a last step that read nothing, and did not throw, is an empty read", async () => {
   const { emptyReadOf } = await import("../src/testrun/playwright.mjs");
   const at = (last) => ({ steps: [{ step: "a.open" }, last] });

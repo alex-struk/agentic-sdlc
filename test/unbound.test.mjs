@@ -393,3 +393,9 @@ test("a run does not file again a row a binding answered against the same adapte
   assert.deepEqual(sync("tree-a").opened, [], "the binding has answered against this build");
   assert.deepEqual(sync("tree-b").opened, ["R-1.1"], "a new build of the application is owed the binding again");
 });
+
+test("an unbound row's reason is read off the last step where the test caught the adapter's error", () => {
+  const caught = { id: "R-1.9", result: "unbound", tests: [{ title: "t", status: "failed", error: "Error: the proposal carries no score",
+    steps: [{ step: "view.open" }, { step: "view.totalScore", threw: "unbound: view.total_score — the page now shows a total score" }] }] };
+  assert.equal(unboundWhy(caught), "unbound: view.total_score — the page now shows a total score");
+});

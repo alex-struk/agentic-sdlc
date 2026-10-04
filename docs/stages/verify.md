@@ -257,6 +257,11 @@ make the page, addresses it to `plan` when the plan makes the page in another sl
 it to `bind-adapter` when the page is served after all
 (`docs/decisions/0098-a-page-the-application-does-not-serve-is-a-failure.md`).
 
+A test can catch what an adapter member throws and fail on what it was left with. When the last
+step it recorded threw `unbound:` or `absent:`, it is read as having stopped there: toward an
+unbound row, or into the sort, with the reason taken from that step
+(`docs/decisions/0100-an-adapter-error-a-test-caught-is-still-the-adapters.md`).
+
 ## The verdict table
 
 | Result | Route | Gate file written |
