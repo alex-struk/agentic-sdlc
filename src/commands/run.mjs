@@ -311,6 +311,40 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       merge: stage.revisionOverlayMerge?.(projectDir, ctx.domain),
     }
     : undefined;
+  // A run its stage says needs no agent turn (`stage.withoutTurn`: a build revision whose
+  // ruling asked nothing of the builder, `docs/decisions/0106`) builds the workspace the turn
+  // would have had and collects it as it stands, so the proposal carries exactly what that
+  // workspace held. The account the stage gives stands in for the session's, and the run goes
+  // through the same post-checks, journal and proposal as any other; a post-check that fails
+  // still earns its repair turn there.
+  const withoutTurn = stage.withoutTurn?.(ctx) ?? null;
+  if (withoutTurn) {
+    if (dryRun) {
+      console.log(`stage ${name}: no agent turn\n\n${withoutTurn}`);
+      assertDryRunUntouched();
+      return { ok: true, dryRun: true, text: withoutTurn };
+    }
+    const ws = materialise(projectDir, wsMode, { collect: collectPaths, context: contextPaths, ...(overlay ? { overlay } : {}) });
+    try {
+      if (stage.prepare) {
+        try {
+          stage.prepare(ws.dir, ctx, config);
+        } catch (e) {
+          const runPath = appendRun(projectDir, `run ${name}: prepare failed`);
+          stageAll(projectDir, [relative(projectDir, runPath)]);
+          git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): prepare failed`], projectDir);
+          return { ok: false, messages: [e.message] };
+        }
+      }
+      const recollect = () => collect(projectDir, ws.dir, collectPaths);
+      if (ws.mode !== "project") recollect();
+      return await finishStage(projectDir, stage, ctx, { text: withoutTurn, cost: 0, turns: 0, sessionId: "" },
+        ws.mode === "project" ? {} : { workspaceDir: ws.dir, recollect });
+    } finally {
+      ws.cleanup();
+    }
+  }
+
   // `materialise` is not called here: building a workspace is itself a write — an
   // ephemeral mode archives the committed tree with `git archive`, and `with-sources`
   // (`ensureSources`) clones the old application's whole repository into

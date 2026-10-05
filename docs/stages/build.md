@@ -37,6 +37,16 @@ finds the application exactly as the returned proposal left it, plus the ruling 
 and its conditions, quoted into the prompt: "This is a revision. The application as the returned
 proposal left it is already under app/; change what the ruling below names and leave the rest."
 
+A revision whose ruling asked the builder for nothing runs no session at all. When every condition
+on the returned ruling is addressed to another stage (a test that overreaches, a binding, a request
+to the contract) and no condition an earlier ruling attached to this line of work is still open, the
+run builds the same workspace, collects it as it stands and proposes it: the new proposal carries the
+application the returned one carried, unchanged, and its journal and proposal page say why no session
+ran, naming each condition and the stage it went to. It then goes through the same post-checks as any
+build, and verify measures it again with the other stages' work in place. A return with no conditions
+at all is still revised by a session, since its rationale is then the only statement of what it
+wants (`docs/decisions/0106-a-revision-that-asks-the-builder-nothing-runs-no-session.md`).
+
 ## Workspace
 
 `build`: a temporary directory, `git archive HEAD` over `app`, `plan`, `spec`, `design`,

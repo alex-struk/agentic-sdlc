@@ -140,6 +140,24 @@ export const build = {
   // application up, which alone runs past any smaller ceiling.
   defaultTurns: 400,
   revisionOverlayPaths: () => ["app", "docs/decisions"],
+  // A revision whose ruling asked the builder for nothing, each of its conditions addressed to
+  // another stage and nothing an earlier ruling on this line of work attached still open, has
+  // no work for a builder session. It is proposed again with the application it carried, and
+  // this is the account the run records in place of a session's (`docs/decisions/0106`). A
+  // return with no conditions at all is still the builder's to read: its rationale is then the
+  // only statement of what it wants.
+  withoutTurn(ctx) {
+    const r = ctx.revise ? ctx.revision : null;
+    if (!r?.name || (r.conditions ?? []).length || (r.owedConditions ?? []).length) return null;
+    const away = r.addressedElsewhere ?? [];
+    if (!away.length) return null;
+    return [
+      `The application ${r.name} carried is proposed again unchanged, because the ruling on it asked nothing of the build.`,
+      away.length === 1 ? "Its one condition went to another stage:" : `Each of its ${away.length} conditions went to another stage:`,
+      away.map((a) => `- to ${a.stage}: ${a.text}`).join("\n"),
+      "No earlier condition on this line of work is open, so no builder session ran. The application is verified again with that other work in place.",
+    ].join("\n\n");
+  },
   implemented: true,
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash(npm *)", "Bash(npx *)", "Bash(node *)", "Bash(ls *)", "Bash(mkdir *)"],
   // Its shell installs packages, so an isolated build reaches the package registry as well as
