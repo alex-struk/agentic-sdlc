@@ -112,7 +112,7 @@ test("doctor names which backend runs which stages and gates when the work is sp
   machine();
   try {
     const { text } = await doctor(project("  agents:\n    backend: codex\n    model: gpt-test\n    stages: { build: { backend: claude } }\n    rulings: { G3: { backend: claude } }\n"));
-    assert.match(text, /^ok {3}agents codex runs intent, plan and rulings at G0, G2; model: gpt-test$/m);
+    assert.match(text, /^ok {3}agents codex runs intent, plan, deploy and rulings at G0, G2; model: gpt-test$/m);
     assert.match(text, /^ok {3}agents claude runs build and rulings at G3; model: the CLI's default model$/m);
     assert.match(text, /^ok {3}codex codex-cli 9\.9\.9, signed in with ChatGPT$/m);
     assert.match(text, /^ok {3}claude 9\.9\.9 \(Claude Code\)/m);
@@ -220,7 +220,7 @@ test("doctor says which turns cannot run when Docker is not there", async () => 
   process.env.FAKE_DOCKER_DOWN = "1";
   try {
     const { text } = await doctor(project("  agents: { backend: codex }\n"));
-    assert.match(text, /^warn isolation Docker is not reachable: an isolated session needs a running Docker daemon this account can use; plan, build will be refused until it is$/m);
+    assert.match(text, /^warn isolation Docker is not reachable: an isolated session needs a running Docker daemon this account can use; plan, build, deploy will be refused until it is$/m);
   } finally { clear(); }
 });
 

@@ -244,7 +244,7 @@ export function runCommand(stage, args = {}) {
     if (args[k] === undefined || args[k] === null) return SUBJECT_OF[stage] === k ? `--${k} <${k}>` : null;
     return `--${k} ${args[k]}`;
   };
-  return ["sdlc run", stage, flag("domain"), flag("target"), flag("slice"), args.stale ? "--stale" : null, args.revise ? "--revise" : null, args.skipSuite ? "--skip-suite" : null, args.full ? "--full" : null]
+  return ["sdlc run", stage, flag("domain"), flag("target"), flag("slice"), flag("platform"), args.stale ? "--stale" : null, args.revise ? "--revise" : null, args.skipSuite ? "--skip-suite" : null, args.full ? "--full" : null]
     .filter(Boolean).join(" ");
 }
 
@@ -419,7 +419,12 @@ function sequenceSteps(record) {
       previous = `build:${JSON.stringify(args)}`;
     }
   }
-  for (const stage of ["deploy", "operate"]) if (has.has(stage)) add(5, stage, {}, false);
+  // One deploy run per platform the project lists, each after the last slice is built.
+  if (has.has("deploy")) {
+    const lastBuild = [...steps].reverse().find((s) => s.stage === "build")?.key;
+    for (const platform of record.config?.deploy ?? []) add(5, "deploy", { platform }, approvedFamily(record, `deploy-${platform}`), lastBuild ? [lastBuild] : []);
+  }
+  if (has.has("operate")) add(5, "operate", {}, false);
   return steps;
 }
 

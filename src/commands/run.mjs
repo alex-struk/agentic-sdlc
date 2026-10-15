@@ -129,7 +129,7 @@ function followUp(projectDir, stage, ctx, result) {
   return { ...result, proposal: opened };
 }
 
-export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, full = false, deviationReason } = {}) {
+export async function runStage(projectDir, name, { slice, domain, target, platform, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, full = false, deviationReason } = {}) {
   assertSafeDeviationReason(deviationReason);
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
@@ -170,7 +170,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // every other reader of it already gets it.
   const contextReason = typeof deviationReason === "string" && deviationReason.trim()
     ? redactLocalPaths(deviationReason.trim(), projectDir) : undefined;
-  const ctx = { slice, domain, target, stale, config, revise, dryRun, skipSuite, full, projectDir,
+  const ctx = { slice, domain, target, platform, stale, config, revise, dryRun, skipSuite, full, projectDir,
     ...(contextReason ? { deviationReason: contextReason } : {}) };
   // `stage.workspace` may be a plain string or a function of `config` — resolved once,
   // here, so every later use (`materialise`, the run-state a crashed session leaves for
@@ -458,7 +458,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
       // `returnSource` names the returned proposal a run answers where the return is only
       // recorded once post-checks pass (`contract`), so a resume answers that same return
       // after the branch it was found on has moved.
-      const state = { stage: name, ctx: { slice, domain, target, stale, revise,
+      const state = { stage: name, ctx: { slice, domain, target, platform, stale, revise,
         ...(ctx.deviationReason ? { deviationReason: ctx.deviationReason } : {}),
         ...(ctx.returnSource ? { returnSource: ctx.returnSource } : {}) }, startedAt: new Date().toISOString(), phase: "agent" };
       writeRunState(projectDir, state);
@@ -538,6 +538,7 @@ COMMANDS.run = async ({ pos, flags }) => {
     slice: flags.slice !== undefined ? Number(flags.slice) : undefined,
     domain: flags.domain,
     target: flags.target,
+    platform: flags.platform,
     stale: !!flags.stale,
     dryRun: !!flags["dry-run"],
     again: !!flags.again,

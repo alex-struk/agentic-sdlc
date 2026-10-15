@@ -21,11 +21,12 @@ const ROUTES = [
   { prefix: "calibrate-", stage: "calibrate", subject: "target" },
   { prefix: "design-", stage: "design", subject: "domain" },
   { prefix: "build-slice-", stage: "build", subject: "slice" },
+  { prefix: "deploy-", stage: "deploy", subject: "platform" },
   { prefix: "plan", stage: "plan", exact: /^plan(?:-\d+)?$/ },
 ];
 
 // The flag each stage needs to say what it runs on.
-export const SUBJECT_OF = { archaeology: "domain", ratify: "domain", "derive-tests": "domain", design: "domain", "bind-adapter": "target", calibrate: "target", build: "slice", verify: "slice" };
+export const SUBJECT_OF = { archaeology: "domain", ratify: "domain", "derive-tests": "domain", design: "domain", "bind-adapter": "target", calibrate: "target", build: "slice", verify: "slice", deploy: "platform" };
 
 // Stages whose every run is on the build target, whatever else names them.
 const ON_BUILD_TARGET = new Set(["build", "verify"]);
@@ -46,6 +47,10 @@ export function routeOf(name, config) {
     if (r.subject === "slice") {
       const m = /^(\d+)(?:-\d+)?$/.exec(rest);
       return m ? { stage: r.stage, slice: Number(m[1]) } : null;
+    }
+    if (r.subject === "platform") {
+      const m = /^(.+?)(?:-\d+)?$/.exec(rest);
+      return m ? { stage: r.stage, platform: m[1] } : null;
     }
     const list = r.subject === "domain" ? domains : targets;
     const hit = list.filter((x) => rest === x || rest.startsWith(`${x}-`)).sort((a, b) => b.length - a.length)[0];

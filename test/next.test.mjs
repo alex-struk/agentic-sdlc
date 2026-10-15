@@ -256,7 +256,7 @@ test("a build proposal is verified before it is ruled", (t) => {
   assert.equal(r.next.kind, "proposals");
 });
 
-test("slices are built in the plan's order, and a finished plan leaves a stage this pipeline does not run", (t) => {
+test("slices are built in the plan's order, and a finished plan with no platform to deploy to is complete", (t) => {
   const d = project(t, { profile: "feature" });
   approved(d, ["intent-thing"], "G0");
   approved(d, ["plan"], "G2");
@@ -266,8 +266,20 @@ test("slices are built in the plan's order, and a finished plan leaves a stage t
   approved(d, ["build-slice-2"], "G3");
   const r = whatNext(d);
   assert.equal(r.state, "idle");
-  assert.match(r.blocked, /deploy, is not implemented/);
-  assert.match(formatNext(r), /^next: nothing to run: the next stage in the sequence, deploy, is not implemented/);
+  assert.equal(r.blocked, null);
+  assert.match(formatNext(r), /^next: nothing to run: every phase this project's profile runs is complete/);
+});
+
+test("each platform the project lists is a deploy run of its own, after the last slice is built", (t) => {
+  const d = project(t, { profile: "feature", extra: ["deploy: [azure-container-apps, openshift]"] });
+  approved(d, ["intent-thing"], "G0");
+  approved(d, ["plan"], "G2");
+  commit(d, { "plan/tasks.md": "### Slice 1 · First\n- criteria: R-1.1\n" });
+  assert.equal(whatNext(d).next.command, "sdlc run build --slice 1");
+  approved(d, ["build-slice-1"], "G3");
+  assert.equal(whatNext(d).next.command, "sdlc run deploy --platform azure-container-apps");
+  approved(d, ["deploy-azure-container-apps"], "G3");
+  assert.equal(whatNext(d).next.command, "sdlc run deploy --platform openshift");
 });
 
 test("owed work is taken before the sequence moves on, grouped by the run that answers it", (t) => {

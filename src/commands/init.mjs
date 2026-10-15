@@ -73,7 +73,7 @@ function installTemplateFiles(projectDir) {
 }
 
 // The stack profile's standards (`stacks/<stack>/SKILL.md`) are the pipeline's own skill for
-// the project's technology: framework, layout, sign-in, deploy. Installed beside the packs'
+// the project's technology: framework, layout, sign-in. Installed beside the packs'
 // skills in `.claude/skills/`, which every workspace that plans or builds already carries,
 // so the planner and the builder work from the stack the project's config names rather than
 // one they chose. Refreshed like a template file: the pipeline owns its text.

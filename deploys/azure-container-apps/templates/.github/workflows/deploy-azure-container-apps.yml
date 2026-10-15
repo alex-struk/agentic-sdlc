@@ -1,0 +1,59 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [development]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type deploy to deploy to production"
+        required: true
+      image-tag:
+        description: "Image tag to deploy (defaults to this commit)"
+        required: false
+
+permissions: {}
+
+jobs:
+  development:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    environment: development
+    concurrency: { group: deploy-development, cancel-in-progress: false }
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@<full-commit-sha>
+      - uses: azure/login@<full-commit-sha>
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy
+        env:
+          RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+          LOCATION: ${{ vars.LOCATION }}
+          REGISTRY: ${{ vars.REGISTRY }}
+          SRE_AGENT_ID: ${{ vars.SRE_AGENT_ID }}
+        run: bash deploy/azure-container-apps/deploy.sh development "${GITHUB_SHA::12}"
+
+  production:
+    if: github.event_name == 'workflow_dispatch' && inputs.confirm == 'deploy'
+    runs-on: ubuntu-24.04
+    environment: production
+    concurrency: { group: deploy-production, cancel-in-progress: false }
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@<full-commit-sha>
+      - uses: azure/login@<full-commit-sha>
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy
+        env:
+          RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+          LOCATION: ${{ vars.LOCATION }}
+          REGISTRY: ${{ vars.REGISTRY }}
+          SRE_AGENT_ID: ${{ vars.SRE_AGENT_ID }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: bash deploy/azure-container-apps/deploy.sh production "${IMAGE_TAG:-${GITHUB_SHA::12}}"

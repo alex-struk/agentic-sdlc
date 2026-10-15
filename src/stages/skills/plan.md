@@ -11,7 +11,9 @@ superseded are your business. `spec/domains/*.md` carries what each one actually
 `design/screens.yaml` say what those pages are built from and which states each has.
 `constitution.md` binds this project and is the thing your constitution check answers to.
 The technology is already chosen: the `stack-*` skill in `.claude/skills/` is the project's stack
-profile — framework, repository layout, sign-in flow, deploy — and the plan is built on it. A
+profile — framework, repository layout, sign-in flow — and the plan is built on it. Where the
+application is hosted is not the stack's to say and not the plan's to decide: the deploy stage chooses
+it later. A
 departure from it is a decision record naming what departs and why, not a silent substitution.
 
 There is no application in this workspace and no acceptance suite. The suite is deliberate: a plan

@@ -60,6 +60,14 @@ The mailpit API port the oracle publishes is not a config key (a target the pipe
 
 `sdlc oracle up` records the ports and URLs it actually chose in `.sdlc/oracle-<target>.local.yaml` — untracked (`.gitignore` carries `.sdlc/oracle-*.local.yaml`), since it is a fact about this machine's current run, not project configuration. `bind-adapter` and `calibrate` read it to find the running oracle; see `docs/stages/oracle.md`.
 
+## deploy
+
+Optional. A list of hosting platforms the application is deployed to, each the name of a deploy profile under `deploys/` (`openshift`, `azure-container-apps`). Only the `deploy` stage reads it: `sdlc run deploy --platform <name>` runs once per entry. It says where the application is hosted and nothing about what the tests run against, which is `targets`. Hosting is chosen here, when the application is deployed, and not by the stack profile or the plan; switching platform, or adding a second, is another deploy run.
+
+```yaml
+deploy: [azure-container-apps]
+```
+
 ## targets
 
 Optional. Container of deployment targets.
