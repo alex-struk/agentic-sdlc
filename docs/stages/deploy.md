@@ -61,6 +61,93 @@ leaves no environment behind that nothing else uses.
 GitHub does every deploy. The workflow deploys automatically on a push to the `development` branch;
 production is a manual dispatch with a confirmation. There is no second, local deploy path.
 
+## Running it on a built project
+
+The steps below take a project the pipeline has already built to Azure Container Apps. The other
+profiles follow the same shape with their own prerequisites.
+
+### Prerequisites
+
+- **The project.** Its `app/` exists and its build slices are approved. The working tree is clean
+  and on `main`; `sdlc run` refuses anywhere else. The repository is on GitHub, where the
+  workflow will run.
+- **The pipeline.** The project's `.sdlc/config.yaml` pins (`pipeline.ref`) a pipeline that has the
+  deploy stage, and its profile includes `deploy` (`rebuild`, `greenfield` and `feature` all do).
+- **Tools on the operator's machine.** Node 24, `git`, `curl`, `jq`, the Azure CLI (`az`), Docker
+  with a daemon the account can reach, and the GitHub CLI (`gh`). Bicep is installed through
+  `az bicep install` when it is missing. The agent CLI the project runs its stages on is signed in,
+  as for any other stage; `sdlc doctor` reports it.
+- **Azure.** A subscription, and an `az login` to it; the preflight offers a device-code sign-in
+  when there is none. To create resource groups the account needs Owner or Contributor on the
+  subscription; with less, use existing groups. The bootstrap also assigns roles to the identity
+  GitHub deploys as, which needs Owner, User Access Administrator or Role Based Access Control
+  Administrator; without one, it prints the exact assignments for someone who has it. The
+  resource providers the profile uses are registered by the bootstrap when they are not.
+- **GitHub.** `gh auth login` as someone who administers the repository, so the bootstrap can
+  create the `development` and `production` environments and their variables. Without it the
+  deploy still runs, and the environments are left to be set up by hand.
+- **Network.** GitHub's hosted runners reach Azure's public endpoints. A subscription that only
+  admits private traffic needs self-hosted runners inside its network instead.
+
+### Steps
+
+1. **Name the platform.** Add it to `.sdlc/config.yaml` and commit, then refresh the installed
+   pipeline files (`sdlc init` commits what it changes) and push:
+
+   ```yaml
+   deploy: [azure-container-apps]
+   ```
+
+   ```sh
+   sdlc init
+   git push origin main
+   ```
+
+2. **Check the machine.** `sdlc doctor` reports the tools, sign-ins and configuration.
+
+3. **Run the stage.** `sdlc next` names `sdlc run deploy --platform azure-container-apps` once the
+   last build slice is approved. Run it. Running it before then needs `--reason "<why>"`.
+
+   The preflight runs first, then the bootstrap asks whether to create resources or use existing
+   ones, what to call them, and which region. Created resources are three resource groups
+   (`rg-<prefix>-shared` for the registry and identities, `rg-<prefix>-development` and
+   `rg-<prefix>-production`), a container registry, the identity the application pulls its image
+   as and the identity GitHub deploys as, with its federated credentials. Each question names a
+   variable (`deploys/azure-container-apps/SKILL.md` lists them); setting it beforehand
+   answers it, and the answers are kept in `.sdlc/deploy-azure-container-apps.local.txt` for the
+   next run.
+
+   The agent then writes the deployment definition, the script and the workflow. The runner runs
+   the script against the development environment, checks the application answers, and opens the
+   proposal `deploy-azure-container-apps` with the outcome.
+
+4. **Rule on the proposal** at G3:
+
+   ```sh
+   sdlc rule deploy-azure-container-apps approve --by reviewer
+   ```
+
+   or `--by agent:reviewer` to have the reviewer persona rule. Before approving, check that every
+   `uses:` line in the workflow is pinned to a full commit SHA. Approval merges it into `main`.
+
+5. **Hand deploys to GitHub.** Push `main`, and create the `development` branch from it; each push
+   to `development` deploys the development environment:
+
+   ```sh
+   git push origin main
+   git push origin main:development
+   ```
+
+   Production is a manual run, approved by the production environment's reviewers when the
+   bootstrap was given any:
+
+   ```sh
+   gh workflow run deploy-azure-container-apps.yml -f confirm=deploy
+   ```
+
+To take everything down, delete the three resource groups (`az group delete --name <group>`); the
+GitHub environments and variables are removed from the repository's settings.
+
 ## Scope
 
 A deploy session may change `deploy/<platform>/`, its workflow and `docs/decisions/`. A change
