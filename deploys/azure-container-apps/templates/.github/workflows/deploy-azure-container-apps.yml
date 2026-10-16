@@ -33,6 +33,8 @@ jobs:
           RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
           LOCATION: ${{ vars.LOCATION }}
           REGISTRY: ${{ vars.REGISTRY }}
+          PULL_IDENTITY_ID: ${{ vars.PULL_IDENTITY_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           SRE_AGENT_ID: ${{ vars.SRE_AGENT_ID }}
         run: bash deploy/azure-container-apps/deploy.sh development "${GITHUB_SHA::12}"
 
@@ -54,6 +56,8 @@ jobs:
           RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
           LOCATION: ${{ vars.LOCATION }}
           REGISTRY: ${{ vars.REGISTRY }}
+          PULL_IDENTITY_ID: ${{ vars.PULL_IDENTITY_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           SRE_AGENT_ID: ${{ vars.SRE_AGENT_ID }}
           IMAGE_TAG: ${{ inputs.image-tag }}
         run: bash deploy/azure-container-apps/deploy.sh production "${IMAGE_TAG:-${GITHUB_SHA::12}}"

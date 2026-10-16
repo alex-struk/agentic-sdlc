@@ -4,6 +4,10 @@ param prefix string
 param location string
 param image string
 param deployApps bool
+@description('Login server of the registry the image is pulled from.')
+param registryServer string
+@description('Resource id of a user-assigned identity allowed to pull from the registry. Empty when the registry is public.')
+param pullIdentityId string = ''
 param tags object = {}
 
 resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
@@ -41,10 +45,15 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
   name: '${prefix}-web'
   location: location
   tags: tags
+  identity: empty(pullIdentityId) ? { type: 'None' } : {
+    type: 'UserAssigned'
+    userAssignedIdentities: { '${pullIdentityId}': {} }
+  }
   properties: {
     managedEnvironmentId: environment.id
     configuration: {
       ingress: { external: true, targetPort: 3000, transport: 'auto', allowInsecure: false }
+      registries: empty(pullIdentityId) ? [] : [ { server: registryServer, identity: pullIdentityId } ]
     }
     template: {
       containers: [

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "../src/config/load.mjs";
@@ -9,7 +10,12 @@ import { STAGES_BY_NAME } from "../src/stages/registry.mjs";
 import { PIPELINE_ROOT } from "../src/lib/root.mjs";
 import {
   deploy, deployProfiles, profileText, checkDeployFiles, checkWorkflowCallsScript, testEnvironmentRun,
+  bootstrapPlatform, deploySettingsFile, readDeploySettings,
 } from "../src/stages/deploy.mjs";
+import { git } from "../src/lib/git.mjs";
+import { newProject } from "../src/commands/new.mjs";
+import { runStage } from "../src/commands/run.mjs";
+import { workspaceScopeViolations } from "../src/runner/workspace.mjs";
 
 const BASE = `
 pipeline: { repo: agentic-sdlc, ref: v0.1.0 }
@@ -66,9 +72,7 @@ test("the deploy stage is implemented, gated at G3 and works from the project", 
   assert.equal(STAGES_BY_NAME.deploy, deploy);
   assert.equal(deploy.gate, "G3");
   assert.equal(deploy.workspace, "project");
-  assert.deepEqual(deploy.collect({ platform: "azure-container-apps" }).sort(),
-    [".github/workflows/deploy-azure-container-apps.yml", "deploy/azure-container-apps"].sort());
-  assert.deepEqual(deploy.collect({}), []);
+  assert.deepEqual(workspaceScopeViolations("deploy", deploy.workspace, deploy.collect, deploy.context?.({ platform: "azure-container-apps" }) ?? []), []);
 });
 
 test("each platform has a deploy profile and the stack names no deploy", () => {
@@ -145,4 +149,136 @@ test("the proposal page carries what the test-environment run saw", (t) => {
   assert.match(page, /Test-environment run/);
   assert.match(page, /https:\/\/app\.example\.test/);
   assert.equal(existsSync(d), true);
+});
+
+// ---- setting up the platform before the turn ----
+
+function profileWith(t, platform, scripts) {
+  const root = project(t);
+  mkdirSync(join(root, platform, "bootstrap"), { recursive: true });
+  writeFileSync(join(root, platform, "SKILL.md"), "# profile\n");
+  for (const [name, body] of Object.entries(scripts)) writeFileSync(join(root, platform, "bootstrap", name), `#!/usr/bin/env bash\nset -euo pipefail\n${body}\n`);
+  return root;
+}
+
+test("the settings a bootstrap chose live in a file every project already ignores", () => {
+  assert.equal(deploySettingsFile("azure-container-apps"), ".sdlc/deploy-azure-container-apps.local.txt");
+  const ignores = readFileSync(join(PIPELINE_ROOT, "src", "lib", "git.mjs"), "utf8");
+  assert.match(ignores, /"\.sdlc\/\*\.local\.txt"/);
+});
+
+test("a platform with no bootstrap has nothing to set up", (t) => {
+  const d = project(t);
+  const profiles = project(t);
+  mkdirSync(join(profiles, "openshift"));
+  const r = bootstrapPlatform(d, "openshift", { profilesDir: profiles, stdio: "pipe" });
+  assert.equal(r.ok, true);
+  assert.equal(r.ran, false);
+});
+
+test("the preflight runs first, and a failing preflight stops the bootstrap", (t) => {
+  const d = project(t);
+  const profiles = profileWith(t, "cloud", {
+    "preflight.sh": "echo 'not signed in' >&2; exit 1",
+    "bootstrap.sh": "touch \"$SDLC_PROJECT_DIR/bootstrapped\"",
+  });
+  const r = bootstrapPlatform(d, "cloud", { profilesDir: profiles, stdio: "pipe" });
+  assert.equal(r.ok, false);
+  assert.match(r.messages.join("\n"), /preflight/);
+  assert.equal(existsSync(join(d, "bootstrapped")), false);
+});
+
+test("what the bootstrap chose is kept, named without its values, and handed to the test-environment run", async (t) => {
+  const d = project(t);
+  const profiles = profileWith(t, "cloud", {
+    "preflight.sh": "true",
+    "bootstrap.sh": "mkdir -p \"$(dirname \"$SDLC_SETTINGS_FILE\")\"; printf 'RESOURCE_GROUP=rg-example-test\\nLOCATION=%s\\n' \"$SDLC_PLATFORM-region\" > \"$SDLC_SETTINGS_FILE\"",
+  });
+  const r = bootstrapPlatform(d, "cloud", { profilesDir: profiles, stdio: "pipe" });
+  assert.equal(r.ok, true, r.messages.join("\n"));
+  assert.deepEqual(readDeploySettings(d, "cloud"), { RESOURCE_GROUP: "rg-example-test", LOCATION: "cloud-region" });
+  const said = r.messages.join("\n");
+  assert.match(said, /RESOURCE_GROUP, LOCATION/);
+  assert.doesNotMatch(said, /rg-example-test/);
+  assert.match(said, /set -a; \. \.sdlc\/deploy-cloud\.local\.txt; set \+a/);
+  assert.ok(!said.includes(d), "no local path is reported");
+
+  lay(d, "cloud");
+  let seen;
+  await testEnvironmentRun(d, "cloud", {
+    env: { PATH: process.env.PATH, RESOURCE_GROUP: "stale" },
+    exec: (cmd, args, opts) => { seen = opts.env; return { status: 0, stdout: "DEPLOYED_URL=https://app.example.test\n", stderr: "" }; },
+    fetchFn: async () => ({ status: 200 }),
+  });
+  assert.equal(seen.RESOURCE_GROUP, "rg-example-test");
+  assert.equal(seen.LOCATION, "cloud-region");
+});
+
+test("a bootstrap that writes no settings has not set the platform up", (t) => {
+  const d = project(t);
+  const profiles = profileWith(t, "cloud", { "preflight.sh": "true", "bootstrap.sh": "true" });
+  const r = bootstrapPlatform(d, "cloud", { profilesDir: profiles, stdio: "pipe" });
+  assert.equal(r.ok, false);
+  assert.match(r.messages.join("\n"), /wrote no settings/);
+});
+
+const AZ = join(PIPELINE_ROOT, "deploys", "azure-container-apps", "bootstrap");
+
+test("the Azure bootstrap scripts parse", () => {
+  for (const f of ["lib.sh", "preflight.sh", "bootstrap.sh"]) {
+    const r = spawnSync("bash", ["-n", join(AZ, f)], { encoding: "utf8" });
+    assert.equal(r.status, 0, `${f}: ${r.stderr}`);
+  }
+});
+
+test("an answer is taken from the environment, then a default, and is never guessed without a terminal", () => {
+  const ask = (env, args) => spawnSync("bash", ["-c", `. "${join(AZ, "lib.sh")}"; ask ${args} </dev/null; echo "got=$REGION"`],
+    { encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
+  assert.match(ask({ REGION: "region-a" }, "REGION 'Which region?'").stdout, /got=region-a/);
+  assert.match(ask({}, "REGION 'Which region?' region-b").stdout, /got=region-b/);
+  const none = ask({}, "REGION 'Which region?'");
+  assert.notEqual(none.status, 0);
+  assert.match(none.stderr, /REGION/);
+});
+
+test("the Azure preflight says when the Azure CLI is not signed in", (t) => {
+  const bin = project(t);
+  writeFileSync(join(bin, "az"), "#!/bin/sh\ncase \"$1 $2\" in\n  'account show') echo 'Please run az login' >&2; exit 1 ;;\n  *) exit 0 ;;\nesac\n");
+  chmodSync(join(bin, "az"), 0o755);
+  const r = spawnSync("bash", [join(AZ, "preflight.sh")], { encoding: "utf8", input: "", env: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.notEqual(r.status, 0);
+  assert.match(`${r.stdout}${r.stderr}`, /not signed in/i);
+});
+
+const FROM = join(PIPELINE_ROOT, "fixture-project", "fixture.config.yaml");
+
+test("a deploy whose preflight fails stops before any agent turn and records the run", async (t) => {
+  const tmp = project(t);
+  const keep = { PATH: process.env.PATH, SDLC_EGRESS_NAMES: process.env.SDLC_EGRESS_NAMES, SDLC_EXECUTOR: process.env.SDLC_EXECUTOR, SDLC_MOCK_DIR: process.env.SDLC_MOCK_DIR };
+  t.after(() => { for (const [k, v] of Object.entries(keep)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
+  writeFileSync(join(tmp, "names.txt"), "");
+  process.env.SDLC_EGRESS_NAMES = join(tmp, "names.txt");
+  const dir = join(tmp, "service");
+  await newProject({ dir, from: FROM });
+  const c = join(dir, "constitution.md");
+  writeFileSync(c, readFileSync(c, "utf8").replace(/\{\{[A-Z_]+\}\}/g, "filled"));
+  const cfg = join(dir, ".sdlc", "config.yaml");
+  writeFileSync(cfg, `${readFileSync(cfg, "utf8")}deploy: [azure-container-apps]\n`);
+  mkdirSync(join(dir, "app"), { recursive: true });
+  writeFileSync(join(dir, "app", "index.js"), "export {};\n");
+  git(["add", "-A"], dir);
+  git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "built"], dir);
+  const bin = join(tmp, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "az"), "#!/bin/sh\n[ \"$1 $2\" = 'account show' ] && exit 1\nexit 0\n");
+  chmodSync(join(bin, "az"), 0o755);
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+  process.env.SDLC_EXECUTOR = "mock";
+  process.env.SDLC_MOCK_DIR = join(tmp, "no-replies");
+  mkdirSync(process.env.SDLC_MOCK_DIR);
+  const r = await runStage(dir, "deploy", { platform: "azure-container-apps" });
+  assert.equal(r.ok, false);
+  assert.match(r.messages.join("\n"), /preflight/);
+  assert.match(git(["log", "-1", "--format=%s"], dir), /run\(deploy\): bootstrap failed/);
+  assert.equal(existsSync(join(dir, ".sdlc", "run-state.json")), false);
 });

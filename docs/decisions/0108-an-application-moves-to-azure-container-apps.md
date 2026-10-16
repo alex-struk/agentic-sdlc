@@ -14,14 +14,18 @@ GitHub signs in to Azure and deploys to Container Apps.
 The application's move to Azure is recorded as a deploy run with the `azure-container-apps`
 profile (`docs/decisions/0107`). What was learned is in that profile:
 
-- GitHub signs in by OIDC with no stored secrets; the one-time federated-credential and role setup
-  needs an owner and is manual.
+- GitHub signs in by OIDC with no stored secrets. The deploy stage's bootstrap creates the identity,
+  its federated credentials, its roles and the repository's environments; a role the operator
+  cannot assign is printed as a command for someone who can.
+- The application pulls its image from Azure Container Registry as a user-assigned identity holding
+  AcrPull, so no registry credential exists.
 - Images are tagged by commit SHA and pushed to a container registry; the app is deployed in two
   passes, the second pointing at the pushed image.
 - A smoke test follows each deploy.
 - Attaching the SRE agent reads the agent, unions the resource group into its managed resources,
   patches with its identity included, then polls until provisioning leaves `InProgress`.
-- The agent's identity needs Reader, Monitoring Reader and Log Analytics Reader on the group.
+- The agent's identity needs Reader, Monitoring Reader and Log Analytics Reader on the group; the
+  bootstrap assigns them, because the identity GitHub deploys as cannot assign roles.
 
 ## Consequences
 

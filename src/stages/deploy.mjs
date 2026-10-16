@@ -20,6 +20,47 @@ const PLATFORM = /^[a-z0-9][a-z0-9-]*$/;
 export const deployDir = (platform) => `deploy/${platform}`;
 export const deployScript = (platform) => `${deployDir(platform)}/deploy.sh`;
 export const deployWorkflow = (platform) => `.github/workflows/deploy-${platform}.yml`;
+// What a platform's bootstrap chose: names, ids and a region, never a credential. It matches the
+// `.sdlc/*.local.txt` line every project ignores, because it describes this machine's setup and
+// the workflow reads the same values from the repository's own variables.
+export const deploySettingsFile = (platform) => `.sdlc/deploy-${platform}.local.txt`;
+
+export function readDeploySettings(projectDir, platform) {
+  const file = join(projectDir, deploySettingsFile(platform));
+  if (!existsSync(file)) return {};
+  const settings = {};
+  for (const line of readText(file).split(/\r?\n/)) {
+    const m = /^(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line.trim());
+    if (m) settings[m[1]] = m[2].replace(/^'(.*)'$/, "$1").replace(/^"(.*)"$/, "$1");
+  }
+  return settings;
+}
+
+// A profile may carry `bootstrap/preflight.sh` and `bootstrap/bootstrap.sh`. They run on this
+// machine, before the agent turn, with the terminal attached: the preflight checks the operator
+// is signed in and can do what the bootstrap needs, and the bootstrap asks what to create or
+// reuse, makes sure it exists, and writes its choices to the settings file. The agent session
+// never runs them: it holds no cloud sign-in and cannot ask anyone anything.
+export function bootstrapPlatform(projectDir, platform, { profilesDir = PROFILES_DIR, env = process.env, stdio = "inherit" } = {}) {
+  const dir = join(profilesDir, platform, "bootstrap");
+  const scripts = ["preflight.sh", "bootstrap.sh"].filter((f) => existsSync(join(dir, f)));
+  if (!scripts.length) return { ok: true, ran: false, messages: [] };
+  const rel = deploySettingsFile(platform);
+  const runEnv = { ...env, SDLC_PROJECT_DIR: projectDir, SDLC_PLATFORM: platform, SDLC_SETTINGS_FILE: join(projectDir, rel) };
+  for (const f of scripts) {
+    const r = spawnSync("bash", [join(dir, f)], { cwd: projectDir, env: runEnv, stdio, encoding: "utf8" });
+    if (r.status !== 0) {
+      const said = stdio === "inherit" ? "" : `\n${`${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-20).join("\n")}`;
+      const step = f === "preflight.sh" ? "preflight" : "bootstrap";
+      return { ok: false, ran: true, messages: [redactLocalPaths(`${platform} ${step} did not pass${r.error ? `: ${r.error.message}` : ""}; nothing past it ran${said}`, projectDir)] };
+    }
+  }
+  const keys = Object.keys(readDeploySettings(projectDir, platform));
+  if (!keys.length) return { ok: false, ran: true, messages: [`${platform} bootstrap wrote no settings to ${rel}`] };
+  return { ok: true, ran: true, messages: [
+    `${platform} is set up; its settings (${keys.join(", ")}) are in ${rel}. To use them in a shell: set -a; . ${rel}; set +a`,
+  ] };
+}
 
 // The platforms the pipeline has a profile for, by name.
 export function deployProfiles() {
@@ -113,10 +154,11 @@ function defaultExec(cmd, args, { cwd, env } = {}) {
 // Runs the script from this machine against the test environment, then asks the deployed
 // application for its address. The script prints `DEPLOYED_URL=<address>`; anything below 400
 // from that address is an answer. Credentials come from the environment the run is started in
-// and are never read or reported here.
+// and are never read or reported here. The bootstrap's settings are laid over that environment,
+// so the run uses what was chosen at the start of this deploy rather than a stale export.
 export async function testEnvironmentRun(projectDir, platform, { exec = defaultExec, fetchFn = fetch, env = process.env } = {}) {
   const id = "deploy-test-run";
-  const ran = exec("bash", [deployScript(platform), "test"], { cwd: projectDir, env });
+  const ran = exec("bash", [deployScript(platform), "test"], { cwd: projectDir, env: { ...env, ...readDeploySettings(projectDir, platform) } });
   const tail = (s) => s.trim().split("\n").slice(-20).join("\n");
   if (ran.status !== 0) return { id, ok: false, messages: [`${deployScript(platform)} test failed:\n${tail(`${ran.stdout}\n${ran.stderr}`)}`] };
   const url = /^DEPLOYED_URL=(\S+)\s*$/m.exec(ran.stdout)?.[1];
@@ -135,7 +177,6 @@ export const deploy = {
   workspace: "project",
   gate: "G3",
   proposalPrefix: "deploy-",
-  collect: (ctx) => (ctx?.platform ? [deployDir(ctx.platform), deployWorkflow(ctx.platform)] : []),
   defaultTurns: 80,
   implemented: true,
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash(ls *)", "Bash(mkdir *)", "Bash(chmod *)"],
@@ -164,6 +205,9 @@ export const deploy = {
   },
   preChecks(projectDir, ctx) {
     return [checkPlatformOption(ctx), checkApplicationExists(projectDir)];
+  },
+  bootstrap(projectDir, ctx) {
+    return bootstrapPlatform(projectDir, ctx.platform);
   },
   async postChecks(projectDir, ctx) {
     ctx.deployName = nextProposalName(projectDir, `deploy-${ctx.platform}`);

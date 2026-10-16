@@ -383,6 +383,7 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
       // `prepare` writes real files, so it does not run on a dry run at all — this is
       // the only account of it a dry run gives, and only for a stage that has one.
       if (stage.prepare) console.log("prepare: skipped on dry run");
+      if (stage.bootstrap) console.log("bootstrap: skipped on dry run");
       if (mcpServers) console.log(`mcp: ${Object.keys(mcpServers).join(", ")}`);
       // Names only, never values: a dry run is printed to a terminal (or captured in a
       // log) and `env` exists precisely to carry things like API keys into the session.
@@ -416,6 +417,21 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
       stageAll(projectDir, [relative(projectDir, runPath)]);
       git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): authentication check failed`], projectDir);
       return { ok: false, messages: [e.message] };
+    }
+
+    // A stage that sets up what it runs against does so here, on this machine, with the
+    // terminal attached so it can ask its questions: after the sign-in check, so a session that
+    // could not start never asked anyone anything, and before the workspace, so nothing is
+    // spent on a turn whose platform is not there. Recorded like a failed `prepare`.
+    if (stage.bootstrap) {
+      const b = stage.bootstrap(projectDir, ctx);
+      for (const m of b.ok ? b.messages : []) console.log(m);
+      if (!b.ok) {
+        const runPath = appendRun(projectDir, `run ${name}: bootstrap failed`);
+        stageAll(projectDir, [relative(projectDir, runPath)]);
+        git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): bootstrap failed`], projectDir);
+        return { ok: false, messages: b.messages };
+      }
     }
 
     const ws = materialise(projectDir, wsMode, { collect: collectPaths, context: contextPaths, ...(overlay ? { overlay } : {}) });

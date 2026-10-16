@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # deploy.sh <environment> [image-tag] — the only way the application is deployed. The workflow
-# and a person at a terminal run this same file. Settings come from the environment.
+# and the deploy stage's test-environment run use this same file. Settings come from the
+# environment: on GitHub from the environment's variables, on a machine from the settings file
+# the bootstrap wrote. RESOURCE_GROUP is the one group this environment lives in, and exists.
 set -euo pipefail
 
 ENVIRONMENT="${1:?usage: deploy.sh <environment> [image-tag]}"
@@ -13,12 +15,17 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="app-${ENVIRONMENT}"
 REGISTRY="$(tr '[:upper:]' '[:lower:]' <<< "$REGISTRY")"
 
-az group create --name "${RESOURCE_GROUP}-${ENVIRONMENT}" --location "$LOCATION" --output none
-RG="${RESOURCE_GROUP}-${ENVIRONMENT}"
+REGISTRY_SERVER="${REGISTRY%%/*}"
+
+if [ -n "${AZURE_SUBSCRIPTION_ID:-}" ]; then az account set --subscription "$AZURE_SUBSCRIPTION_ID"; fi
+RG="$RESOURCE_GROUP"
+az group show --name "$RG" --output none \
+  || { echo "resource group $RG does not exist; the deploy stage's bootstrap creates it" >&2; exit 1; }
 
 deploy_stack() {
   az deployment group create --resource-group "$RG" --template-file "$HERE/main.bicep" \
     --parameters prefix="$PREFIX" location="$LOCATION" image="$REGISTRY:$IMAGE_TAG" deployApps="$1" \
+      registryServer="$REGISTRY_SERVER" pullIdentityId="${PULL_IDENTITY_ID:-}" \
     --query properties.outputs --output json
 }
 
@@ -27,8 +34,9 @@ deploy_stack() {
 deploy_stack false > /dev/null
 
 # Build and push the image, tagged with the commit, unless that tag is already in the registry.
-# An Azure Container Registry is signed in to with `az acr login --name <registry>`; another
-# registry is signed in to by whatever the project's profile notes name.
+# An Azure Container Registry is signed in to here; another registry is signed in to beforehand
+# by whatever the project's profile notes name.
+if [[ "$REGISTRY_SERVER" == *.azurecr.io ]]; then az acr login --name "${REGISTRY_SERVER%%.*}" > /dev/null; fi
 if ! docker manifest inspect "$REGISTRY:$IMAGE_TAG" > /dev/null 2>&1; then
   docker build --tag "$REGISTRY:$IMAGE_TAG" "$HERE/../../app"
   docker push "$REGISTRY:$IMAGE_TAG"
