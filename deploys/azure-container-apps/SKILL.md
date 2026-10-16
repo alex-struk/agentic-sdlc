@@ -55,8 +55,8 @@ variable; setting it beforehand answers it, so an unattended run asks nothing.
 |---|---|
 | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID` | Where everything is deployed. |
 | `LOCATION` | The region; one where `Microsoft.App/managedEnvironments` is offered. |
-| `RESOURCE_GROUP` | The test environment's group. On GitHub, each environment's own. |
-| `RESOURCE_GROUP_DEVELOPMENT`, `RESOURCE_GROUP_PRODUCTION` | The groups GitHub deploys into. |
+| `RESOURCE_GROUP` | The development environment's group, which the deploy stage's own run also uses. On GitHub, each environment's own. |
+| `RESOURCE_GROUP_PRODUCTION` | The production environment's group. |
 | `SHARED_RESOURCE_GROUP` | The registry and the identities. |
 | `REGISTRY_NAME`, `REGISTRY` | The Azure Container Registry, and the image path in it. |
 | `PULL_IDENTITY_ID` | The user-assigned identity the app pulls its image as (AcrPull). |

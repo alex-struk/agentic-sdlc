@@ -117,7 +117,7 @@ test("the workflow must call the script the stage ran", (t) => {
   assert.equal(checkWorkflowCallsScript(e, "azure-container-apps").ok, false);
 });
 
-test("the test-environment run needs the script to succeed and the app to answer", async (t) => {
+test("the development run needs the script to succeed and the app to answer", async (t) => {
   const d = project(t);
   lay(d, "azure-container-apps");
   const ok = async () => ({ status: 200 });
@@ -129,7 +129,7 @@ test("the test-environment run needs the script to succeed and the app to answer
   assert.equal(good.ok, true);
   assert.equal(good.url, "https://app.example.test");
   assert.equal(seen[0][0], "bash");
-  assert.deepEqual(seen[0][1], ["deploy/azure-container-apps/deploy.sh", "test"]);
+  assert.deepEqual(seen[0][1], ["deploy/azure-container-apps/deploy.sh", "development"]);
 
   const failed = await testEnvironmentRun(d, "azure-container-apps", { exec: exec("", 3), fetchFn: ok });
   assert.equal(failed.ok, false);
@@ -142,11 +142,12 @@ test("the test-environment run needs the script to succeed and the app to answer
   assert.match(down.messages.join("\n"), /503/);
 });
 
-test("the proposal page carries what the test-environment run saw", (t) => {
+test("the proposal page carries what the development run saw", (t) => {
   const d = project(t);
   const ctx = { platform: "openshift", deployRun: { ok: true, url: "https://app.example.test", status: 200, messages: [] } };
   const page = deploy.proposalEvidence(ctx);
-  assert.match(page, /Test-environment run/);
+  assert.match(page, /Development run/);
+  assert.match(page, /development environment/);
   assert.match(page, /https:\/\/app\.example\.test/);
   assert.equal(existsSync(d), true);
 });
@@ -188,7 +189,7 @@ test("the preflight runs first, and a failing preflight stops the bootstrap", (t
   assert.equal(existsSync(join(d, "bootstrapped")), false);
 });
 
-test("what the bootstrap chose is kept, named without its values, and handed to the test-environment run", async (t) => {
+test("what the bootstrap chose is kept, named without its values, and handed to the development run", async (t) => {
   const d = project(t);
   const profiles = profileWith(t, "cloud", {
     "preflight.sh": "true",
@@ -281,4 +282,43 @@ test("a deploy whose preflight fails stops before any agent turn and records the
   assert.match(r.messages.join("\n"), /preflight/);
   assert.match(git(["log", "-1", "--format=%s"], dir), /run\(deploy\): bootstrap failed/);
   assert.equal(existsSync(join(dir, ".sdlc", "run-state.json")), false);
+});
+
+test("the Azure bootstrap creates the shared, development and production groups and tests in development", (t) => {
+  const tmp = project(t);
+  const bin = join(tmp, "bin");
+  mkdirSync(bin);
+  const log = join(tmp, "az.log");
+  writeFileSync(join(bin, "az"), [
+    "#!/bin/bash",
+    `echo "$*" >> "${log}"`,
+    'case "$*" in',
+    '  "account show --query id -o tsv") echo sub-id;;',
+    '  "account show --query tenantId -o tsv") echo tenant-id;;',
+    '  "provider show --namespace Microsoft.App --query"*) echo region-a;;',
+    '  "provider show"*) echo Registered;;',
+    '  "group show"*|"acr show --name"*"--query id"*|"identity show --resource-group"*) exit 3;;',
+    '  "acr check-name"*) echo true;;',
+    '  "acr create"*) echo /subscriptions/sub-id/resourceGroups/rg-svc-shared/providers/Microsoft.ContainerRegistry/registries/svcacr;;',
+    '  "acr show"*loginServer*) echo svcacr.azurecr.io;;',
+    '  "identity create"*) echo /subscriptions/sub-id/resourceGroups/rg-svc-shared/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-svc-pull;;',
+    '  "identity show --ids"*) echo principal-id;;',
+    "esac",
+    "",
+  ].join("\n"));
+  chmodSync(join(bin, "az"), 0o755);
+  const settings = join(tmp, deploySettingsFile("azure-container-apps"));
+  const r = spawnSync("bash", [join(AZ, "bootstrap.sh")], {
+    cwd: tmp, encoding: "utf8", input: "",
+    env: { PATH: `${bin}:${process.env.PATH}`, SDLC_PROJECT_DIR: tmp, SDLC_SETTINGS_FILE: settings,
+      NAME_PREFIX: "svc", LOCATION: "region-a", GITHUB_REPO: "" },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const created = readFileSync(log, "utf8").split("\n").filter((l) => l.startsWith("group create"))
+    .map((l) => /--name (\S+)/.exec(l)[1]);
+  assert.deepEqual(created, ["rg-svc-shared", "rg-svc-development", "rg-svc-production"]);
+  const saved = readDeploySettings(tmp, "azure-container-apps");
+  assert.equal(saved.RESOURCE_GROUP, "rg-svc-development");
+  assert.equal(saved.RESOURCE_GROUP_PRODUCTION, "rg-svc-production");
+  assert.equal("RESOURCE_GROUP_DEVELOPMENT" in saved, false);
 });

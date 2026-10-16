@@ -1,7 +1,7 @@
 // `deploy --platform P`: an agent writes the one deployment definition, the one deploy script and
 // the GitHub workflow that calls that script, from the deploy profile for platform P
-// (`deploys/<P>/`). Before it proposes, the runner runs the script from this machine against a
-// test environment and checks the application answers; that result goes to the gate with the
+// (`deploys/<P>/`). Before it proposes, the runner runs the script from this machine against the
+// development environment and checks the application answers; that result goes to the gate with the
 // proposal (`docs/stages/deploy.md`). Once the proposal is approved, GitHub does every deploy
 // from then on, by running the same script, so there is no second path to keep in step.
 import { existsSync, readdirSync, statSync } from "node:fs";
@@ -151,18 +151,23 @@ function defaultExec(cmd, args, { cwd, env } = {}) {
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr || (r.error ? r.error.message : "") };
 }
 
-// Runs the script from this machine against the test environment, then asks the deployed
+// Runs the script from this machine against the development environment, the one GitHub deploys
+// to on a push to `development`, so the run leaves nothing behind that GitHub would not
+// replace on its first deploy. It then asks the deployed
 // application for its address. The script prints `DEPLOYED_URL=<address>`; anything below 400
 // from that address is an answer. Credentials come from the environment the run is started in
 // and are never read or reported here. The bootstrap's settings are laid over that environment,
 // so the run uses what was chosen at the start of this deploy rather than a stale export.
+// The environment the stage's own run deploys.
+export const DEVELOPMENT = "development";
+
 export async function testEnvironmentRun(projectDir, platform, { exec = defaultExec, fetchFn = fetch, env = process.env } = {}) {
   const id = "deploy-test-run";
-  const ran = exec("bash", [deployScript(platform), "test"], { cwd: projectDir, env: { ...env, ...readDeploySettings(projectDir, platform) } });
+  const ran = exec("bash", [deployScript(platform), DEVELOPMENT], { cwd: projectDir, env: { ...env, ...readDeploySettings(projectDir, platform) } });
   const tail = (s) => s.trim().split("\n").slice(-20).join("\n");
-  if (ran.status !== 0) return { id, ok: false, messages: [`${deployScript(platform)} test failed:\n${tail(`${ran.stdout}\n${ran.stderr}`)}`] };
+  if (ran.status !== 0) return { id, ok: false, messages: [`${deployScript(platform)} ${DEVELOPMENT} failed:\n${tail(`${ran.stdout}\n${ran.stderr}`)}`] };
   const url = /^DEPLOYED_URL=(\S+)\s*$/m.exec(ran.stdout)?.[1];
-  if (!url) return { id, ok: false, messages: [`${deployScript(platform)} test succeeded but printed no DEPLOYED_URL=<address> line`] };
+  if (!url) return { id, ok: false, messages: [`${deployScript(platform)} ${DEVELOPMENT} succeeded but printed no DEPLOYED_URL=<address> line`] };
   let status;
   try { status = (await fetchFn(url, { redirect: "follow", signal: AbortSignal.timeout(60_000) })).status; }
   catch (e) { return { id, ok: false, url, messages: [`${url} did not answer: ${e.message}`] }; }
@@ -190,7 +195,7 @@ export const deploy = {
   proposal(ctx) {
     return {
       name: ctx.deployName ?? nextProposalName(ctx.projectDir, `deploy-${ctx.platform}`),
-      question: `Is this the right way to deploy the application to ${ctx.platform}, and did it run from the test environment?`,
+      question: `Is this the right way to deploy the application to ${ctx.platform}, and did it deploy the development environment?`,
       recommendation: recommendationFrom(ctx.agentText),
     };
   },
@@ -199,9 +204,9 @@ export const deploy = {
     const r = ctx.deployRun;
     if (!r) return "";
     const body = r.ok
-      ? `The deploy script ran against the test environment and ${r.url} answered ${r.status}.`
-      : `The deploy script did not pass against the test environment:\n\n${r.messages.join("\n")}`;
-    return redactLocalPaths(`\n\n## Test-environment run\n\n${body}\n`, ctx.projectDir ?? process.cwd());
+      ? `The deploy script deployed the development environment and ${r.url} answered ${r.status}.`
+      : `The deploy script did not pass against the development environment:\n\n${r.messages.join("\n")}`;
+    return redactLocalPaths(`\n\n## Development run\n\n${body}\n`, ctx.projectDir ?? process.cwd());
   },
   preChecks(projectDir, ctx) {
     return [checkPlatformOption(ctx), checkApplicationExists(projectDir)];

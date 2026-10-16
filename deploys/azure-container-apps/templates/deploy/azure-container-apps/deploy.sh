@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # deploy.sh <environment> [image-tag] — the only way the application is deployed. The workflow
-# and the deploy stage's test-environment run use this same file. Settings come from the
+# and the deploy stage's own run against development use this same file. Settings come from the
 # environment: on GitHub from the environment's variables, on a machine from the settings file
 # the bootstrap wrote. RESOURCE_GROUP is the one group this environment lives in, and exists.
 set -euo pipefail

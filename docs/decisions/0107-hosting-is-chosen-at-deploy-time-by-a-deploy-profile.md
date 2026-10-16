@@ -22,8 +22,9 @@ stack decides.
 
 **The `deploy` stage runs after `build`, once per listed platform.** It writes one deployment
 definition, one script and one GitHub workflow that calls the script. Before it proposes, the runner
-runs the script against a test environment and checks the application responds; the result goes to
-gate G3 with the proposal.
+runs the script against the development environment and checks the application responds; the result
+goes to gate G3 with the proposal. It uses development rather than an environment of its own, so a
+deploy stands up nothing that GitHub's own deploys do not go on to use.
 
 **After approval GitHub does every deploy**: automatic on the `development` branch, production by
 manual dispatch. No local deploy path is kept, because two paths drift apart.

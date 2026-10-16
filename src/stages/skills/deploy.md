@@ -28,8 +28,9 @@ is and where it comes from (a repository variable, an environment variable).
 You have the whole project. You change only `deploy/<platform>/`, the workflow file and
 `docs/decisions/`. A change anywhere else ends the run.
 
-After your turn the runner runs `deploy/<platform>/deploy.sh test` from this machine against a
-test environment, then asks the address it printed whether the application answers. The
+After your turn the runner runs `deploy/<platform>/deploy.sh development` from this machine,
+deploying the same development environment GitHub deploys on a push to `development`, then asks
+the address it printed whether the application answers. The
 proposal goes to its gate with that result. You cannot run the script yourself: your shell lists
 and makes directories, and does not reach the platform. Write the script so that a failure at any
 step stops it with a non-zero status and a plain message.

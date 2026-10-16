@@ -26,7 +26,7 @@ pre-checks and before the agent turn.
   unattended run asks nothing and fails naming the variable it lacks.
 - The settings are names, ids and regions. No credential is asked for, written or printed: the
   platform's own sign-in holds the operator's, and the deploys sign in without one.
-- The test-environment run gets the settings laid over its environment. The runner prints the
+- The development run gets the settings laid over its environment. The runner prints the
   line that loads them into a shell, because no process can change the environment of the shell
   that started it.
 - What cannot be done by the operator's account (a role assignment needing rights it lacks) is

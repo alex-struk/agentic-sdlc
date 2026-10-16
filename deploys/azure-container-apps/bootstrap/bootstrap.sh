@@ -60,23 +60,20 @@ ask_region() {
 
 if [ "$DEPLOY_MODE" = create ]; then
   ask SHARED_RESOURCE_GROUP "Resource group for what the environments share (registry, identities)" "rg-$NAME_PREFIX-shared"
-  ask RESOURCE_GROUP "Resource group for the test environment" "rg-$NAME_PREFIX-test"
-  ask RESOURCE_GROUP_DEVELOPMENT "Resource group for the development environment" "rg-$NAME_PREFIX-development"
+  ask RESOURCE_GROUP "Resource group for the development environment, which this deploy's own run also uses" "rg-$NAME_PREFIX-development"
   ask RESOURCE_GROUP_PRODUCTION "Resource group for the production environment" "rg-$NAME_PREFIX-production"
   ask REGISTRY_NAME "Container registry name (5-50 letters and digits, unique across Azure)" "$(tr -d '-' <<< "$NAME_PREFIX")acr"
   ask_region
 else
-  ask RESOURCE_GROUP "Name or id of the test environment's resource group"
+  ask RESOURCE_GROUP "Name or id of the development environment's resource group, which this deploy's own run also uses"
   RESOURCE_GROUP="$(name_of "$RESOURCE_GROUP")"
-  ask_optional RESOURCE_GROUP_DEVELOPMENT "Name or id of the development environment's resource group"
   ask_optional RESOURCE_GROUP_PRODUCTION "Name or id of the production environment's resource group"
-  RESOURCE_GROUP_DEVELOPMENT="$(name_of "${RESOURCE_GROUP_DEVELOPMENT:-}")"
   RESOURCE_GROUP_PRODUCTION="$(name_of "${RESOURCE_GROUP_PRODUCTION:-}")"
   ask REGISTRY_NAME "Name or id of the Azure container registry"
   REGISTRY_NAME="$(name_of "$REGISTRY_NAME")"
-  test_location="$(az group show --name "$RESOURCE_GROUP" --query location -o tsv 2>/dev/null)" \
+  group_location="$(az group show --name "$RESOURCE_GROUP" --query location -o tsv 2>/dev/null)" \
     || fail "resource group $RESOURCE_GROUP does not exist in this subscription, or this account cannot read it"
-  ask_region "$test_location"
+  ask_region "$group_location"
 fi
 ask_optional PULL_IDENTITY_ID "Resource id of an identity allowed to pull from the registry" ""
 ask_optional SRE_AGENT_ID "Resource id of an Azure SRE Agent to connect" ""
@@ -97,7 +94,7 @@ done
 if [ "$DEPLOY_MODE" = create ]; then
   say ""
   say "About to create, in $LOCATION, whatever of these does not exist yet:"
-  say "  resource groups $SHARED_RESOURCE_GROUP, $RESOURCE_GROUP, $RESOURCE_GROUP_DEVELOPMENT, $RESOURCE_GROUP_PRODUCTION"
+  say "  resource groups $SHARED_RESOURCE_GROUP, $RESOURCE_GROUP (development), $RESOURCE_GROUP_PRODUCTION (production)"
   say "  container registry $REGISTRY_NAME (Basic, admin user off) in $SHARED_RESOURCE_GROUP"
   [ -z "$PULL_IDENTITY_ID" ] && say "  managed identity id-$NAME_PREFIX-pull, allowed to pull images"
   [ -n "$GITHUB_REPO" ] && say "  managed identity id-$NAME_PREFIX-github, which GitHub signs in as for $GITHUB_REPO"
@@ -159,7 +156,6 @@ ok "resource providers are registered"
 
 if [ "$DEPLOY_MODE" = create ]; then ensure_group "$SHARED_RESOURCE_GROUP"; fi
 ensure_group "$RESOURCE_GROUP"
-[ -n "${RESOURCE_GROUP_DEVELOPMENT:-}" ] && ensure_group "$RESOURCE_GROUP_DEVELOPMENT"
 [ -n "${RESOURCE_GROUP_PRODUCTION:-}" ] && ensure_group "$RESOURCE_GROUP_PRODUCTION"
 
 if ! REGISTRY_ID="$(az acr show --name "$REGISTRY_NAME" --query id -o tsv 2>/dev/null)"; then
@@ -194,7 +190,6 @@ ok "docker is signed in to $REGISTRY_SERVER"
 # ---- the SRE agent -----------------------------------------------------------------------------
 
 env_groups=("$RESOURCE_GROUP")
-[ -n "${RESOURCE_GROUP_DEVELOPMENT:-}" ] && env_groups+=("$RESOURCE_GROUP_DEVELOPMENT")
 [ -n "${RESOURCE_GROUP_PRODUCTION:-}" ] && env_groups+=("$RESOURCE_GROUP_PRODUCTION")
 agent_identity=""
 if [ -n "${SRE_AGENT_ID:-}" ]; then
@@ -222,7 +217,7 @@ if [ -n "${GITHUB_REPO:-}" ]; then
     gh_principal="$(az identity show --ids "$gh_id" --query principalId -o tsv)"
     declare -A env_rg=()
     envs=()
-    if [ -n "${RESOURCE_GROUP_DEVELOPMENT:-}" ]; then env_rg[development]="$RESOURCE_GROUP_DEVELOPMENT"; envs+=(development); fi
+    env_rg[development]="$RESOURCE_GROUP"; envs+=(development)
     if [ -n "${RESOURCE_GROUP_PRODUCTION:-}" ]; then env_rg[production]="$RESOURCE_GROUP_PRODUCTION"; envs+=(production); fi
     for env in "${envs[@]}"; do
       if ! az identity federated-credential show --resource-group "$SHARED_RESOURCE_GROUP" --identity-name "$gh_name" \
@@ -281,7 +276,7 @@ mkdir -p "$(dirname "$SDLC_SETTINGS_FILE")"
 umask 077
 {
   for v in DEPLOY_MODE NAME_PREFIX AZURE_SUBSCRIPTION_ID AZURE_TENANT_ID LOCATION RESOURCE_GROUP \
-           RESOURCE_GROUP_DEVELOPMENT RESOURCE_GROUP_PRODUCTION SHARED_RESOURCE_GROUP REGISTRY_NAME \
+           RESOURCE_GROUP_PRODUCTION SHARED_RESOURCE_GROUP REGISTRY_NAME \
            IMAGE_NAME REGISTRY PULL_IDENTITY_ID SRE_AGENT_ID GITHUB_REPO PRODUCTION_REVIEWERS AZURE_CLIENT_ID; do
     declare -n _v="$v"
     safe_value "${_v:-}" || fail "$v has characters a setting may not"

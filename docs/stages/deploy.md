@@ -45,12 +45,16 @@ The bootstrap runs on the operator's machine rather than in the agent's session 
 holds no platform credentials, may be isolated in a container and cannot ask anyone anything
 (`docs/decisions/0109`). A dry run skips it.
 
-## Test-environment run
+## Development run
 
-Before it proposes, the runner runs `bash deploy/<platform>/deploy.sh test` from the machine, with
-the bootstrap's settings laid over its environment, requires
-a `DEPLOYED_URL=` line, and fetches that URL (a status below 400 passes). The outcome is written into
-the proposal page under "Test-environment run", so the gate sees what the script did.
+Before it proposes, the runner runs `bash deploy/<platform>/deploy.sh development` from the machine,
+with the bootstrap's settings laid over its environment, requires a `DEPLOYED_URL=` line, and fetches
+that URL (a status below 400 passes). The outcome is written into the proposal page under
+"Development run", so the gate sees what the script did.
+
+The run deploys the same development environment GitHub deploys on a push to `development`, not an
+environment of its own. Whatever it stands up, GitHub's first deploy replaces in place, so a deploy
+leaves no environment behind that nothing else uses.
 
 ## After approval
 
