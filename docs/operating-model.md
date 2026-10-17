@@ -24,8 +24,10 @@ between stages. This is the reference for the concepts; the reasoning behind eac
 
 ## 2. Work and judgement
 
-Work is always done by agents. Judgement is done from seats, and each seat is filled by an
-agent or a person as the project's config says.
+Work is done by agents, or handed in by a person from a branch in place of an agent's session
+(`sdlc run <stage> --hand-in <branch>`, `docs/decisions/0107`); either way the stage's own checks
+judge it and it reaches `main` only through the stage's gate. Judgement is done from seats, and each
+seat is filled by an agent or a person as the project's config says.
 
 | Stage | What its agent produces |
 |---|---|

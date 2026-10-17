@@ -10,7 +10,8 @@ proposal, depending on whether the stage holds a gate.
 ## Inputs
 
 `sdlc run <stage> [--slice N] [--domain X] [--target old|new] [--stale] [--dry-run] [--again]
-[--revise] [--reason "..."]`, run from inside the project's working tree, on `main`.
+[--revise] [--hand-in <branch>] [--reason "..."]`, run from inside the project's working tree, on
+`main`.
 
 A run other than the one `sdlc next` names needs `--reason`, and without one it is refused before
 anything is written, with a message naming what `next` names. With one, what `next` named, what
@@ -320,6 +321,39 @@ success. `ratify`'s opens the G1 proposal that closes out criteria it could not 
 each failing criterion's failure means (`docs/stages/calibrate.md`, "The ruling loop"). A run that
 opens one returns it as `proposal` and leaves the checkout on that branch, exactly as a gated stage
 does.
+
+## Work handed in by a person
+
+`--hand-in <branch>` takes a stage's work from a person's branch in place of an agent session
+(`docs/decisions/0107-a-person-can-hand-in-a-stage-s-work.md`). The run is the stage's own in every
+other respect: the same pre-checks, the same workspace, the same post-checks, the same journal, run
+record and proposal at the stage's gate.
+
+The workspace is built as usual from `HEAD`, and then every path the stage collects is replaced
+outright by the branch's version: emptied first, so a file the branch removed is removed, and
+extracted from the branch's commit. Writing the workspace back carries those deletions into the
+project as well, for files `git` tracks. Nothing the branch changed outside the stage's collect
+paths is taken.
+
+It is refused before anything is written:
+
+- for a stage with no gate, whose work would reach `main` unreviewed;
+- for a stage that works in the project tree (`project` or `with-sources`), which has no workspace
+  to take the branch's outputs into;
+- with `--revise`, since a hand-in is new work and a revision answers a ruling;
+- for a name that is not a branch or commit in the repository;
+- when `main` has changed any of the stage's collect paths since the branch left it, naming those
+  paths, since taking the branch's version would undo that work. Bring the branch up to date with
+  `main` and hand it in again.
+
+The account a session would give is replaced by one saying that a person handed the work in, from
+which branch and at which commit, followed by the run's `--reason` when one was given. It is what
+the journal entry records and the proposal page carries, and the run-record line reads `run
+<stage>: ok, handed in from <branch> at <commit>`. A dry run prints that account and writes nothing.
+
+A post-check that fails is recorded like any other failure, with one more message: `no agent repairs
+handed-in work: correct <branch> and hand it in again`. No repair turn runs. The branch's files are
+then taken back out of the working tree, so `main` is left clean for the next run.
 
 ## Checks that block
 
