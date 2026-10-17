@@ -244,7 +244,7 @@ export function runCommand(stage, args = {}) {
     if (args[k] === undefined || args[k] === null) return SUBJECT_OF[stage] === k ? `--${k} <${k}>` : null;
     return `--${k} ${args[k]}`;
   };
-  return ["sdlc run", stage, flag("domain"), flag("target"), flag("slice"), args.stale ? "--stale" : null, args.revise ? "--revise" : null, args.skipSuite ? "--skip-suite" : null, args.full ? "--full" : null]
+  return ["sdlc run", stage, flag("domain"), flag("target"), flag("slice"), args.stale ? "--stale" : null, args.revise ? "--revise" : null, args.skipSuite ? "--skip-suite" : null, args.full ? "--full" : null, args.handIn ? `--hand-in ${args.handIn}` : null]
     .filter(Boolean).join(" ");
 }
 

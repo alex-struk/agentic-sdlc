@@ -1,14 +1,14 @@
 import { join, relative, resolve } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { git, assertCleanTree, assertOnMain, stageAll, SDLC_AUTHOR } from "../lib/git.mjs";
+import { git, gitOk, assertCleanTree, assertOnMain, stageAll, SDLC_AUTHOR } from "../lib/git.mjs";
 import { writeText } from "../lib/fsx.mjs";
 import { loadConfig } from "../config/load.mjs";
 import { commandMinutes } from "../config/policy.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { stageFor, skillText } from "../stages/registry.mjs";
 import { handedNote } from "../spec/missing-tests.mjs";
-import { materialise, collect, workspaceScopeNote, workspaceScopeViolations } from "../runner/workspace.mjs";
+import { IN_PLACE_MODES, materialise, collect, collectDeletions, workspaceScopeNote, workspaceScopeViolations } from "../runner/workspace.mjs";
 import { runAgent, endedBecause, preflightAuth, turnsFor, writeMcpConfig, metricsOf } from "../runner/executor.mjs";
 import { stageAgent, codexRefusal, isolationRefusal, isolationUnavailable } from "../runner/agents.mjs";
 import { engineLabel } from "../lib/engine.mjs";
@@ -129,7 +129,43 @@ function followUp(projectDir, stage, ctx, result) {
   return { ...result, proposal: opened };
 }
 
-export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, full = false, deviationReason } = {}) {
+// The branch a hand-in takes a stage's work from, and the commit it names. Refused for a stage
+// with no gate, whose work lands on `main` with no ruling, so a person's files would reach it
+// unreviewed; for a stage that works in the project tree, which has no workspace to take the
+// branch's outputs into; alongside `--revise`, since a revision answers a ruling and a hand-in
+// is new work; and for a name this repository does not have.
+function resolveHandIn(projectDir, stage, ref, { revise, wsMode }) {
+  const name = stage.name;
+  if (!stage.gate) throw new Error(`run ${name} --hand-in: ${name} has no gate, so handed-in work would reach main unreviewed`);
+  if (IN_PLACE_MODES.has(wsMode)) throw new Error(`run ${name} --hand-in: ${name} works in the project tree, so there is no workspace to take ${ref}'s outputs into`);
+  if (revise) throw new Error(`run ${name}: --hand-in and --revise cannot be used together; a hand-in is new work, a revision answers a ruling`);
+  if (typeof ref !== "string" || !ref.trim() || !gitOk(["rev-parse", "--verify", "-q", `${ref}^{commit}`], projectDir))
+    throw new Error(`run ${name} --hand-in: ${ref} is not a branch or commit in this repository`);
+  return { ref, commit: git(["rev-parse", `${ref}^{commit}`], projectDir) };
+}
+
+// Taking a branch's outputs replaces what `main` holds at those paths, so a branch that `main`
+// has moved past there would undo the newer work without anyone choosing to. Refused, naming
+// the paths, until the branch is brought up to date.
+function assertHandInCurrent(projectDir, name, handIn, collectPaths) {
+  const base = git(["merge-base", "HEAD", handIn.commit], projectDir);
+  const moved = collectPaths.filter((p) => !gitOk(["diff", "--quiet", base, "HEAD", "--", p], projectDir));
+  if (moved.length)
+    throw new Error(`run ${name} --hand-in: main has changed ${moved.join(", ")} since ${handIn.ref} left it; bring ${handIn.ref} up to date with main first, so handing it in undoes nothing`);
+}
+
+// What a handed-in run gives in place of a session's account: whose work it is, where it came
+// from, and that the stage's own checks judged it. The reason given for the run, when there is
+// one, is the person's own word on the work.
+export function handInAccount(ctx) {
+  const { ref, commit } = ctx.handIn;
+  return [
+    `Handed in by a person from \`${ref}\` at ${commit.slice(0, 12)}. No agent session ran: the stage's outputs are that commit's own, judged by the stage's checks as an agent's work is.`,
+    ctx.deviationReason ? `The reason given for the run: ${ctx.deviationReason}` : null,
+  ].filter(Boolean).join("\n\n");
+}
+
+export async function runStage(projectDir, name, { slice, domain, target, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, full = false, deviationReason, handIn: handInRef } = {}) {
   assertSafeDeviationReason(deviationReason);
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
@@ -177,6 +213,11 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // `resume` to read, the dry-run print below) sees the same resolved mode rather than
   // each re-deriving it from a possibly-impure function.
   const wsMode = typeof stage.workspace === "function" ? stage.workspace(config) : stage.workspace;
+  // A hand-in takes the stage's work from a person's branch in place of an agent session
+  // (`docs/decisions/0107`). Everything that could refuse it is asked here, before anything
+  // is written or spent.
+  const handIn = handInRef !== undefined ? resolveHandIn(projectDir, stage, handInRef, { revise, wsMode }) : null;
+  if (handIn) ctx.handIn = handIn;
   // `stage.collect` may be a plain array or, like `stage.workspace` above, a function —
   // `derive-tests` narrows it on a revise run to the same paths its workspace overlaid
   // (plus `tests/generated`, always regenerated from `HEAD`'s own contract by `prepare`),
@@ -198,6 +239,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // turn nothing at all, and it refuses before any of it is spent.
   const scope = workspaceScopeViolations(name, wsMode, collectPaths, contextPaths);
   if (scope.length) throw new Error(scope.join("\n"));
+  if (handIn) assertHandInCurrent(projectDir, name, handIn, collectPaths);
 
   // Which backend and model this stage's turns run on (`src/runner/agents.mjs`): the project's
   // `policy.agents`, or an operator's `SDLC_AGENT_BACKEND` for this run.
@@ -304,7 +346,11 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // ones are shared by every domain rather than owned by the one under revision —
   // `derive-tests`'s own `tests/acceptance/not-testable.yaml` — so `materialise` merges
   // them instead of letting the returned branch's content replace `HEAD`'s wholesale.
-  const overlay = ctx.revision?.branchCommit && stage.revisionOverlayPaths
+  // A hand-in's overlay is every path the stage collects, each replaced outright by the
+  // branch's own version, so a file the person removed is removed here too.
+  const overlay = handIn
+    ? { ref: handIn.commit, paths: collectPaths, replace: true }
+    : ctx.revision?.branchCommit && stage.revisionOverlayPaths
     ? {
       ref: ctx.revision.branchCommit,
       paths: stage.revisionOverlayPaths(ctx),
@@ -317,7 +363,7 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
   // workspace held. The account the stage gives stands in for the session's, and the run goes
   // through the same post-checks, journal and proposal as any other; a post-check that fails
   // still earns its repair turn there.
-  const withoutTurn = stage.withoutTurn?.(ctx) ?? null;
+  const withoutTurn = handIn ? handInAccount(ctx) : (stage.withoutTurn?.(ctx) ?? null);
   if (withoutTurn) {
     if (dryRun) {
       console.log(`stage ${name}: no agent turn\n\n${withoutTurn}`);
@@ -336,7 +382,10 @@ export async function runStage(projectDir, name, { slice, domain, target, stale 
           return { ok: false, messages: [e.message] };
         }
       }
-      const recollect = () => collect(projectDir, ws.dir, collectPaths);
+      const recollect = () => {
+        collect(projectDir, ws.dir, collectPaths);
+        if (handIn) collectDeletions(projectDir, ws.dir, collectPaths);
+      };
       if (ws.mode !== "project") recollect();
       return await finishStage(projectDir, stage, ctx, { text: withoutTurn, cost: 0, turns: 0, sessionId: "" },
         ws.mode === "project" ? {} : { workspaceDir: ws.dir, recollect });
@@ -544,6 +593,7 @@ COMMANDS.run = async ({ pos, flags }) => {
     revise: !!flags.revise,
     skipSuite: !!flags["skip-suite"],
     full: !!flags.full,
+    ...(flags["hand-in"] !== undefined ? { handIn: String(flags["hand-in"]) } : {}),
   };
   const deviation = recordDeviation(process.cwd(), pos[0], opts, flags.reason);
   const runOpts = { ...opts, ...(deviation ? { deviationReason: deviation.reason } : {}) };

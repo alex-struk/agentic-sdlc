@@ -294,6 +294,19 @@ function recordReaddressed(projectDir, stageName, journal, proposalName, domain)
   return r;
 }
 
+// A handed-in run whose work failed a check. The failure is recorded like any other, and the
+// branch's files are then taken back out of the working tree: they are the person's, still on
+// their branch, and left here they would block every later run on `main` behind an unclean tree.
+function handInFailed(projectDir, stage, ctx, result, messages) {
+  const failed = commitPostCheckFailure(projectDir, stage, result,
+    [...messages, `no agent repairs handed-in work: correct ${ctx.handIn.ref} and hand it in again`]);
+  const outputs = typeof stage.collect === "function" ? stage.collect(ctx) : (stage.collect ?? []);
+  const tracked = outputs.filter((p) => gitOk(["cat-file", "-e", `HEAD:${p}`], projectDir));
+  if (tracked.length) git(["checkout", "-q", "HEAD", "--", ...tracked], projectDir);
+  if (outputs.length) git(["clean", "-fdq", "--", ...outputs], projectDir);
+  return failed;
+}
+
 export async function finishStage(projectDir, stage, ctx, agentResult, { workspaceDir, recollect } = {}) {
   const state = readRunState(projectDir) ?? { stage: stage.name, ctx, startedAt: new Date().toISOString() };
   state.phase = "post-checks";
@@ -341,8 +354,11 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     let lastMessages = allMessages;
 
     while (postFail.length) {
-      const eligible = Boolean(repairDir) && stage.agent !== false && !ctx.dryRun && spent < allowed;
+      // Handed-in work is the person's to correct: an agent repairing it would put work in front
+      // of the gate that nobody handed in (`docs/decisions/0107`).
+      const eligible = Boolean(repairDir) && stage.agent !== false && !ctx.dryRun && !ctx.handIn && spent < allowed;
       if (!eligible) {
+        if (ctx.handIn) return handInFailed(projectDir, stage, ctx, result, allMessages);
         // Only the journal and the run record are staged: the agent's other files stay in
         // the working tree, untracked, so a person can see exactly what it produced.
         return commitPostCheckFailure(projectDir, stage, result, allMessages);
@@ -408,7 +424,9 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     body: result.text,
     metrics: metricsOf(result),
   });
-  appendRun(projectDir, fixTurnsRun
+  appendRun(projectDir, ctx.handIn
+    ? `run ${stage.name}: ok, handed in from ${ctx.handIn.ref} at ${ctx.handIn.commit.slice(0, 12)}`
+    : fixTurnsRun
     ? `run ${stage.name}: ok after ${fixTurnsRun === 1 ? "a fix turn" : `${fixTurnsRun} fix turns`}, cost ${result.cost}, turns ${result.turns}${onEngine(result)}`
     : `run ${stage.name}: ok, cost ${result.cost}, turns ${result.turns}${onEngine(result)}`);
 

@@ -278,6 +278,10 @@ export function materialise(projectDir, mode, { collect = [], context = [], over
   // extraction overwrites an existing file by default, the same way `collect` below always
   // overwrites the project on its way back out.
   if (overlay) {
+    // `overlay.replace` (a hand-in, `docs/decisions/0107`) empties each path before the ref's
+    // version is extracted, so the workspace holds exactly the ref's tree there: a file the
+    // ref removed is removed, and a path the ref does not have at all is left absent.
+    if (overlay.replace) for (const p of overlay.paths) rmSync(join(dir, p), { recursive: true, force: true });
     const mergeByPath = new Map((overlay.merge ?? []).map((m) => [m.path, m]));
     const overlayPaths = overlay.paths.filter((p) => gitOk(["cat-file", "-e", `${overlay.ref}:${p}`], projectDir));
     const archivePaths = overlayPaths.filter((p) => !mergeByPath.has(p));
@@ -356,6 +360,16 @@ export function workspaceScopeNote(mode, collect, context = []) {
 // the project at all. A destination that already holds one keeps it; nothing here touches
 // what the project installed for itself.
 const NEVER_COLLECTED = new Set(["node_modules"]);
+
+// A hand-in's deletions (`docs/decisions/0107`): every file `git` tracks under `paths` that the
+// workspace no longer holds is removed from the project. `collect` itself only writes, since an
+// agent's tools cannot remove a file; a person's branch can. Only tracked files are read, so
+// nothing `git` ignores (installed dependencies, build output) is ever touched.
+export function collectDeletions(projectDir, dir, paths) {
+  if (!paths.length) return;
+  const tracked = git(["ls-files", "-z", "--", ...paths], projectDir).split("\0").filter(Boolean);
+  for (const file of tracked) if (!existsSync(join(dir, file))) rmSync(join(projectDir, file), { force: true });
+}
 
 export function collect(projectDir, dir, paths) {
   for (const p of paths) {
