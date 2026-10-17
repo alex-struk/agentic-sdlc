@@ -7,7 +7,7 @@ import { redactLocalPaths } from "../lib/redact.mjs";
 import { loadConfig, parseConfig } from "../config/load.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
 import { buildPersonaPrompt, parseVerdict, readPersonaBrief, personaEscalates } from "../runner/persona.mjs";
-import { captureScreens } from "../runner/catalogue.mjs";
+import { captureScreens, changedStories } from "../runner/catalogue.mjs";
 import { runAgent, endedBecause, preflightAuth, turnsFor, DEFAULT_MAX_TURNS, metricsOf } from "../runner/executor.mjs";
 import { rulingAgent, isolationUnavailable } from "../runner/agents.mjs";
 import { engineFrontMatter, engineLabel } from "../lib/engine.mjs";
@@ -1824,7 +1824,9 @@ export async function ruleByAgent(projectDir, name, { persona }) {
     // person in the same seat sees the same screens by opening the catalogue
     // (`npm --prefix design start`).
     const route = routeOf(name, config);
-    const screens = route?.stage === "design" && route.domain ? captureScreens(projectDir, route.domain) : null;
+    const screens = route?.stage === "design" && route.domain
+      ? captureScreens(projectDir, route.domain, { also: changedStories(projectDir, branch) })
+      : null;
     if (screens) assertCleanTree(projectDir, "rule: taking screenshots modified the working tree");
     const prompt = await buildPersonaPrompt(projectDir, name, persona, { tier, gate, typecheck, escalation: ruleEscalation ? escalation : null, screens });
     // A ruling reads and answers; it never writes. The tool list says so up front rather

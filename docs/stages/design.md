@@ -107,10 +107,19 @@ draws against, and it must not be able to answer a failing scan by editing the s
 
 ## What the ruler sees
 
-Before an agent rules on a design proposal, the runner renders each of the domain's stories at
-desktop width and saves a picture of each into `design/screenshots/`, which git ignores. The
+Before an agent rules on a design proposal, the runner renders each of the domain's stories, and
+every other story the proposal changed, at desktop width and saves a picture of each into
+`design/screenshots/`, which git ignores. A proposal can change another domain's stories: a hand-in
+carries the whole catalogue (`docs/decisions/0107-a-person-can-hand-in-a-stage-s-work.md`). The
 ruling request lists them and asks for the layout to be judged by eye; when none could be taken
 it says why. A person in the seat opens the catalogue instead (`npm --prefix design start`).
 
 `sdlc init` installs the pipeline's current `design/scan.mjs` and `design/.storybook/` into a
 project, since a design run may not change them.
+
+## Handing in a design
+
+A design made outside an agent session, by a person working in a design tool and the catalogue,
+is handed in with `sdlc run design --domain <d> --hand-in <branch>` (`docs/stages/run.md`, "Work
+handed in by a person"). The branch's `design/` and `spec/contract/surface.yaml` replace `main`'s,
+and every check above judges them as it judges an agent's catalogue.

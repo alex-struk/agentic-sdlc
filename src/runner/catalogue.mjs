@@ -53,18 +53,27 @@ export function runCatalogueScan(projectDir) {
 // git (`REQUIRED_IGNORES`) so a ruling neither commits them nor counts them as a change it made.
 export const SCREENS_DIR = "screenshots";
 
-// Pictures of one domain's screens, for whoever rules its design. The scanner renders each
-// of the domain's stories and saves it; nothing is committed. Returns where the pictures
+// Pictures of one domain's screens, and of any other story the proposal changed (`also`), for
+// whoever rules its design. The scanner renders each story and saves it; nothing is committed. Returns where the pictures
 // are, or why there are none — a ruler is told either way, since one who is not told assumes
 // the screens were looked at.
-export function captureScreens(projectDir, domain, { exec: run = exec, ensure = ensureDeps } = {}) {
+// The story files a branch changed against `main`, by file name. A proposal can change stories
+// outside the domain it is named for (a hand-in carries the whole catalogue,
+// `docs/decisions/0107`), and its ruler is shown those screens as well as the domain's own.
+export function changedStories(projectDir, branch, base = "main") {
+  const res = spawnSync("git", ["diff", "--name-only", "--diff-filter=AM", `${base}...${branch}`, "--", "design/catalogue"], { cwd: projectDir, encoding: "utf8" });
+  if (res.status !== 0) return [];
+  return res.stdout.split("\n").filter((f) => f.endsWith(".stories.tsx") && f.split("/").length === 3).map((f) => f.split("/").pop()).sort();
+}
+
+export function captureScreens(projectDir, domain, { exec: run = exec, ensure = ensureDeps, also = [] } = {}) {
   const designDir = join(projectDir, "design");
   const result = (files, error = null) => ({ dir: `design/${SCREENS_DIR}`, files, error });
   const scanner = join(designDir, "scan.mjs");
   if (!existsSync(join(designDir, "package.json")) || !existsSync(scanner)) return result([], "this project has no design harness (design/scan.mjs)");
   if (!readFileSync(scanner, "utf8").includes("--screens")) return result([], "this project's design/scan.mjs cannot take screenshots; `sdlc init` installs the pipeline's current one");
   const pages = surfacePageIds(projectDir, domain);
-  const stories = catalogueFiles(projectDir).filter((f) => pages.some((p) => f.startsWith(`${p}.`)));
+  const stories = catalogueFiles(projectDir).filter((f) => pages.some((p) => f.startsWith(`${p}.`)) || also.includes(f));
   if (!stories.length) return result([], `no story in design/catalogue/ draws a page of the ${domain} domain`);
   const out = join(designDir, SCREENS_DIR);
   rmSync(out, { recursive: true, force: true });

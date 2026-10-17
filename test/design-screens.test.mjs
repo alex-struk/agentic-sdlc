@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { captureScreens } from "../src/runner/catalogue.mjs";
+import { execFileSync } from "node:child_process";
+import { captureScreens, changedStories } from "../src/runner/catalogue.mjs";
 
 const SURFACE = `pages:
   - { id: application-list, domain: applications, route: /applications }
@@ -78,4 +79,42 @@ test("a domain with no stories is told so rather than photographed empty", (t) =
   const dir = project(t);
   const shots = captureScreens(dir, "reports", { exec: () => assert.fail("must not run"), ensure: () => ({ status: 0 }) });
   assert.match(shots.error, /no story/);
+});
+
+// A proposal can change a story outside the domain it is named for: a hand-in carries the whole
+// catalogue (`docs/decisions/0107`), and a change to a shared module can be paired with another
+// domain's story. Its ruler sees those screens too.
+test("a story the proposal changed in another domain is photographed with the domain's own", (t) => {
+  const dir = project(t);
+  const calls = [];
+  const shots = captureScreens(dir, "applications", {
+    exec: fakeScan(calls),
+    ensure: () => ({ status: 0 }),
+    also: ["invoice-list.default.stories.tsx", "application-list.default.stories.tsx", "gone.default.stories.tsx"],
+  });
+  assert.deepEqual(calls[0][4].split(","), [
+    "application-list.default.stories.tsx",
+    "application-list.empty.stories.tsx",
+    "application-view.default.stories.tsx",
+    "invoice-list.default.stories.tsx",
+  ]);
+  assert.ok(shots.files.includes("design/screenshots/invoice-list.default.png"));
+});
+
+test("the stories a branch changed are read from git against main", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "sdlc-screens-git-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  run("init", "-q", "-b", "main");
+  mkdirSync(join(dir, "design", "catalogue"), { recursive: true });
+  for (const f of ["a.default.stories.tsx", "b.default.stories.tsx", "layout.tsx"]) writeFileSync(join(dir, "design", "catalogue", f), "export {};\n");
+  run("add", "-A");
+  run("-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "catalogue");
+  run("checkout", "-q", "-b", "proposal/design-x");
+  writeFileSync(join(dir, "design", "catalogue", "b.default.stories.tsx"), "export const B = 1;\n");
+  writeFileSync(join(dir, "design", "catalogue", "c.default.stories.tsx"), "export {};\n");
+  writeFileSync(join(dir, "design", "catalogue", "layout.tsx"), "export const L = 1;\n");
+  run("add", "-A");
+  run("-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "change");
+  assert.deepEqual(changedStories(dir, "proposal/design-x"), ["b.default.stories.tsx", "c.default.stories.tsx"]);
 });
