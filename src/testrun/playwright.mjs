@@ -164,6 +164,20 @@ export function emptyReadOf(test) {
   return last?.empty && !last.threw ? last : null;
 }
 
+// The step a failed test stopped at, when the adapter raised an error of its own there: a member
+// that waited for the page to show something and gave up, or found it in a state it could not go
+// on from. That is the adapter's as often as the application's — it looked for the wrong thing, or
+// the application never drew it — and the steps alone cannot tell the two apart
+// (`docs/decisions/0111`). An `unbound:` or `absent:` error is not one: each is accounted for on its
+// own. Only a test whose status is `failed` counts, as in `caughtThrow`.
+const ABSENT_RE = /^(?:Error: )?absent: /m;
+export function adapterThrowOf(test) {
+  if (test?.status !== "failed") return null;
+  const last = (test?.steps ?? []).at(-1);
+  const threw = String(last?.threw ?? "");
+  return threw && !UNBOUND_RE.test(threw) && !ABSENT_RE.test(threw) ? last : null;
+}
+
 // What one spec file's tests add up to. A spec whose every result is `skipped` (or that
 // recorded no result at all) never ran the criterion's assertions, so it has not passed —
 // reported as a failure rather than silently defaulting to `pass` for lack of any failing

@@ -16,7 +16,7 @@ import { writeText } from "../lib/fsx.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { git, gitOk, stagePaths, enterBranch, leaveBranch, mergeInto, SDLC_AUTHOR } from "../lib/git.mjs";
 import { appendRun } from "../lib/runrecord.mjs";
-import { caughtThrow, emptyReadOf, runSuite } from "../testrun/playwright.mjs";
+import { adapterThrowOf, caughtThrow, emptyReadOf, runSuite } from "../testrun/playwright.mjs";
 import { caseOf, casesPhrase, failureMessage, failuresOf, quotedList, stoppedAt, withoutColour, FAILURES_DESCRIBED } from "../testrun/failures.mjs";
 import { resetCommandFor, targetSettings, APPLICATION } from "../sandbox/local.mjs";
 import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
@@ -335,6 +335,12 @@ function keepEvidence(projectDir, slice, rows) {
 // after a read that came back with nothing (`emptyReadOf`).
 function readNothing(r) {
   return (r?.tests ?? []).some((x) => x.error && emptyReadOf(x));
+}
+
+// Whether a failed row has a test the adapter stopped with an error of its own, which only a look
+// at the page can place either (`adapterThrowOf`, `docs/decisions/0111`).
+function adapterGaveUp(r) {
+  return (r?.tests ?? []).some((x) => x.error && adapterThrowOf(x));
 }
 
 // Whether a failed row has a test the adapter stopped because the application does not serve the
@@ -763,7 +769,13 @@ export const verify = {
         const absent = v.verdict === "fail"
           ? [...v.failing.filter(pageAbsent).map((r) => r.id), ...recheck.regressed.filter((x) => pageAbsent(x.row)).map((x) => x.id)]
           : [];
-        const sortFirst = (emptyReads.length > 0 || absent.length > 0) && returnsByVerify(projectDir, slice.number) + 1 < limit;
+        // And so is a failure the adapter raised itself, waiting for the page and giving up: it
+        // looked for the wrong thing, or the application never drew it (`docs/decisions/0111`).
+        const adapterErrors = v.verdict === "fail"
+          ? [...v.failing.filter((r) => !readNothing(r) && !pageAbsent(r) && adapterGaveUp(r)).map((r) => r.id),
+            ...recheck.regressed.filter((x) => !readNothing(x.row) && !pageAbsent(x.row) && adapterGaveUp(x.row)).map((x) => x.id)]
+          : [];
+        const sortFirst = (emptyReads.length > 0 || absent.length > 0 || adapterErrors.length > 0) && returnsByVerify(projectDir, slice.number) + 1 < limit;
         const unboundListed = unboundReasons(claimed, v.unbound);
         const paths = [writeVerifyResult(projectDir, {
           slice: slice.number, name, verdict: v.verdict, rows: claimed, unasserted: v.unasserted,
@@ -771,7 +783,7 @@ export const verify = {
           rechecked: recheck.held,
           regressed: recheck.regressed.map((x) => ({ id: x.id, slice: x.slice, result: x.row.result, error: firstError(x.row) })),
           measured,
-          sort: sortFirst ? { empty_reads: emptyReads, ...(absent.length ? { absent } : {}), conditions: failureConditions } : null,
+          sort: sortFirst ? { empty_reads: emptyReads, ...(absent.length ? { absent } : {}), ...(adapterErrors.length ? { adapter_errors: adapterErrors } : {}), conditions: failureConditions } : null,
         })];
         // Filed on main once the tree is back there, below: owed work is read off main by
         // `next` and by the binding run, and this branch reaches main only when it is ruled.
@@ -787,11 +799,13 @@ export const verify = {
           const why = [
             emptyReads.length ? `${emptyReads.length} of them a read that came back with nothing` : null,
             absent.length ? `${absent.length} of them a page the application does not serve` : null,
+            adapterErrors.length ? `${adapterErrors.length} of them an error the adapter raised itself` : null,
           ].filter(Boolean).join(", ");
           notPassed = `not yet returned — ${failingIds.length} ${failingIds.length === 1 ? "failure" : "failures"}, ${why}, for ${holder} to sort`;
           const stopped = [
             emptyReads.length ? `${emptyReads.join(", ")} stopped on a read that came back with nothing, which can be the adapter's as easily as the application's` : null,
             absent.length ? `${absent.join(", ")} stopped where the adapter found the application does not serve the page, which this build, another slice or the adapter may be the one to answer` : null,
+            adapterErrors.length ? `${adapterErrors.join(", ")} stopped where the adapter raised an error of its own, which can be the adapter's as easily as the application's` : null,
           ].filter(Boolean).join("; ");
           const to = absent.length ? "to the build, to bind-adapter or to the plan" : "to the build or to bind-adapter";
           text = [

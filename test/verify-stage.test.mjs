@@ -1503,6 +1503,44 @@ test("a failure where the adapter found the application does not serve the page 
   assert.equal(buildVerified(d, "build-slice-1", ctx.config).ok, false, "it is still not approvable");
 });
 
+// An adapter member that waits for the page and gives up raises its own error, and whether it
+// looked for the wrong thing or the application never drew it is a question the page answers and
+// a builder cannot (`docs/decisions/0111`).
+test("a failure where the adapter raised an error of its own is left open for the G3 ruler to sort", async (t) => {
+  const d = buildProject(t);
+  const gaveUp = "accountView.addAttachment — \"a.pdf\" was offered on http://localhost/accounts/7 and after 30 s its row carries neither a \"Download a.pdf\" link nor an alert (no row naming it)";
+  mockSuite(t, [
+    failedAfter("R-4.1", { step: "accountView.addAttachment", given: "{file}", at: "/accounts/7", threw: gaveUp }, { error: `Error: ${gaveUp}` }),
+    row("R-4.2", "fail", "Error: plainly wrong"),
+  ]);
+  const ctx = ctxFor(d);
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"), "verify writes no ruling of its own");
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "fail");
+  assert.deepEqual(result.sort.adapter_errors, ["R-4.1"]);
+  assert.deepEqual(result.sort.empty_reads, []);
+  assert.equal(result.sort.conditions.length, 2, "every failure is listed as the build would be told it");
+  assert.match(r.text, /R-4\.1 stopped where the adapter raised an error of its own.*left open for agent:reviewer/);
+  assert.equal(buildVerified(d, "build-slice-1", ctx.config).ok, false, "it is still not approvable");
+});
+
+test("a ruler given a failure the adapter raised itself is told it may be the adapter's", async () => {
+  const { formatVerifyEvidence } = await import("../src/runner/verify-evidence.mjs");
+  const text = formatVerifyEvidence({ slice: 1, result: {
+    verdict: "fail", proposal: "build-slice-1", app_tree: "abcdef0",
+    sort: { empty_reads: [], adapter_errors: ["R-4.1"], conditions: ["R-4.1: Error: accountView.addAttachment — gave up (no row naming it)", "R-4.2: Error: y"] },
+    rows: [row("R-4.1", "fail", "Error: x"), row("R-4.2", "fail", "Error: y")],
+  } });
+  assert.match(text, /### Failures to sort before the build goes back/);
+  assert.match(text, /R-4\.1 stopped where the adapter raised an error of its own/);
+  assert.doesNotMatch(text, /came back with nothing/);
+  assert.match(text, /addressed-to bind-adapter: <the criterion id>:/);
+  assert.match(text, /^- R-4\.1: Error: accountView\.addAttachment — gave up \(no row naming it\)$/m);
+  assert.match(text, /^- R-4\.2: Error: y$/m);
+});
+
 // A test that caught the adapter's `absent:` and failed on what it was left with stopped at a page
 // the application does not serve all the same (`docs/decisions/0100`).
 test("a failure whose last step threw absent: is sorted as a page the application does not serve, and an unbound reason is read off the step", async (t) => {

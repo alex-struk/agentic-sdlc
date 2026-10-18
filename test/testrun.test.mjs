@@ -735,3 +735,14 @@ test("emptyReadOf: only a last step that read nothing, and did not throw, is an 
   assert.equal(emptyReadOf(at({ step: "a.click", threw: "timed out" })), null);
   assert.equal(emptyReadOf({}), null);
 });
+
+test("adapterThrowOf: only the last step of a failed test, where the adapter raised an error of its own, counts", async () => {
+  const { adapterThrowOf } = await import("../src/testrun/playwright.mjs");
+  const at = (last, status = "failed") => ({ status, steps: [{ step: "a.open" }, last] });
+  assert.ok(adapterThrowOf(at({ step: "a.add", threw: "a.add — \"x.pdf\" was offered and after 30 s its row carries no link (no row naming it)" })));
+  assert.equal(adapterThrowOf(at({ step: "a.add", threw: "unbound: a.add — no control named Add" })), null);
+  assert.equal(adapterThrowOf(at({ step: "a.open", threw: "Error: absent: a.open — /a answers the not-found page" })), null);
+  assert.equal(adapterThrowOf(at({ step: "a.text", read: "\"\"", empty: true })), null);
+  assert.equal(adapterThrowOf(at({ step: "a.add", threw: "a.add — gave up" }, "timedOut")), null);
+  assert.equal(adapterThrowOf({}), null);
+});

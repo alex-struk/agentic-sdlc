@@ -268,6 +268,14 @@ step it recorded threw `unbound:` or `absent:`, it is read as having stopped the
 unbound row, or into the sort, with the reason taken from that step
 (`docs/decisions/0100-an-adapter-error-a-test-caught-is-still-the-adapters.md`).
 
+A failure whose test stopped where the adapter raised any other error of its own is sorted the
+same way: a member waited for the page to show something and gave up, or found it in a state it
+could not go on from, and whether it looked for the wrong thing or the application never drew it
+is a question the page answers. The last step the failed test recorded threw it. The result names
+those criteria in `sort.adapter_errors`, and the ruler returns each to the build or addresses it to
+`bind-adapter`, as for an empty read
+(`docs/decisions/0111-an-error-the-adapter-raises-itself-is-sorted-before-the-build-goes-back.md`).
+
 ## The verdict table
 
 | Result | Route | Gate file written |
