@@ -68,6 +68,21 @@ export function buildBranches(projectDir, slice) {
   }));
 }
 
+// When the proposal on `branch` was opened, in seconds, from the `propose(<gate>): <name>` commit
+// it opens with, or `null` where the branch holds none.
+function proposedAt(projectDir, branch, name) {
+  const args = ["log", "-1", "--format=%ct", `--grep=^propose([^)]*): ${name}$`, branch];
+  const out = gitOk(args, projectDir) ? git(args, projectDir).trim() : "";
+  return out ? Number(out) : null;
+}
+
+// Of each slice's newest build, the one proposed last. Where no branch records when it was
+// proposed, the one of the slice furthest on in the plan.
+function proposedLast(projectDir, builds) {
+  const dated = builds.map((b) => ({ ...b, at: proposedAt(projectDir, b.branch, b.name) })).filter((b) => b.at !== null);
+  return dated.length ? dated.reduce((a, b) => (b.at >= a.at ? b : a)) : builds.at(-1);
+}
+
 // The branch a binding of the new target runs against, for the rebind entries it is handed:
 // `{ branch }`, or `{ why }` when there is no one branch to start it from. The application
 // such a binding needs is on a build proposal alone until that proposal is ruled
@@ -81,9 +96,9 @@ export function buildBranches(projectDir, slice) {
 // person's call. Where none is open, a verify has returned the newest, and its application is
 // still the one the rows were found on: the newest build proposal of the slice is bound
 // against whatever its state, `proposal/<name>` or `returned/<name>` (`docs/decisions/0080`).
-// With no entries that is the newest of the slice furthest on in the plan that has one, which
-// carries every slice approved before it; with entries naming more than one slice, choosing is
-// a person's call.
+// With no entries that is the build proposed last, of whichever slice, which carries every
+// slice approved before it (`docs/decisions/0109`); with entries naming more than one slice,
+// choosing is a person's call.
 export function bindingBranch(projectDir, entries = []) {
   const slices = new Set();
   const unstamped = new Set();
@@ -100,8 +115,9 @@ export function bindingBranch(projectDir, entries = []) {
   const open = built.map((x) => ({ n: x.n, branch: x.branches.find((b) => b.open)?.branch })).filter((x) => x.branch);
   if (open.length === 1) return { branch: open[0].branch };
   if (open.length > 1) return { why: `slices ${open.map((x) => x.n).join(", ")} each have an open build proposal (${open.map((x) => x.branch).join(", ")}), and which of them to bind against is a person's call` };
-  const newest = built.map((x) => ({ n: x.n, branch: x.branches[0].branch }));
-  if (newest.length === 1 || (newest.length > 1 && !entries.length)) return { branch: newest.at(-1).branch };
+  const newest = built.map((x) => ({ n: x.n, branch: x.branches[0].branch, name: x.branches[0].name }));
+  if (newest.length && !entries.length) return { branch: proposedLast(projectDir, newest).branch };
+  if (newest.length === 1) return { branch: newest[0].branch };
   const which = `slice${candidates.length === 1 ? "" : "s"} ${candidates.join(", ")}`;
   if (newest.length > 1) return { why: `no build proposal is open for ${which}, and slices ${newest.map((x) => x.n).join(", ")} each have a ruled one (${newest.map((x) => x.branch).join(", ")}); which of them to bind against is a person's call` };
   return { why: `no build proposal for ${which}` };

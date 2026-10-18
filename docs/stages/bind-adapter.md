@@ -196,12 +196,14 @@ password from `process.env.SDLC_SANDBOX_PASSWORD` at run time
     has an open build proposal, a verify has returned the newest, and the branch is the newest
     build proposal of that slice whatever its state, by proposal number: `proposal/<name>` while
     it carries its return, `returned/<name>` once `build --revise` has renamed it. With no entries,
-    that is the newest build of the slice furthest on in the plan that has one. An open build
-    proposal for more than one slice, or none open and a ruled one for more than one of the slices
-    the entries name, is a person's call: the refusal says so and names no branch. `sdlc drive`
-    acts on the refusal that names one
+    that is the build proposed last, of whichever slice, read from the `propose(<gate>): <name>`
+    commit each slice's newest build opens with; where no branch has one, the newest build of the
+    slice furthest on in the plan. An open build proposal for more than one slice, or none open
+    and a ruled one for more than one of the slices the entries name, is a person's call: the
+    refusal says so and names no branch. `sdlc drive` acts on the refusal that names one
     (`docs/decisions/0078-drive-starts-the-new-sandbox-for-a-rebind.md`,
-    `docs/decisions/0080-a-returned-adapter-is-revised-before-it-is-measured-with.md`).
+    `docs/decisions/0080-a-returned-adapter-is-revised-before-it-is-measured-with.md`,
+    `docs/decisions/0109-a-binding-with-nothing-owed-runs-against-the-build-proposed-last.md`).
   - With `--revise`, a returned `bind-adapter-<t>[-n]` proposal to revise from, newest first, or a
     revision request addressed to bind-adapter about `<t>`, or one nothing places on a target
     (`docs/decisions/0081-a-revision-request-carries-its-target.md`). A request about another

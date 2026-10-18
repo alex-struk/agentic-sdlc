@@ -111,10 +111,48 @@ test("with no build proposal of its slice open, a binding runs against the newes
   // An open proposal is preferred over a newer-numbered returned one.
   const both = withProposals(t, ["build-slice-1-2", "build-slice-1-3"], [], ["build-slice-1-3"]);
   assert.deepEqual(bindingBranch(both, [{ id: "R-4.1", slice: 1 }]), { branch: "proposal/build-slice-1-2" });
-  // With nothing owed — a revision whose entries are spent — the newest build of the slice
-  // furthest on in the plan that has one.
+  // With nothing owed, and no branch recording when it was proposed, the newest build of the
+  // slice furthest on in the plan that has one.
   const plan = withProposals(t, ["build-slice-1", "build-slice-2-3", "build-slice-2-4"], [], ["build-slice-1", "build-slice-2-3", "build-slice-2-4"]);
   assert.deepEqual(bindingBranch(plan, []), { branch: "returned/build-slice-2-4" });
+});
+
+// Each name in `order` proposed on its own branch from `main`, a minute after the one before it,
+// with the commit a proposal opens with; a name in `ruled` is approved and merged into `main`.
+function proposedInOrder(t, order, ruled = []) {
+  const d = project(t);
+  const run = (a, at) => execFileSync("git", a, { cwd: d, stdio: "ignore", env: { ...process.env, ...(at ? { GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at } : {}) } });
+  const commit = (m, at) => run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "--allow-empty", "-m", m], at);
+  run(["init", "-q", "-b", "main"]); run(["add", "-A"]); commit("x", "2026-01-01T00:00:00Z");
+  order.forEach((name, i) => {
+    const at = `2026-01-01T00:${String(i + 1).padStart(2, "0")}:00Z`;
+    run(["checkout", "-q", "-b", `proposal/${name}`, "main"]);
+    commit(`propose(G3): ${name}`, at);
+    if (ruled.includes(name)) {
+      mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+      writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), "verdict: approve\n");
+      run(["add", "-A"]); commit(`rule(G3): ${name} approve`, at);
+      run(["checkout", "-q", "main"]);
+      run(["-c", "user.name=t", "-c", "user.email=t@e.test", "merge", "-q", "--no-ff", "-m", `merge: ${name} approved at G3 by t`, `proposal/${name}`], at);
+    } else {
+      mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
+      writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), "verdict: return\n");
+      run(["add", "-A"]); commit(`rule(G3): ${name} return`, at);
+      run(["checkout", "-q", "main"]);
+    }
+  });
+  return d;
+}
+
+// A slice approved earlier can be built again after the last slice in the plan was approved, and
+// its build then carries every approval before it while the last slice's does not. With nothing
+// owed, a binding runs against the build proposed last, whichever slice it is of.
+test("with nothing owed and no build open, a binding runs against the build proposed last", (t) => {
+  const d = proposedInOrder(t, ["build-slice-1", "build-slice-2", "build-slice-1-2"], ["build-slice-1", "build-slice-2"]);
+  assert.deepEqual(bindingBranch(d, []), { branch: "proposal/build-slice-1-2" });
+  // In plan order, the build proposed last is the furthest slice's.
+  const inOrder = proposedInOrder(t, ["build-slice-1", "build-slice-2"], ["build-slice-1"]);
+  assert.deepEqual(bindingBranch(inOrder, []), { branch: "proposal/build-slice-2" });
 });
 
 test("the spec files for a slice's criteria are found wherever their domain keeps them", (t) => {
