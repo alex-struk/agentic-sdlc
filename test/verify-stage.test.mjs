@@ -331,18 +331,21 @@ test("a return the reviewer wrote is not counted toward verify's escalation", as
 // A person who returns an escalated slice has answered the escalation; the verify returns
 // before that ruling are not held against the build it asked for. An agent seat's return
 // does not reset the count, or the loop would never reach a person (`0076`).
-for (const [by, expected] of [["tech-lead", "return"], ["agent:tech-lead", "escalated"]]) {
-  test(`verify's return count ${expected === "return" ? "starts again after a person's" : "does not restart after an agent seat's"} return (${by})`, async (t) => {
+// An approval ends a slice's line of work too: a later build of the slice (one a later design
+// or contract change asks for) starts a new line, and the returns before the approval are not
+// held against it (`0108`).
+for (const [by, expected, verdict] of [["tech-lead", "return", "return"], ["agent:tech-lead", "escalated", "return"], ["agent:reviewer", "return", "approve"]]) {
+  test(`verify's return count ${verdict === "approve" ? "starts again after the slice is approved" : expected === "return" ? "starts again after a person's return" : "does not restart after an agent seat's return"} (${by})`, async (t) => {
     const d = buildProject(t);
     const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
     for (const k of [2, 3, 4]) {
       run(["checkout", "-q", "-b", `proposal/build-slice-1-${k}`, "proposal/build-slice-1"]);
       run(["checkout", "-q", "main"]);
     }
-    for (const [name, who, verdict] of [["build-slice-1", "runner:verify", "return"], ["build-slice-1-2", "runner:verify", "return"], ["build-slice-1-3", by, "return"]]) {
+    for (const [name, who, ruled] of [["build-slice-1", "runner:verify", "return"], ["build-slice-1-2", "runner:verify", "return"], ["build-slice-1-3", by, verdict]]) {
       run(["checkout", "-q", `proposal/${name}`]);
       mkdirSync(join(d, ".sdlc", "gates"), { recursive: true });
-      writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), `gate: G3\nverdict: ${verdict}\nby: ${who}\nheld_by: runner\n`);
+      writeFileSync(join(d, ".sdlc", "gates", `${name}.yaml`), `gate: G3\nverdict: ${ruled}\nby: ${who}\nheld_by: runner\n`);
       run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
       run(["checkout", "-q", "main"]);
     }

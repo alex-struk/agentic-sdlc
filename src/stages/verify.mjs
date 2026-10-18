@@ -416,13 +416,16 @@ function verifyReturnGate(projectDir, name) {
 // front of a slice the loop is not closing; once one has read it and asked for another
 // build, the returns before that ruling have been answered. Only a person's ruling resets
 // it: an agent seat returning its own escalation would let the loop run without end
-// (`docs/decisions/0076`). The family's order is its proposal numbers, which only grow.
+// (`docs/decisions/0076`). An approval starts it again too: it ends that line of work, and a
+// later build of the slice, asked for by a later change, is a new line whose first failure is
+// returned like any other (`docs/decisions/0108`). The family's order is its proposal numbers,
+// which only grow.
 function returnsByVerify(projectDir, slice) {
   const base = buildProposalBase(slice);
   const seq = (name) => (name === base ? 1 : Number(name.slice(base.length + 1)));
   const gates = [...buildProposalFamily(projectDir, slice)]
     .map((name) => ({ name, n: seq(name), gate: verifyReturnGate(projectDir, name) }));
-  const since = Math.max(0, ...gates.filter(({ gate }) => gate?.verdict === "return" && byPerson(gate.by)).map(({ n }) => n));
+  const since = Math.max(0, ...gates.filter(({ gate }) => (gate?.verdict === "return" && byPerson(gate.by)) || gate?.verdict === "approve").map(({ n }) => n));
   return gates.filter(({ n, gate, name }) => n > since && !environmentOnly(gate)
     && (gate?.by === "runner:verify" || (gate?.verdict === "return" && sortedOn(projectDir, name, slice)))).length;
 }

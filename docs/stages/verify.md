@@ -127,7 +127,9 @@ asks for happens at the gate it is returned to, not here.
    condition is an environment gap. The count starts again after a person returns the slice: the
    returns before that ruling are the ones the person answered, and only verify's returns on
    later proposals count. An agent seat's return does not reset it
-   (`docs/decisions/0076-a-person-s-return-resets-the-verify-count.md`). The conditions are the failures alone: an environment gap or
+   (`docs/decisions/0076-a-person-s-return-resets-the-verify-count.md`). The count also starts
+   again once the slice is approved: a later build of an approved slice is a new line of work
+   (`docs/decisions/0108-a-slice-s-verify-count-starts-again-once-it-is-approved.md`). The conditions are the failures alone: an environment gap or
    an unbound row beside them is named in what is printed and never made a condition.
 8. **On `environment`, report and stop.** Nothing is written to a gate file and nothing counts
    toward the return limit: nothing the builder can change would test these criteria. What is
