@@ -9,6 +9,12 @@ because its workspace never has any application source to read. It holds gate G3
 only, covers everything the contract names, and touches nothing outside its own target's corner of
 the tree.
 
+A binding finds what a member works on by the test ID the contract gives it (`test_id` in
+`spec/contract/surface.yaml`) on a target the pipeline built, whose pages carry those identifiers,
+and by role, label, visible text or URL on the old target, which carries none, or wherever the
+contract names none
+(`docs/decisions/0110-a-rebuilt-target-is-bound-by-the-contract-s-test-ids.md`).
+
 ## Inputs
 
 `sdlc run bind-adapter --target <t> [--dry-run]`, run from inside the project's working tree, on

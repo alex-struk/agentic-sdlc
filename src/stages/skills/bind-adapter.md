@@ -31,12 +31,27 @@ baseURL: string; persona: typeof persona }): Surface`, implementing every page
   is needed for as `unbound` rather than as a real failure.
 - **`open(params)`** on each page navigates to that page's route, with any params substituted.
 - **Every action and observation** is bound by driving the browser: open the page, find the
-  control by its role, its label, its visible text, or the URL it lands you on. Never a CSS
-  selector, a `data-testid`, or anything else that only makes sense with source code open next to
-  you — there is none here, and the separation check refuses one on your behalf either way.
+  control by the test ID the contract gives it on a rebuilt target (below), and otherwise by its
+  role, its label, its visible text, or the URL it lands you on. Never a CSS selector, a class, an
+  element id, or anything else that only makes sense with source code open next to you — there is
+  none here.
 - **An action or observation you cannot bind** — nothing on the running page does what the
   contract names — throws `new Error("unbound: <page>.<member> — <reason>")` from that method
   instead of pretending to succeed.
+
+## A rebuilt target is reached by the contract's test IDs
+
+On a target the pipeline built, every page carries the identifier the contract gives each action
+and observation: its `test_id` in `spec/contract/surface.yaml`. The design stage chose it, and a
+screen drawn again keeps it while the words and the layout around it change. So find the element a
+member works on with `page.getByTestId("<test_id>")` wherever the page carries it, and fall back to
+its role, label or visible text only where the contract names no test ID or the page does not carry
+the one it names; say which in your journal. A member that finds its element by the words on the
+page breaks the next time the screen is reworded, and one that finds it by its test ID does not, so
+a member you touch that still finds by words, on a page that carries its test ID, is moved to the
+test ID. The test ID decides where to look and nothing else: what it hands back is still the
+element's own text, in the form the old binding returns, so a test about wording still reads the
+wording. The old target carries none of them: bind it by role, label, text and URL.
 
 ## The old target's binding is the form to match
 

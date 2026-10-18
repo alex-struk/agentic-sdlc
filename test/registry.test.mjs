@@ -137,6 +137,22 @@ test("the binder of the new target is told to answer in the form the old target'
   assert.match(skill, /the same spellings of its input/);
 });
 
+// A rebuilt target's pages carry the test ID the contract names for each action and observation,
+// and a redesign keeps every one while it changes the words and the layout around them. A member
+// found by its test ID survives the redesign; one found by the words on the page does not
+// (`docs/decisions/0110`).
+test("the binder of a rebuilt target finds a member by the test ID the contract names for it", () => {
+  const skill = skillText("bind-adapter");
+  assert.match(skill, /## A rebuilt target is reached by the contract's test IDs/);
+  assert.match(skill, /`test_id` in `spec\/contract\/surface\.yaml`/);
+  assert.match(skill, /page\.getByTestId\(/);
+  assert.match(skill, /The old target carries\s+none of them/);
+  assert.match(skill, /what it hands back is still the\s+element's own text/);
+  // The separation check keeps test IDs out of the acceptance tests, not out of an adapter.
+  assert.doesNotMatch(skill, /the separation check refuses one on your behalf/);
+  assert.doesNotMatch(skill, /Never a CSS\s+selector, a `data-testid`/);
+});
+
 // A page the application does not serve is the application's to make, not the binding's to find:
 // the binder reports it absent, decided when the member runs, and unbound once the page answers
 // (`docs/decisions/0098`).
