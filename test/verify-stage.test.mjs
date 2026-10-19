@@ -25,6 +25,16 @@ process.env.SDLC_SANDBOX_PASSWORD = "set-for-tests";
 test("a suite run given spec files runs exactly those", (t) => {
   const d = mkdtempSync(join(tmpdir(), "sdlc-files-"));
   t.after(() => rmSync(d, { recursive: true, force: true }));
+  // A chromium already in place, so the run is the only Playwright call, whatever the machine
+  // running this test has cached: without one, `runSuite` installs it first.
+  const browsers = mkdtempSync(join(tmpdir(), "sdlc-files-browsers-"));
+  mkdirSync(join(browsers, "chromium-1084"));
+  const prevBrowsers = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  process.env.PLAYWRIGHT_BROWSERS_PATH = browsers;
+  t.after(() => {
+    if (prevBrowsers === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH; else process.env.PLAYWRIGHT_BROWSERS_PATH = prevBrowsers;
+    rmSync(browsers, { recursive: true, force: true });
+  });
   mkdirSync(join(d, "tests", "acceptance", "users"), { recursive: true });
   mkdirSync(join(d, "tests", "test-results"), { recursive: true });
   writeFileSync(join(d, "tests", "test-results", "results.json"), '{"suites":[]}');
