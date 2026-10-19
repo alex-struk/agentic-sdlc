@@ -49,10 +49,21 @@ function listen(server) {
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port)));
 }
 
+// What the far end sends is read from the moment the tunnel opens, starting with `head`. Bytes
+// that reach the client in the same read as the proxy's reply are handed over as the connect
+// event's `head`, not as data on the socket, so a reader that only listens to the socket later
+// gets the whole body on one machine and none of it on another.
 function connectThrough(proxyPort, target) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port: proxyPort, method: "CONNECT", path: target });
-    req.on("connect", (res, socket) => resolve({ status: res.statusCode, socket }));
+    req.on("connect", (res, socket, head) => {
+      const body = new Promise((done) => {
+        let b = head.toString();
+        socket.on("data", (c) => { b += c; });
+        socket.on("end", () => done(b));
+      });
+      resolve({ status: res.statusCode, socket, body });
+    });
     req.on("error", reject);
     req.end();
   });
@@ -79,8 +90,7 @@ test("the proxy tunnels to an allowed host, refuses any other, and logs each dec
   try {
     const ok = await connectThrough(proxyPort, `127.0.0.1:${upstreamPort}`);
     assert.equal(ok.status, 200);
-    const body = await new Promise((resolve) => { let b = ""; ok.socket.on("data", (c) => { b += c; }); ok.socket.on("end", () => resolve(b)); });
-    assert.equal(body, "upstream says hi");
+    assert.equal(await ok.body, "upstream says hi");
     const denied = await connectThrough(proxyPort, "blocked.example:443");
     assert.equal(denied.status, 403);
     denied.socket.destroy();
