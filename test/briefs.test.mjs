@@ -89,7 +89,7 @@ test("a brief that is behind its template is reported, and the next init brings 
   writeFileSync(briefPath(dir, file), older);
   const recorded = { ...lockBriefs(dir), [file]: briefDigest(older) };
   writeFileSync(join(dir, ".sdlc", "lock.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(dir, ".sdlc", "lock.json"), "utf8")), briefs: recorded }, null, 2) + "\n");
-  git(["add", "-A"], dir); git(["commit", "-q", "-m", "a brief from an older template"], dir);
+  git(["add", "-A"], dir); git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "a brief from an older template"], dir);
 
   assert.equal(briefStates(dir, recorded).find((b) => b.file === file).state, "behind");
   const check = checkBriefs(dir);
@@ -108,7 +108,7 @@ test("a brief with local edits is left alone, named, and replaced only when the 
   const template = templateOf(file);
   const edited = `${template}\n## A rule this team added\n\nSomething this project's reviewer is asked for and no other project is.\n`;
   writeFileSync(briefPath(dir, file), edited);
-  git(["add", "-A"], dir); git(["commit", "-q", "-m", "a local addition to the brief"], dir);
+  git(["add", "-A"], dir); git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "a local addition to the brief"], dir);
 
   assert.equal(briefStates(dir, lockBriefs(dir)).find((b) => b.file === file).state, "local");
   const check = checkBriefs(dir);

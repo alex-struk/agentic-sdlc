@@ -262,7 +262,7 @@ test("init installs the pipeline's current design harness into an existing proje
     };
     writeFileSync(join(dir, "design", "scan.mjs"), "// an older scanner\n");
     writeFileSync(join(dir, "design", ".storybook", "main.ts"), "export default {};\n");
-    git(["add", "-A"], dir); git(["commit", "-q", "-m", "an older harness"], dir);
+    git(["add", "-A"], dir); git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "an older harness"], dir);
 
     const r = await init(dir);
 

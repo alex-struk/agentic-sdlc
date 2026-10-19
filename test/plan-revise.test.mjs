@@ -66,7 +66,7 @@ test("plan --revise retries from a recorded return whose branch was renamed", (t
     "gate: G2\nverdict: return\nby: agent:architect\nheld_by: agent\nrationale: the plan ignores the stack profile\nconditions:\n  - \"Adopt the openshift-ts stack profile\"\n");
   run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "returned"]);
   run(["checkout", "-q", "main"]);
-  run(["cherry-pick", "returned/plan"]);
+  run(["-c", "user.name=t", "-c", "user.email=t@e.test", "cherry-pick", "returned/plan"]);
   const ctx = { revise: true, dryRun: true };
   const plan = stageFor("plan");
   assert.equal(plan.preChecks(d, ctx).find((c) => c.id === "plan-revise-source").ok, true);
