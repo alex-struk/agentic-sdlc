@@ -1249,6 +1249,8 @@ test("a criterion an approved slice passed is run again, and its failure now ret
   assert.ok(!calls[0].includes("tests/acceptance/users/R-3.1.spec.ts"), "the slice's own tests run first, on their own");
   assert.ok(calls[1].includes("tests/acceptance/users/R-3.1.spec.ts"), "then, its own passing, the earlier slice's passing criterion");
   assert.ok(!calls[1].includes("tests/acceptance/users/R-3.2.spec.ts"), "one it never passed is not");
+  assert.deepEqual(calls[2], ["tests/acceptance/users/R-3.1.spec.ts"], "the one that failed runs once more, apart from the rest, before it is charged");
+  assert.equal(existsSync(join(d, "tests", "acceptance", "redo.yaml")), false, "one that fails again is the build's, and its test is not filed");
   const gate = parseYaml(onBranch(d, ".sdlc/gates/build-slice-1.yaml"));
   assert.equal(gate.verdict, "return");
   assert.equal(gate.conditions.length, 1);
@@ -1258,6 +1260,81 @@ test("a criterion an approved slice passed is run again, and its failure now ret
   assert.equal(result.verdict, "fail");
   assert.deepEqual(result.regressed.map((x) => [x.id, x.slice]), [["R-3.1", 5]]);
   assert.deepEqual(result.rows.map((x) => x.id).sort(), ["R-4.1", "R-4.2"], "the slice's own rows stay its own");
+});
+
+// The contract on main, holding the criteria given: what a redo entry takes its version from.
+function withIndex(d, criteria) {
+  const run = (a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  mkdirSync(join(d, "spec"), { recursive: true });
+  writeFileSync(join(d, "spec", "criteria-index.json"), JSON.stringify({ criteria: criteria.map((c) => ({ domain: "users", state: "accepted", ...c })) }));
+  run(["add", "-A"]); run(["-c", "user.name=t", "-c", "user.email=t@e.test", "commit", "-q", "-m", "index"]);
+}
+
+// A suite run that answers each call with the next set of rows, recording the files it was given.
+const runsOf = (runs, calls) => (opts) => { calls.push(opts.files); return { rows: runs[calls.length - 1] ?? [] }; };
+
+// A test that passes or fails by what other tests did, or by how long a step took, fails on a
+// build that never touched what it reads. Run once more, apart from the rest of the suite and
+// against the same application, it passes; it is not charged to the build, and its test is filed
+// to be written again (`docs/decisions/0112`).
+test("an earlier criterion that passes when run once more is not charged to the build, and its test is filed to be written again", async (t) => {
+  const d = buildProject(t);
+  withEarlierSlice(d, [row("R-3.1", "pass"), row("R-3.4", "pass")]);
+  withIndex(d, [{ id: "R-3.1", version: 2 }, { id: "R-3.4", version: 1 }]);
+  const calls = [];
+  const runs = [
+    [row("R-4.1", "pass"), row("R-4.2", "pass")],
+    [row("R-3.1", "fail", "Error: Timeout 5000ms exceeded while waiting on the predicate"), row("R-3.4", "pass")],
+    [row("R-3.1", "pass")],
+  ];
+  const ctx = { ...ctxFor(d), runSuite: runsOf(runs, calls) };
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+
+  assert.deepEqual(calls[2], ["tests/acceptance/users/R-3.1.spec.ts"], "the one that failed runs once more, apart from the rest");
+  assert.equal(calls.length, 3);
+  assert.equal(r.notPassed, undefined, "the build is not returned for it");
+  assert.match(r.text, /slice 1 verified/);
+  assert.match(r.text, /R-3\.1 \(slice 5\) failed, then passed when run again against the same application: not charged to this build, and its test is filed to be written again/);
+  assert.throws(() => onBranch(d, ".sdlc/gates/build-slice-1.yaml"), "no ruling of verify's own");
+  const result = JSON.parse(onBranch(d, "tests/results/new/slice-1.json"));
+  assert.equal(result.verdict, "pass");
+  assert.deepEqual(result.regressed ?? [], []);
+  assert.deepEqual(result.flaky.map((x) => [x.id, x.slice]), [["R-3.1", 5]]);
+  assert.match(result.flaky[0].error, /Timeout 5000ms/);
+  assert.deepEqual(result.rechecked, ["R-3.4"], "a criterion that passed only on its second run is not counted as holding");
+  assert.deepEqual(Object.keys(result.measured.passed), ["R-3.4"], "nor carried into the next verify as measured");
+
+  // Filed on main, where `next` offers derive-tests --stale for it.
+  const redo = parseYaml(readFileSync(join(d, "tests", "acceptance", "redo.yaml"), "utf8")).redo;
+  assert.equal(redo.length, 1);
+  assert.equal(redo[0].id, "R-3.1");
+  assert.equal(redo[0].version, 2, "the criterion's version now, as a ruling's redo entry records it");
+  assert.equal(redo[0].verb, "test-flaky");
+  assert.equal(redo[0].from, "build-slice-1");
+  assert.equal(redo[0].by, "runner:verify");
+  assert.match(redo[0].why, /failed in the verify of build-slice-1 and then passed when run again apart from the rest of the suite, against the same application and the same test/);
+  assert.match(redo[0].why, /Timeout 5000ms/);
+});
+
+// A redo entry for a criterion nothing can derive would never close, so one the contract does not
+// hold is not filed (`overreachRedoEntries`, `src/commands/rule.mjs`). It is still not the build's.
+test("an earlier criterion that passes when run once more, and that the contract does not hold, is not filed", async (t) => {
+  const d = buildProject(t);
+  withEarlierSlice(d, [row("R-3.1", "pass")]);
+  const calls = [];
+  const runs = [
+    [row("R-4.1", "pass"), row("R-4.2", "pass")],
+    [row("R-3.1", "fail", "Error: Timeout 5000ms exceeded while waiting on the predicate")],
+    [row("R-3.1", "pass")],
+  ];
+  const ctx = { ...ctxFor(d), runSuite: runsOf(runs, calls) };
+  verify.preChecks(d, ctx);
+  const r = await verify.execute(d, ctx);
+
+  assert.equal(r.notPassed, undefined);
+  assert.match(r.text, /R-3\.1 \(slice 5\) failed, then passed when run again against the same application: not charged to this build\. The contract does not hold it, so its test is not filed to be written again\./);
+  assert.equal(existsSync(join(d, "tests", "acceptance", "redo.yaml")), false);
 });
 
 test("earlier criteria that still pass leave the slice's own verdict as it was, and the result says they were checked", async (t) => {
@@ -1797,12 +1874,17 @@ test("the evidence of the slice's own run is kept before the earlier slices' run
   const ctx = { ...ctxFor(d), runSuite: () => {
     call += 1;
     if (call === 1) return { rows: [row("R-4.1", "pass"), withShot(row("R-4.2", "fail", MAIL_UNSET), shot("own.png"))] };
-    rmSync(join(shots, "own.png"));
-    return { rows: [withShot(row("R-3.1", "fail", "Error: y"), shot("earlier.png"))] };
+    if (call === 2) {
+      rmSync(join(shots, "own.png"));
+      return { rows: [withShot(row("R-3.1", "fail", "Error: y"), shot("earlier.png"))] };
+    }
+    rmSync(join(shots, "earlier.png"));
+    return { rows: [withShot(row("R-3.1", "fail", "Error: y"), shot("again.png"))] };
   } };
   verify.preChecks(d, ctx);
   await verify.execute(d, ctx);
-  assert.equal(call, 2, "the earlier slices' tests ran");
+  assert.equal(call, 3, "the earlier slices' tests ran, and the one that failed ran once more");
   assert.equal(readFileSync(join(d, ".sdlc", "evidence", "slice-1", "R-4.2.png"), "utf8"), "own.png");
   assert.equal(readFileSync(join(d, ".sdlc", "evidence", "slice-1", "R-3.1.png"), "utf8"), "earlier.png");
+  assert.equal(readFileSync(join(d, ".sdlc", "evidence", "slice-1", "R-3.1-2.png"), "utf8"), "again.png", "the run once more keeps its own beside the first");
 });

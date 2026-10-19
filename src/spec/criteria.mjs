@@ -518,6 +518,12 @@ export const OVERREACH_VERB = "test-overreaches";
 export const OVERREACH_CONDITION_FORM =
   `${OVERREACH_VERB} <ID>: <what the test demands that the criterion does not ask for>`;
 
+// The verb on a redo entry verify files itself: the criterion's test failed and then passed
+// against the same application, with nothing changed between, so whatever it asserts, its
+// outcome depends on more than what the application does (`docs/decisions/0112`). No ruler
+// writes it, and no condition grammar reads it.
+export const FLAKY_VERB = "test-flaky";
+
 // No `/s` flag and a bare `$`, for the same reason `parseCondition` has neither. The
 // reason is required and a reason that collapses to nothing is not one: an entry filed
 // without it would send the criterion back to a writer with nothing to write differently,

@@ -17,7 +17,7 @@ import { runCatalogueScan } from "../runner/catalogue.mjs";
 import { typecheckPostCheck } from "../runner/typecheck.mjs";
 import { checkDesignAccessibility, checkDesignCatalogue, checkDesignCompiles, checkDesignHarnessUntouched, checkDesignNoLiteralColours, checkDesignSurfaceScope, surfacePageIds } from "../checks/design.mjs";
 import { checkPlanConstitution, checkPlanCoverage, planShape } from "../checks/plan.mjs";
-import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, conditionPaths, withoutEvidence, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee, overreachConditions, OVERREACH_STAGE } from "../spec/criteria.mjs";
+import { parseDomainFile, parseAll, applyConditions, mintIds, serialiseDomainFile, writeIndex, renderSpecIndex, CONDITION_GRAMMAR, OVERREACH_VERB, FLAKY_VERB, conditionPaths, withoutEvidence, domainOrdinal, conditionTargetId, criterionFingerprint, splitConditionsByAddressee, overreachConditions, OVERREACH_STAGE } from "../spec/criteria.mjs";
 import { close as closeOwed, identityOf, isOpen, open as openOwed, openOn, read as readOwed, readAt, rewrite, sameFiling, sends, unexpectedChange } from "../spec/owed.mjs";
 import { UNBOUND, unboundHanded } from "../spec/unbound.mjs";
 import { NOT_TESTABLE_PATH, missingTestRef, openMissingTestsAt, recordProblems } from "../spec/missing-tests.mjs";
@@ -1128,13 +1128,26 @@ const redoRuled = (r) => (r.verb === OVERREACH_VERB
 
 const REDO_INSTRUCTION = "Write each of those from its criterion and nothing else, and make sure the new test does not do what the ruling names. A test that asserts more than its criterion states — a capability, a screen or a step the criterion never asks for — cannot be bound at all against an application that is only answerable for the criterion, and the failure it produces names the application rather than the test. Assert what the criterion states, and stop there.";
 
+// A test verify saw fail and then pass against the same application is filed by verify rather
+// than by a ruling (`docs/decisions/0112`), and is put to the writer in a paragraph of its own:
+// neither thing a ruling says of a test is true of it, since it may assert exactly what its
+// criterion states. What verify saw is quoted, and the instruction is about what the outcome may
+// depend on. A revision is never handed one (`lineRedoFor`), so only this block words it.
+const FLAKY_INSTRUCTION = "Write each of those again from its criterion so that whether it passes depends on what the application does and nothing else: not on how long a step takes, the order the tests run in, or anything another test leaves behind.";
+
 function redoPromptBlock(ctx) {
   const entries = (ctx.deriveTestsRedo ?? []).filter((r) => r?.id && r?.why);
-  if (!entries.length) return [];
-  const lines = entries.map((r) => `- ${r.id} (as derived at v${r.version}): ${redoRuled(r)}`);
+  const ruled = entries.filter((r) => r.verb !== FLAKY_VERB);
+  const flaky = entries.filter((r) => r.verb === FLAKY_VERB);
   return [
-    `${entries.length} of the criteria below already had a test, and a ruling asked for it to be written again. The criterion has not changed; the test is what was wrong. Each is listed with the ruler's own account of it, verbatim:\n\n${lines.join("\n")}`,
-    REDO_INSTRUCTION,
+    ...(ruled.length ? [
+      `${ruled.length} of the criteria below already had a test, and a ruling asked for it to be written again. The criterion has not changed; the test is what was wrong. Each is listed with the ruler's own account of it, verbatim:\n\n${ruled.map((r) => `- ${r.id} (as derived at v${r.version}): ${redoRuled(r)}`).join("\n")}`,
+      REDO_INSTRUCTION,
+    ] : []),
+    ...(flaky.length ? [
+      `${flaky.length} of the criteria below already had a test that verify saw fail and then pass against the same application, with nothing changed between. The criterion has not changed either. Each is listed with what verify saw, verbatim:\n\n${flaky.map((r) => `- ${r.id} (as derived at v${r.version}): ${r.why}`).join("\n")}`,
+      FLAKY_INSTRUCTION,
+    ] : []),
   ];
 }
 

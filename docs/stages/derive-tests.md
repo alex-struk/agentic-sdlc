@@ -36,7 +36,10 @@ rulings write to it. `calibrate` adds an entry when the product owner rules `tes
 criterion is right and the test asserts the wrong thing (`docs/stages/calibrate.md`). A gate ruling
 adds one, carrying `verb: test-overreaches`, when the ruler writes `test-overreaches <ID>`: the
 criterion is right and the test reaches past it, demanding a capability the criterion never asked for
-(`docs/stages/rule.md`).
+(`docs/stages/rule.md`). And `verify` adds one, carrying `verb: test-flaky`, for an earlier slice's
+criterion whose test failed against a build and then passed when run once more against the same
+application: whatever the test asserts, its outcome depends on more than what the application does
+(`docs/stages/verify.md`).
 
 A criterion can be sent back more than once, and each send is its own entry. `policy.loops.redo`
 (two by default, `docs/config.md`) bounds how many: a `--stale` run handed a criterion sent back more
@@ -47,7 +50,11 @@ The ruler's `why` is quoted verbatim into the prompt, under a paragraph naming e
 wrong with the test being replaced. Without it the run is handed a criterion that has not changed and
 writes the same test again, which is the one outcome a redo request cannot afford. It says nothing
 about the running application and nothing about how the system is built, so the stage stays blind: a
-redo id is derived the same blind way a fresh one is, from its criterion and the contract.
+redo id is derived the same blind way a fresh one is, from its criterion and the contract. An entry
+verify filed is put in a paragraph of its own, with verify's `why` verbatim, and the writer is asked
+for a test whose outcome depends on what the application does and nothing else — not on how long a
+step takes, the order the tests run in, or anything another test leaves behind. A revision is never
+handed one: it takes up only what its own line's rulings sent back.
 
 ## Outputs
 

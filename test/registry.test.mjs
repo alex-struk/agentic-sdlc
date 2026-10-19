@@ -405,6 +405,30 @@ test("derive-tests leaves how to judge a not-testable reason to its skill", () =
   assert.match(skill, /owner: <the stage that supplies it>/);
 });
 
+// A redo entry verify files itself is about a test that failed and then passed against the same
+// application (`docs/decisions/0112`). Neither account a ruling gives is true of it, so the writer
+// is told what verify saw, apart from what any ruling sent back.
+test("derive-tests puts a test verify saw fail and then pass to the writer as that, apart from what a ruling sent back", () => {
+  const why = "failed in the verify of build-slice-4-2 and then passed when run again apart from the rest of the suite, against the same application and the same test. The failure: Error: Timeout 5000ms exceeded";
+  const prompt = stageFor("derive-tests").prompt({
+    domain: "alpha",
+    deriveTestsCriteria: [{ id: "R-1.1", version: 2, statement: "s" }, { id: "R-1.2", version: 1, statement: "t" }],
+    deriveTestsRedo: [
+      { id: "R-1.1", version: 2, verb: "test-flaky", why },
+      { id: "R-1.2", version: 1, verb: "test-overreaches", why: "it creates a record the criterion never mentions" },
+    ],
+  });
+  assert.match(prompt, /1 of the criteria below already had a test, and a ruling asked for it to be written again\./);
+  assert.match(prompt, /- R-1\.2 \(as derived at v1\): the criterion stands and the test reached past it/);
+  assert.match(prompt, /1 of the criteria below already had a test that verify saw fail and then pass against the same application, with nothing changed between\./);
+  assert.ok(prompt.includes(`- R-1.1 (as derived at v2): ${why}`), "what verify saw, verbatim");
+  assert.ok(!/R-1\.1[^\n]*(asserted the wrong thing|reached past it)/.test(prompt), "and not as either thing a ruling says");
+  assert.match(prompt, /depends on what the application does and nothing else: not on how long a step takes, the order the tests run in, or anything another test leaves behind/);
+
+  const alone = stageFor("derive-tests").prompt({ domain: "alpha", deriveTestsCriteria: [{ id: "R-1.1", version: 2, statement: "s" }], deriveTestsRedo: [{ id: "R-1.1", version: 2, verb: "test-flaky", why }] });
+  assert.ok(!alone.includes("a ruling asked"), "with nothing a ruling sent back, nothing is said about one");
+});
+
 test("contract's skill says what to do with a missing test it is handed, and the runner states only the form", () => {
   const skill = readFileSync(skillPath("contract"), "utf8");
   assert.match(skill, /## Missing tests handed to you/);

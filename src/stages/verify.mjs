@@ -23,13 +23,14 @@ import { sandboxUp, sandboxDown } from "../commands/sandbox.mjs";
 import { readSlice, buildBranches, buildProposals, buildProposalBase, openBuildProposal, specFilesFor } from "./slices.mjs";
 import { carriedFrom, criterionOf, measureOf, priorMeasure } from "../testrun/measured.mjs";
 import { checkSandboxPassword, escapeRe, skillPath } from "./shared.mjs";
-import { ADDRESSED_CONDITION_FORM, OVERREACH_CONDITION_FORM } from "../spec/criteria.mjs";
+import { ADDRESSED_CONDITION_FORM, OVERREACH_CONDITION_FORM, FLAKY_VERB } from "../spec/criteria.mjs";
 import { isNotAsserted, notAssertedEntries, environmentGap, MAIL_CATCHER_UNSET_RE } from "../testrun/results.mjs";
 import { verifyReturnLimit, owedLoopLimit } from "../config/policy.mjs";
 import { readConfigurations } from "../oracle/configurations.mjs";
 import { taggedSpecFiles } from "../testrun/tags.mjs";
 import { adapterAt, syncUnbound, unavailableOn, personaUnavailable, withdrawUnclaimed } from "../spec/unbound.mjs";
-import { isOpen, read as readOwed } from "../spec/owed.mjs";
+import { isOpen, open as openOwed, read as readOwed } from "../spec/owed.mjs";
+import { loadIndex } from "../checks/tests.mjs";
 
 // Five outcomes, because a slice's claims come apart five ways and a reader has to be able
 // to tell them apart. `fail` is a criterion exercised against the application and not met,
@@ -464,7 +465,7 @@ function environmentOnly(gate) {
 // the routes where no test ran: currency is judged by `app_tree`, so a run that left this
 // file alone would leave an earlier `pass` on the same tree standing and the proposal
 // rulable as approved. `not_verified` says, for a reader, why there are no rows.
-function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "", rechecked = [], regressed = [], measured = null, sort = null }) {
+function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted = [], environment = [], unbound = [], adapter = "", notVerified = "", rechecked = [], regressed = [], flaky = [], measured = null, sort = null }) {
   const resultRel = `tests/results/new/slice-${slice}.json`;
   mkdirSync(join(projectDir, "tests", "results", "new"), { recursive: true });
   // Each row carries the acceptance test's own error text, which is a browser's or a
@@ -491,6 +492,9 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted 
     // which are this slice's own criteria and nothing else.
     ...(rechecked.length ? { rechecked } : {}),
     ...(regressed.length ? { regressed } : {}),
+    // The earlier criteria whose test failed and then passed when run again against the same
+    // application: charged to nothing, and filed to be written again (`docs/decisions/0112`).
+    ...(flaky.length ? { flaky } : {}),
     // What the earlier criteria that pass were measured against: the harness digest beside
     // `app_tree`, and each one's test file, so the slice's next verify runs again only what has
     // changed since (`docs/decisions/0104`).
@@ -501,6 +505,20 @@ function writeVerifyResult(projectDir, { slice, name, verdict, rows, unasserted 
     rows,
   }, null, 2)}\n`, projectDir));
   return resultRel;
+}
+
+// The redo entries for earlier criteria whose test failed and then passed against the same
+// application (`docs/decisions/0112`), each at the version the criterion carries now, the version
+// a ruling's redo entry records. One the contract does not hold is left out: nothing could derive
+// it, so its entry would never close (`overreachRedoEntries`, `src/commands/rule.mjs`).
+function flakyRedoEntries(projectDir, flaky, name, at = new Date().toISOString()) {
+  const index = loadIndex(projectDir);
+  const byId = new Map(((index && !index.parseError ? index.criteria : null) ?? []).map((c) => [c.id, c]));
+  return flaky.filter((x) => byId.has(x.id)).map((x) => ({
+    id: x.id, version: byId.get(x.id).version, verb: FLAKY_VERB,
+    why: redactLocalPaths(`failed in the verify of ${name} and then passed when run again apart from the rest of the suite, against the same application and the same test. The failure: ${firstError(x.row)}`, projectDir),
+    from: name, by: "runner:verify", at,
+  }));
 }
 
 // One return by verify, written the one way. `by: "runner:verify"` is what makes
@@ -635,6 +653,9 @@ export const verify = {
     // owed for.
     let binding = null;
     let describeUnbound = null;
+    // The redo entries for earlier criteria whose test failed and then passed, carried off the
+    // branch to be filed on main, as what the suite found about the adapter is.
+    let flakyRedo = [];
     try {
       // The branch was cut from `main` when the slice was built, and `main` has moved
       // since: an adapter ruled at G3 in the meantime is on `main` and nowhere else, and
@@ -744,8 +765,19 @@ export const verify = {
         const adapter = adapterExists(projectDir, "new") ? adapterAt(projectDir, "new", "HEAD") : "";
         const claimed = rows.filter((r) => slice.criteria.includes(r.id)).map((r) => (adapter && r.file ? { ...r, adapter } : r));
         const own = verifyVerdict(claimed, slice.criteria, { configured });
-        const recheck = earlierRun ? recheckEarlier([...earlierRun.rows, ...carriedRows], earlier, configured) : { regressed: [], held: [], unexercised: [] };
         const fileOf = new Map(earlierFiles.map((f) => [criterionOf(f), f]));
+        const firstCheck = earlierRun ? recheckEarlier([...earlierRun.rows, ...carriedRows], earlier, configured) : { regressed: [], held: [], unexercised: [] };
+        // An earlier criterion that fails is run once more, apart from the rest of the suite and
+        // against the same application, before it is charged to this build. One that passes then
+        // changed its outcome with nothing changed: it is not charged, not counted as holding and
+        // not carried, and its test is filed to be written again. One that fails again is charged
+        // as it always was, with its first failure (`docs/decisions/0112`).
+        const againFiles = firstCheck.regressed.map((x) => fileOf.get(x.id)).filter(Boolean);
+        const again = againFiles.length ? suite(againFiles) : null;
+        const passedAgain = new Set((again?.rows ?? []).filter((r) => r.result === "pass").map((r) => r.id));
+        const flaky = firstCheck.regressed.filter((x) => passedAgain.has(x.id));
+        const recheck = { ...firstCheck, regressed: firstCheck.regressed.filter((x) => !passedAgain.has(x.id)) };
+        flakyRedo = flakyRedoEntries(projectDir, flaky, name);
         const measured = earlierRun && measure ? {
           harness: measure.harness,
           passed: Object.fromEntries(recheck.held.flatMap((id) => (measure.specs.get(fileOf.get(id)) ? [[id, measure.specs.get(fileOf.get(id))]] : []))),
@@ -782,6 +814,7 @@ export const verify = {
           environment: v.environment, unbound: unboundListed, adapter,
           rechecked: recheck.held,
           regressed: recheck.regressed.map((x) => ({ id: x.id, slice: x.slice, result: x.row.result, error: firstError(x.row) })),
+          flaky: flaky.map((x) => ({ id: x.id, slice: x.slice, error: firstError(x.row) })),
           measured,
           sort: sortFirst ? { empty_reads: emptyReads, ...(absent.length ? { absent } : {}), ...(adapterErrors.length ? { adapter_errors: adapterErrors } : {}), conditions: failureConditions } : null,
         })];
@@ -919,9 +952,13 @@ export const verify = {
         const h = recheck.held.length;
         const k = carried.filter((f) => recheck.held.includes(criterionOf(f))).length;
         const carriedNote = k ? ` (${k === h ? "" : `${k} of them `}carried from the run on ${prior.from}, against the same application, test harness and test)` : "";
+        const filed = new Set(flakyRedo.map((e) => e.id));
         text = [
           text,
           ...(h ? [`${h} ${criteriaWord(h)} earlier slices passed still ${h === 1 ? "passes" : "pass"}${carriedNote}.`] : []),
+          ...flaky.map((x) => `${x.id} (slice ${x.slice}) failed, then passed when run again against the same application: not charged to this build${filed.has(x.id)
+            ? ", and its test is filed to be written again (tests/acceptance/redo.yaml)."
+            : ". The contract does not hold it, so its test is not filed to be written again."}`),
           ...(recheck.unexercised.length ? [`Not checked again, and not charged to this build: ${recheck.unexercised.map((x) => `${x.id} (slice ${x.slice}: ${x.why})`).join("; ")}.`] : []),
           ...(earlierDeferred ? [`The ${earlier.size} ${criteriaWord(earlier.size)} earlier slices passed ${earlier.size === 1 ? "is" : "are"} checked again once this slice's own criteria pass.`] : []),
         ].join("\n");
@@ -965,6 +1002,13 @@ export const verify = {
             .map((r) => r.id);
           if (describeUnbound) text = describeUnbound(owed);
         } catch (err) { failure = err; }
+      }
+      // On main too, where `next` reads it and offers derive-tests --stale for each: the redo
+      // entries for the tests that failed and then passed. An entry already open for the
+      // criterion is kept and this one dropped (`open`, `src/spec/owed.mjs`). The file is left for
+      // the run's own commit on main, as the binding's is.
+      if (!dirty && !failure && flakyRedo.length) {
+        try { openOwed(projectDir, "redo", flakyRedo); } catch (err) { failure = err; }
       }
       // Every attempt says what became of it, including the ones that failed: a run with
       // no line in the record is indistinguishable from a run nobody made.

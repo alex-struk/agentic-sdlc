@@ -128,8 +128,9 @@ what the results *mean*.
   suite, writes `tests/results/<target>/<date>.json` and `latest.json`, and opens a G1 proposal
   listing every failure that has no ruling yet. A ruling that has to be carried out by another
   stage is carried forward as owed work (`src/spec/owed.mjs`, `docs/operating-model.md` §6): a
-  redo entry on `tests/acceptance/redo.yaml`, written by `calibrate` for a `test-wrong` ruling and
-  by `sdlc rule` for a `test-overreaches` one and closed by the `derive-tests` run that answers it;
+  redo entry on `tests/acceptance/redo.yaml`, written by `calibrate` for a `test-wrong` ruling, by
+  `sdlc rule` for a `test-overreaches` one and by `verify` for a test that failed and then passed
+  against the same application, and closed by the `derive-tests` run that answers it;
   a revision request on `.sdlc/revision-requests.yaml`, written by `sdlc rule` for an
   `addressed-to <stage>` condition and read whole — every open request addressed to a stage, as one
   round — by the run of that stage that takes requests up (`--revise`, or `contract`'s ordinary

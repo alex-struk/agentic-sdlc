@@ -37,6 +37,11 @@ asks for happens at the gate it is returned to, not here.
   that fails now returns the build as a regression, naming the slice it passed under, and one the
   run could not exercise is reported and not charged to it
   (`docs/decisions/0087-a-later-build-is-checked-against-what-earlier-slices-passed.md`).
+  Before one that fails is charged, its test runs once more, apart from the rest of the suite and
+  against the same application. One that fails again is charged with its first failure. One that
+  passes is not charged, not counted as still passing and not carried: the summary names it, the
+  result lists it under `flaky`, and its test is filed to be written again
+  (`docs/decisions/0112-an-earlier-criterion-that-fails-and-then-passes-is-not-charged-to-the-build.md`).
   An earlier criterion a verify of this slice already passed against the same application, the
   same test harness and the same test file is carried rather than run again, and the summary says
   how many were carried and from which proposal's run
@@ -101,8 +106,10 @@ asks for happens at the gate it is returned to, not here.
 6. **Write the result file**, `tests/results/new/slice-<n>.json` —
    `{ slice, proposal, app_tree, at, verdict, rows }`, plus `unasserted` — one
    `{ id, result, reason }` per criterion nobody asserted — whenever there is one, `environment`
-   and `unbound` — one `{ id, reason }` per criterion of each — whenever there is one, and
-   `adapter`, the tree of `tests/adapters/new` the suite drove with.
+   and `unbound` — one `{ id, reason }` per criterion of each — whenever there is one,
+   `adapter`, the tree of `tests/adapters/new` the suite drove with, and `flaky` — one
+   `{ id, slice, error }` per earlier criterion that failed and then passed when run once more —
+   whenever there is one.
    `app_tree` is the commit the branch's `app/`
    tree hashes to, which is what `buildVerified` compares against later, so a ruling cannot be given
    on the strength of verify evidence about a version of the application the proposal no longer
@@ -217,6 +224,11 @@ the proposal branch.
   branch dirty.
 - On `main`, `tests/adapters/rebind.yaml` entries for the slice's unbound rows, filed, lapsed or
   closed as step 9 says.
+- On `main`, a `tests/acceptance/redo.yaml` entry for each earlier criterion that failed and then
+  passed when run once more, and that the contract holds: `{ id, version, verb: test-flaky, why,
+  from, by: runner:verify, at }`, where `why` says what happened and quotes the failure. One is not
+  filed for a criterion that already has an open entry. `next` offers `derive-tests --domain <d>
+  --stale` for it (`docs/stages/derive-tests.md`).
 - Nothing else on the owed list. A row showing a missing test's test ran is evidence the G3 approval of
   the slice reads: that approval closes the item, citing the row (`docs/stages/rule.md`, "A test a
   criterion is owed"). A criterion recorded untestable is a `not-testable` row here as it always
