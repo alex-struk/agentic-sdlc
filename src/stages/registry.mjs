@@ -44,6 +44,7 @@ import { calibrate, dropTestWrongRulings } from "./calibrate.mjs";
 // `registry.mjs` keeps working unchanged.
 import { addressedElsewhereNote, isReopening, nextProposalName, openProposalOn, recommendationFrom, recordReturnOnMain, requestedRevision, returnedRulingOn, owedConditionsNote, revisionConditionList, revisionLine, revisionRulingBlock, splitRulingConditions, withOpenRequests, withOwedConditions, highestRulingNumber } from "./proposals.mjs";
 import { build } from "./build.mjs";
+import { deploy } from "./deploy.mjs";
 import { verify } from "./verify.mjs";
 
 export { nextProposalName, recommendationFrom, recordReturnOnMain, returnedRulingOn };
@@ -3277,6 +3278,7 @@ STAGES_BY_NAME.calibrate = calibrate;
 STAGES_BY_NAME.plan = plan;
 STAGES_BY_NAME.design = design;
 STAGES_BY_NAME.build = build;
+STAGES_BY_NAME.deploy = deploy;
 STAGES_BY_NAME.verify = verify;
 
 // The stages a condition may be addressed to: the ones that can be asked to produce their

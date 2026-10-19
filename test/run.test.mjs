@@ -561,11 +561,11 @@ test("runStage rejects an unimplemented stage by name", async () => {
   const { dir, prevEgress } = await makeProject(tmp);
   try {
     // Whichever stage stands in here is the frontier: each one stops being a stub as its
-    // own task lands, and the next one along takes its place. `deploy` is the current
+    // own task lands, and the next one along takes its place. `operate` is the current
     // one, now that `build` and `verify` are implemented and review is the reviewer
     // persona's G3 ruling rather than a stage of its own
     // (docs/decisions/0011-build-verify-review.md).
-    await assert.rejects(() => runStage(dir, "deploy"), /not implemented/);
+    await assert.rejects(() => runStage(dir, "operate"), /not implemented/);
   } finally {
     restoreEgress(prevEgress);
   }

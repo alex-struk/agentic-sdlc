@@ -317,7 +317,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
   // judges that output — and again after every repair turn below — so what the post-checks
   // see, and what the proposal carries, is consistent with itself.
   stage.beforePostChecks?.(projectDir, ctx);
-  let post = stage.postChecks(projectDir, ctx);
+  let post = await stage.postChecks(projectDir, ctx);
   let postFail = post.filter((r) => !r.ok);
 
   // `result` is what actually gets journalled and committed: `agentResult` unchanged
@@ -385,7 +385,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
       };
 
       stage.beforePostChecks?.(projectDir, ctx);
-      post = stage.postChecks(projectDir, ctx);
+      post = await stage.postChecks(projectDir, ctx);
       postFail = post.filter((r) => !r.ok);
       lastMessages = postFail.flatMap((r) => r.messages);
       allMessages.push(...lastMessages);
@@ -478,7 +478,7 @@ export async function finishStage(projectDir, stage, ctx, agentResult, { workspa
     const account = result.account ?? result.text;
     const p = stage.proposal({ ...ctx, projectDir, agentText: account });
     const { branch } = propose(projectDir, p.name, {
-      gate: stage.gate, question: p.question, recommendation: p.recommendation, page: account, paths: changed,
+      gate: stage.gate, question: p.question, recommendation: p.recommendation, page: `${account}${stage.proposalEvidence?.({ ...ctx, projectDir }) ?? ""}`, paths: changed,
       engine: result.engine ?? null,
     });
     // Owed work sent back more times than the policy allows is escalated here, on the
