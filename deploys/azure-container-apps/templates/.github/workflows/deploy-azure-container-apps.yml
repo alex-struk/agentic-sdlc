@@ -1,8 +1,10 @@
 name: Deploy to Azure Container Apps
 
 on:
+  # A push to main deploys development, and so does a push to development, the branch a
+  # deploy's trial is pushed to before its proposal is ruled on.
   push:
-    branches: [development]
+    branches: [main, development]
   workflow_dispatch:
     inputs:
       confirm:
@@ -22,8 +24,8 @@ jobs:
     concurrency: { group: deploy-development, cancel-in-progress: false }
     permissions: { contents: read, id-token: write }
     steps:
-      - uses: actions/checkout@<full-commit-sha>
-      - uses: azure/login@<full-commit-sha>
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -35,7 +37,6 @@ jobs:
           REGISTRY: ${{ vars.REGISTRY }}
           PULL_IDENTITY_ID: ${{ vars.PULL_IDENTITY_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          SRE_AGENT_ID: ${{ vars.SRE_AGENT_ID }}
         run: bash deploy/azure-container-apps/deploy.sh development "${GITHUB_SHA::12}"
 
   production:
@@ -45,8 +46,8 @@ jobs:
     concurrency: { group: deploy-production, cancel-in-progress: false }
     permissions: { contents: read, id-token: write }
     steps:
-      - uses: actions/checkout@<full-commit-sha>
-      - uses: azure/login@<full-commit-sha>
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -58,6 +59,5 @@ jobs:
           REGISTRY: ${{ vars.REGISTRY }}
           PULL_IDENTITY_ID: ${{ vars.PULL_IDENTITY_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          SRE_AGENT_ID: ${{ vars.SRE_AGENT_ID }}
           IMAGE_TAG: ${{ inputs.image-tag }}
         run: bash deploy/azure-container-apps/deploy.sh production "${IMAGE_TAG:-${GITHUB_SHA::12}}"

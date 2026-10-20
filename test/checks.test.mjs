@@ -61,6 +61,17 @@ test("egress: standard names such as SHA-256 or ISO-8601 are not read as ticket 
   assert.ok(!r.messages.some((m) => m.includes("ticket")), r.messages.join("\n"));
 });
 
+test("egress: a scan of the files a caller is about to publish reads those and no others", () => {
+  const d = repo();
+  writeFileSync(join(d, "old.md"), `Notes kept at ${HOME_PATH}\n`);
+  git(["add", "old.md"], d);
+  writeFileSync(join(d, "new.md"), `Copied from ${HOME_PATH}\n`);
+  writeFileSync(join(d, "clean.md"), "Nothing here.\n");
+  assert.deepEqual(checkEgress(d, { files: ["clean.md"] }).messages, []);
+  const r = checkEgress(d, { files: ["new.md", "clean.md"] });
+  assert.deepEqual(r.messages, ["new.md:1: local home path (rule E-2)"]);
+});
+
 test("egress: ticket numbers, notes paths and listed names are caught in tracked and untracked files alike", () => {
   const d = repo();
   mkdirSync(join(d, ".sdlc"), { recursive: true });

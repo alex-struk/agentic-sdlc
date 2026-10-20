@@ -12,10 +12,16 @@ You write three things, and only these:
    (`test`, `development` or `production`) as its first argument, deploys the application to it
    from the definition, checks it answers, and prints one line, `DEPLOYED_URL=<address>`, with
    the address the application is reachable at. It is the only way the application is deployed.
+   It builds and pushes the images on every run and deploys each by the digest its own push gave
+   back, never by a tag.
 3. **One GitHub workflow**, `.github/workflows/deploy-<platform>.yml`, that runs that same
-   script: automatically on a push to the `development` branch, and for production only by a
-   manual `workflow_dispatch` that asks for confirmation. The workflow holds no deploy logic of
-   its own beyond signing in and calling the script.
+   script: against development, automatically, on a push to `main` and on a push to the
+   `development` branch; against production only by a manual `workflow_dispatch` that asks for
+   confirmation. The workflow holds no deploy logic of its own beyond signing in and calling the
+   script. Every action it uses, its own included, is pinned to a full commit SHA and every image
+   by its digest; it names each secret it reads, from the environment its job deploys; and its
+   jobs are granted `contents: read`, `id-token: write` and, to push images to GitHub's container
+   registry, `packages: write`, and nothing else. The post-checks refuse a workflow that is not.
 
 There is no second path. Nothing in the definition, the script or the workflow may depend on a
 person's machine, a stored credential, or a step that only a laptop can do. Sign-in to the
@@ -25,15 +31,18 @@ is and where it comes from (a repository variable, an environment variable).
 
 ## What you have and what you do not
 
-You have the whole project. You change only `deploy/<platform>/`, the workflow file and
-`docs/decisions/`. A change anywhere else ends the run.
+You have the application in `app/`, to read, and the project's decision records. What you write
+in `deploy/<platform>/`, the workflow file and `docs/decisions/` is what the run takes back;
+nothing else you change leaves the workspace.
 
-After your turn the runner runs `deploy/<platform>/deploy.sh development` from this machine,
-deploying the same development environment GitHub deploys on a push to `development`, then asks
-the address it printed whether the application answers. The
-proposal goes to its gate with that result. You cannot run the script yourself: your shell lists
-and makes directories, and does not reach the platform. Write the script so that a failure at any
-step stops it with a non-zero status and a plain message.
+After your turn the runner commits what you wrote on top of `main`, pushes that commit to the
+`development` branch, and waits for GitHub's run of your workflow, which deploys the development
+environment with it. It then asks the address your script printed whether the application
+answers, and the proposal goes to its gate with that result. Nothing in your session reaches the
+platform or GitHub: your shell lists and makes directories. Write the script so that a failure at
+any step stops it with a non-zero status and a plain message. The workflow's log is as public as
+the repository, so the script prints nothing a reader of it should not see: the
+`DEPLOYED_URL=<address>` line, and what went wrong when something does.
 
 ## Where decisions go
 

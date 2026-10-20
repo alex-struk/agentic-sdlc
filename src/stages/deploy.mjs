@@ -1,14 +1,18 @@
 // `deploy --platform P`: an agent writes the one deployment definition, the one deploy script and
 // the GitHub workflow that calls that script, from the deploy profile for platform P
-// (`deploys/<P>/`). Before it proposes, the runner runs the script from this machine against the
-// development environment and checks the application answers; that result goes to the gate with the
-// proposal (`docs/stages/deploy.md`). Once the proposal is approved, GitHub does every deploy
-// from then on, by running the same script, so there is no second path to keep in step.
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { join, relative } from "node:path";
+// (`deploys/<P>/`). Before it proposes, the runner has GitHub deploy that work to the development
+// environment, as a trial, and checks the application answers; that result goes to the gate with
+// the proposal (`docs/stages/deploy.md`). Once the proposal is approved, GitHub does every deploy
+// from then on, by running the same script, so there is no second path to keep in step. The
+// platform is set up once, by a person signed in to it, in a run of its own (`--setup`).
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { basename, join, relative } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { readText } from "../lib/fsx.mjs";
-import { changedPaths } from "../lib/git.mjs";
+import { changedPaths, gitOk, gitRaw, SDLC_AUTHOR } from "../lib/git.mjs";
+import { checkEgress } from "../checks/egress.mjs";
 import { PIPELINE_ROOT } from "../lib/root.mjs";
 import { redactLocalPaths } from "../lib/redact.mjs";
 import { nextProposalName, recommendationFrom } from "./proposals.mjs";
@@ -36,11 +40,12 @@ export function readDeploySettings(projectDir, platform) {
   return settings;
 }
 
-// A profile may carry `bootstrap/preflight.sh` and `bootstrap/bootstrap.sh`. They run on this
-// machine, before the agent turn, with the terminal attached: the preflight checks the operator
-// is signed in and can do what the bootstrap needs, and the bootstrap asks what to create or
-// reuse, makes sure it exists, and writes its choices to the settings file. The agent session
-// never runs them: it holds no cloud sign-in and cannot ask anyone anything.
+// A profile may carry `bootstrap/preflight.sh` and `bootstrap/bootstrap.sh`, the platform's
+// setup. `sdlc run deploy --platform P --setup` runs them on this machine with the terminal
+// attached, and nothing else: the preflight checks the operator is signed in and can do what the
+// bootstrap needs, and the bootstrap asks what to create or reuse, makes sure it exists, and writes
+// its choices to the settings file. A deploy run never runs them, and the agent session cannot:
+// it holds no cloud sign-in and cannot ask anyone anything.
 export function bootstrapPlatform(projectDir, platform, { profilesDir = PROFILES_DIR, env = process.env, stdio = "inherit" } = {}) {
   const dir = join(profilesDir, platform, "bootstrap");
   const scripts = ["preflight.sh", "bootstrap.sh"].filter((f) => existsSync(join(dir, f)));
@@ -78,8 +83,8 @@ function templateFiles(root, dir = root) {
 }
 
 // The profile as the agent reads it: its standards, then each template with the path the
-// project's copy goes to. The workspace is the project, which does not carry the pipeline's
-// own checkout, so the text travels in the prompt.
+// project's copy goes to. The workspace does not carry the pipeline's own checkout, so the text
+// travels in the prompt.
 export function profileText(platform) {
   if (!PLATFORM.test(platform ?? "") || !deployProfiles().includes(platform)) throw new Error(`no deploy profile for ${platform}`);
   const root = join(PROFILES_DIR, platform);
@@ -103,6 +108,45 @@ function checkPlatformOption(ctx) {
     return { id, ok: false, messages: [`no deploy profile for ${ctx.platform}; the pipeline has: ${deployProfiles().join(", ")}`] };
   }
   return { id, ok: true, messages: [] };
+}
+
+const hasSetup = (platform) => existsSync(join(PROFILES_DIR, platform, "bootstrap", "bootstrap.sh"));
+
+// The outcome of the platform's last setup, as the run records give it: a setup run records
+// `run deploy: set up <p>` when it completes, which it does only once nothing a deploy needs is
+// owed, and `run deploy: setup of <p> failed` when it does not. The records are committed, so a
+// setup done on one machine is known on every other. `null` when there has been none.
+export function lastSetupOf(projectDir, platform) {
+  const dir = join(projectDir, ".sdlc", "runs");
+  if (!existsSync(dir)) return null;
+  let last = null;
+  for (const f of readdirSync(dir).filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)).sort()) {
+    for (const line of readText(join(dir, f)).split(/\r?\n/)) {
+      if (line.endsWith(`run deploy: set up ${platform}`)) last = "complete";
+      else if (line.endsWith(`run deploy: setup of ${platform} failed`)) last = "failed";
+    }
+  }
+  return last;
+}
+
+// A deploy run needs its platform set up: the resources, the identities GitHub deploys as, and
+// the repository's environments. A profile with no setup of its own needs none.
+export function checkSetUp(projectDir, platform) {
+  const id = "deploy-setup";
+  if (!PLATFORM.test(platform ?? "") || !hasSetup(platform)) return { id, ok: true, messages: [] };
+  const last = lastSetupOf(projectDir, platform);
+  if (last === "complete") return { id, ok: true, messages: [] };
+  const command = `sdlc run deploy --platform ${platform} --setup`;
+  return { id, ok: false, messages: [last === "failed"
+    ? `the last setup of ${platform} did not complete. Once the steps it printed are done, a person signed in to ${platform} runs it again: ${command}`
+    : `${platform} has not been set up. A person signed in to ${platform}, with the rights its deploy profile names, runs: ${command}`] };
+}
+
+// A setup run is for a platform whose profile carries a setup.
+function checkHasSetup(platform) {
+  const id = "deploy-has-setup";
+  if (!PLATFORM.test(platform ?? "") || !deployProfiles().includes(platform) || hasSetup(platform)) return { id, ok: true, messages: [] };
+  return { id, ok: false, messages: [`${platform} has no setup; its deploys need none, so run the stage itself`] };
 }
 
 function checkApplicationExists(projectDir) {
@@ -132,54 +176,278 @@ export function checkDeployFiles(projectDir, platform) {
   return { id, ok: messages.length === 0, messages };
 }
 
-// The workflow runs the script this stage ran, and nothing else deploys: a production run by
-// hand, and an automatic run on the `development` branch.
+// The branch a deploy's trial is pushed to, and so the one besides `main` whose pushes deploy
+// the development environment (`docs/decisions/0116`).
+export const TRIAL_BRANCH = "development";
+
+// What a deploy workflow's token may hold: the repository's contents to read, the sign-in token
+// the platform's federated credential accepts, and, for images kept in GitHub's own container
+// registry, the right to push them. Nothing else a deploy does writes anything on GitHub, and a
+// trial runs the workflow before anyone has read it.
+const GRANTS = { contents: "read", "id-token": "write", packages: "write" };
+const GRANTED = "contents: read, id-token: write and, for images in GitHub's container registry, packages: write";
+const PINNED = /@[0-9a-f]{40}$/;
+
+function triggersOf(on) {
+  if (typeof on === "string") return { [on]: null };
+  if (Array.isArray(on)) return Object.fromEntries(on.map((t) => [t, null]));
+  return on && typeof on === "object" ? on : {};
+}
+
+function grantProblems(file, where, permissions) {
+  if (permissions === undefined || permissions === null) return [];
+  if (typeof permissions !== "object") return [`${file} grants ${where} ${permissions}; a deploy workflow grants only ${GRANTED}`];
+  // Reading what a grant could write is a grant of less.
+  return Object.entries(permissions).filter(([k, v]) => v !== "none" && GRANTS[k] !== v && !(GRANTS[k] === "write" && v === "read"))
+    .map(([k, v]) => `${file} grants ${where} ${k}: ${v}; a deploy workflow grants only ${GRANTED}`);
+}
+
+const DIGEST = /@sha256:[0-9a-f]{64}$/;
+
+// What a step or a job runs that the workflow does not hold itself: an action or reusable workflow
+// from elsewhere is pinned to a full commit SHA, an image by its digest, and an action in the
+// repository is read as the workflow is, since a trial runs whatever it uses as well.
+function usesProblems(projectDir, from, uses, seen) {
+  if (typeof uses !== "string") return [];
+  if (uses.startsWith("docker://")) return DIGEST.test(uses) ? [] : [`${from} uses ${uses}, which is not pinned to an image digest; a trial runs this workflow before it is ruled on`];
+  if (!uses.startsWith("./")) return PINNED.test(uses) ? [] : [`${from} uses ${uses}, which is not pinned to a full commit SHA; a trial runs this workflow before it is ruled on`];
+  const dir = uses.slice(2).replace(/\/+$/, "");
+  if (seen.has(dir)) return [];
+  seen.add(dir);
+  const file = ["action.yml", "action.yaml"].map((n) => join(projectDir, dir, n)).find((p) => existsSync(p));
+  if (!file) return [`${from} uses ${uses}, which is not in the repository`];
+  let action;
+  try { action = parseYaml(readText(file)); } catch (e) { return [`${dir}/${basename(file)} is not YAML: ${e.message}`]; }
+  const runs = action?.runs ?? {};
+  if (runs.using === "composite") return (Array.isArray(runs.steps) ? runs.steps : []).flatMap((s) => usesProblems(projectDir, dir, s?.uses, seen));
+  if (runs.using === "docker" && typeof runs.image === "string" && runs.image.startsWith("docker://")) return usesProblems(projectDir, dir, runs.image, seen);
+  return [];
+}
+
+function imageProblems(from, image) {
+  const ref = typeof image === "string" ? image : image?.image;
+  if (typeof ref !== "string" || DIGEST.test(ref)) return [];
+  return [`${from} ${ref}, which is not pinned to an image digest; a trial runs this workflow before it is ruled on`];
+}
+
+// The workflow runs the script this stage's trial ran, and nothing else deploys: development on
+// a push to `main` or to the trial branch, production only by hand. Because a trial runs the
+// workflow before it is ruled on, every action it uses is pinned to a full commit SHA and its
+// token can read the repository, sign in to the platform and push images, and do nothing else.
 export function checkWorkflowCallsScript(projectDir, platform) {
   const id = "deploy-workflow";
-  const file = join(projectDir, deployWorkflow(platform));
-  if (!existsSync(file)) return { id, ok: false, messages: [`${deployWorkflow(platform)} is missing`] };
+  const rel = deployWorkflow(platform);
+  const file = join(projectDir, rel);
+  if (!existsSync(file)) return { id, ok: false, messages: [`${rel} is missing`] };
   const text = readText(file);
+  let wf;
+  try { wf = parseYaml(text); } catch (e) { return { id, ok: false, messages: [`${rel} is not YAML: ${e.message}`] }; }
+  if (!wf || typeof wf !== "object") return { id, ok: false, messages: [`${rel} holds no workflow`] };
   const messages = [];
-  if (!text.includes(deployScript(platform))) messages.push(`${deployWorkflow(platform)} does not run ${deployScript(platform)}; the workflow and the local run must be the same script`);
-  if (!/workflow_dispatch/.test(text)) messages.push(`${deployWorkflow(platform)} has no workflow_dispatch trigger for the manual production deploy`);
-  if (!/\bdevelopment\b/.test(text)) messages.push(`${deployWorkflow(platform)} does not deploy automatically on the development branch`);
+  if (!text.includes(deployScript(platform))) messages.push(`${rel} does not run ${deployScript(platform)}; the workflow and the trial must run the same script`);
+  const on = triggersOf(wf.on);
+  const branches = Array.isArray(on.push?.branches) ? on.push.branches : [];
+  if (!branches.includes("main")) messages.push(`${rel} does not deploy development on a push to main`);
+  if (!branches.includes(TRIAL_BRANCH)) messages.push(`${rel} does not deploy development on a push to ${TRIAL_BRANCH}, the branch a deploy's trial is pushed to`);
+  if (!("workflow_dispatch" in on)) messages.push(`${rel} has no workflow_dispatch trigger for the manual production deploy`);
+  if (!("permissions" in wf)) messages.push(`${rel} sets no permissions of its own, so its jobs get the repository's default token; set permissions: {} and grant each job only ${GRANTED}`);
+  else messages.push(...grantProblems(rel, "the workflow", wf.permissions));
+  // A secret reaches a step only where the workflow names it, and a deploy names the ones its
+  // environment holds; one that reads them all, or one by a name worked out as it runs, could read
+  // any the repository has.
+  if (/toJSON\(\s*secrets\s*\)/.test(text)) messages.push(`${rel} reads every secret at once; name each secret the deploy needs`);
+  if (/\bsecrets\s*\[/.test(text)) messages.push(`${rel} reads a secret by a name worked out at run time; name each secret the deploy needs`);
+  const seen = new Set();
+  for (const [name, job] of Object.entries(wf.jobs ?? {})) {
+    messages.push(...grantProblems(rel, `job ${name}`, job?.permissions));
+    if (job?.secrets === "inherit") messages.push(`${rel}: job ${name} hands every secret on to ${job.uses ?? "the workflow it calls"}; name each secret the deploy needs`);
+    for (const u of [job?.uses, ...(Array.isArray(job?.steps) ? job.steps.map((s) => s?.uses) : [])]) messages.push(...usesProblems(projectDir, rel, u, seen));
+    messages.push(...imageProblems(`${rel}: job ${name} runs in`, job?.container));
+    for (const [svc, def] of Object.entries(job?.services ?? {})) messages.push(...imageProblems(`${rel}: job ${name}'s service ${svc} runs`, def));
+  }
   return { id, ok: messages.length === 0, messages };
 }
 
-function defaultExec(cmd, args, { cwd, env } = {}) {
-  const r = spawnSync(cmd, args, { cwd, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 45 * 60 * 1000 });
-  return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr || (r.error ? r.error.message : "") };
+function defaultGh(args) {
+  const r = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: 5 * 60 * 1000 });
+  if (r.status !== 0) throw new Error(`gh ${args.slice(0, 2).join(" ")} failed: ${(r.stderr || (r.error ? r.error.message : "")).trim()}`);
+  return r.stdout ?? "";
 }
 
-// Runs the script from this machine against the development environment, the one GitHub deploys
-// to on a push to `development`, so the run leaves nothing behind that GitHub would not
-// replace on its first deploy. It then asks the deployed
-// application for its address. The script prints `DEPLOYED_URL=<address>`; anything below 400
-// from that address is an answer. Credentials come from the environment the run is started in
-// and are never read or reported here. The bootstrap's settings are laid over that environment,
-// so the run uses what was chosen at the start of this deploy rather than a stale export.
-// The environment the stage's own run deploys.
-export const DEVELOPMENT = "development";
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function testEnvironmentRun(projectDir, platform, { exec = defaultExec, fetchFn = fetch, env = process.env } = {}) {
-  const id = "deploy-test-run";
-  const ran = exec("bash", [deployScript(platform), DEVELOPMENT], { cwd: projectDir, env: { ...env, ...readDeploySettings(projectDir, platform) } });
-  const tail = (s) => s.trim().split("\n").slice(-20).join("\n");
-  if (ran.status !== 0) return { id, ok: false, messages: [`${deployScript(platform)} ${DEVELOPMENT} failed:\n${tail(`${ran.stdout}\n${ran.stderr}`)}`] };
-  const url = /^DEPLOYED_URL=(\S+)\s*$/m.exec(ran.stdout)?.[1];
-  if (!url) return { id, ok: false, messages: [`${deployScript(platform)} ${DEVELOPMENT} succeeded but printed no DEPLOYED_URL=<address> line`] };
-  let status;
-  try { status = (await fetchFn(url, { redirect: "follow", signal: AbortSignal.timeout(60_000) })).status; }
-  catch (e) { return { id, ok: false, url, messages: [`${url} did not answer: ${e.message}`] }; }
-  if (status >= 400) return { id, ok: false, url, status, messages: [`${url} answered ${status}`] };
-  return { id, ok: true, url, status, messages: [] };
+// The `owner/name` of the repository `origin` names on GitHub, read from the remote's own
+// configuration, which is where the trial is pushed and so where its run is.
+function originRepo(projectDir) {
+  let url = "";
+  try { url = gitRaw(["config", "--get", "remote.origin.url"], projectDir).trim(); } catch { return null; }
+  return /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url)?.[1] ?? null;
+}
+
+// What `main` may hold that `origin` does not when a trial publishes it: the pipeline's own
+// records of runs, which a setup or a run out of sequence commits before a person pushes.
+const PIPELINE_RECORDS = /^\.sdlc\/(runs|journal)\//;
+
+// Text that looks like a credential, which a trial must not publish whatever put it in a file.
+// Assembled from pieces where the source would otherwise hold the very shape it looks for.
+const CREDENTIAL_SHAPES = [
+  [new RegExp("-----BEGIN [A-Z ]*PRIVATE " + "KEY-----"), "a private key"],
+  [/\b(?:AccountKey|SharedAccessKey)=[A-Za-z0-9+/=]{20,}/, "a storage or messaging key"],
+  [/[?&]sig=[A-Za-z0-9%+/=]{20,}/, "a shared access signature"],
+  [/\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{30,}/, "a GitHub token"],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/, "a signed access token"],
+  [/\bAKIA[0-9A-Z]{16}\b/, "a cloud access key"],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/, "a chat token"],
+];
+
+function credentialShapes(projectDir, files) {
+  const found = [];
+  for (const f of files) {
+    const abs = join(projectDir, f);
+    if (!existsSync(abs) || !statSync(abs).isFile()) continue;
+    readText(abs).split("\n").forEach((line, i) => {
+      for (const [re, what] of CREDENTIAL_SHAPES) if (re.test(line)) found.push(`${f}:${i + 1}: ${what}`);
+    });
+  }
+  return found;
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// The working tree as the session left it, committed on top of `HEAD` through an index of its
+// own, so neither the project's index nor any of its branches moves. What git ignores (the
+// settings file among it) is left out, as from any commit.
+function trialCommit(projectDir, message) {
+  const dir = mkdtempSync(join(tmpdir(), "sdlc-trial-"));
+  const env = { ...process.env, GIT_INDEX_FILE: join(dir, "index") };
+  const g = (args) => execFileSync("git", args, { cwd: projectDir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  try {
+    g(["read-tree", "HEAD"]);
+    g(["add", "-A"]);
+    return g([...SDLC_AUTHOR, "commit-tree", g(["write-tree"]), "-p", "HEAD", "-m", message]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const lastLines = (text, n = 20) => String(text ?? "").trim().split("\n").slice(-n).join("\n");
+
+// The trial (`docs/decisions/0116`): the session's work, committed on top of `main` and pushed to
+// the trial branch, which the workflow deploys to the development environment. GitHub's run of it
+// signs in as the development environment's own identity, which can reach nothing but that
+// environment, so the workflow is tried before it is ruled on without this machine ever signing
+// in to the platform. The run's `DEPLOYED_URL=<address>` is then asked whether the application
+// answers; anything below 400 is an answer.
+//
+// Before anything is published it is refused: while the commits `main` holds and `origin` does
+// not touch anything but the pipeline's own records, since the push publishes their history;
+// while the files the trial adds hold anything the egress check forbids or anything shaped like a
+// credential; and while the repository's workflows can read a secret no environment holds back,
+// since the workflow it runs has not been ruled on yet.
+export async function trialDeploy(projectDir, platform, {
+  gh = defaultGh, fetchFn = fetch, sleep = defaultSleep, pollMs = 15_000, appearPolls = 40, finishPolls = 240, tries = 5, config,
+} = {}) {
+  const id = "deploy-trial";
+  const fail = (messages, more = {}) => ({ id, ok: false, ...more, messages: messages.map((m) => redactLocalPaths(m, projectDir)) });
+  // A call to GitHub that fails is tried again a few times before the trial gives up on it.
+  const call = async (args) => {
+    for (let i = 1; ; i++) {
+      try { return gh(args); } catch (e) { if (i >= tries) throw e; await sleep(pollMs); }
+    }
+  };
+  const repo = originRepo(projectDir);
+  if (!repo) return fail([`origin is not a repository on GitHub, where the trial runs`]);
+  const named = readDeploySettings(projectDir, platform).GITHUB_REPO;
+  if (named && named !== repo) return fail([`the setup named ${named}, but origin is ${repo}; the trial runs where origin is, so set the platform up for ${repo}`]);
+  if (!gitOk(["fetch", "-q", "origin", "main"], projectDir)) return fail([`could not fetch main from origin, where the trial is pushed`]);
+  let unpushed;
+  try {
+    const touched = gitRaw(["log", "--name-only", "--format=", "refs/remotes/origin/main..HEAD"], projectDir).split("\n").filter(Boolean);
+    unpushed = [...new Set(touched)].filter((p) => !PIPELINE_RECORDS.test(p));
+  } catch (e) { return fail([`could not compare main with origin's: ${e.message}`]); }
+  if (unpushed.length) {
+    const listed = `${unpushed.slice(0, 5).join(", ")}${unpushed.length > 5 ? `, and ${unpushed.length - 5} more` : ""}`;
+    return fail([`main has commits origin does not, changing ${listed}; push main first, so a trial publishes only this deploy's files and the pipeline's own records`]);
+  }
+  let sha;
+  try { sha = trialCommit(projectDir, `deploy(${platform}): trial`); }
+  catch (e) { return fail([`could not commit the trial: ${e.message}`]); }
+  const adds = gitRaw(["diff", "--name-only", "HEAD", sha], projectDir).split("\n").filter(Boolean);
+  const leaks = [...checkEgress(projectDir, { config, files: adds }).messages, ...credentialShapes(projectDir, adds)];
+  if (leaks.length) return fail([`the trial would publish what must not leave this machine, so nothing was pushed:\n${leaks.join("\n")}`]);
+  let readable;
+  try {
+    const count = async (path) => Number(String(await call(["api", `repos/${repo}/${path}`, "--jq", ".total_count"])).trim()) || 0;
+    readable = { repo: await count("actions/secrets"), org: await count("actions/organization-secrets") };
+  } catch (e) { return fail([`could not ask GitHub which secrets ${repo}'s workflows can read: ${e.message}`]); }
+  if (readable.repo || readable.org) {
+    return fail([`${repo}'s workflows can read ${plural(readable.repo, "repository secret")} and ${plural(readable.org, "organization secret")}, which no environment holds back; a trial runs a workflow before it is ruled on, so keep secrets in the environments that use them`]);
+  }
+  try { gitRaw(["push", "-q", "--force", "origin", `${sha}:refs/heads/${TRIAL_BRANCH}`], projectDir); }
+  catch (e) { return fail([`could not push the trial to ${TRIAL_BRANCH}: ${e.message}`]); }
+
+  // The push may start other workflows too, and a workflow that is not yet on the default branch
+  // cannot be asked for by file, so the deploy's run is found among the trial branch's runs by its
+  // commit and its workflow's name, which GitHub takes from the file's `name:` or else its path.
+  const workflowFile = deployWorkflow(platform);
+  const workflow = basename(workflowFile);
+  let workflowName = workflowFile;
+  try {
+    const declared = parseYaml(readText(join(projectDir, workflowFile)))?.name;
+    if (typeof declared === "string" && declared.trim()) workflowName = declared.trim();
+  } catch { /* the post-checks read it before the trial, and refuse one that is not YAML */ }
+  const runOf = async () => {
+    const runs = JSON.parse(await call(["run", "list", "--repo", repo, "--branch", TRIAL_BRANCH, "--event", "push",
+      "--limit", "30", "--json", "databaseId,headSha,status,conclusion,url,workflowName"]) || "[]");
+    return runs.find((r) => r.headSha === sha && r.workflowName === workflowName) ?? null;
+  };
+  let run = null;
+  try {
+    for (let i = 0; !run; i++) {
+      run = await runOf();
+      if (run) break;
+      if (i >= appearPolls) return fail([`GitHub started no run of ${workflow} for the trial commit ${sha.slice(0, 12)} on ${TRIAL_BRANCH}`]);
+      await sleep(pollMs);
+    }
+    for (let i = 0; run.status !== "completed"; i++) {
+      if (i >= finishPolls) return fail([`GitHub's run of the trial did not finish in time: ${run.url}`], { runUrl: run.url });
+      await sleep(pollMs);
+      run = (await runOf()) ?? run;
+    }
+    if (run.conclusion !== "success") {
+      // Two deploys of development share one concurrency group, and a newer one waiting replaces
+      // an older one that is still waiting.
+      const why = run.conclusion === "cancelled" ? "; another deploy of development took its place; run the stage again" : "";
+      let said = "";
+      try { said = lastLines(await call(["run", "view", String(run.databaseId), "--repo", repo, "--log-failed"])); } catch { /* the run's page has it */ }
+      return fail([`GitHub's run of the trial ended ${run.conclusion}: ${run.url}${why}${said ? `\n${said}` : ""}`], { runUrl: run.url });
+    }
+    // A finished run's log can take a moment to be readable in full.
+    let url = null;
+    for (let i = 1; !url; i++) {
+      url = /DEPLOYED_URL=(\S+)/.exec(await call(["run", "view", String(run.databaseId), "--repo", repo, "--log"]))?.[1] ?? null;
+      if (url) break;
+      if (i >= tries) return fail([`GitHub's run of the trial succeeded but printed no DEPLOYED_URL=<address> line: ${run.url}`], { runUrl: run.url });
+      await sleep(pollMs);
+    }
+    let status;
+    try { status = (await fetchFn(url, { redirect: "follow", signal: AbortSignal.timeout(60_000) })).status; }
+    catch (e) { return fail([`${url} did not answer: ${e.message}`], { url, runUrl: run.url }); }
+    if (status >= 400) return fail([`${url} answered ${status}`], { url, status, runUrl: run.url });
+    return { id, ok: true, url, status, runUrl: run.url, messages: [] };
+  } catch (e) {
+    return fail([`could not follow GitHub's run of the trial: ${e.message}`], run ? { runUrl: run.url } : {});
+  }
 }
 
 export const deploy = {
   name: "deploy",
   title: (ctx) => `deploy to ${ctx.platform}`,
   skill: skillPath("deploy"),
-  workspace: "project",
+  workspace: "deploy",
+  // A run delivers its own platform's files. Asked with no platform, as the registry asks when
+  // it works out which stage can deliver a path, it delivers any platform's it has a profile for.
+  collect: (ctx) => [...(ctx?.platform ? [ctx.platform] : deployProfiles()).flatMap((p) => [deployDir(p), deployWorkflow(p)]), "docs/decisions"],
   gate: "G3",
   proposalPrefix: "deploy-",
   defaultTurns: 80,
@@ -195,21 +463,25 @@ export const deploy = {
   proposal(ctx) {
     return {
       name: ctx.deployName ?? nextProposalName(ctx.projectDir, `deploy-${ctx.platform}`),
-      question: `Is this the right way to deploy the application to ${ctx.platform}, and did it deploy the development environment?`,
+      question: `Is this the right way to deploy the application to ${ctx.platform}, and did its trial deploy the development environment?`,
       recommendation: recommendationFrom(ctx.agentText),
     };
   },
-  // What the runner saw when it ran the script, appended to the page the gate rules on.
+  // What the trial saw, appended to the page the gate rules on.
   proposalEvidence(ctx) {
     const r = ctx.deployRun;
     if (!r) return "";
+    const run = r.runUrl ? ` (${r.runUrl})` : "";
     const body = r.ok
-      ? `The deploy script deployed the development environment and ${r.url} answered ${r.status}.`
-      : `The deploy script did not pass against the development environment:\n\n${r.messages.join("\n")}`;
-    return redactLocalPaths(`\n\n## Development run\n\n${body}\n`, ctx.projectDir ?? process.cwd());
+      ? `GitHub deployed the development environment from this proposal's trial commit${run}, and ${r.url} answered ${r.status}.`
+      : `The trial deploy did not pass${run}:\n\n${r.messages.join("\n")}`;
+    return redactLocalPaths(`\n\n## Trial deploy\n\n${body}\n`, ctx.projectDir ?? process.cwd());
   },
+  // A setup run checks that the platform is one the project deploys to and has a setup; a deploy
+  // run also needs the application, and the platform's last setup to have completed.
   preChecks(projectDir, ctx) {
-    return [checkPlatformOption(ctx), checkApplicationExists(projectDir)];
+    if (ctx.setup) return [checkPlatformOption(ctx), checkHasSetup(ctx.platform)];
+    return [checkPlatformOption(ctx), checkApplicationExists(projectDir), checkSetUp(projectDir, ctx.platform)];
   },
   bootstrap(projectDir, ctx) {
     return bootstrapPlatform(projectDir, ctx.platform);
@@ -218,7 +490,7 @@ export const deploy = {
     ctx.deployName = nextProposalName(projectDir, `deploy-${ctx.platform}`);
     const before = [checkDeployScope(projectDir, ctx.platform), checkDeployFiles(projectDir, ctx.platform), checkWorkflowCallsScript(projectDir, ctx.platform)];
     if (before.some((r) => !r.ok) || ctx.dryRun) return before;
-    const run = await testEnvironmentRun(projectDir, ctx.platform);
+    const run = await trialDeploy(projectDir, ctx.platform, { config: ctx.config });
     ctx.deployRun = run;
     return [...before, run];
   },

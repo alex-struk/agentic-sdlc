@@ -88,7 +88,9 @@ export function checkEgress(projectDir, ctx = {}) {
   }
   const names = nameList(projectDir);
   const warnings = names.length ? [] : [`no egress name list found; add colleagues' names, one per line, to ${defaultNamesPath()}`];
-  const files = scannedFiles(projectDir);
+  // `ctx.files` narrows the scan to the files a caller is about to publish (a deploy's trial),
+  // so what is already in the project is not what decides it.
+  const files = ctx.files ? ctx.files.filter((f) => TEXT_EXT.test(f)) : scannedFiles(projectDir);
   const scoped = ctx.self ? files.filter((f) => !SELF_EXCLUDE.some((x) => f === x || f.startsWith(x))) : files;
   const messages = [];
   for (const f of scoped) {

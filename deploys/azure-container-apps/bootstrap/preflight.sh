@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Preflight for deploying to Azure Container Apps: run by the deploy stage on the operator's
-# machine before anything is asked or created. It stops on what would stop the deploy (no Azure
-# CLI, no sign-in, no Docker) and warns on what may (roles it cannot see). Nothing is written.
+# Preflight for the Azure Container Apps setup: run on the operator's machine before anything is
+# asked or created. It stops on what would stop the setup (no Azure CLI or no sign-in to it, no
+# GitHub CLI or no sign-in to that) and warns on what may (roles it cannot see). Nothing is
+# written. Nothing is built or deployed from this machine, so it needs no Docker and no Bicep:
+# images are built, and every deploy is run, on GitHub.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -12,7 +14,7 @@ if ! az account show --output none > /dev/null 2>&1; then
   if interactive && confirm "The Azure CLI is not signed in. Sign in now (device code)?" y; then
     az login --use-device-code --output none || fail "Azure sign-in did not complete"
   else
-    fail "the Azure CLI is not signed in; run az login and start the deploy again"
+    fail "the Azure CLI is not signed in; run az login and start the setup again"
   fi
 fi
 if [ -n "${AZURE_SUBSCRIPTION_ID:-}" ]; then
@@ -22,19 +24,12 @@ sub_name="$(az account show --query name -o tsv)"
 user_type="$(az account show --query user.type -o tsv)"
 ok "signed in to Azure ($user_type), subscription \"$sub_name\""
 
-for tool in docker jq curl git; do
-  command -v "$tool" > /dev/null 2>&1 || fail "$tool is not installed; the deploy script needs it"
+for tool in git node; do
+  command -v "$tool" > /dev/null 2>&1 || fail "$tool is not installed; the setup needs it"
 done
-ok "docker, jq, curl and git are installed"
-
-docker info > /dev/null 2>&1 || fail "Docker is installed but its daemon is not reachable by this account"
-ok "Docker daemon is reachable"
-
-if ! az bicep version > /dev/null 2>&1; then
-  say "installing Bicep for the Azure CLI"
-  az bicep install > /dev/null 2>&1 || fail "Bicep is not installed and az bicep install failed"
-fi
-ok "Bicep is available"
+{ command -v gh > /dev/null 2>&1 && gh auth status > /dev/null 2>&1; } \
+  || fail "the GitHub CLI (gh) is missing or not signed in; every deploy runs on GitHub, and the setup creates the repository's deploy environments there, so sign in with gh auth login as someone who administers the repository"
+ok "git, node and the GitHub CLI are ready"
 
 # Which roles the signed-in identity holds, directly or through a group. A role activated just in
 # time, or held through a group the directory will not list, is not seen here, so this warns and
@@ -73,9 +68,3 @@ for ns in Microsoft.App Microsoft.OperationalInsights Microsoft.Insights Microso
   [ "$state" = Registered ] || missing="$missing $ns"
 done
 if [ -n "$missing" ]; then warn "not yet registered in the subscription (the bootstrap registers them):$missing"; else ok "resource providers are registered"; fi
-
-if command -v gh > /dev/null 2>&1 && gh auth status > /dev/null 2>&1; then
-  ok "GitHub CLI is signed in, so the bootstrap can set up the repository's deploy environments"
-else
-  warn "GitHub CLI is missing or not signed in; the repository's deploy environments will not be set up"
-fi

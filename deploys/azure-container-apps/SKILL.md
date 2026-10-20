@@ -29,46 +29,59 @@ description: Deploy standards for hosting an application on Azure Container Apps
   and signs in with the `azure/login` action using a client id, tenant id and subscription id
   read from repository or environment **variables**. None of the three is written in a file.
 - The federated credential is scoped to the repository and to a GitHub **environment**
-  (`development`, `production`), not to a branch, so the production environment's own approval
-  rules apply. The subject is `repo:<owner>/<repo>:environment:<name>`.
-- The identity holds Contributor on each environment's resource group, AcrPush on the
-  registry, and Managed Identity Operator on the identity the app pulls its image as. The
-  deploy stage's bootstrap (below) creates it, its federated credentials, its role assignments
-  and the GitHub environments and variables. Where the operator cannot assign roles, the
-  bootstrap prints the exact commands for someone who can.
-- Pin every third-party action to a full commit SHA, pin the runner image, set
-  `permissions: {}` on the workflow and grant each job only what it needs, and start each script
-  with `set -euo pipefail`.
+  (`development`, `production`), not to a branch, so the environment's own rules apply. The
+  subject is `repo:<owner>/<repo>:environment:<name>`.
+- Each environment has an identity of its own, `id-<prefix>-github-<environment>`, which only
+  its own GitHub environment can sign in as. It holds Contributor on that environment's resource
+  group alone, AcrPush on the registry, and Managed Identity Operator on the identity the app
+  pulls its image as, and nothing on the SRE agent. The setup (below) creates the identities,
+  their federated credentials and their role assignments, and the GitHub environments with
+  their variables, each admitting deploys only from its own branches: development from `main`
+  and `development`, production from `main`. Where the operator cannot assign a role or
+  administer the repository, the setup prints the exact steps for someone who can.
+- Pin every action to a full commit SHA, pin the runner image, set `permissions: {}` on the
+  workflow and grant each job only `contents: read` and `id-token: write` (and `packages: write`
+  where the images go to GitHub's container registry), and start each script with
+  `set -euo pipefail`. A deploy's trial runs the workflow before it is ruled on, so a post-check
+  refuses one that leaves an action unpinned or grants anything more.
 
-## Bootstrap and settings
+## Setup and settings
 
-Before the agent turn, the deploy stage runs `bootstrap/preflight.sh` and then
-`bootstrap/bootstrap.sh` from this profile on the operator's machine, with the terminal
-attached. The preflight checks the tools, the Azure sign-in (offering `az login` when there is
-a terminal), the operator's roles and the resource providers. The bootstrap asks whether to
-create the resources or use existing ones, their names or ids and the region, then creates or
-checks them, signs Docker in to the registry, and writes its answers to
-`.sdlc/deploy-azure-container-apps.local.txt`, which git ignores. Every question names a
-variable; setting it beforehand answers it, so an unattended run asks nothing.
+The platform is set up once, by a person signed in to Azure with the rights below:
+`sdlc run deploy --platform azure-container-apps --setup`. That run executes
+`bootstrap/preflight.sh` and then `bootstrap/bootstrap.sh` from this profile on the operator's
+machine, with the terminal attached, and nothing else. The preflight checks the tools (the
+Azure and GitHub CLIs, git and node), the Azure sign-in (offering `az login` when there is a
+terminal), the operator's roles and the resource providers. The bootstrap asks whether to create
+the resources or use existing ones, their names or ids and the region, then creates or checks
+them, and writes its answers to `.sdlc/deploy-azure-container-apps.local.txt`, which git ignores,
+with `SETUP=complete` once nothing a deploy needs is owed. A deploy run refuses to start until
+it is. Every question names a variable; setting it beforehand answers it, so an unattended run
+asks nothing.
+
+A resource group that already exists is used as it is, so an environment the application already
+runs in can be taken over by naming it as `RESOURCE_GROUP`. Setting `RESOURCE_GROUP_PRODUCTION`
+to nothing sets up development alone.
 
 | Setting | What it is |
 |---|---|
 | `AZURE_SUBSCRIPTION_ID`, `AZURE_TENANT_ID` | Where everything is deployed. |
 | `LOCATION` | The region; one where `Microsoft.App/managedEnvironments` is offered. |
-| `RESOURCE_GROUP` | The development environment's group, which the deploy stage's own run also uses. On GitHub, each environment's own. |
-| `RESOURCE_GROUP_PRODUCTION` | The production environment's group. |
+| `RESOURCE_GROUP` | The development environment's group, which a deploy's trial also deploys to. On GitHub, each environment's own. |
+| `RESOURCE_GROUP_PRODUCTION` | The production environment's group; empty for none. |
 | `SHARED_RESOURCE_GROUP` | The registry and the identities. |
 | `REGISTRY_NAME`, `REGISTRY` | The Azure Container Registry, and the image path in it. |
 | `PULL_IDENTITY_ID` | The user-assigned identity the app pulls its image as (AcrPull). |
 | `SRE_AGENT_ID` | An existing Azure SRE Agent to connect; empty for none. |
 | `GITHUB_REPO`, `PRODUCTION_REVIEWERS` | Where the workflow runs, and who approves production. |
-| `AZURE_CLIENT_ID` | The identity GitHub signs in as. |
+| `AZURE_CLIENT_ID_DEVELOPMENT`, `AZURE_CLIENT_ID_PRODUCTION` | The identity each environment's deploys sign in as; on GitHub, that environment's `AZURE_CLIENT_ID`. |
+| `SETUP` | `complete` once nothing a deploy needs is owed. |
 
 These are names, ids and a region. No credential is among them, and none is needed: GitHub
 signs in by OpenID Connect and the app pulls by managed identity.
 
-The bootstrap does not create the Azure SRE Agent itself, push the `development` branch, or
-supply the application's own secrets; the deploy script reads those from the environment.
+The setup does not create the Azure SRE Agent itself or supply the application's own secrets;
+the deploy script reads those from the environment.
 
 ## What the definition stands up
 
@@ -89,17 +102,20 @@ environment name, deployed into one resource group per environment:
   the environment, never a file;
 - the app pulls its image as the user-assigned identity `PULL_IDENTITY_ID`, named in its
   `registries` configuration;
-- secrets are passed in as `readEnvironmentVariable` parameters or workflow secrets and held as
-  Container Apps secrets.
+- secrets are passed in as `readEnvironmentVariable` parameters, from secrets of the GitHub
+  environment the job deploys, each named in the workflow, and held as Container Apps secrets.
 
 Enable ingress over HTTPS. A subscription policy may deny plain-HTTP ingress even where the
 validation passes.
 
 ## Images
 
-- Build the image in the deploy script and push it to the registry the project uses (Azure Container
-  Registry, or GitHub's container registry). Tag it with the commit SHA (12 characters) and never
-  by `latest` alone. Lowercase the registry path.
+- Build the image in the deploy script on every run and push it to the registry the project uses
+  (Azure Container Registry, or GitHub's container registry). Tag it with the commit SHA (12
+  characters) and never by `latest` alone, and deploy it by the digest of the image its own run
+  pushed (`<registry>/<image>@sha256:…`), never by a tag. Every environment's deploys can push to
+  the registry, a trial's among them, so a tag is no proof of who pushed it; a digest the run read
+  back from its own push is. Lowercase the registry path.
 - A registry package on GitHub's container registry is made public by a person, once; the API
   cannot do it. Say so in the decision record if it applies.
 - An address that is only known after the first deploy (the application's own public address,
@@ -118,40 +134,40 @@ validation passes.
 3. Smoke-tests the deployed application with `curl` against its status page and at least one
    page that needs the application to be talking to its own dependencies, retrying for up to
    two minutes, and fails if none answers.
-4. When `SRE_AGENT_ID` is set, attaches the environment's resource group to the SRE agent
-   (below).
-5. Prints `DEPLOYED_URL=<address>` as its last line.
+4. Prints `DEPLOYED_URL=<address>` as its last line, and nothing else a reader of the
+   workflow's public log should not see.
 
-Running it from a machine and running it from the workflow are the same command, image build
-included. The workflow adds only sign-in.
+A person deploying by hand runs the same command as the workflow, image build included. The
+workflow adds only sign-in.
 
 ## The workflow
 
 `.github/workflows/deploy-azure-container-apps.yml`:
 
-- `push` to the `development` branch deploys the `development` environment.
-- `workflow_dispatch` with an `environment` input and a typed confirmation (`deploy`) deploys
-  production, and an optional image tag that defaults to the commit's. The production job uses
-  the `production` GitHub environment, so its protection rules apply, and runs under a
-  concurrency group that never cancels a deploy in progress.
+- A `push` to `main` deploys the `development` environment, and so does a push to
+  `development`, the branch a deploy's trial is pushed to before its proposal is ruled on.
+- `workflow_dispatch` with a typed confirmation (`deploy`) deploys production, with an optional
+  image tag that defaults to the commit's. The production job uses the `production` GitHub
+  environment, so its protection rules apply.
+- Each job runs under a concurrency group that never cancels a deploy in progress.
 - Both call the one script. Neither carries deploy logic of its own.
 
 ## Monitoring and the SRE Agent
 
 Application Insights and Log Analytics are always part of the definition. Connecting the Azure
-SRE Agent to the deployed application is part of the same deploy, and optional: it happens when
-the repository variable `SRE_AGENT_ID` (the agent's resource id) is set.
+SRE Agent is part of the setup, and optional: it happens when the setup is given `SRE_AGENT_ID`,
+the agent's resource id.
 
-- The bootstrap gives the agent's identity read-only roles on each environment's resource
-  group: Reader, Monitoring Reader, Log Analytics Reader. The definition does not, because the
-  identity GitHub deploys as cannot assign roles. Anything the agent changes stays behind its
-  own approval mode.
-- Attach by reading the agent resource, adding the environment's resource group to
+- The setup gives the agent's identity read-only roles on each environment's resource group
+  (Reader, Monitoring Reader, Log Analytics Reader) and sets the agent to watch each group. No
+  deploy touches the agent, so no identity GitHub deploys as holds any right on it, and a trial
+  cannot change what the agent does. Anything the agent changes stays behind its own approval
+  mode.
+- Setting the agent to watch a group reads the agent resource, adds the group to
   `knowledgeGraphConfiguration.managedResources` (the union with what is there, so nothing is
-  dropped), and patching it back **with `knowledgeGraphConfiguration.identity` included**; the
-  API refuses the change without it. The patch is asynchronous: poll `provisioningState` until
-  it leaves `InProgress`, and fail unless it ends `Succeeded`. If the group is already
-  attached, do nothing.
+  dropped), and patches it back **with `knowledgeGraphConfiguration.identity` included**; the
+  API refuses the change without it. The patch is asynchronous: `provisioningState` is polled
+  until it leaves `InProgress`. A group the agent already watches is left as it is.
 - The alerts above are what the agent responds to. The agent's own Application Insights is not
   the application's; query the application's Log Analytics workspace tables, not
   `az monitor app-insights query`.

@@ -51,7 +51,7 @@ move work there.
   says to always escalate.
 - `sdlc rule --pending` — rule every open proposal whose gate is held by a persona agent, oldest
   branch first.
-- `sdlc run <stage> [--slice N] [--domain X] [--target <t>] [--platform <p>] [--stale] [--revise] [--dry-run]` — run
+- `sdlc run <stage> [--slice N] [--domain X] [--target <t>] [--platform <p>] [--setup] [--stale] [--revise] [--dry-run]` — run
   one pipeline stage as an isolated headless session: materialise its workspace, run pre-checks,
   let the agent work, run post-checks, and commit or open a proposal. Implemented stages today:
   `intent`, `archaeology`, `ratify`, `contract`, `derive-tests`, `bind-adapter` and `calibrate`,
@@ -59,7 +59,9 @@ move work there.
   on, `--target` the running application it acts against, `--stale` restricts `derive-tests` to the
   criteria that have moved on since their tests were written, and `--revise` sends `archaeology`
   back over a domain from a returned G1 ruling. `--platform` names the hosting platform a `deploy`
-  run deploys to; `docs/stages/deploy.md` says how to deploy a built project, and what it needs.
+  run deploys to, and `--setup` runs that platform's one-time setup, which needs a person signed in
+  to it, and nothing else; `docs/stages/deploy.md` says how to deploy a built project, and what it
+  needs.
 - `sdlc next [dir] [--json]` — name the next command to run and the rule of the record that
   chose it, read from `main`, with what else is ready and what waits on a person. Exits 0 when
   something can run, 3 when nothing can until a person acts, 4 when nothing is left

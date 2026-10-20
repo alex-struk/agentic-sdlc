@@ -85,8 +85,18 @@ export const MODES = {
   // application is checked by running them, afterwards. The application itself and
   // `docs/decisions` are the builder's output and are declared in its `collect`.
   "build": ["plan", "spec", "design", "tests/seed", "constitution.md", ".claude/skills"],
+  // What a deploy works from: the built application, which it reads to know what has to be
+  // stood up, the constitution it answers to, and the stack skill that says how the
+  // application is laid out. It changes none of them. The deployment definition, the deploy
+  // script, the workflow and `docs/decisions` are its output and are declared in its
+  // `collect`, which is also what lets a person's branch be handed in in place of a session.
+  "deploy": ["app", "constitution.md", ".claude/skills"],
   "with-sources": null,
 };
+
+// The ephemeral modes that may hold the application: the one that writes it and the one that
+// deploys it. `materialise` refuses `app/` in any other.
+const SEES_THE_APPLICATION = new Set(["build", "deploy"]);
 
 // Whether `path` is `parent` or sits underneath it. Plain string work on `/`-joined
 // project-relative paths, so `plan` covers `plan/tasks.md` and never `planning/x`.
@@ -299,9 +309,10 @@ export function materialise(projectDir, mode, { collect = [], context = [], over
       writeText(dst, stringifyYaml({ [key]: merged }));
     }
   }
-  // The build workspace is the one mode that works on the application; every other ephemeral
-  // mode stays blind to it. Reject app/ in any ephemeral mode except build.
-  if (existsSync(join(dir, "app")) && mode !== "build") {
+  // The application is in front of the two modes whose work is about it: build, which writes
+  // it, and deploy, which reads it to know what to stand up and holds it sealed. Every other
+  // ephemeral mode stays blind to it.
+  if (existsSync(join(dir, "app")) && !SEES_THE_APPLICATION.has(mode)) {
     throw new Error(`blindness violated: app/ present in ${mode} workspace`);
   }
   const sealed = sealedPathsFor(mode, collect, context);

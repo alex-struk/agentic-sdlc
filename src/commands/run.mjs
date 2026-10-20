@@ -165,13 +165,18 @@ export function handInAccount(ctx) {
   ].filter(Boolean).join("\n\n");
 }
 
-export async function runStage(projectDir, name, { slice, domain, target, platform, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, full = false, deviationReason, handIn: handInRef } = {}) {
+export async function runStage(projectDir, name, { slice, domain, target, platform, stale = false, dryRun = false, again = false, revise = false, skipSuite = false, full = false, setup = false, deviationReason, handIn: handInRef } = {}) {
   assertSafeDeviationReason(deviationReason);
   projectDir = resolve(projectDir);
   assertCleanTree(projectDir, "run");
   assertOnMain(projectDir, "run");
   const stage = stageFor(name);
   if (!stage.implemented) throw new Error(`stage ${name} is not implemented yet`);
+  // `--setup` runs a stage's setup and nothing else (`docs/decisions/0116`): the one step that
+  // needs a person signed in to what the stage works against. It is new work of no kind a
+  // revision or a hand-in answers.
+  if (setup && !stage.bootstrap) throw new Error(`run ${name} --setup: ${name} has nothing to set up`);
+  if (setup && (revise || handInRef !== undefined)) throw new Error(`run ${name}: --setup cannot be used with --revise or --hand-in; a setup prepares a platform and proposes nothing`);
 
   // The structural half of "a dry run writes nothing": `dryRunHead` is `main`'s commit
   // before anything below runs, and `assertDryRunUntouched` (called at every point this
@@ -207,6 +212,7 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
   const contextReason = typeof deviationReason === "string" && deviationReason.trim()
     ? redactLocalPaths(deviationReason.trim(), projectDir) : undefined;
   const ctx = { slice, domain, target, platform, stale, config, revise, dryRun, skipSuite, full, projectDir,
+    ...(setup ? { setup: true } : {}),
     ...(contextReason ? { deviationReason: contextReason } : {}) };
   // `stage.workspace` may be a plain string or a function of `config` — resolved once,
   // here, so every later use (`materialise`, the run-state a crashed session leaves for
@@ -250,11 +256,12 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
   // with the pre-checks, before anything is spent: a stage with an allowlist on Codex on the
   // host, unless the project accepted the weaker stage in its policy; a stage set to run in a
   // container that cannot be isolated; an isolated stage on a machine with no Docker.
-  for (const refusal of agent ? [codexRefusal(stage, config, agent), isolationRefusal(stage, config, agent), isolationUnavailable(agent)] : []) {
+  // A setup run starts no agent turn and is handed no owed work, so neither is asked about it.
+  for (const refusal of agent && !setup ? [codexRefusal(stage, config, agent), isolationRefusal(stage, config, agent), isolationUnavailable(agent)] : []) {
     if (refusal) pre.push({ ok: false, messages: [refusal] });
   }
   // After the stage's own pre-checks, which are what read the owed work this run is handed.
-  if (stage.gate) pre.push(checkOwedLimits(projectDir, stage, ctx));
+  if (stage.gate && !setup) pre.push(checkOwedLimits(projectDir, stage, ctx));
   // A pre-check can pass and still have something to say — a turn ceiling that looks too
   // low for the work in front of it, say. Printed before anything is spent, so the person
   // running the stage sees it while there is still time to change the setting.
@@ -284,6 +291,26 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
   // `again` is accepted here only for CLI symmetry with `resume --again`; it does not
   // change anything below — `resume` is the one place a re-run decision gets made.
   void again;
+
+  // A setup run, once its pre-checks pass, runs the stage's setup on this machine with the
+  // terminal attached, records the run, and stops: no workspace, no agent turn, no proposal.
+  if (setup) {
+    const what = ctx.platform ? ` ${ctx.platform}` : "";
+    if (dryRun) {
+      console.log(`stage ${name}: --setup runs the setup for${what || " this stage"} on this machine, and nothing else`);
+      assertDryRunUntouched();
+      return { ok: true, dryRun: true, setup: true };
+    }
+    const b = stage.bootstrap(projectDir, ctx);
+    if (b.ok) for (const m of b.messages) console.log(m);
+    // Named for the platform either way: these lines are what a deploy run reads to know whether
+    // the platform's last setup completed (`lastSetupOf`).
+    const outcome = b.ok ? `set up${what}` : `setup${what ? ` of${what}` : ""} failed`;
+    const runPath = appendRun(projectDir, `run ${name}: ${outcome}`);
+    stageAll(projectDir, [relative(projectDir, runPath)]);
+    git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): ${outcome}`], projectDir);
+    return { ok: b.ok, setup: true, messages: b.messages };
+  }
 
   const openProposal = checkProposalNotOpen(projectDir, stage, ctx);
   if (openProposal) {
@@ -432,7 +459,6 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
       // `prepare` writes real files, so it does not run on a dry run at all — this is
       // the only account of it a dry run gives, and only for a stage that has one.
       if (stage.prepare) console.log("prepare: skipped on dry run");
-      if (stage.bootstrap) console.log("bootstrap: skipped on dry run");
       if (mcpServers) console.log(`mcp: ${Object.keys(mcpServers).join(", ")}`);
       // Names only, never values: a dry run is printed to a terminal (or captured in a
       // log) and `env` exists precisely to carry things like API keys into the session.
@@ -466,21 +492,6 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
       stageAll(projectDir, [relative(projectDir, runPath)]);
       git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): authentication check failed`], projectDir);
       return { ok: false, messages: [e.message] };
-    }
-
-    // A stage that sets up what it runs against does so here, on this machine, with the
-    // terminal attached so it can ask its questions: after the sign-in check, so a session that
-    // could not start never asked anyone anything, and before the workspace, so nothing is
-    // spent on a turn whose platform is not there. Recorded like a failed `prepare`.
-    if (stage.bootstrap) {
-      const b = stage.bootstrap(projectDir, ctx);
-      for (const m of b.ok ? b.messages : []) console.log(m);
-      if (!b.ok) {
-        const runPath = appendRun(projectDir, `run ${name}: bootstrap failed`);
-        stageAll(projectDir, [relative(projectDir, runPath)]);
-        git([...SDLC_AUTHOR, "commit", "-q", "-m", `run(${name}): bootstrap failed`], projectDir);
-        return { ok: false, messages: b.messages };
-      }
     }
 
     const ws = materialise(projectDir, wsMode, { collect: collectPaths, context: contextPaths, ...(overlay ? { overlay } : {}) });
@@ -610,9 +621,12 @@ COMMANDS.run = async ({ pos, flags }) => {
     revise: !!flags.revise,
     skipSuite: !!flags["skip-suite"],
     full: !!flags.full,
+    setup: !!flags.setup,
     ...(flags["hand-in"] !== undefined ? { handIn: String(flags["hand-in"]) } : {}),
   };
-  const deviation = recordDeviation(process.cwd(), pos[0], opts, flags.reason);
+  // A setup proposes nothing and runs nothing in the sequence, so it is not held to what next
+  // names: a platform can be set up before its deploy is the next thing to run.
+  const deviation = opts.setup ? null : recordDeviation(process.cwd(), pos[0], opts, flags.reason);
   const runOpts = { ...opts, ...(deviation ? { deviationReason: deviation.reason } : {}) };
   if (opts.dryRun) return runCli(pos, runOpts);
   try {
