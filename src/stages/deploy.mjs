@@ -1,10 +1,13 @@
-// `deploy --platform P`: an agent writes the one deployment definition, the one deploy script and
-// the GitHub workflow that calls that script, from the deploy profile for platform P
-// (`deploys/<P>/`). Before it proposes, the runner has GitHub deploy that work to the development
-// environment, as a trial, and checks the application answers; that result goes to the gate with
-// the proposal (`docs/stages/deploy.md`). Once the proposal is approved, GitHub does every deploy
-// from then on, by running the same script, so there is no second path to keep in step. The
-// platform is set up once, by a person signed in to it, in a run of its own (`--setup`).
+// `deploy --platform P`: an agent reads the application, writes down in `deploy/<P>/plan.md` what
+// deploying it needs (the resources, the changes to the application, the secrets by name), then
+// makes those changes and writes the one deployment definition, the one deploy script and the
+// GitHub workflow that calls that script, from the deploy profile for platform P (`deploys/<P>/`).
+// The person running the stage, signed in to the platform as themselves, then provisions what the
+// definition names, and GitHub deploys the work to the development environment as a trial and
+// the runner checks the application answers. What both did goes to the gate with the proposal
+// (`docs/stages/deploy.md`, `docs/decisions/0117`). Once the proposal is approved, GitHub does
+// every deploy from then on by running the same script, which creates nothing, so the identity it
+// deploys as can change the application and nothing else.
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -41,11 +44,13 @@ export function readDeploySettings(projectDir, platform) {
 }
 
 // A profile may carry `bootstrap/preflight.sh` and `bootstrap/bootstrap.sh`, the platform's
-// setup. `sdlc run deploy --platform P --setup` runs them on this machine with the terminal
-// attached, and nothing else: the preflight checks the operator is signed in and can do what the
-// bootstrap needs, and the bootstrap asks what to create or reuse, makes sure it exists, and writes
-// its choices to the settings file. A deploy run never runs them, and the agent session cannot:
-// it holds no cloud sign-in and cannot ask anyone anything.
+// provisioning. A deploy run runs them on this machine with the terminal attached, once the
+// session's files pass their checks and before the trial; `sdlc run deploy --platform P --setup`
+// runs them alone, against the definition the checkout holds. The preflight checks the person is
+// signed in and can do what the bootstrap needs; the bootstrap asks what to create or reuse,
+// creates the resources the project's definition names, gives the identity GitHub deploys as only
+// what a deploy needs, and writes its choices to the settings file. The agent session never runs
+// them: it holds no cloud sign-in and cannot ask anyone anything.
 export function bootstrapPlatform(projectDir, platform, { profilesDir = PROFILES_DIR, env = process.env, stdio = "inherit" } = {}) {
   const dir = join(profilesDir, platform, "bootstrap");
   const scripts = ["preflight.sh", "bootstrap.sh"].filter((f) => existsSync(join(dir, f)));
@@ -112,36 +117,6 @@ function checkPlatformOption(ctx) {
 
 const hasSetup = (platform) => existsSync(join(PROFILES_DIR, platform, "bootstrap", "bootstrap.sh"));
 
-// The outcome of the platform's last setup, as the run records give it: a setup run records
-// `run deploy: set up <p>` when it completes, which it does only once nothing a deploy needs is
-// owed, and `run deploy: setup of <p> failed` when it does not. The records are committed, so a
-// setup done on one machine is known on every other. `null` when there has been none.
-export function lastSetupOf(projectDir, platform) {
-  const dir = join(projectDir, ".sdlc", "runs");
-  if (!existsSync(dir)) return null;
-  let last = null;
-  for (const f of readdirSync(dir).filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)).sort()) {
-    for (const line of readText(join(dir, f)).split(/\r?\n/)) {
-      if (line.endsWith(`run deploy: set up ${platform}`)) last = "complete";
-      else if (line.endsWith(`run deploy: setup of ${platform} failed`)) last = "failed";
-    }
-  }
-  return last;
-}
-
-// A deploy run needs its platform set up: the resources, the identities GitHub deploys as, and
-// the repository's environments. A profile with no setup of its own needs none.
-export function checkSetUp(projectDir, platform) {
-  const id = "deploy-setup";
-  if (!PLATFORM.test(platform ?? "") || !hasSetup(platform)) return { id, ok: true, messages: [] };
-  const last = lastSetupOf(projectDir, platform);
-  if (last === "complete") return { id, ok: true, messages: [] };
-  const command = `sdlc run deploy --platform ${platform} --setup`;
-  return { id, ok: false, messages: [last === "failed"
-    ? `the last setup of ${platform} did not complete. Once the steps it printed are done, a person signed in to ${platform} runs it again: ${command}`
-    : `${platform} has not been set up. A person signed in to ${platform}, with the rights its deploy profile names, runs: ${command}`] };
-}
-
 // A setup run is for a platform whose profile carries a setup.
 function checkHasSetup(platform) {
   const id = "deploy-has-setup";
@@ -156,13 +131,27 @@ function checkApplicationExists(projectDir) {
     : { id, ok: false, messages: ["app/ is missing; deploy runs after the application is built"] };
 }
 
-// The stage changes its own platform's definition, script and workflow and nothing else.
+export const deployPlan = (platform) => `${deployDir(platform)}/plan.md`;
+
+// The stage changes its own platform's plan, definition, script and workflow, and the application
+// only where the plan names the change by its path, so the gate reads every change to app/ with
+// the reason for it.
 export function checkDeployScope(projectDir, platform) {
   const id = "deploy-scope";
+  const planFile = join(projectDir, deployPlan(platform));
+  const plan = existsSync(planFile) ? readText(planFile) : "";
   const own = (p) => p === deployWorkflow(platform) || p.startsWith(`${deployDir(platform)}/`)
     || p.startsWith("docs/decisions/") || /^\.sdlc\/(journal|runs|proposals)\//.test(p) || p === ".sdlc/run-state.json";
-  const outside = changedPaths(projectDir).filter((p) => !own(p));
-  return { id, ok: outside.length === 0, messages: outside.map((p) => `${p}: deploy changes only ${deployDir(platform)}/, ${deployWorkflow(platform)} and docs/decisions/`) };
+  const messages = [];
+  for (const p of changedPaths(projectDir).filter((p) => !own(p))) {
+    if (p.startsWith("app/")) {
+      const named = new RegExp(`(?<![\\w./-])${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/-]|\\.\\w)`).test(plan);
+      if (!named) messages.push(`${p}: a deploy changes the application only where ${deployPlan(platform)} names the change; name it there with why the deploy needs it, or leave it to the build stage`);
+    } else {
+      messages.push(`${p}: deploy changes only ${deployDir(platform)}/, ${deployWorkflow(platform)}, docs/decisions/, and app/ where ${deployPlan(platform)} names the change`);
+    }
+  }
+  return { id, ok: messages.length === 0, messages };
 }
 
 export function checkDeployFiles(projectDir, platform) {
@@ -170,9 +159,39 @@ export function checkDeployFiles(projectDir, platform) {
   const messages = [];
   const dir = join(projectDir, deployDir(platform));
   const files = existsSync(dir) ? readdirSync(dir) : [];
+  if (!existsSync(join(projectDir, deployPlan(platform)))) messages.push(`${deployPlan(platform)} is missing; it says what the application needs to deploy and what changes to it`);
   if (!files.some((f) => /\.(bicep|ya?ml)$/.test(f))) messages.push(`${deployDir(platform)}/ has no deployment definition (a .bicep or .yaml file)`);
   if (!existsSync(join(projectDir, deployScript(platform)))) messages.push(`${deployScript(platform)} is missing`);
   if (!existsSync(join(projectDir, deployWorkflow(platform)))) messages.push(`${deployWorkflow(platform)} is missing`);
+  return { id, ok: messages.length === 0, messages };
+}
+
+// What a Bicep definition may do, since provisioning deploys it signed in as the person running
+// the stage, before anyone has ruled on it: create and change resources in the one resource group
+// it is deployed to, from files the project holds. It may not reach another scope, grant a role,
+// lock or set policy on anything, run a script of its own in the cloud, or pull a module from a
+// registry, whose content the gate cannot read.
+const OTHER_SCOPE = /\bscope\s*:\s*(?:subscription|tenant|managementGroup|resourceGroup)\s*\(/;
+const REMOTE_MODULE = /^\s*(?:module\s+\w+\s+|using\s+)'((?:br|ts)[:/][^']*)'/;
+
+export function checkDefinitionScope(projectDir, platform) {
+  const id = "deploy-definition";
+  const dir = join(projectDir, deployDir(platform));
+  const files = existsSync(dir) ? readdirSync(dir).filter((f) => /\.bicep(param)?$/.test(f)).sort() : [];
+  const messages = [];
+  for (const f of files) {
+    readText(join(dir, f)).split(/\r?\n/).forEach((line, i) => {
+      const at = `${f}:${i + 1}`;
+      const code = line.replace(/\/\/.*$/, "");
+      const target = /^\s*targetScope\s*=\s*'([^']*)'/.exec(code)?.[1];
+      if (target && target !== "resourceGroup") messages.push(`${at}: targetScope is ${target}; a definition is deployed to its one resource group`);
+      if (/Microsoft\.Authorization\//.test(code)) messages.push(`${at}: Microsoft.Authorization resources (roles, locks, policy) are not the definition's to create; provisioning assigns the roles a deploy needs`);
+      if (/Microsoft\.Resources\/deploymentScripts/.test(code)) messages.push(`${at}: a deploymentScripts resource runs code in the cloud as provisioning signs in; do what it would in deploy.sh or the definition`);
+      if (OTHER_SCOPE.test(code)) messages.push(`${at}: a module deployed to another scope; everything is deployed to the definition's own resource group`);
+      const remote = REMOTE_MODULE.exec(code)?.[1];
+      if (remote) messages.push(`${at}: ${remote} is not a file in ${deployDir(platform)}; the gate rules on what the definition holds, so every module is one of its files`);
+    });
+  }
   return { id, ok: messages.length === 0, messages };
 }
 
@@ -230,8 +249,8 @@ function imageProblems(from, image) {
   return [`${from} ${ref}, which is not pinned to an image digest; a trial runs this workflow before it is ruled on`];
 }
 
-// The workflow runs the script this stage's trial ran, and nothing else deploys: development on
-// a push to `main` or to the trial branch, production only by hand. Because a trial runs the
+// The workflow runs the script this stage's trial ran, and deploys development on a push to
+// `main` or to the trial branch. Because a trial runs the
 // workflow before it is ruled on, every action it uses is pinned to a full commit SHA and its
 // token can read the repository, sign in to the platform and push images, and do nothing else.
 export function checkWorkflowCallsScript(projectDir, platform) {
@@ -249,7 +268,6 @@ export function checkWorkflowCallsScript(projectDir, platform) {
   const branches = Array.isArray(on.push?.branches) ? on.push.branches : [];
   if (!branches.includes("main")) messages.push(`${rel} does not deploy development on a push to main`);
   if (!branches.includes(TRIAL_BRANCH)) messages.push(`${rel} does not deploy development on a push to ${TRIAL_BRANCH}, the branch a deploy's trial is pushed to`);
-  if (!("workflow_dispatch" in on)) messages.push(`${rel} has no workflow_dispatch trigger for the manual production deploy`);
   if (!("permissions" in wf)) messages.push(`${rel} sets no permissions of its own, so its jobs get the repository's default token; set permissions: {} and grant each job only ${GRANTED}`);
   else messages.push(...grantProblems(rel, "the workflow", wf.permissions));
   // A secret reaches a step only where the workflow names it, and a deploy names the ones its
@@ -445,19 +463,22 @@ export const deploy = {
   title: (ctx) => `deploy to ${ctx.platform}`,
   skill: skillPath("deploy"),
   workspace: "deploy",
-  // A run delivers its own platform's files. Asked with no platform, as the registry asks when
-  // it works out which stage can deliver a path, it delivers any platform's it has a profile for.
-  collect: (ctx) => [...(ctx?.platform ? [ctx.platform] : deployProfiles()).flatMap((p) => [deployDir(p), deployWorkflow(p)]), "docs/decisions"],
+  // A run delivers its own platform's files, and the changes to the application its plan names.
+  // Asked with no platform, as the registry asks when it works out which stage can deliver a
+  // path, it delivers any platform's it has a profile for.
+  collect: (ctx) => [...(ctx?.platform ? [ctx.platform] : deployProfiles()).flatMap((p) => [deployDir(p), deployWorkflow(p)]), "app", "docs/decisions"],
   gate: "G3",
   proposalPrefix: "deploy-",
   defaultTurns: 80,
   implemented: true,
   allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash(ls *)", "Bash(mkdir *)", "Bash(chmod *)"],
   prompt(ctx) {
+    const p = ctx.platform;
     return [
-      `Deploy the application in app/ to ${ctx.platform}. Write ${deployDir(ctx.platform)}/ (the one deployment definition and the one deploy script, ${deployScript(ctx.platform)}) and ${deployWorkflow(ctx.platform)}, which runs that same script.`,
-      `The deploy profile for ${ctx.platform} follows. It is the pipeline's standard for this platform; a departure from it is a decision record under docs/decisions/ naming what departs and why.`,
-      profileText(ctx.platform),
+      `Deploy the application in app/ to ${p}. First read app/ through and write ${deployPlan(p)}: every resource the application needs to run on ${p} and why, every change the application needs to deploy there (each by its path under app/, with what changes and why), and every secret it needs, by name and where it comes from, never a value.`,
+      `Then make those changes to app/ and nothing else in it, and write the rest of ${deployDir(p)}/ (the one deployment definition and the one deploy script, ${deployScript(p)}) and ${deployWorkflow(p)}, which runs that same script. Once your files pass their checks, the person running the stage provisions what the definition names, signed in as themselves, and GitHub then deploys your work to the development environment as a trial.`,
+      `The deploy profile for ${p} follows. It is the pipeline's standard for this platform; a departure from it is a decision record under docs/decisions/ naming what departs and why.`,
+      profileText(p),
     ].join("\n\n");
   },
   proposal(ctx) {
@@ -467,31 +488,54 @@ export const deploy = {
       recommendation: recommendationFrom(ctx.agentText),
     };
   },
-  // What the trial saw, appended to the page the gate rules on.
+  // What provisioning did and what the trial saw, appended to the page the gate rules on.
   proposalEvidence(ctx) {
+    const parts = [];
+    const p = ctx.provisionRun;
+    if (p?.ran) {
+      parts.push(`## Provisioning\n\n${p.ok
+        ? `The person who ran the stage, signed in as themselves, provisioned what ${deployDir(ctx.platform)}/ defines on ${ctx.platform} before the trial, and gave the identity GitHub deploys as only what a deploy needs.`
+        : `Provisioning did not pass:\n\n${p.messages.join("\n")}`}`);
+    }
     const r = ctx.deployRun;
-    if (!r) return "";
-    const run = r.runUrl ? ` (${r.runUrl})` : "";
-    const body = r.ok
-      ? `GitHub deployed the development environment from this proposal's trial commit${run}, and ${r.url} answered ${r.status}.`
-      : `The trial deploy did not pass${run}:\n\n${r.messages.join("\n")}`;
-    return redactLocalPaths(`\n\n## Trial deploy\n\n${body}\n`, ctx.projectDir ?? process.cwd());
+    if (r) {
+      const run = r.runUrl ? ` (${r.runUrl})` : "";
+      parts.push(`## Trial deploy\n\n${r.ok
+        ? `GitHub deployed the development environment from this proposal's trial commit${run}, and ${r.url} answered ${r.status}.`
+        : `The trial deploy did not pass${run}:\n\n${r.messages.join("\n")}`}`);
+    }
+    if (!parts.length) return "";
+    return redactLocalPaths(`\n\n${parts.join("\n\n")}\n`, ctx.projectDir ?? process.cwd());
   },
   // A setup run checks that the platform is one the project deploys to and has a setup; a deploy
-  // run also needs the application, and the platform's last setup to have completed.
+  // run also needs the application. Neither needs a setup before it: a deploy run provisions what
+  // its own definition names.
   preChecks(projectDir, ctx) {
     if (ctx.setup) return [checkPlatformOption(ctx), checkHasSetup(ctx.platform)];
-    return [checkPlatformOption(ctx), checkApplicationExists(projectDir), checkSetUp(projectDir, ctx.platform)];
+    return [checkPlatformOption(ctx), checkApplicationExists(projectDir)];
   },
+  // `--setup`: provisioning alone, from the definition the checkout holds.
   bootstrap(projectDir, ctx) {
+    return bootstrapPlatform(projectDir, ctx.platform);
+  },
+  // Provisioning within a deploy run. It runs again on every repair turn, so a bootstrap makes
+  // sure of what it creates rather than creating it twice.
+  provision(projectDir, ctx) {
     return bootstrapPlatform(projectDir, ctx.platform);
   },
   async postChecks(projectDir, ctx) {
     ctx.deployName = nextProposalName(projectDir, `deploy-${ctx.platform}`);
-    const before = [checkDeployScope(projectDir, ctx.platform), checkDeployFiles(projectDir, ctx.platform), checkWorkflowCallsScript(projectDir, ctx.platform)];
+    const before = [
+      checkDeployScope(projectDir, ctx.platform), checkDeployFiles(projectDir, ctx.platform),
+      checkDefinitionScope(projectDir, ctx.platform), checkWorkflowCallsScript(projectDir, ctx.platform),
+    ];
     if (before.some((r) => !r.ok) || ctx.dryRun) return before;
+    const provisioned = await deploy.provision(projectDir, ctx);
+    ctx.provisionRun = provisioned;
+    const provision = { id: "deploy-provision", ok: provisioned.ok, messages: provisioned.ok ? [] : provisioned.messages };
+    if (!provision.ok) return [...before, provision];
     const run = await trialDeploy(projectDir, ctx.platform, { config: ctx.config });
     ctx.deployRun = run;
-    return [...before, run];
+    return [...before, provision, run];
   },
 };

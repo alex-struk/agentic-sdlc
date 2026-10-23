@@ -20,7 +20,7 @@ const HELP = `sdlc <command> [args] [--flags]
   scrub [dir]                      redact a local home path from a tracked file the egress check flags, committed as the pipeline
   run <stage> [--slice N] [--domain X] [--target old|new] [--platform P] [--setup] [--stale] [--revise] [--skip-suite] [--full] [--hand-in <branch>] [--dry-run] [--reason "..."]
                                    run one pipeline stage; --reason is required to run something other than what next names;
-                                   --setup runs a stage's one-time setup (a deploy platform's) and nothing else
+                                   --setup provisions a deploy platform again from the definition main holds, and nothing else
   next [dir] [--json]              name the next stage to run and why, read from main (exit 0 run, 3 waiting on a person, 4 nothing left)
   drive [dir] [--max-steps N] [--dry-run]   run what next names until a person, a failure or a dead end
                                    (exit 0 nothing left, 1 failed, 2 refused, 3 waiting on a person, 5 sign-in expired, 6 no progress, 7 step limit)

@@ -1,60 +1,72 @@
 #!/usr/bin/env bash
 # deploy.sh <environment> [image-tag] — the only way the application is deployed. The workflow
 # runs it for every deploy, a deploy's trial included, and a person deploying by hand runs the
-# same file. Settings come from the environment: on GitHub from the environment's variables, on a
-# machine from the settings file the setup wrote. RESOURCE_GROUP is the one group this
-# environment lives in, and exists. The SRE agent, when there is one, was set to watch it by the
-# setup, so nothing here touches the agent.
+# same file. RESOURCE_GROUP is the group provisioning deployed the definition into, and REGISTRY
+# the registry's login server; on GitHub both are the environment's variables.
+#
+# It creates nothing. It builds each image and pushes it, then points the container apps that
+# run it at the digest this run's push produced, by changing their template and nothing else.
+# That is all the identity GitHub deploys as may do: change those container apps and push images.
+# A new resource, or a change to anything but the images, is a change to the definition, which
+# provisioning deploys.
 set -euo pipefail
 
 ENVIRONMENT="${1:?usage: deploy.sh <environment> [image-tag]}"
 IMAGE_TAG="${2:-$(git rev-parse --short=12 HEAD)}"
 : "${RESOURCE_GROUP:?set RESOURCE_GROUP}"
-: "${LOCATION:?set LOCATION}"
-: "${REGISTRY:?set REGISTRY (the image registry path, lowercase)}"
+: "${REGISTRY:?set REGISTRY (the registry login server)}"
+API=2024-03-01
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PREFIX="app-${ENVIRONMENT}"
+ROOT="$(cd "$HERE/../.." && pwd)"
 REGISTRY="$(tr '[:upper:]' '[:lower:]' <<< "$REGISTRY")"
+# What is built, by the name of the container that runs it: the build context of each image.
+declare -A BUILD=([web]="app")
 
-REGISTRY_SERVER="${REGISTRY%%/*}"
-
+echo "deploying to $ENVIRONMENT from $RESOURCE_GROUP" >&2
 if [ -n "${AZURE_SUBSCRIPTION_ID:-}" ]; then az account set --subscription "$AZURE_SUBSCRIPTION_ID"; fi
-RG="$RESOURCE_GROUP"
-az group show --name "$RG" --output none \
-  || { echo "resource group $RG does not exist; the platform's setup creates it" >&2; exit 1; }
+az acr login --name "${REGISTRY%%.*}" > /dev/null
 
-# deploy_stack <deploy-apps> <image>
-deploy_stack() {
-  az deployment group create --resource-group "$RG" --template-file "$HERE/main.bicep" \
-    --parameters prefix="$PREFIX" location="$LOCATION" image="$2" deployApps="$1" \
-      registryServer="$REGISTRY_SERVER" pullIdentityId="${PULL_IDENTITY_ID:-}" \
-    --query properties.outputs --output json
-}
-
-# Pass one: monitoring and the environment, so the image has somewhere to land and
-# any address only known after this pass exists.
-deploy_stack false "$REGISTRY:$IMAGE_TAG" > /dev/null
-
-# Build and push the image, tagged with the commit, on every run, and deploy it by the digest
-# this run's push produced. Every environment's deploys can push to the registry, so a tag is no
-# proof of who pushed it, and an image another run pushed under this tag is never the one deployed.
-# An Azure Container Registry is signed in to here; another registry is signed in to beforehand
-# by whatever the project's profile notes name.
-if [[ "$REGISTRY_SERVER" == *.azurecr.io ]]; then az acr login --name "${REGISTRY_SERVER%%.*}" > /dev/null; fi
-docker build --tag "$REGISTRY:$IMAGE_TAG" "$HERE/../../app"
-docker push "$REGISTRY:$IMAGE_TAG"
-DIGEST="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$REGISTRY:$IMAGE_TAG" | grep -m1 "^$REGISTRY@sha256:")" \
-  || { echo "the push of $REGISTRY:$IMAGE_TAG reported no digest" >&2; exit 1; }
-
-# Pass two: the applications, from the image this run pushed.
-outputs="$(deploy_stack true "$DIGEST")"
-URL="$(jq -r '.appUrl.value' <<< "$outputs")"
-
-for _ in $(seq 1 24); do
-  if curl -fsS --max-time 10 "$URL/status" > /dev/null; then ok=1; break; fi
-  sleep 5
+# Build and push each image, tagged with the commit, on every run, and deploy it by the digest
+# this run's push produced: a tag is no proof of who pushed it, so an image another run pushed
+# under this tag is never the one deployed.
+declare -A DIGEST=()
+for container in "${!BUILD[@]}"; do
+  ref="$REGISTRY/$container:$IMAGE_TAG"
+  docker build --tag "$ref" "$ROOT/${BUILD[$container]}"
+  docker push "$ref"
+  DIGEST[$container]="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" | grep -m1 "^$REGISTRY/$container@sha256:")" \
+    || { echo "the push of $ref reported no digest" >&2; exit 1; }
 done
-[ "${ok:-0}" = 1 ] || { echo "the application did not answer at $URL/status" >&2; exit 1; }
+digests="$(for c in "${!DIGEST[@]}"; do jq -n --arg c "$c" --arg d "${DIGEST[$c]}" '{($c): $d}'; done | jq -s 'add')"
+
+# Each container app provisioning stood up, its containers pointed at this run's images.
+placed="[]"
+URL=""
+for id in $(az containerapp list --resource-group "$RESOURCE_GROUP" --query "[].id" -o tsv); do
+  app="$(az rest --method get --url "https://management.azure.com$id?api-version=$API")"
+  names="$(jq -c --argjson d "$digests" '[.properties.template.containers[].name | select($d[.] != null)]' <<< "$app")"
+  [ "$names" = "[]" ] && continue
+  body="$(jq -c --argjson d "$digests" '{properties: {template: (.properties.template | .containers |= map(if $d[.name] then .image = $d[.name] else . end))}}' <<< "$app")"
+  az rest --method patch --url "https://management.azure.com$id?api-version=$API" --body "$body" --output none
+  for _ in $(seq 1 60); do
+    state="$(az rest --method get --url "https://management.azure.com$id?api-version=$API" --query properties.provisioningState -o tsv)"
+    [ "$state" = InProgress ] || break
+    sleep 5
+  done
+  [ "$state" = Succeeded ] || { echo "${id##*/} ended $state" >&2; exit 1; }
+  placed="$(jq -c --argjson n "$names" '. + $n' <<< "$placed")"
+  fqdn="$(jq -r 'select(.properties.configuration.ingress.external == true) | .properties.configuration.ingress.fqdn // empty' <<< "$app")"
+  if [ -n "$fqdn" ] && jq -e 'index("web")' <<< "$names" > /dev/null; then URL="https://$fqdn"; fi
+  echo "${id##*/} runs $(jq -r 'join(", ")' <<< "$names") from this run's images" >&2
+done
+for c in "${!DIGEST[@]}"; do
+  jq -e --arg c "$c" 'index($c)' <<< "$placed" > /dev/null \
+    || { echo "no container app in $RESOURCE_GROUP runs a container named $c; the definition stands them up" >&2; exit 1; }
+done
+[ -n "$URL" ] || { echo "no container app with external ingress runs the web container" >&2; exit 1; }
+
+curl --fail --silent --show-error --max-time 10 --retry 24 --retry-delay 5 --retry-all-errors "$URL/status" > /dev/null \
+  || { echo "the application did not answer at $URL/status" >&2; exit 1; }
 
 echo "DEPLOYED_URL=$URL"

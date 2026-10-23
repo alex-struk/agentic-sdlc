@@ -63,7 +63,7 @@ test("a proposal name resolves to the stage that would be asked to revise it", (
 
 test("which stages can deliver a path is read off the registry, not listed a second time", () => {
   assert.deepEqual(deliverableBy("plan/tasks.md"), ["plan"]);
-  assert.deepEqual(deliverableBy("app/routes/list.tsx"), ["build"]);
+  assert.deepEqual(deliverableBy("app/routes/list.tsx"), ["build", "deploy"]);
   assert.deepEqual(deliverableBy("docs/decisions/0031-a-choice.md"), ["build", "deploy", "plan"]);
   assert.deepEqual(deliverableBy("constitution.md"), []);
   // A stage whose outputs depend on what its run is about (a deploy's platform) is asked about

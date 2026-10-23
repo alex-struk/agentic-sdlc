@@ -1,14 +1,24 @@
+// Everything the application runs on, in the one resource group provisioning deploys this into,
+// signed in as the person running the deploy stage. It creates no role assignment: provisioning
+// gives each identity its rights. A deploy never deploys this; it points the container apps at
+// the images its run pushed, and nothing else.
 targetScope = 'resourceGroup'
 
 param prefix string
-param location string
-param image string
-param deployApps bool
-@description('Login server of the registry the image is pulled from.')
+param location string = resourceGroup().location
+@description('Login server of the registry the images are pulled from.')
 param registryServer string
-@description('Resource id of a user-assigned identity allowed to pull from the registry. Empty when the registry is public.')
-param pullIdentityId string = ''
+@description('Resource id of the user-assigned identity allowed to pull from the registry.')
+param pullIdentityId string
+@description('The image each container runs now, as "<app>/<container>": image, so provisioning again keeps what a deploy put there.')
+param existingImagesJson string = '{}'
+@description('What a container app runs until its first deploy.')
+param initialImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 param tags object = {}
+
+var existingImages = json(existingImagesJson)
+var webName = '${prefix}-web'
+var webImage = existingImages[?'${webName}/web'] ?? initialImage
 
 resource workspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${prefix}-law'
@@ -41,11 +51,11 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
-resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
-  name: '${prefix}-web'
+resource app 'Microsoft.App/containerApps@2024-03-01' = {
+  name: webName
   location: location
   tags: tags
-  identity: empty(pullIdentityId) ? { type: 'None' } : {
+  identity: {
     type: 'UserAssigned'
     userAssignedIdentities: { '${pullIdentityId}': {} }
   }
@@ -53,25 +63,27 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApps) {
     managedEnvironmentId: environment.id
     configuration: {
       ingress: { external: true, targetPort: 3000, transport: 'auto', allowInsecure: false }
-      registries: empty(pullIdentityId) ? [] : [ { server: registryServer, identity: pullIdentityId } ]
+      registries: [ { server: registryServer, identity: pullIdentityId } ]
     }
     template: {
       containers: [
         {
           name: 'web'
-          image: image
+          image: webImage
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
           ]
         }
       ]
-      scale: { minReplicas: 1, maxReplicas: 3 }
+      // The placeholder answers on another port than the application, so until the first deploy
+      // nothing keeps a replica of it running.
+      scale: { minReplicas: webImage == initialImage ? 0 : 1, maxReplicas: 3 }
     }
   }
 }
 
-resource statusTest 'Microsoft.Insights/webtests@2022-06-15' = if (deployApps) {
+resource statusTest 'Microsoft.Insights/webtests@2022-06-15' = {
   name: '${prefix}-status'
   location: location
   tags: union(tags, { 'hidden-link:${appInsights.id}': 'Resource' })
@@ -90,7 +102,7 @@ resource statusTest 'Microsoft.Insights/webtests@2022-06-15' = if (deployApps) {
   }
 }
 
-resource statusDown 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployApps) {
+resource statusDown 'Microsoft.Insights/metricAlerts@2018-03-01' = {
   name: '${prefix}-status-down'
   location: 'global'
   tags: tags
@@ -110,7 +122,7 @@ resource statusDown 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployApp
   }
 }
 
-resource serverErrors 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployApps) {
+resource serverErrors 'Microsoft.Insights/metricAlerts@2018-03-01' = {
   name: '${prefix}-5xx'
   location: 'global'
   tags: tags
@@ -139,6 +151,6 @@ resource serverErrors 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployA
   }
 }
 
-output appUrl string = deployApps ? 'https://${app.properties.configuration.ingress.fqdn}' : ''
+output appUrl string = 'https://${app.properties.configuration.ingress.fqdn}'
 output workspaceId string = workspace.id
 output appInsightsId string = appInsights.id
