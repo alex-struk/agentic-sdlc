@@ -10,7 +10,7 @@ import { routeOf, SUBJECT_OF } from "../src/runner/routes.mjs";
 import { STAGES_BY_NAME } from "../src/stages/registry.mjs";
 import { PIPELINE_ROOT } from "../src/lib/root.mjs";
 import {
-  deploy, deployProfiles, profileText, checkDeployFiles, checkWorkflowCallsScript, trialDeploy, TRIAL_BRANCH,
+  deploy, deployProfiles, profileText, checkDeployFiles, checkDeployScope, checkDefinitionScope, checkWorkflowCallsScript, trialDeploy, TRIAL_BRANCH,
   bootstrapPlatform, deploySettingsFile, readDeploySettings,
 } from "../src/stages/deploy.mjs";
 import { git } from "../src/lib/git.mjs";
@@ -45,13 +45,14 @@ function project(t) {
 const PIN = "0123456789abcdef0123456789abcdef01234567";
 
 function lay(d, platform, {
-  workflow = true, callsScript = true, on = "{ push: { branches: [main, development] }, workflow_dispatch: {} }",
+  workflow = true, callsScript = true, on = "{ push: { branches: [main, development] } }", plan = true,
   permissions = "{}", jobPermissions = "{ contents: read, id-token: write }", steps = [`- uses: actions/checkout@${PIN}`], jobUses,
 } = {}) {
   mkdirSync(join(d, "deploy", platform), { recursive: true });
   mkdirSync(join(d, ".github", "workflows"), { recursive: true });
   writeFileSync(join(d, "deploy", platform, "main.bicep"), "targetScope = 'resourceGroup'\n");
   writeFileSync(join(d, "deploy", platform, "deploy.sh"), "#!/usr/bin/env bash\necho ok\n");
+  if (plan) writeFileSync(join(d, "deploy", platform, "plan.md"), "# Deploy plan\n\n## Changes to the application\n\nNone.\n");
   if (workflow) {
     const job = jobUses
       ? [`  go:`, `    uses: ${jobUses}`]
@@ -78,16 +79,17 @@ test("a deploy proposal is routed to the deploy stage and its platform", () => {
   assert.equal(SUBJECT_OF.deploy, "platform");
 });
 
-test("the deploy stage is implemented, gated at G3, and writes only its platform's files from a workspace of its own", () => {
+test("the deploy stage is implemented, gated at G3, and writes its platform's files and the application from a workspace of its own", () => {
   assert.equal(deploy.implemented, true);
   assert.equal(STAGES_BY_NAME.deploy, deploy);
   assert.equal(deploy.gate, "G3");
   const ctx = { platform: "azure-container-apps" };
-  assert.deepEqual(deploy.collect(ctx), ["deploy/azure-container-apps", ".github/workflows/deploy-azure-container-apps.yml", "docs/decisions"]);
+  assert.deepEqual(deploy.collect(ctx), ["deploy/azure-container-apps", ".github/workflows/deploy-azure-container-apps.yml", "app", "docs/decisions"]);
   assert.deepEqual(workspaceScopeViolations("deploy", deploy.workspace, deploy.collect(ctx), deploy.context?.(ctx) ?? []), []);
-  // The application is read, not changed; and a workspace that is not the project tree is one a
-  // person's branch can be handed in to.
-  assert.ok(MODES[deploy.workspace].includes("app"));
+  // The application is the stage's to change where its plan says so, so it is collected rather
+  // than sealed; and a workspace that is not the project tree is one a person's branch can be
+  // handed in to.
+  assert.equal(MODES[deploy.workspace].includes("app"), false);
   assert.equal(IN_PLACE_MODES.has(deploy.workspace), false);
 });
 
@@ -114,7 +116,7 @@ test("a platform the project does not list, or without a profile, fails the pre-
   assert.match(deploy.preChecks(d, { platform: "nowhere", config: c2 }).flatMap((r) => r.messages).join("\n"), /no deploy profile/);
 });
 
-test("the definition, the script and the workflow must all exist", (t) => {
+test("the plan, the definition, the script and the workflow must all exist", (t) => {
   const d = project(t);
   assert.equal(checkDeployFiles(d, "azure-container-apps").ok, false);
   lay(d, "azure-container-apps");
@@ -122,6 +124,49 @@ test("the definition, the script and the workflow must all exist", (t) => {
   const e = project(t);
   lay(e, "azure-container-apps", { workflow: false });
   assert.match(checkDeployFiles(e, "azure-container-apps").messages.join("\n"), /deploy-azure-container-apps\.yml/);
+  const f = project(t);
+  lay(f, "azure-container-apps", { plan: false });
+  assert.match(checkDeployFiles(f, "azure-container-apps").messages.join("\n"), /deploy\/azure-container-apps\/plan\.md is missing/);
+});
+
+test("a change to the application is in scope only where the plan names its path, whole", (t) => {
+  const P = "azure-container-apps";
+  const said = (plan) => {
+    const d = project(t);
+    git(["init", "-q", "-b", "main"], d);
+    mkdirSync(join(d, "app"));
+    writeFileSync(join(d, "app", "a.js"), "1\n");
+    git(["add", "-A"], d); git(["-c", "user.name=t", "-c", "user.email=t@example.org", "commit", "-q", "-m", "app"], d);
+    writeFileSync(join(d, "app", "a.js"), "2\n");
+    mkdirSync(join(d, "deploy", P), { recursive: true });
+    writeFileSync(join(d, "deploy", P, "plan.md"), plan);
+    return checkDeployScope(d, P).messages.join("\n");
+  };
+  assert.equal(said("| `app/a.js` | reads its port | the platform names it |\n"), "");
+  assert.equal(said("It changes app/a.js.\n"), "");
+  for (const plan of ["It changes app/a.jsx.\n", "It changes xapp/a.js.\n", "It changes app/a.js.map.\n", "None.\n"]) {
+    assert.match(said(plan), /app\/a\.js: a deploy changes the application only where deploy\/azure-container-apps\/plan\.md names the change/, plan);
+  }
+});
+
+test("a definition provisioning runs as the person signed in stays inside its resource group and grants nothing", (t) => {
+  const P = "azure-container-apps";
+  const said = (files) => {
+    const d = project(t);
+    lay(d, P);
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(d, "deploy", P, name), text);
+    return checkDefinitionScope(d, P).messages.join("\n");
+  };
+  assert.equal(said({}), "");
+  assert.match(said({ "main.bicep": "targetScope = 'subscription'\n" }), /main\.bicep:1: targetScope is subscription/);
+  assert.match(said({ "net.bicep": "resource r 'Microsoft.Authorization/roleAssignments@2022-04-01' = {\n}\n" }), /net\.bicep:1: .*Microsoft\.Authorization/);
+  assert.match(said({ "main.bicep": "resource s 'Microsoft.Resources/deploymentScripts@2023-08-01' = {\n}\n" }), /deploymentScripts/);
+  assert.match(said({ "main.bicep": "module m './m.bicep' = {\n  scope: resourceGroup('other')\n}\n" }), /main\.bicep:2: .*another scope/);
+  assert.match(said({ "main.bicep": "module m 'br/public:avm/res/app/container-app:0.1.0' = {\n}\n" }), /main\.bicep:1: .*not a file in deploy\/azure-container-apps/);
+  assert.match(said({ "main.bicepparam": "using 'br:example.azurecr.io/bicep/main:v1'\n" }), /main\.bicepparam:1: .*not a file in deploy\/azure-container-apps/);
+  // The profile's own templates are what a definition is held to.
+  const tdir = join(PIPELINE_ROOT, "deploys", P, "templates", "deploy", P);
+  assert.equal(said({ "main.bicep": readFileSync(join(tdir, "main.bicep"), "utf8"), "main.bicepparam": readFileSync(join(tdir, "main.bicepparam"), "utf8") }), "");
 });
 
 test("the workflow must call the script the stage ran", (t) => {
@@ -133,17 +178,19 @@ test("the workflow must call the script the stage ran", (t) => {
   assert.equal(checkWorkflowCallsScript(e, "azure-container-apps").ok, false);
 });
 
-test("the workflow deploys development on a push to main or to development, and production only by hand", (t) => {
+test("the workflow deploys development on a push to main or to development, and nothing else is asked of its triggers", (t) => {
   const P = "azure-container-apps";
   for (const [on, why] of [
-    ["{ push: { branches: [development] }, workflow_dispatch: {} }", /on a push to main/],
-    ["{ push: { branches: [main] }, workflow_dispatch: {} }", /on a push to development, the branch a deploy's trial is pushed to/],
-    ["{ push: { branches: [main, development] } }", /workflow_dispatch/],
+    ["{ push: { branches: [development] } }", /on a push to main/],
+    ["{ push: { branches: [main] } }", /on a push to development, the branch a deploy's trial is pushed to/],
   ]) {
     const d = project(t);
     lay(d, P, { on });
     assert.match(checkWorkflowCallsScript(d, P).messages.join("\n"), why, on);
   }
+  const d = project(t);
+  lay(d, P, { on: "{ push: { branches: [main, development] } }" });
+  assert.deepEqual(checkWorkflowCallsScript(d, P).messages, []);
 });
 
 test("the workflow a trial runs before it is ruled on pins every action and grants nothing but a read and a sign-in token", (t) => {
@@ -183,22 +230,28 @@ test("a workflow a trial runs reads no secret it was not handed by name, and run
   assert.equal(said({ jobPermissions: `{ contents: read }\n    container: node@sha256:${"a".repeat(64)}` }), "");
 });
 
-test("the Azure profile's deploy script runs the image its own run built, by digest, so an image another deploy pushed under that tag is never what it runs", () => {
+test("the Azure profile's deploy script runs the image its own run built, by digest, and creates nothing", () => {
   const script = readFileSync(join(PIPELINE_ROOT, "deploys", "azure-container-apps", "templates", "deploy", "azure-container-apps", "deploy.sh"), "utf8");
   assert.doesNotMatch(script, /manifest inspect/, "the build is never skipped because the tag is already there");
   assert.match(script, /RepoDigests/);
-  assert.match(script, /deploy_stack true "\$DIGEST"/);
+  // It points the container apps provisioning stood up at the new images, by changing their
+  // template and nothing else, which is all the identity GitHub deploys as may do.
+  assert.match(script, /properties: \{template:/);
+  assert.match(script, /az rest --method patch/);
+  assert.doesNotMatch(script, /az deployment|az group create|az identity|role assignment|az containerapp (create|up)/);
   const skill = readFileSync(join(PIPELINE_ROOT, "deploys", "azure-container-apps", "SKILL.md"), "utf8");
   assert.match(skill.replace(/\s+/g, " "), /by the digest of the image its own run pushed/);
 });
 
-test("the Azure profile's own workflow template passes the checks a project's workflow is held to", (t) => {
+test("the Azure profile's own workflow template passes the checks a project's workflow is held to, and deploys development alone", (t) => {
   const d = project(t);
   const P = "azure-container-apps";
   lay(d, P, { workflow: false });
   const tpl = readFileSync(join(PIPELINE_ROOT, "deploys", P, "templates", ".github", "workflows", `deploy-${P}.yml`), "utf8");
   writeFileSync(join(d, ".github", "workflows", `deploy-${P}.yml`), tpl);
   assert.deepEqual(checkWorkflowCallsScript(d, P).messages, []);
+  assert.doesNotMatch(tpl, /production/);
+  assert.doesNotMatch(tpl, /secrets\./, "the workflow reads variables; provisioning holds the application's secrets");
 });
 
 // ---- the trial, on GitHub ----
@@ -400,35 +453,31 @@ test("a trial GitHub never starts a run for, or whose run never finishes, gives 
   assert.match(b.messages.join("\n"), /did not finish in time: https:\/\/github\.example\/run\/9/);
 });
 
-test("the proposal page carries what the trial saw, with the run that deployed it", (t) => {
+test("the proposal page carries what provisioning did and what the trial saw, with the run that deployed it", (t) => {
   const d = project(t);
-  const ctx = { platform: "openshift", projectDir: d, deployRun: { ok: true, url: "https://app.example.test", status: 200, runUrl: "https://github.example/run/7", messages: [] } };
+  const ctx = { platform: "openshift", projectDir: d,
+    provisionRun: { ok: true, ran: true, messages: [] },
+    deployRun: { ok: true, url: "https://app.example.test", status: 200, runUrl: "https://github.example/run/7", messages: [] } };
   const page = deploy.proposalEvidence(ctx);
+  assert.match(page, /## Provisioning/);
+  assert.match(page, /signed in as themselves/);
+  assert.ok(page.indexOf("## Provisioning") < page.indexOf("## Trial deploy"));
   assert.match(page, /## Trial deploy/);
   assert.match(page, /development environment/);
   assert.match(page, /https:\/\/app\.example\.test answered 200/);
   assert.match(page, /https:\/\/github\.example\/run\/7/);
+  // A platform with nothing to provision says nothing about it.
+  assert.doesNotMatch(deploy.proposalEvidence({ ...ctx, provisionRun: { ok: true, ran: false, messages: [] } }), /## Provisioning/);
 });
 
 // ---- setup, a run of its own ----
 
-test("a deploy runs once the run records say its platform's last setup completed, on whichever machine ran it", (t) => {
+test("a deploy run needs no setup before it, since it provisions what its own definition names; --setup is for a platform with a setup", (t) => {
   const d = project(t);
   mkdirSync(join(d, "app"));
-  mkdirSync(join(d, ".sdlc", "runs"), { recursive: true });
   const { config } = parseConfig(`${BASE}deploy: [azure-container-apps, openshift]\n`);
   const said = (platform, ctx = {}) => deploy.preChecks(d, { platform, config, ...ctx }).filter((r) => !r.ok).flatMap((r) => r.messages).join("\n");
-  const record = (day, lines) => writeFileSync(join(d, ".sdlc", "runs", `${day}.md`), `# Run record ${day}\n\n${lines.map((l) => `- 10:00:00 ${l}`).join("\n")}\n`);
-  assert.match(said("azure-container-apps"), /azure-container-apps has not been set up.*sdlc run deploy --platform azure-container-apps --setup/s);
-  record("2026-10-18", ["run deploy: setup of azure-container-apps failed"]);
-  assert.match(said("azure-container-apps"), /last setup of azure-container-apps did not complete/);
-  record("2026-10-19", ["run deploy: set up openshift", "run deploy: set up azure-container-apps"]);
   assert.equal(said("azure-container-apps"), "");
-  // The latest outcome is the one that counts.
-  record("2026-10-20", ["run deploy: setup of azure-container-apps failed"]);
-  assert.match(said("azure-container-apps"), /did not complete/);
-  // A profile with no setup of its own has nothing to complete, and the setup run is not refused
-  // for the setup it is about to do; a setup of a platform with none is.
   assert.equal(said("openshift"), "");
   assert.equal(said("azure-container-apps", { setup: true }), "");
   assert.match(said("openshift", { setup: true }), /openshift has no setup/);
@@ -593,26 +642,20 @@ test("a setup that completes is recorded and stops there, with no agent turn", a
   assert.equal(existsSync(join(dir, ".sdlc", "run-state.json")), false);
 });
 
-test("a deploy on a machine that was never set up is refused before any agent turn, and never sets itself up", async (t) => {
-  const { dir } = await builtProject(t);
-  const real = deploy.bootstrap;
-  t.after(() => { deploy.bootstrap = real; });
-  deploy.bootstrap = () => { throw new Error("a deploy run started the setup"); };
-  const r = await runStage(dir, "deploy", { platform: "azure-container-apps" });
-  assert.equal(r.ok, false);
-  assert.match(r.messages.join("\n"), /sdlc run deploy --platform azure-container-apps --setup/);
-  assert.match(git(["log", "-1", "--format=%s"], dir), /^run\(deploy\): pre-checks failed$/);
-});
-
-// A built project whose Azure setup completed (as its run records say), with `main` pushed to an
-// `origin` on GitHub that git reaches through a bare repository here, an application at a local
-// address, and `gh` answering for one finished run of the workflow on whatever the trial pushed,
-// whose log names that address. The session's reply writes `files`.
-async function readyToDeploy(t, files) {
+// A built project with `main` pushed to an `origin` on GitHub that git reaches through a bare
+// repository here, an application at a local address, and `gh` answering for one finished run of
+// the workflow on whatever the trial pushed, whose log names that address. Provisioning is stood
+// in for by `provision`, and `order` records it and the trial's push as they happen. The
+// session's reply writes `files`.
+async function readyToDeploy(t, files, { provision = () => ({ ok: true, ran: true, messages: [] }) } = {}) {
   const { tmp, dir } = await builtProject(t);
-  const real = deploy.bootstrap;
-  deploy.bootstrap = () => ({ ok: true, ran: true, messages: [] });
-  try { await runStage(dir, "deploy", { platform: "azure-container-apps", setup: true }); } finally { deploy.bootstrap = real; }
+  const order = [];
+  const real = deploy.provision;
+  t.after(() => { deploy.provision = real; });
+  deploy.provision = (projectDir, ctx) => {
+    order.push(`provision ${existsSync(join(projectDir, "deploy", ctx.platform, "main.bicep")) ? "with" : "without"} the definition`);
+    return provision(projectDir, ctx);
+  };
   const remote = join(tmp, "origin.git");
   git(["init", "-q", "--bare", "-b", "main", remote], tmp);
   originOnGitHub(dir, remote);
@@ -622,10 +665,12 @@ async function readyToDeploy(t, files) {
   t.after(() => app.close());
   const bin = join(tmp, "bin");
   mkdirSync(bin);
+  const pushes = join(tmp, "pushes.log");
   writeFileSync(join(bin, "gh"), [
     "#!/bin/bash",
     'case "$1 $2" in',
-    '  "api repos/example/service/actions/secrets"|"api repos/example/service/actions/organization-secrets") echo 0;;',
+    `  "api repos/example/service/actions/secrets") echo trial >> "${pushes}"; echo 0;;`,
+    '  "api repos/example/service/actions/organization-secrets") echo 0;;',
     `  "run list") sha="$(git --git-dir "${remote}" rev-parse refs/heads/${TRIAL_BRANCH})"; printf '[{"databaseId":7,"headSha":"%s","status":"completed","conclusion":"success","url":"https://github.example/run/7","workflowName":"Deploy to Azure Container Apps"}]' "$sha";;`,
     `  "run view") printf 'deploy\\tDeploy\\tDEPLOYED_URL=http://127.0.0.1:${port}\\n';;`,
     "  *) exit 1;;",
@@ -637,31 +682,56 @@ async function readyToDeploy(t, files) {
   writeFileSync(join(process.env.SDLC_MOCK_DIR, "deploy.json"), JSON.stringify({
     text: "The application deploys to Container Apps from one definition.\n\nRecommendation: approve.", files,
   }));
-  return { dir, remote, port };
+  const steps = () => [...order, ...(existsSync(pushes) ? readFileSync(pushes, "utf8").split("\n").filter(Boolean) : [])];
+  return { dir, remote, port, steps };
 }
 
 const DEPLOY_FILES = {
+  "deploy/azure-container-apps/plan.md": "# Deploy plan\n\n## Changes to the application\n\nNone.\n",
   "deploy/azure-container-apps/main.bicep": "targetScope = 'resourceGroup'\n",
   "deploy/azure-container-apps/deploy.sh": "#!/usr/bin/env bash\nset -euo pipefail\n",
   ".github/workflows/deploy-azure-container-apps.yml": readFileSync(join(PIPELINE_ROOT, "deploys", "azure-container-apps", "templates", ".github", "workflows", "deploy-azure-container-apps.yml"), "utf8"),
 };
 
-test("a deploy run takes the session's files out of its workspace, has GitHub try them, and proposes them with what the trial saw", async (t) => {
-  const { dir, remote, port } = await readyToDeploy(t, DEPLOY_FILES);
+test("a deploy run takes the session's files out of its workspace, provisions what they define, has GitHub try them, and proposes them with what both saw", async (t) => {
+  const { dir, remote, port, steps } = await readyToDeploy(t, DEPLOY_FILES);
   const r = await runStage(dir, "deploy", { platform: "azure-container-apps" });
   assert.equal(r.ok, true, (r.messages ?? []).join("\n"));
+  // Provisioning stands up what the session's definition names, before GitHub deploys to it.
+  assert.deepEqual(steps(), ["provision with the definition", "trial"]);
   const branch = "proposal/deploy-azure-container-apps";
   const changed = git(["diff", "--name-only", `main...${branch}`], dir).split("\n");
   assert.ok(changed.includes(".github/workflows/deploy-azure-container-apps.yml"), changed.join("\n"));
   assert.ok(changed.includes("deploy/azure-container-apps/main.bicep"));
+  assert.ok(changed.includes("deploy/azure-container-apps/plan.md"));
   const page = changed.find((p) => /^\.sdlc\/proposals\/.*deploy-azure-container-apps.*\.md$/.test(p));
   assert.ok(page, changed.join("\n"));
   const said = git(["show", `${branch}:${page}`], dir);
+  assert.match(said, /## Provisioning/);
   assert.match(said, /## Trial deploy/);
   assert.match(said, new RegExp(`http://127\\.0\\.0\\.1:${port} answered 200`));
   assert.match(said, /https:\/\/github\.example\/run\/7/);
   // The trial GitHub ran is the session's work on top of what main held when the run began.
   assert.match(git(["show", `refs/heads/${TRIAL_BRANCH}:.github/workflows/deploy-azure-container-apps.yml`], remote), /deploy\.sh development/);
+});
+
+test("a deploy run whose provisioning fails tries nothing on GitHub and proposes nothing", async (t) => {
+  const { dir, remote, steps } = await readyToDeploy(t, DEPLOY_FILES, {
+    provision: () => ({ ok: false, ran: true, messages: ["azure-container-apps bootstrap did not pass; nothing past it ran"] }),
+  });
+  const r = await runStage(dir, "deploy", { platform: "azure-container-apps" });
+  assert.equal(r.ok, false);
+  assert.match(r.messages.join("\n"), /bootstrap did not pass/);
+  assert.equal(steps().includes("trial"), false);
+  assert.equal(spawnSync("git", ["rev-parse", "--verify", "-q", `refs/heads/${TRIAL_BRANCH}`], { cwd: remote }).status, 1, "no trial was pushed");
+});
+
+test("a deploy run whose files fail their checks provisions nothing", async (t) => {
+  const { dir, steps } = await readyToDeploy(t, { ...DEPLOY_FILES, "deploy/azure-container-apps/main.bicep": "targetScope = 'subscription'\n" });
+  const r = await runStage(dir, "deploy", { platform: "azure-container-apps" });
+  assert.equal(r.ok, false);
+  assert.match(r.messages.join("\n"), /targetScope is subscription/);
+  assert.deepEqual(steps(), []);
 });
 
 test("a person's deploy files are handed in from a branch, tried on GitHub and proposed as a session's would be", async (t) => {
@@ -682,13 +752,25 @@ test("a person's deploy files are handed in from a branch, tried on GitHub and p
   assert.match(said, new RegExp(`http://127\\.0\\.0\\.1:${port} answered 200`));
 });
 
-test("a deploy session that changes the application is refused, and nothing is tried or proposed", async (t) => {
-  const { dir, remote } = await readyToDeploy(t, { ...DEPLOY_FILES, "app/index.js": "export const changed = true;\n" });
-  const r = await runStage(dir, "deploy", { platform: "azure-container-apps" });
-  assert.equal(r.ok, false);
-  assert.match(r.messages.join("\n"), /app\/index\.js/);
-  assert.equal(spawnSync("git", ["rev-parse", "--verify", "-q", "refs/heads/proposal/deploy-azure-container-apps"], { cwd: dir }).status, 1);
-  assert.equal(spawnSync("git", ["rev-parse", "--verify", "-q", `refs/heads/${TRIAL_BRANCH}`], { cwd: remote }).status, 1, "no trial was pushed");
+test("a deploy session may change the application only where its plan names the change", async (t) => {
+  const unlisted = await readyToDeploy(t, { ...DEPLOY_FILES, "app/index.js": "export const changed = true;\n" });
+  const a = await runStage(unlisted.dir, "deploy", { platform: "azure-container-apps" });
+  assert.equal(a.ok, false);
+  assert.match(a.messages.join("\n"), /app\/index\.js: .*deploy\/azure-container-apps\/plan\.md/);
+  assert.equal(spawnSync("git", ["rev-parse", "--verify", "-q", "refs/heads/proposal/deploy-azure-container-apps"], { cwd: unlisted.dir }).status, 1);
+  assert.equal(spawnSync("git", ["rev-parse", "--verify", "-q", `refs/heads/${TRIAL_BRANCH}`], { cwd: unlisted.remote }).status, 1, "no trial was pushed");
+  assert.deepEqual(unlisted.steps(), [], "nothing was provisioned");
+
+  const listed = await readyToDeploy(t, {
+    ...DEPLOY_FILES,
+    "deploy/azure-container-apps/plan.md": "# Deploy plan\n\n## Changes to the application\n\n| Path | Change | Why |\n|---|---|---|\n| `app/index.js` | reads its port from the environment | the platform names the port |\n",
+    "app/index.js": "export const port = process.env.PORT;\n",
+  });
+  const b = await runStage(listed.dir, "deploy", { platform: "azure-container-apps" });
+  assert.equal(b.ok, true, (b.messages ?? []).join("\n"));
+  const changed = git(["diff", "--name-only", "main...proposal/deploy-azure-container-apps"], listed.dir).split("\n");
+  assert.ok(changed.includes("app/index.js"), changed.join("\n"));
+  assert.match(git(["show", `refs/heads/${TRIAL_BRANCH}:app/index.js`], listed.remote), /process\.env\.PORT/, "the trial deploys the changed application");
 });
 
 test("only a stage with something to set up takes --setup", async (t) => {
@@ -697,15 +779,26 @@ test("only a stage with something to set up takes --setup", async (t) => {
   await assert.rejects(() => runStage(dir, "deploy", { platform: "azure-container-apps", setup: true, handIn: "main" }), /--setup.*--hand-in/);
 });
 
-// `az` and `gh` as a subscription and a repository would answer the setup, each call logged. A
-// group named in FAKE_GROUPS exists already; a role named in FAKE_DENY_ROLE is one this account
-// cannot assign; FAKE_GH_NOT_ADMIN makes the account one that cannot create environments.
-function fakeCloud(t) {
+// `az` and `gh` as a subscription and a repository would answer provisioning, each call logged,
+// in a project whose definition is the profile's own template. A group named in FAKE_GROUPS
+// exists already, and so does the registry when FAKE_REGISTRY is set; FAKE_APPS_JSON is what the
+// group's container apps are before the definition is deployed; a role named in FAKE_DENY_ROLE is
+// one this account cannot assign; FAKE_GH_NOT_ADMIN makes the account one that cannot create
+// environments.
+function fakeCloud(t, { definition = true, params } = {}) {
   const tmp = project(t);
   const bin = join(tmp, "bin");
   mkdirSync(bin);
   const azLog = join(tmp, "az.log");
   const ghLog = join(tmp, "gh.log");
+  const P = "azure-container-apps";
+  if (definition) {
+    const tdir = join(PIPELINE_ROOT, "deploys", P, "templates", "deploy", P);
+    mkdirSync(join(tmp, "deploy", P), { recursive: true });
+    writeFileSync(join(tmp, "deploy", P, "main.bicep"), readFileSync(join(tdir, "main.bicep"), "utf8"));
+    writeFileSync(join(tmp, "deploy", P, "main.bicepparam"), params ?? readFileSync(join(tdir, "main.bicepparam"), "utf8"));
+  }
+  const RG_ID = (rg) => `/subscriptions/sub-id/resourceGroups/${rg}`;
   writeFileSync(join(bin, "az"), [
     "#!/bin/bash",
     `echo "$*" >> "${azLog}"`,
@@ -716,13 +809,18 @@ function fakeCloud(t) {
     '  "provider show --namespace Microsoft.App --query"*) echo region-a;;',
     '  "provider show"*) echo Registered;;',
     '  "group show --name "*) g="$(opt --name "$@")"; [[ " ${FAKE_GROUPS:-} " == *" $g "* ]] && { echo region-a; exit 0; }; exit 3;;',
-    '  "acr show --name"*"--query id"*|"identity show --resource-group"*|"identity federated-credential show"*) exit 3;;',
+    '  "acr show --name"*"--query id"*) [ -n "${FAKE_REGISTRY:-}" ] || exit 3; echo /subscriptions/sub-id/resourceGroups/rg-registry/providers/Microsoft.ContainerRegistry/registries/svcacr;;',
+    '  "identity show --resource-group"*|"identity federated-credential show"*) exit 3;;',
     '  "acr check-name"*) echo true;;',
-    '  "acr create"*) echo /subscriptions/sub-id/resourceGroups/rg-svc-shared/providers/Microsoft.ContainerRegistry/registries/svcacr;;',
+    `  "acr create"*) echo "${RG_ID("$(opt --resource-group \"$@\")")}/providers/Microsoft.ContainerRegistry/registries/$(opt --name "$@")";;`,
     '  "acr show"*loginServer*) echo svcacr.azurecr.io;;',
-    '  "identity create"*) echo "/subscriptions/sub-id/resourceGroups/rg-svc-shared/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$(opt --name "$@")";;',
+    `  "identity create"*) echo "${RG_ID("$(opt --resource-group \"$@\")")}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/$(opt --name "$@")";;`,
     '  "identity show --ids"*"--query principalId"*) id="$(opt --ids "$@")"; echo "principal-${id##*/}";;',
     '  "identity show --ids"*"--query clientId"*) id="$(opt --ids "$@")"; echo "client-${id##*/}";;',
+    '  "containerapp list --resource-group "*"--output json") echo "${FAKE_APPS_JSON:-[]}";;',
+    `  "containerapp list --resource-group "*) rg="$(opt --resource-group "$@")"; printf '%s\\n' "${RG_ID("$rg")}/providers/Microsoft.App/containerApps/svc-web" "${RG_ID("$rg")}/providers/Microsoft.App/containerApps/svc-api";;`,
+    `  "deployment group what-if"*) echo "+ Microsoft.App/containerApps/svc-web";;`,
+    `  "deployment group create"*) echo "env NAME_PREFIX=$NAME_PREFIX LOCATION=$LOCATION REGISTRY_SERVER=$REGISTRY_SERVER PULL_IDENTITY_ID=$PULL_IDENTITY_ID EXISTING_IMAGES=$EXISTING_IMAGES" >> "${azLog}"; echo '{}';;`,
     '  "role assignment create"*) [ -n "${FAKE_DENY_ROLE:-}" ] && [ "$(opt --role "$@")" = "$FAKE_DENY_ROLE" ] && { echo "AuthorizationFailed" >&2; exit 1; }; exit 0;;',
     // The SRE agent: its identity, the agent as the API returns it, and its provisioning state.
     '  "resource show --ids"*knowledgeGraphConfiguration.identity*) echo /subscriptions/sub-id/resourceGroups/rg-agents/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-agent;;',
@@ -736,6 +834,7 @@ function fakeCloud(t) {
     `echo "$*" >> "${ghLog}"`,
     'case "$1 $2 $3" in',
     '  "auth status"*) exit 0;;',
+    '  "api repos/example/service --jq") echo "1001 2002";;',
     '  "api --method PUT") [ -n "${FAKE_GH_NOT_ADMIN:-}" ] && { echo "HTTP 403" >&2; exit 1; }; ' + `echo "body $(cat)" >> "${ghLog}"; exit 0;;`,
     '  "api --method POST"|"api --method DELETE") exit 0;;',
     '  "api repos/"*"/deployment-branch-policies --jq") printf "%b" "${FAKE_POLICIES:-}";;',
@@ -745,63 +844,81 @@ function fakeCloud(t) {
   ].join("\n"));
   chmodSync(join(bin, "az"), 0o755);
   chmodSync(join(bin, "gh"), 0o755);
-  const settings = join(tmp, deploySettingsFile("azure-container-apps"));
+  const settings = join(tmp, ".sdlc", "deploy-azure-container-apps.local.txt");
   const setup = (env = {}) => spawnSync("bash", [join(AZ, "bootstrap.sh")], {
     cwd: tmp, encoding: "utf8", input: "",
-    env: { PATH: `${bin}:${process.env.PATH}`, SDLC_PROJECT_DIR: tmp, SDLC_SETTINGS_FILE: settings,
-      NAME_PREFIX: "svc", LOCATION: "region-a", GITHUB_REPO: "example/service", PRODUCTION_REVIEWERS: "", ...env },
+    env: { PATH: `${bin}:${process.env.PATH}`, SDLC_PROJECT_DIR: tmp, SDLC_PLATFORM: P, SDLC_SETTINGS_FILE: settings,
+      NAME_PREFIX: "svc", LOCATION: "region-a", GITHUB_REPO: "example/service", ...env },
   });
   const lines = (file) => (existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : []);
-  return { tmp, setup, az: () => lines(azLog), gh: () => lines(ghLog) };
+  return { tmp, settings, setup, az: () => lines(azLog), gh: () => lines(ghLog) };
 }
 
 const nameAfter = (flag, line) => new RegExp(`${flag} (\\S+)`).exec(line)?.[1];
+const DEV = "/subscriptions/sub-id/resourceGroups/rg-svc-development";
 
-test("the Azure setup creates the shared, development and production groups, and an identity for each environment's deploys that reaches only its own group", (t) => {
+test("provisioning puts everything in the development group, deploys the definition after a what-if, and gives GitHub's identity no right to create anything", (t) => {
   const cloud = fakeCloud(t);
   const r = cloud.setup();
   assert.equal(r.status, 0, r.stderr);
   const az = cloud.az();
-  assert.deepEqual(az.filter((l) => l.startsWith("group create")).map((l) => nameAfter("--name", l)), ["rg-svc-shared", "rg-svc-development", "rg-svc-production"]);
-  assert.deepEqual(az.filter((l) => l.startsWith("identity create")).map((l) => nameAfter("--name", l)), ["id-svc-pull", "id-svc-github-development", "id-svc-github-production"]);
-  for (const env of ["development", "production"]) {
-    const cred = az.find((l) => l.startsWith("identity federated-credential create") && l.includes(`--identity-name id-svc-github-${env} `));
-    assert.match(cred, new RegExp(`--subject repo:example/service:environment:${env} `));
-    const contributor = az.filter((l) => l.startsWith("role assignment create") && l.includes(`--assignee-object-id principal-id-svc-github-${env} `) && l.includes("--role Contributor"));
-    assert.deepEqual(contributor.map((l) => nameAfter("--scope", l)), [`/subscriptions/sub-id/resourceGroups/rg-svc-${env}`]);
+  assert.deepEqual(az.filter((l) => l.startsWith("group create")).map((l) => nameAfter("--name", l)), ["rg-svc-development"]);
+  for (const what of ["identity create", "acr create"]) {
+    assert.ok(az.filter((l) => l.startsWith(what)).every((l) => nameAfter("--resource-group", l) === "rg-svc-development"), what);
   }
-  assert.equal(az.some((l) => l.startsWith("acr login")), false, "nothing here signs Docker in; images are built on GitHub");
+  assert.deepEqual(az.filter((l) => l.startsWith("identity create")).map((l) => nameAfter("--name", l)), ["id-svc-pull", "id-svc-github-development"]);
+  // GitHub signs in by either form of the subject it may send: by name, or by owner and repository id.
+  const subjects = az.filter((l) => l.startsWith("identity federated-credential create")).map((l) => nameAfter("--subject", l));
+  assert.deepEqual(subjects, ["repo:example/service:environment:development", "repo:example@1001/service@2002:environment:development"]);
+  // The definition is shown, then deployed, into the development group, from its parameters file.
+  const whatIf = az.findIndex((l) => l.startsWith("deployment group what-if"));
+  const create = az.findIndex((l) => l.startsWith("deployment group create"));
+  assert.ok(whatIf >= 0 && create > whatIf, az.join("\n"));
+  for (const i of [whatIf, create]) {
+    assert.equal(nameAfter("--resource-group", az[i]), "rg-svc-development");
+    assert.match(az[i], /--parameters \S+\/deploy\/azure-container-apps\/main\.bicepparam/);
+  }
+  assert.match(az[create + 1], /^env NAME_PREFIX=svc LOCATION=region-a REGISTRY_SERVER=svcacr\.azurecr\.io PULL_IDENTITY_ID=\S+\/id-svc-pull EXISTING_IMAGES=\{\}$/);
+  // GitHub's identity may change the container apps the definition stood up, and push images; nothing more.
+  const granted = az.filter((l) => l.startsWith("role assignment create --assignee-object-id principal-id-svc-github-development "))
+    .map((l) => `${/--role (.+) --scope/.exec(l)[1]} on ${nameAfter("--scope", l)}`);
+  assert.deepEqual(granted, [
+    `Container Apps Contributor on ${DEV}/providers/Microsoft.App/containerApps/svc-web`,
+    `Container Apps Contributor on ${DEV}/providers/Microsoft.App/containerApps/svc-api`,
+    `AcrPush on ${DEV}/providers/Microsoft.ContainerRegistry/registries/svcacr`,
+  ]);
+  assert.ok(az.some((l) => l.startsWith("role assignment create --assignee-object-id principal-id-svc-pull ") && l.includes("--role AcrPull")));
   const gh = cloud.gh();
   assert.ok(gh.some((l) => l.includes("custom_branch_policies\":true")), gh.join("\n"));
-  const policies = (env) => gh.filter((l) => l.startsWith(`api --method POST repos/example/service/environments/${env}/deployment-branch-policies`)).map((l) => nameAfter("name=", l) ?? /name=(\S+)/.exec(l)[1]);
-  assert.deepEqual(policies("development"), ["main", "development"]);
-  assert.deepEqual(policies("production"), ["main"]);
-  assert.ok(gh.includes("variable set AZURE_CLIENT_ID --env development --repo example/service --body client-id-svc-github-development"), gh.join("\n"));
-  assert.ok(gh.includes("variable set AZURE_CLIENT_ID --env production --repo example/service --body client-id-svc-github-production"), gh.join("\n"));
+  assert.equal(gh.some((l) => l.includes("production")), false);
+  const policies = gh.filter((l) => l.startsWith("api --method POST repos/example/service/environments/development/deployment-branch-policies")).map((l) => /name=(\S+)/.exec(l)[1]);
+  assert.deepEqual(policies, ["main", "development"]);
+  for (const v of ["AZURE_CLIENT_ID --env development --repo example/service --body client-id-svc-github-development",
+    "RESOURCE_GROUP --env development --repo example/service --body rg-svc-development",
+    "REGISTRY --env development --repo example/service --body svcacr.azurecr.io"]) {
+    assert.ok(gh.includes(`variable set ${v}`), `${v}\n${gh.join("\n")}`);
+  }
   const saved = readDeploySettings(cloud.tmp, "azure-container-apps");
   assert.equal(saved.SETUP, "complete");
   assert.equal(saved.RESOURCE_GROUP, "rg-svc-development");
-  assert.equal(saved.RESOURCE_GROUP_PRODUCTION, "rg-svc-production");
-  assert.equal(saved.AZURE_CLIENT_ID_DEVELOPMENT, "client-id-svc-github-development");
-  assert.equal(saved.AZURE_CLIENT_ID_PRODUCTION, "client-id-svc-github-production");
+  assert.equal(saved.AZURE_CLIENT_ID, "client-id-svc-github-development");
+  for (const gone of ["RESOURCE_GROUP_PRODUCTION", "SHARED_RESOURCE_GROUP", "AZURE_CLIENT_ID_PRODUCTION"]) assert.equal(gone in saved, false, gone);
 });
 
-test("a setup into a development group that already runs the application, with no production, creates neither", (t) => {
+test("provisioning again into a group that already runs the application keeps the images it runs", (t) => {
   const cloud = fakeCloud(t);
-  const r = cloud.setup({ RESOURCE_GROUP: "rg-live", RESOURCE_GROUP_PRODUCTION: "", FAKE_GROUPS: "rg-live" });
+  const image = `svcacr.azurecr.io/web@sha256:${"a".repeat(64)}`;
+  const apps = JSON.stringify([{ name: "svc-web", properties: { template: { containers: [{ name: "web", image }] } } }]);
+  const r = cloud.setup({ DEPLOY_MODE: "existing", RESOURCE_GROUP: "rg-live", REGISTRY_NAME: "svcacr", FAKE_GROUPS: "rg-live", FAKE_REGISTRY: "1", FAKE_APPS_JSON: apps });
   assert.equal(r.status, 0, r.stderr);
   const az = cloud.az();
-  assert.deepEqual(az.filter((l) => l.startsWith("group create")).map((l) => nameAfter("--name", l)), ["rg-svc-shared"]);
-  assert.deepEqual(az.filter((l) => l.startsWith("identity create")).map((l) => nameAfter("--name", l)), ["id-svc-pull", "id-svc-github-development"]);
-  assert.ok(az.some((l) => l.startsWith("role assignment create") && l.includes("--scope /subscriptions/sub-id/resourceGroups/rg-live")));
-  assert.equal(cloud.gh().some((l) => l.includes("environments/production")), false);
-  const saved = readDeploySettings(cloud.tmp, "azure-container-apps");
-  assert.equal(saved.RESOURCE_GROUP, "rg-live");
-  assert.equal(saved.RESOURCE_GROUP_PRODUCTION, "");
-  assert.equal(saved.SETUP, "complete");
+  assert.equal(az.some((l) => /^(group|acr) create/.test(l)), false);
+  const env = az[az.findIndex((l) => l.startsWith("deployment group create")) + 1];
+  assert.ok(env.endsWith(`EXISTING_IMAGES={"svc-web/web":"${image}"}`), env);
+  assert.equal(readDeploySettings(cloud.tmp, "azure-container-apps").RESOURCE_GROUP, "rg-live");
 });
 
-test("a setup that cannot create the repository's environments, or assign a role the deploys need, is not complete and says what someone else does", (t) => {
+test("provisioning that cannot create the repository's environment, or assign a role the deploys need, is not complete and says what someone else does", (t) => {
   const github = fakeCloud(t);
   const a = github.setup({ FAKE_GH_NOT_ADMIN: "1" });
   assert.notEqual(a.status, 0);
@@ -809,54 +926,58 @@ test("a setup that cannot create the repository's environments, or assign a role
   assert.equal(readDeploySettings(github.tmp, "azure-container-apps").SETUP, "incomplete");
 
   const roles = fakeCloud(t);
-  const b = roles.setup({ FAKE_DENY_ROLE: "Contributor" });
+  const b = roles.setup({ FAKE_DENY_ROLE: "Container Apps Contributor" });
   assert.notEqual(b.status, 0);
-  assert.match(b.stderr, /az role assignment create --assignee-object-id principal-id-svc-github-development .*--role "Contributor" --scope \/subscriptions\/sub-id\/resourceGroups\/rg-svc-development/);
+  assert.match(b.stderr, new RegExp(`az role assignment create --assignee-object-id principal-id-svc-github-development .*--role "Container Apps Contributor" --scope ${DEV}/providers/Microsoft\\.App/containerApps/svc-web`));
   assert.equal(readDeploySettings(roles.tmp, "azure-container-apps").SETUP, "incomplete");
 });
 
-test("a setup refuses environments that share a group with each other, with the registry and identities, or with the SRE agent", (t) => {
-  for (const [env, why] of [
-    [{ RESOURCE_GROUP: "rg-svc-shared" }, /rg-svc-shared is both the development environment's group and the shared group/],
-    [{ RESOURCE_GROUP_PRODUCTION: "rg-svc-development" }, /rg-svc-development is both the development environment's group and the production environment's/],
-    [{ SRE_AGENT_ID: "/subscriptions/sub-id/resourceGroups/rg-svc-development/providers/Microsoft.App/agents/agent-1" }, /the SRE agent is in rg-svc-development, an environment's own group/],
-  ]) {
-    const cloud = fakeCloud(t);
-    const r = cloud.setup(env);
-    assert.notEqual(r.status, 0, JSON.stringify(env));
-    assert.match(r.stderr, why);
-    assert.equal(cloud.az().some((l) => /^(group|identity|acr) create/.test(l)), false, "nothing was created");
-  }
+test("provisioning with no definition, or without a secret the definition reads, creates nothing", (t) => {
+  const none = fakeCloud(t, { definition: false });
+  const a = none.setup();
+  assert.notEqual(a.status, 0);
+  assert.match(a.stderr, /deploy\/azure-container-apps\/main\.bicep is missing; a deploy run writes the definition/);
+  assert.equal(none.az().some((l) => / create/.test(l)), false);
+
+  const params = `${readFileSync(join(PIPELINE_ROOT, "deploys", "azure-container-apps", "templates", "deploy", "azure-container-apps", "main.bicepparam"), "utf8")}param databasePassword = readEnvironmentVariable('DATABASE_PASSWORD')\n`;
+  const unset = fakeCloud(t, { params });
+  const b = unset.setup();
+  assert.notEqual(b.status, 0);
+  assert.match(b.stderr, /DATABASE_PASSWORD/);
+  assert.equal(unset.az().some((l) => / create/.test(l)), false);
+
+  // A secret given in the environment reaches the deployment that way, and is written nowhere.
+  const given = fakeCloud(t, { params });
+  const value = "example-value-not-a-real-one";
+  const c = given.setup({ DATABASE_PASSWORD: value });
+  assert.equal(c.status, 0, c.stderr);
+  assert.ok(given.az().some((l) => l.startsWith("deployment group create")));
+  for (const said of [c.stdout, c.stderr, given.az().join("\n"), given.gh().join("\n"), readFileSync(given.settings, "utf8")]) assert.equal(said.includes(value), false);
 });
 
-test("a setup sets the SRE agent to watch each environment and gives its identity read access, and no deploy identity any right on the agent", (t) => {
+test("provisioning sets the SRE agent to watch the development group and gives its identity read access, and no deploy identity any right on the agent", (t) => {
   const cloud = fakeCloud(t);
   const agent = "/subscriptions/sub-id/resourceGroups/rg-agents/providers/Microsoft.App/agents/agent-1";
   const r = cloud.setup({ SRE_AGENT_ID: agent });
   assert.equal(r.status, 0, r.stderr);
   const az = cloud.az();
-  for (const env of ["development", "production"]) {
-    const scope = `/subscriptions/sub-id/resourceGroups/rg-svc-${env}`;
-    for (const role of ["Reader", "Monitoring Reader", "Log Analytics Reader"]) {
-      assert.ok(az.some((l) => l.startsWith("role assignment create --assignee-object-id principal-id-agent ") && l.includes(`--role ${role} --scope ${scope}`)), `${role} on ${env}`);
-    }
-    const patch = az.find((l) => l.startsWith("rest --method patch") && l.includes(`${scope}"`));
-    assert.ok(patch, `the agent is set to watch ${env}`);
-    assert.match(patch, /"identity":"\/subscriptions\/sub-id\/resourceGroups\/rg-agents\/providers\/Microsoft\.ManagedIdentity\/userAssignedIdentities\/id-agent"/);
-    assert.match(patch, /rg-other/, "what the agent already watched is kept");
+  for (const role of ["Reader", "Monitoring Reader", "Log Analytics Reader"]) {
+    assert.ok(az.some((l) => l.startsWith("role assignment create --assignee-object-id principal-id-agent ") && l.includes(`--role ${role} --scope ${DEV}`)), role);
   }
+  const patch = az.find((l) => l.startsWith("rest --method patch") && l.includes(`${DEV}"`));
+  assert.ok(patch, "the agent is set to watch the development group");
+  assert.match(patch, /"identity":"\/subscriptions\/sub-id\/resourceGroups\/rg-agents\/providers\/Microsoft\.ManagedIdentity\/userAssignedIdentities\/id-agent"/);
+  assert.match(patch, /rg-other/, "what the agent already watched is kept");
   assert.equal(az.some((l) => l.startsWith("role assignment create --assignee-object-id principal-id-svc-github-") && l.includes(agent)), false);
 });
 
-test("a setup takes away a branch an environment admitted deploys from that it should not", (t) => {
+test("provisioning takes away a branch the development environment admitted deploys from that it should not", (t) => {
   const cloud = fakeCloud(t);
   const r = cloud.setup({ FAKE_POLICIES: "11 release\\n12 main\\n" });
   assert.equal(r.status, 0, r.stderr);
   const gh = cloud.gh();
-  for (const env of ["development", "production"]) {
-    assert.ok(gh.includes(`api --method DELETE repos/example/service/environments/${env}/deployment-branch-policies/11`), gh.join("\n"));
-    assert.equal(gh.some((l) => l.startsWith(`api --method POST repos/example/service/environments/${env}/deployment-branch-policies`) && l.includes("name=main")), false, "main is kept, not added twice");
-  }
+  assert.ok(gh.includes("api --method DELETE repos/example/service/environments/development/deployment-branch-policies/11"), gh.join("\n"));
+  assert.equal(gh.some((l) => l.startsWith("api --method POST repos/example/service/environments/development/deployment-branch-policies") && l.includes("name=main")), false, "main is kept, not added twice");
   assert.ok(gh.some((l) => l.startsWith("api --method POST repos/example/service/environments/development/deployment-branch-policies") && l.includes("name=development")));
 });
 

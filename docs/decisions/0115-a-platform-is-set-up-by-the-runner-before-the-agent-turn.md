@@ -1,6 +1,6 @@
 # 0115 · A platform is set up by the runner, on the operator's machine, before the agent turn
 
-Status: accepted · 2026-10-06
+Status: accepted · 2026-10-06 · superseded in part by docs/decisions/0117
 
 ## Context
 

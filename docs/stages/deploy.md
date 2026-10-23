@@ -3,72 +3,90 @@
 ## Purpose
 
 Take a built application to a hosting platform, once per platform the project lists in its
-`deploy` setting (`docs/config.md`). The stage writes three things and nothing else:
+`deploy` setting (`docs/config.md`). The stage reads the application, works out what deploying it
+needs, and writes:
 
-- one deployment definition (`deploy/<platform>/`, Bicep or YAML),
-- one deploy script, `deploy/<platform>/deploy.sh <environment>`, which prints `DEPLOYED_URL=<url>`,
+- the plan, `deploy/<platform>/plan.md`: every resource the application needs, every change to
+  the application the deploy makes (each by its path under `app/`, with why), and every secret by
+  name;
+- those changes to `app/`, and only those;
+- one deployment definition (`deploy/<platform>/`, Bicep or YAML);
+- one deploy script, `deploy/<platform>/deploy.sh <environment>`, which prints `DEPLOYED_URL=<url>`;
 - one GitHub workflow, `.github/workflows/deploy-<platform>.yml`, that calls that same script.
 
 The platform is chosen here, not in phase 0. What is specific to a platform lives in its deploy
 profile under `deploys/<platform>/`; the stack profile says nothing about hosting. Supporting two
-platforms is running the stage twice.
+platforms is running the stage twice. There is one environment, development; production is set up
+apart from the pipeline.
 
 It holds gate G3, ruled by the reviewer persona, with proposals named `deploy-<platform>`.
 
 ## Inputs
 
 `sdlc run deploy --platform <p>`, run from the project's working tree. `<p>` must be listed in
-`deploy` and have a deploy profile; `app/` must exist; and a profile with a setup of its own must
-have been set up on this machine (below). The stage runs after the last build step. `--revise` is
-not supported: a returned proposal is answered by running the stage again.
+`deploy` and have a deploy profile, and `app/` must exist. The stage runs after the last build
+step. `--revise` is not supported: a returned proposal is answered by running the stage again.
 
-The session works in a workspace of its own: the application, the constitution and the stack
-skill to read, and `deploy/<platform>/`, the workflow and `docs/decisions/` as what it writes. A
-person can hand those files in from a branch instead, with `--hand-in <branch>`, and the run
+The session works in a workspace of its own: the constitution and the stack skill to read, and the
+application, `deploy/<platform>/`, the workflow and `docs/decisions/` as what it reads and writes.
+A person can hand those files in from a branch instead, with `--hand-in <branch>`, and the run
 judges them as it would a session's.
 
-## Setup
+## Checks
 
-A deploy profile may carry a setup: `bootstrap/preflight.sh` and `bootstrap/bootstrap.sh`. It is
-the one step that needs a person signed in to the platform, with the rights to create resources
-and assign roles, and it runs in a run of its own:
+Once the session (or the hand-in) is done, the post-checks hold its files to these, in order, and
+stop at the first set that fails, with nothing provisioned and nothing pushed:
 
-```sh
-sdlc run deploy --platform <p> --setup
-```
+- **Scope.** The run changes `deploy/<platform>/`, its workflow, `docs/decisions/`, and a path
+  under `app/` only where `deploy/<platform>/plan.md` names it.
+- **Files.** The plan, a definition, the script and the workflow all exist.
+- **Definition.** A Bicep definition stays in its one resource group, since provisioning deploys it
+  signed in as a person before anyone has ruled on it: `targetScope` is `resourceGroup`, no module
+  is deployed to another scope or pulled from a registry, and it defines nothing under
+  `Microsoft.Authorization` (role assignments, locks, policy) and no `deploymentScripts`.
+- **Workflow.** It runs the script, deploys development on a push to `main` and to `development`,
+  pins every action, reusable workflow and image, reads secrets only one by one, and grants its
+  jobs `contents: read`, `id-token: write` and, for images in GitHub's container registry,
+  `packages: write`, and nothing more.
 
-That run executes the two scripts in that order, from the project directory, with the terminal
-attached, records the run, and stops: no workspace, no agent turn, no proposal.
+A failure goes back to the session as a repair turn, and the checks run again.
+
+## Provisioning
+
+A deploy profile may carry provisioning: `bootstrap/preflight.sh` and `bootstrap/bootstrap.sh`.
+Once the files pass their checks, the run executes them on the machine of the person running the
+stage, from the project directory, with the terminal attached, signed in to the platform as that
+person. The agent session never runs them: it holds no sign-in and cannot ask anyone anything.
 
 - The preflight checks the tools, the sign-ins to the platform and to GitHub and, where it can
-  tell, the roles the operator holds; it fails the run naming what is missing.
-- The bootstrap asks whether to create the platform's resources or use existing ones, what they
-  are called and where, then creates or checks them, gives each environment's deploys an identity
-  of their own, and creates the repository's environments, each admitting deploys from its own
-  branches and no others. It refuses environments that share a resource group with each other, or
-  with the registry, the identities or the SRE agent, since an environment's deploys can change
-  everything in their group. It writes its answers, which are names, ids and regions and never
-  credentials, to `.sdlc/deploy-<platform>.local.txt`, a file every project's `.gitignore` already
-  covers. What the operator's account cannot do (a role it cannot assign, an environment it cannot
-  create) is printed as the exact step for someone who can, and the setup is not complete until it
-  has been run again after them.
+  tell, the roles the person holds; it fails naming what is missing.
+- The bootstrap asks whether to create the platform's resource group and registry or use existing
+  ones, what they are called and where. It asks for each secret the definition reads that is not
+  already in the environment, without showing it, before it creates anything, and never writes
+  it. It then creates what does not exist, shows what deploying the definition would change, and
+  deploys it. Then it gives the identity GitHub deploys as the right to change what the
+  definition stood up and to push images, and nothing else, and creates the repository's
+  `development` environment, admitting deploys from `main` and `development` and no other branch.
+  It writes its answers, which are names, ids and regions and never credentials, to
+  `.sdlc/deploy-<platform>.local.txt`, a file every project's `.gitignore` already covers. What
+  the person's account cannot do (a role it cannot assign, an environment it cannot create) is
+  printed as the exact step for someone who can, and provisioning does not pass until it has run
+  again after them.
 
 Every question names a variable. One already set in the environment, or kept in the settings file
-from an earlier run, answers it, so a setup with no terminal asks nothing and fails naming the
-first variable it lacks. A setup that completes is recorded and committed as `run(deploy): set up
-<p>`, and one that does not as `run(deploy): setup of <p> failed`. A setup proposes nothing, so it
-is not held to what `sdlc next` names, and it starts no agent turn, so nothing that would refuse
-one refuses it.
+from an earlier run, answers it, so provisioning with no terminal asks nothing and fails naming the
+first variable it lacks. A repair turn provisions again, and nothing that exists is created twice.
+Provisioning that does not pass stops the run before the trial.
 
-A deploy run never runs the setup. It is refused at its pre-checks, naming the command above, until
-the run records on `main` show that the platform's last setup completed. The records are committed,
-so a setup run on one machine counts on every other, and nothing that runs the stage afterwards, an
-agent running the pipeline among them, needs to be signed in to the platform at all
-(`docs/decisions/0115`, `docs/decisions/0116`).
+`sdlc run deploy --platform <p> --setup` provisions alone, from the definition the checkout holds,
+and stops: no workspace, no agent turn, no proposal. It is for deploying the definition `main`
+holds again (once an owed step is done, or after a change made by hand), and is recorded and
+committed as `run(deploy): set up <p>` or `run(deploy): setup of <p> failed`. It proposes nothing,
+so it is not held to what `sdlc next` names (`docs/decisions/0117`).
 
 ## Trial deploy
 
-Before it proposes, the runner has GitHub deploy the session's work to the development
+Once provisioning passes, the runner has GitHub deploy the session's work to the development
 environment:
 
 1. It commits the working tree as the session left it, on top of `main`, through an index of its
@@ -85,25 +103,19 @@ environment:
    fails, reads the run's `DEPLOYED_URL=<url>` line, and fetches the URL; a status below 400
    passes.
 
-The outcome, with a link to GitHub's run, is written into the proposal page under "Trial deploy",
-so the gate sees what the deploy did. GitHub's run signs in as the development environment's own
-identity, which can change nothing but the development resource group and push images to the
-registry, so the workflow is tried before it is ruled on without reaching anything else. Every
-deploy runs the image its own run pushed, by digest, so an image a trial pushed is never the one
-production runs. For the same reason the post-checks refuse a workflow that leaves an action, a
-reusable workflow or an action of its own unpinned to a full commit SHA, runs an image not pinned
-by digest, reads its secrets other than one by one, or grants a job anything beyond
-`contents: read`, `id-token: write` and, for images in GitHub's container registry,
-`packages: write`.
-
-The trial deploys the development environment that GitHub's own deploys use, not an environment of
-its own, so a deploy leaves nothing behind that nothing else uses.
+What provisioning did and the outcome of the trial, with a link to GitHub's run, are written into
+the proposal page under "Provisioning" and "Trial deploy", so the gate sees both. GitHub's run
+signs in as the development environment's own identity, which can change the application's
+running images and push images to the registry and nothing else, so the workflow is tried before
+it is ruled on without being able to create, delete or grant anything. Every deploy runs the
+image its own run pushed, by digest.
 
 ## After approval
 
 GitHub does every deploy. The workflow deploys development on every push to `main`, and on a push
-to `development`, where a trial goes; production is a manual dispatch with a confirmation. A person
-can still run `deploy/<platform>/deploy.sh <environment>` by hand; it is the same script.
+to `development`, where a trial goes. A deploy changes only which images run; a new resource or a
+changed setting is a change to the definition, which the next run of the stage provisions. A
+person can still run `deploy/<platform>/deploy.sh <environment>` by hand; it is the same script.
 
 ## Running it on a built project
 
@@ -117,18 +129,17 @@ profiles follow the same shape with their own prerequisites.
   GitHub, where the workflow runs.
 - **The pipeline.** The project's `.sdlc/config.yaml` pins (`pipeline.ref`) a pipeline that has the
   deploy stage, and its profile includes `deploy` (`rebuild`, `greenfield` and `feature` all do).
-- **For the setup, once.** On the machine: Node 24, `git`, the Azure CLI (`az`) and the GitHub CLI
-  (`gh`). In Azure: an `az login` to the subscription; the preflight offers a device-code sign-in
-  when there is none. To create resource groups the account needs Owner or Contributor on the
-  subscription; with less, use existing groups. The setup also assigns roles to the identities
-  GitHub deploys as, which needs Owner, User Access Administrator or Role Based Access Control
-  Administrator; without one, it prints the exact assignments for someone who has it. The resource
-  providers the profile uses are registered when they are not. On GitHub: `gh auth login` as
-  someone who administers the repository, so the setup can create the environments and their
-  variables; without it, it prints what an administrator sets.
-- **For a deploy run.** The agent CLI the project runs its stages on, signed in as for any other
-  stage (`sdlc doctor` reports it), and `gh` and `git` able to push to the repository. No sign-in
-  to Azure.
+- **The machine.** Node 24, `git`, the Azure CLI (`az`) with Bicep, and the GitHub CLI (`gh`), and
+  the agent CLI the project runs its stages on, signed in as for any other stage (`sdlc doctor`
+  reports it).
+- **Azure.** An `az login` to the subscription, as the person running the stage; the preflight
+  offers a device-code sign-in when there is none. To create the resource group the account needs
+  Owner or Contributor on the subscription; with less, use an existing group. Provisioning also
+  assigns roles, which needs Owner, User Access Administrator or Role Based Access Control
+  Administrator; without one, it prints the exact assignments for someone who has it.
+- **GitHub.** `gh auth login` as someone who administers the repository, so provisioning can create
+  the `development` environment and its variables; without it, it prints what an administrator
+  sets.
 - **Network.** GitHub's hosted runners reach Azure's public endpoints. A subscription that only
   admits private traffic needs self-hosted runners inside its network instead.
 
@@ -146,29 +157,18 @@ profiles follow the same shape with their own prerequisites.
    git push origin main
    ```
 
-2. **Set the platform up**, as a person with the rights above:
-
-   ```sh
-   sdlc run deploy --platform azure-container-apps --setup
-   ```
-
-   It asks whether to create resources or use existing ones, what to call them, and which region.
-   Created resources are the resource groups (`rg-<prefix>-shared` for the registry and
-   identities, `rg-<prefix>-development`, and `rg-<prefix>-production` unless production is
-   skipped), a container registry, the identity the application pulls its image as, and an
-   identity for each environment's deploys, with its federated credential. A group that already
-   exists is used as it is, so an environment the application already runs in can be taken over.
-   Each question names a variable (`deploys/azure-container-apps/SKILL.md` lists them); setting
-   it beforehand answers it, and the answers are kept in
-   `.sdlc/deploy-azure-container-apps.local.txt` for the next run.
-
-3. **Run the stage.** `sdlc next` names `sdlc run deploy --platform azure-container-apps` once the
+2. **Run the stage.** `sdlc next` names `sdlc run deploy --platform azure-container-apps` once the
    last build slice is approved. Run it; running it before then needs `--reason "<why>"`. The agent
-   writes the deployment definition, the script and the workflow; GitHub deploys them to the
-   development environment as the trial; and the runner opens the proposal
-   `deploy-azure-container-apps` with the outcome.
+   reads the application, writes the plan, the changes to `app/` it names, the definition, the
+   script and the workflow. Provisioning then asks whether to create the resource group and
+   registry or use existing ones, what to call them, the region, and any secret the definition
+   reads, shows what it will deploy, and deploys it into `rg-<prefix>-development`. Each question
+   names a variable (`deploys/azure-container-apps/SKILL.md` lists them); setting it beforehand
+   answers it, and the answers are kept in `.sdlc/deploy-azure-container-apps.local.txt` for the
+   next run. GitHub then deploys the work to the development environment as the trial, and the
+   runner opens the proposal `deploy-azure-container-apps` with what both did.
 
-4. **Rule on the proposal** at G3:
+3. **Rule on the proposal** at G3:
 
    ```sh
    sdlc rule deploy-azure-container-apps approve --by reviewer
@@ -176,20 +176,18 @@ profiles follow the same shape with their own prerequisites.
 
    or `--by agent:reviewer` to have the reviewer persona rule. Approval merges it into `main`.
 
-5. **Push `main`.** From then on every push to `main` deploys the development environment.
-   Production is a manual run, approved by the production environment's reviewers when the setup
-   was given any:
+4. **Push `main`.** From then on every push to `main` deploys the development environment.
 
    ```sh
    git push origin main
-   gh workflow run deploy-azure-container-apps.yml -f confirm=deploy
    ```
 
-To take everything down, delete the resource groups (`az group delete --name <group>`); the GitHub
-environments and variables are removed from the repository's settings.
+To take everything down, delete the resource group (`az group delete --name <group>`); the GitHub
+environment and its variables are removed from the repository's settings.
 
 ## Scope
 
-A deploy session may change `deploy/<platform>/`, its workflow and `docs/decisions/`; nothing else
-it changes leaves its workspace. Credentials are never written: sign-in is by the platform's
-secretless mechanism, and anything else is named and read from the environment.
+A deploy session may change `deploy/<platform>/`, its workflow, `docs/decisions/`, and the paths
+under `app/` its plan names; nothing else it changes leaves its workspace. Credentials are never
+written: sign-in is by the platform's secretless mechanism, and anything else is named and read
+from the environment.

@@ -1,6 +1,6 @@
 # 0116 · A deploy's trial runs on GitHub, as the development environment's own identity
 
-Status: accepted · 2026-10-19
+Status: accepted · 2026-10-19 · superseded in part by docs/decisions/0117
 
 The concepts these decisions use are defined in `docs/operating-model.md`.
 

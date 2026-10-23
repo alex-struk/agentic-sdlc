@@ -172,9 +172,9 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
   assertOnMain(projectDir, "run");
   const stage = stageFor(name);
   if (!stage.implemented) throw new Error(`stage ${name} is not implemented yet`);
-  // `--setup` runs a stage's setup and nothing else (`docs/decisions/0116`): the one step that
-  // needs a person signed in to what the stage works against. It is new work of no kind a
-  // revision or a hand-in answers.
+  // `--setup` runs a stage's setup and nothing else (`docs/decisions/0117`): for a deploy
+  // platform, provisioning again from the definition the checkout holds, signed in as the person
+  // running it. It is new work of no kind a revision or a hand-in answers.
   if (setup && !stage.bootstrap) throw new Error(`run ${name} --setup: ${name} has nothing to set up`);
   if (setup && (revise || handInRef !== undefined)) throw new Error(`run ${name}: --setup cannot be used with --revise or --hand-in; a setup prepares a platform and proposes nothing`);
 
@@ -303,8 +303,7 @@ export async function runStage(projectDir, name, { slice, domain, target, platfo
     }
     const b = stage.bootstrap(projectDir, ctx);
     if (b.ok) for (const m of b.messages) console.log(m);
-    // Named for the platform either way: these lines are what a deploy run reads to know whether
-    // the platform's last setup completed (`lastSetupOf`).
+    // Named for the platform either way, so the record says which platform was provisioned.
     const outcome = b.ok ? `set up${what}` : `setup${what ? ` of${what}` : ""} failed`;
     const runPath = appendRun(projectDir, `run ${name}: ${outcome}`);
     stageAll(projectDir, [relative(projectDir, runPath)]);

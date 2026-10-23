@@ -85,12 +85,12 @@ export const MODES = {
   // application is checked by running them, afterwards. The application itself and
   // `docs/decisions` are the builder's output and are declared in its `collect`.
   "build": ["plan", "spec", "design", "tests/seed", "constitution.md", ".claude/skills"],
-  // What a deploy works from: the built application, which it reads to know what has to be
-  // stood up, the constitution it answers to, and the stack skill that says how the
-  // application is laid out. It changes none of them. The deployment definition, the deploy
-  // script, the workflow and `docs/decisions` are its output and are declared in its
-  // `collect`, which is also what lets a person's branch be handed in in place of a session.
-  "deploy": ["app", "constitution.md", ".claude/skills"],
+  // What a deploy works from: the constitution it answers to and the stack skill that says how
+  // the application is laid out. The application, which it reads to know what has to be stood
+  // up and changes only where its plan names the change, is declared in its `collect` with the
+  // plan, the deployment definition, the deploy script, the workflow and `docs/decisions`, which
+  // is also what lets a person's branch be handed in in place of a session.
+  "deploy": ["constitution.md", ".claude/skills"],
   "with-sources": null,
 };
 
